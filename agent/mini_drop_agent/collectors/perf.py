@@ -12,12 +12,14 @@
 from __future__ import annotations
 
 import os
+import json
 import shutil
 import signal
 import subprocess
 import sys
 
 from agent.mini_drop_agent.collectors.base import CollectorResult, CollectorTask
+from server.app.diagnosis.depth_evidence import build_depth_evidence_summary
 
 
 class PerfCollector:
@@ -107,7 +109,7 @@ class PerfCollector:
                     "size_bytes": size,
                 }
             ]
-            analysis_artifacts, analysis_reason = self._analyze_perf_data(task.id, perf_data, output_dir)
+            analysis_artifacts, analysis_reason = self._analyze_perf_data(task, perf_data, output_dir)
             artifacts.extend(analysis_artifacts)
             reason = "perf record 采集完成"
             if analysis_artifacts:
@@ -178,14 +180,14 @@ class PerfCollector:
         return val <= 1
 
     @staticmethod
-    def _analyze_perf_data(task_id: str, perf_data: str, output_root: str) -> tuple[list[dict], str]:
+    def _analyze_perf_data(task: CollectorTask, perf_data: str, output_root: str) -> tuple[list[dict], str]:
         """MVP 闭环：采集后在 Agent 本地同步生成可展示分析产物。"""
         cmd = [
             sys.executable,
             "-m",
             "analyzer.mini_drop_analyzer.hotmethod_analyzer",
             "--task-id",
-            task_id,
+            task.id,
             "--perf-data",
             perf_data,
             "--output-dir",
@@ -208,8 +210,9 @@ class PerfCollector:
             "suggestions_md": ("suggestions.md", "text/markdown"),
         }
         artifacts: list[dict] = []
+        task_dir = output_root
         for artifact_type, (filename, content_type) in generated.items():
-            path = os.path.join(output_root, filename)
+            path = os.path.join(task_dir, filename)
             if not os.path.isfile(path):
                 continue
             artifacts.append({
@@ -219,4 +222,47 @@ class PerfCollector:
                 "content_type": content_type,
                 "size_bytes": os.path.getsize(path),
             })
+        depth_artifact = PerfCollector._build_depth_artifact(task, task_dir)
+        if depth_artifact is not None:
+            artifacts.append(depth_artifact)
         return artifacts, ""
+
+    @staticmethod
+    def _build_depth_artifact(task: CollectorTask, task_dir: str) -> dict | None:
+        collapsed_path = os.path.join(task_dir, "collapsed.txt")
+        top_path = os.path.join(task_dir, "top.json")
+        if not os.path.isfile(collapsed_path):
+            return None
+        top_functions: list[dict] = []
+        if os.path.isfile(top_path):
+            try:
+                with open(top_path, "r", encoding="utf-8") as fh:
+                    value = json.load(fh)
+                if isinstance(value, list):
+                    top_functions = value
+            except Exception:
+                top_functions = []
+        context = dict(task.options.get("collector_context", {}))
+        context.setdefault("collector_kind", task.collector_type)
+        context.setdefault("target_pid", task.target_pid)
+        context.setdefault("task_id", task.id)
+        summary = build_depth_evidence_summary(
+            task_id=task.id,
+            collector_kind=task.collector_type,
+            collapsed_path=collapsed_path,
+            top_functions=top_functions,
+            context=context,
+            raw_stack_ref=f"task:{task.id}:artifact:raw",
+            derived_artifact_ref=f"task:{task.id}:artifact:collapsed",
+        )
+        depth_path = os.path.join(task_dir, "depth_evidence.json")
+        with open(depth_path, "w", encoding="utf-8") as fh:
+            json.dump(summary, fh, ensure_ascii=False, indent=2)
+        return {
+            "artifact_type": "depth_evidence_json",
+            "filename": "depth_evidence.json",
+            "local_path": depth_path,
+            "content_type": "application/json",
+            "size_bytes": os.path.getsize(depth_path),
+            "metadata": {"data": summary},
+        }

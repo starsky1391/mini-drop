@@ -63,6 +63,8 @@ export default function TaskResult() {
   const [diagnoses, setDiagnoses] = useState([]);
   const [diagnosis, setDiagnosis] = useState(null);
   const [diagnosing, setDiagnosing] = useState(false);
+  const [analysisStrategy, setAnalysisStrategy] = useState("linear");
+  const [analysisPipeline, setAnalysisPipeline] = useState("evidence_to_attribution");
   const [analysis, setAnalysis] = useState({ top: [], svg: "", hasFlameJson: false });
   const [analysisLoading, setAnalysisLoading] = useState(true);
   const [selectedContinuousIndex, setSelectedContinuousIndex] = useState(null);
@@ -146,12 +148,19 @@ export default function TaskResult() {
     setDiagnosing(true);
     setError("");
     try {
-      const result = await triggerDiagnose(taskId);
+      const result = await triggerDiagnose(taskId, {
+        analysis_strategy: analysisStrategy,
+        analysis_pipeline: analysisPipeline,
+      });
       const detail = await getDiagnosis(result.diagnosis_id);
       const list = await listTaskDiagnoses(taskId);
       setDiagnosis(detail);
       setDiagnoses(list || []);
-      message.success("诊断完成");
+      message.success(
+        analysisPipeline === "legacy"
+          ? "旧版假设验证诊断完成"
+          : "Evidence-to-Attribution 诊断完成"
+      );
     } catch (err) {
       setError(err.message);
     } finally {
@@ -187,6 +196,16 @@ export default function TaskResult() {
   const rankedCauses = diagnosis?.report?.ranked_causes || [];
   const repairPlan = diagnosis?.repair_plan;
   const toolResults = diagnosis?.tool_results || [];
+  const structuredResult = report.analysis_result || {};
+  const structuredBoundary = report.conclusion_boundary || structuredResult.conclusion_boundary || null;
+  const structuredFacts = structuredResult.facts || [];
+  const structuredSymptoms = structuredResult.symptoms || [];
+  const structuredLocalizations = structuredResult.localizations || [];
+  const structuredChallenges = structuredResult.evidence_challenges || [];
+  const structuredPrimaryCauseId = report.primary_cause_id || structuredResult.primary_cause_id || "";
+  const structuredStability = report.stability_score ?? structuredResult.stability_score ?? 0;
+  const structuredPrimaryCauseReason = report.primary_cause_reason || structuredResult.primary_cause_reason || "";
+  const structuredAllowedCauseIds = structuredResult.allowed_cause_ids || [];
   const topCause = rankedCauses[0];
   const topArtifact = artifacts.find((item) => item.artifact_type === "top_json");
   const flameArtifact = artifacts.find(
@@ -668,6 +687,34 @@ export default function TaskResult() {
         extra={
           <Space>
             {diagnoses.length > 0 && <Tag>{diagnoses.length} 次诊断</Tag>}
+            <Tooltip title="候选原因的组织方式">
+              <Select
+                aria-label="归因策略"
+                size="small"
+                value={analysisStrategy}
+                onChange={setAnalysisStrategy}
+                disabled={diagnosing}
+                style={{ width: 132 }}
+                options={[
+                  { value: "linear", label: "线性候选" },
+                  { value: "graph", label: "因果图（方案 B）" },
+                ]}
+              />
+            </Tooltip>
+            <Tooltip title="旧版直接验证候选；新版先处理事实、现象、定位和证据反问">
+              <Select
+                aria-label="分析链路"
+                size="small"
+                value={analysisPipeline}
+                onChange={setAnalysisPipeline}
+                disabled={diagnosing}
+                style={{ width: 178 }}
+                options={[
+                  { value: "evidence_to_attribution", label: "新版：证据归因" },
+                  { value: "legacy", label: "旧版：假设验证" },
+                ]}
+              />
+            </Tooltip>
             <Button
               icon={<ExperimentOutlined />}
               loading={diagnosing}
@@ -776,6 +823,170 @@ export default function TaskResult() {
                 ]}
               />
             )}
+
+            {/* 结构化分析 */}
+            <Card size="small" title="结构化分析" bordered={false} style={{ background: "#fafafa" }}>
+              <Space direction="vertical" size={SPACING.md} style={{ width: "100%" }}>
+                <Descriptions column={{ xs: 1, sm: 2, md: 4 }} size="small">
+                  <Descriptions.Item label="主因">
+                    {structuredPrimaryCauseId || "-"}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="稳定性">
+                    <Progress
+                      percent={Math.round((structuredStability || 0) * 100)}
+                      size="small"
+                      strokeColor={
+                        (structuredStability || 0) > 0.7
+                          ? COLORS.success
+                          : (structuredStability || 0) > 0.4
+                          ? COLORS.warning
+                          : COLORS.error
+                      }
+                    />
+                  </Descriptions.Item>
+                  <Descriptions.Item label="最大定位层级">
+                    {structuredBoundary?.max_supported_level || "-"}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="可用原因数">
+                    {structuredAllowedCauseIds.length}
+                  </Descriptions.Item>
+                </Descriptions>
+
+                <Alert
+                  type={structuredBoundary?.can_claim_root_cause ? "success" : "warning"}
+                  message={structuredBoundary?.reason || "当前结构化分析暂无边界说明"}
+                  showIcon
+                />
+
+                {structuredPrimaryCauseReason && (
+                  <Typography.Text type="secondary" style={{ display: "block" }}>
+                    主因判定：{structuredPrimaryCauseReason}
+                  </Typography.Text>
+                )}
+
+                {structuredFacts.length > 0 && (
+                  <Table
+                    rowKey="fact_id"
+                    dataSource={structuredFacts}
+                    pagination={false}
+                    size="small"
+                    scroll={{ x: 760 }}
+                    columns={[
+                      { title: "事实", dataIndex: "fact_id", width: 180 },
+                      { title: "来源", dataIndex: "source", width: 120 },
+                      { title: "证据引用", dataIndex: "evidence_ref", width: 200 },
+                      { title: "值", dataIndex: "value", ellipsis: true },
+                      { title: "状态", dataIndex: "status", width: 100 },
+                      {
+                        title: "阈值带",
+                        dataIndex: "threshold_band",
+                        width: 100,
+                        render: (value) => <Tag>{value}</Tag>,
+                      },
+                    ]}
+                  />
+                )}
+
+                <Collapse
+                  ghost
+                  items={[
+                    {
+                      key: "symptoms",
+                      label: `现象 (${structuredSymptoms.length})`,
+                      children: structuredSymptoms.length > 0 ? (
+                        <Table
+                          rowKey="symptom_id"
+                          dataSource={structuredSymptoms}
+                          pagination={false}
+                          size="small"
+                          columns={[
+                            { title: "现象", dataIndex: "symptom_id", width: 200 },
+                            { title: "类型", dataIndex: "symptom_type", width: 180 },
+                            { title: "严重度", dataIndex: "severity", width: 100 },
+                            {
+                              title: "支持事实",
+                              dataIndex: "fact_ids",
+                              render: (ids = []) => (
+                                <Space size={[4, 4]} wrap>
+                                  {ids.map((item) => <Tag key={item}>{item}</Tag>)}
+                                </Space>
+                              ),
+                            },
+                          ]}
+                        />
+                      ) : (
+                        <Empty description="暂无现象" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                      ),
+                    },
+                    {
+                      key: "localizations",
+                      label: `定位层级 (${structuredLocalizations.length})`,
+                      children: structuredLocalizations.length > 0 ? (
+                        <Table
+                          rowKey={(record, index) => `${record.level}-${record.target || index}`}
+                          dataSource={structuredLocalizations}
+                          pagination={false}
+                          size="small"
+                          columns={[
+                            { title: "层级", dataIndex: "level", width: 140 },
+                            { title: "目标", dataIndex: "target", width: 180 },
+                            {
+                              title: "支持事实",
+                              dataIndex: "fact_ids",
+                              render: (ids = []) => (
+                                <Space size={[4, 4]} wrap>
+                                  {ids.map((item) => <Tag key={item}>{item}</Tag>)}
+                                </Space>
+                              ),
+                            },
+                          ]}
+                        />
+                      ) : (
+                        <Empty description="暂无定位层级" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                      ),
+                    },
+                    {
+                      key: "challenges",
+                      label: `证据反问 (${structuredChallenges.length})`,
+                      children: structuredChallenges.length > 0 ? (
+                        <Table
+                          rowKey="candidate_id"
+                          dataSource={structuredChallenges}
+                          pagination={false}
+                          size="small"
+                          columns={[
+                            { title: "候选", dataIndex: "candidate_id", width: 220 },
+                            { title: "稳定性", dataIndex: "conclusion_stability", width: 120 },
+                            {
+                              title: "关键事实",
+                              dataIndex: "critical_fact_ids",
+                              render: (ids = []) => (
+                                <Space size={[4, 4]} wrap>
+                                  {ids.map((item) => <Tag key={item}>{item}</Tag>)}
+                                </Space>
+                              ),
+                            },
+                            {
+                              title: "反问测试",
+                              dataIndex: "tests",
+                              render: (tests = []) => (
+                                <Space size={[4, 4]} wrap>
+                                  {tests.map((item) => (
+                                    <Tag key={`${item.removed_fact_id}-${item.result}`}>{item.result}</Tag>
+                                  ))}
+                                </Space>
+                              ),
+                            },
+                          ]}
+                        />
+                      ) : (
+                        <Empty description="暂无证据反问结果" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                      ),
+                    },
+                  ]}
+                />
+              </Space>
+            </Card>
 
             {/* 反馈 */}
             <Space>

@@ -1,0 +1,55 @@
+[
+  {
+    "task_id": "task_20260730_035620_13b667",
+    "from_status": null,
+    "to_status": "PENDING",
+    "reason": "Web 请求创建任务",
+    "actor": "web",
+    "metadata": {
+      "name": "dataset mixed anomaly memory trend",
+      "agent_id": "linux-worker-1",
+      "target_pid": 1533,
+      "collector_type": "memory_smaps",
+      "sample_rate": 11,
+      "duration_sec": 30,
+      "options": {}
+    },
+    "created_at": "2026-07-30T03:56:20.539658"
+  },
+  {
+    "task_id": "task_20260730_035620_13b667",
+    "from_status": "PENDING",
+    "to_status": "RUNNING",
+    "reason": "Agent 心跳拉取待执行任务",
+    "actor": "server",
+    "metadata": {},
+    "created_at": "2026-07-30T03:56:56.325553"
+  },
+  {
+    "task_id": "task_20260730_035620_13b667",
+    "from_status": "RUNNING",
+    "to_status": "UPLOADING",
+    "reason": "内存采集完成: 30 个样本, RSS 120.4→120.4 MB (stable)",
+    "actor": "agent",
+    "metadata": {},
+    "created_at": "2026-07-30T03:57:26.430324"
+  },
+  {
+    "task_id": "task_20260730_035620_13b667",
+    "from_status": "UPLOADING",
+    "to_status": "ANALYZING",
+    "reason": "产物已记录，等待分析",
+    "actor": "server",
+    "metadata": {},
+    "created_at": "2026-07-30T03:57:26.453425"
+  },
+  {
+    "task_id": "task_20260730_035620_13b667",
+    "from_status": "ANALYZING",
+    "to_status": "DONE",
+    "reason": "内存时间序列分析已生成；内存采集完成: 30 个样本, RSS 120.4→120.4 MB (stable)",
+    "actor": "analyzer",
+    "metadata": {},
+    "created_at": "2026-07-30T03:57:26.469354"
+  }
+]

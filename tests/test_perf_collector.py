@@ -167,6 +167,35 @@ class TestPerfExecution:
         artifact_types = {item["artifact_type"] for item in result.artifacts}
         assert {"raw", "flamegraph_json", "top_json"} <= artifact_types
 
+    def test_perf_attaches_depth_evidence_artifact(self, collector: PerfCollector, task: CollectorTask, tmp_path):
+        collector.OUTPUT_BASE = str(tmp_path)
+
+        perf_data = tmp_path / task.id / "perf.data"
+        task_dir = perf_data.parent
+        task_dir.mkdir(parents=True, exist_ok=True)
+        perf_data.write_text("perf data")
+        (task_dir / "collapsed.txt").write_text("main;worker;compute_hotspot 100\n")
+        (task_dir / "top.json").write_text('[{"name":"compute_hotspot","percent":68.5}]')
+
+        mock_proc = _mock_popen_complete()
+        mock_run = mock.MagicMock(return_value=mock.MagicMock(returncode=0, stdout=b"", stderr=b""))
+
+        with mock.patch("shutil.which", return_value="/usr/bin/perf"), \
+             mock.patch.object(collector, "_check_perf_paranoid", return_value=True), \
+             mock.patch.object(collector, "_pid_exists", return_value=True), \
+             mock.patch("subprocess.Popen", return_value=mock_proc), \
+             mock.patch("subprocess.run", mock_run), \
+             mock.patch("os.setpgrp", create=True):
+            result = collector.collect(task)
+
+        depth = next(item for item in result.artifacts if item["artifact_type"] == "depth_evidence_json")
+        data = depth["metadata"]["data"]
+        assert data["stack_samples"]
+        assert data["stack_samples"][0]["call_path"] == "main;worker;compute_hotspot"
+        assert data["wait_reason"] == "stack_sampling"
+        assert data["context"]["context_id"]
+        assert data["line_candidates"] == []
+
     def test_perf_nonzero_exit_returns_failure(self, collector: PerfCollector, task: CollectorTask, tmp_path):
         collector.OUTPUT_BASE = str(tmp_path)
 

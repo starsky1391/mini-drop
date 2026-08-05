@@ -166,8 +166,8 @@ export async function downloadTaskArtifact(taskId, artifactType, params = {}) {
   return { blob: response.data, filename };
 }
 
-export function triggerDiagnose(taskId) {
-  return api.post(`/tasks/${taskId}/diagnose`);
+export function triggerDiagnose(taskId, params = {}) {
+  return api.post(`/tasks/${taskId}/diagnose`, null, { params });
 }
 
 export function listTaskDiagnoses(taskId) {

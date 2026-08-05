@@ -89,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     p_collect.add_argument("--agent", required=True, help="target agent ID")
     p_collect.add_argument("--pid", type=int, required=True, help="target process PID")
     p_collect.add_argument("--collector", default="perf_cpu",
-                           choices=["perf_cpu", "ebpf_io", "pyspy", "continuous_perf", "java_async", "go_pprof", "memory_smaps"])
+                           choices=["perf_cpu", "ebpf_io", "pyspy", "continuous_perf", "java_async", "go_pprof", "memory_smaps", "off_cpu_wait_profile", "trace_endpoint_profile", "baseline_window_profile"])
     p_collect.add_argument("--duration", type=int, default=15)
     p_collect.add_argument("--sample-rate", type=int, default=99)
     p_collect.add_argument("--name", default="", help="task display name")
@@ -350,6 +350,7 @@ def _diagnose_local_payload(evidence_path: str) -> dict:
         task_record=task_record,
         top_functions=evidence.top_functions,
         ebpf_metrics=evidence.ebpf_metrics,
+        evidence_index=evidence.evidence_index,
         suggestions=evidence.suggestions,
         failure_events=evidence.failure_events,
         baseline_diff=evidence.baseline_diff,

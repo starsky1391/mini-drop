@@ -1,0 +1,29 @@
+[
+  {
+    "id": 88,
+    "artifact_type": "memory_json",
+    "bucket": "mini-drop",
+    "object_key": "tasks/task_20260730_035620_13b667/memory_profile.json",
+    "filename": "memory_profile.json",
+    "local_path": "/tmp/mini-drop/task_20260730_035620_13b667/memory_profile.json",
+    "content_type": "application/json",
+    "size_bytes": 4411,
+    "sha256": "3c1291b5ef2a3500cf1576670228ed89fe68318c92f9f42424f0e67d7a5d8e19",
+    "metadata": {
+      "sample_count": 30,
+      "first_rss_mb": 120.4,
+      "last_rss_mb": 120.4,
+      "peak_rss_mb": 120.87,
+      "trend": "stable"
+    },
+    "created_at": "2026-07-30T03:57:26.442686",
+    "artifact_id": "art_9a93780420e04d183a28",
+    "task_id": "task_20260730_035620_13b667",
+    "retention_state": "active",
+    "expires_at": "2026-08-29T03:57:26.442686Z",
+    "availability": "available",
+    "availability_reason": "object_storage",
+    "actual_size_bytes": 4411,
+    "integrity_status": "not_checked"
+  }
+]

@@ -51,6 +51,7 @@ perf.data.*
 # Secrets
 *.pem
 *.key
+.ssh/
 deploy/certs/*
 !deploy/certs/.gitkeep
 

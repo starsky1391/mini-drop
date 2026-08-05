@@ -1,0 +1,23 @@
+{
+  "id": "task_20260730_035620_b06fb0",
+  "name": "dataset mixed anomaly python profile",
+  "agent_id": "linux-worker-1",
+  "target_pid": 1533,
+  "collector_type": "pyspy",
+  "sample_rate": 49,
+  "duration_sec": 25,
+  "status": "DONE",
+  "status_reason": "Analyzer 已生成火焰图和热点分析结果；py-spy 采集完成",
+  "request_params": {
+    "name": "dataset mixed anomaly python profile",
+    "agent_id": "linux-worker-1",
+    "target_pid": 1533,
+    "collector_type": "pyspy",
+    "sample_rate": 49,
+    "duration_sec": 25,
+    "options": {}
+  },
+  "created_at": "2026-07-30T03:56:20.592654",
+  "started_at": "2026-07-30T03:57:26.491491",
+  "finished_at": "2026-07-30T03:57:56.638234"
+}

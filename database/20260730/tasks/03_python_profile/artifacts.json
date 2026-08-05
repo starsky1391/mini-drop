@@ -1,0 +1,23 @@
+[
+  {
+    "id": 89,
+    "artifact_type": "flamegraph_svg",
+    "bucket": "mini-drop",
+    "object_key": "tasks/task_20260730_035620_b06fb0/pyspy.svg",
+    "filename": "pyspy.svg",
+    "local_path": "/tmp/mini-drop/task_20260730_035620_b06fb0/pyspy.svg",
+    "content_type": "image/svg+xml",
+    "size_bytes": 43741,
+    "sha256": "bb6d5820a49c11fa5ab8e081db395d565b2bb350273c7424b39d4f8778ffd038",
+    "metadata": {},
+    "created_at": "2026-07-30T03:57:56.610428",
+    "artifact_id": "art_ab918552af15680af8af",
+    "task_id": "task_20260730_035620_b06fb0",
+    "retention_state": "active",
+    "expires_at": "2026-08-29T03:57:56.610428Z",
+    "availability": "available",
+    "availability_reason": "object_storage",
+    "actual_size_bytes": 43741,
+    "integrity_status": "not_checked"
+  }
+]

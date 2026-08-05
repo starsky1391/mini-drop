@@ -500,6 +500,7 @@ class DiagnosisEvidenceModel(Base):
     raw_artifact_ref = Column(String(512), nullable=True)
     derived_artifact_ref = Column(String(512), nullable=True)
     derivation_version = Column(String(64), nullable=False)
+    evidence_index_json = Column(JSON, default=dict)
     observed_value_json = Column(JSON, default=dict)
     baseline_value_json = Column(JSON, default=dict)
     anomaly_score_json = Column(JSON, default=dict)
@@ -520,6 +521,7 @@ class DiagnosisEvidenceModel(Base):
             "raw_artifact_ref": self.raw_artifact_ref,
             "derived_artifact_ref": self.derived_artifact_ref,
             "derivation_version": self.derivation_version,
+            "evidence_index": self.evidence_index_json or {},
             "observed_value": self.observed_value_json or {},
             "baseline_value": self.baseline_value_json or {},
             "anomaly_score": self.anomaly_score_json or {},

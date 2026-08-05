@@ -1,0 +1,74 @@
+{
+  "scenario": "bounded_cpu_memory_io_anomaly",
+  "worker": "linux-worker-1",
+  "target_pid": 1533,
+  "tasks": [
+    {
+      "task_id": "task_20260730_035620_603d19",
+      "collector": "sys_metrics",
+      "status": "DONE",
+      "status_reason": "系统多维指标分析已生成；系统指标采集完成: 30 个样本 | host CPU=25.3% | process CPU=1.00 cores | RSS=126251008 bytes",
+      "files": [
+        {
+          "path": "tasks/01_sys_metrics/sys_metrics.json",
+          "bytes": 48757,
+          "sha256": "b6b741cc70b6209cb19de2fa0407f3b13f6f618b51d3f06fe30ddef8a4b4bf56",
+          "expected_sha256": "b6b741cc70b6209cb19de2fa0407f3b13f6f618b51d3f06fe30ddef8a4b4bf56",
+          "hash_matches": true
+        }
+      ]
+    },
+    {
+      "task_id": "task_20260730_035620_13b667",
+      "collector": "memory_smaps",
+      "status": "DONE",
+      "status_reason": "内存时间序列分析已生成；内存采集完成: 30 个样本, RSS 120.4→120.4 MB (stable)",
+      "files": [
+        {
+          "path": "tasks/02_memory_smaps/memory_profile.json",
+          "bytes": 4411,
+          "sha256": "3c1291b5ef2a3500cf1576670228ed89fe68318c92f9f42424f0e67d7a5d8e19",
+          "expected_sha256": "3c1291b5ef2a3500cf1576670228ed89fe68318c92f9f42424f0e67d7a5d8e19",
+          "hash_matches": true
+        }
+      ]
+    },
+    {
+      "task_id": "task_20260730_035620_b06fb0",
+      "collector": "pyspy",
+      "status": "DONE",
+      "status_reason": "Analyzer 已生成火焰图和热点分析结果；py-spy 采集完成",
+      "files": [
+        {
+          "path": "tasks/03_python_profile/pyspy.svg",
+          "bytes": 43741,
+          "sha256": "bb6d5820a49c11fa5ab8e081db395d565b2bb350273c7424b39d4f8778ffd038",
+          "expected_sha256": "bb6d5820a49c11fa5ab8e081db395d565b2bb350273c7424b39d4f8778ffd038",
+          "hash_matches": true
+        }
+      ]
+    },
+    {
+      "task_id": "task_20260730_035620_7073b7",
+      "collector": "ebpf_io",
+      "status": "DONE",
+      "status_reason": "eBPF IO 延迟分布已生成；bpftrace IO 延迟采集完成，共 438 个样本",
+      "files": [
+        {
+          "path": "tasks/04_ebpf_io/ebpf_metrics.json",
+          "bytes": 211,
+          "sha256": "6955e68f2a531116bc6f2c706022872e021f2c57aba45ef2a3cbcac794968086",
+          "expected_sha256": "6955e68f2a531116bc6f2c706022872e021f2c57aba45ef2a3cbcac794968086",
+          "hash_matches": true
+        },
+        {
+          "path": "tasks/04_ebpf_io/io_latency.txt",
+          "bytes": 14224,
+          "sha256": "4fae64cb488fb9c335c114d614f4b21c3beb347629b189dcb25fbd48701229d4",
+          "expected_sha256": "4fae64cb488fb9c335c114d614f4b21c3beb347629b189dcb25fbd48701229d4",
+          "hash_matches": true
+        }
+      ]
+    }
+  ]
+}

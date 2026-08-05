@@ -8,7 +8,7 @@ LLM 输出的 JSON 必须符合 DiagnosisReport 的 schema，
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -25,9 +25,11 @@ class EvidenceInput(BaseModel):
     sys_metrics: Optional[dict] = None
     baseline_diff: Optional[dict] = None
     agent_stats: Optional[dict] = None
+    evidence_index: Optional[dict] = None
     tool_results: list[dict] = Field(default_factory=list)
     suggestions: list[str] = Field(default_factory=list)
     failure_events: list[str] = Field(default_factory=list)
+    analysis_result: Optional[dict] = None
 
 
 class CandidateCause(BaseModel):
@@ -54,6 +56,132 @@ class CalibratedCause:
     cross_collector_agreement: float
     feedback_prior: float
     missing_evidence: list[str] = field(default_factory=list)
+
+
+class AnalysisFact(BaseModel):
+    """Analyzer 从现有证据中提取的原子事实。"""
+
+    fact_id: str
+    source: str
+    evidence_ref: str
+    value: Any
+    status: Literal["observed", "normal"] = "observed"
+    threshold_band: Literal["below", "near", "above", "unknown"] = "unknown"
+
+
+class AnalysisSymptom(BaseModel):
+    """由事实支持的异常现象。"""
+
+    symptom_id: str
+    symptom_type: str
+    severity: Literal["low", "medium", "high"]
+    fact_ids: list[str] = Field(default_factory=list)
+
+
+class AnalysisLocalization(BaseModel):
+    """现有证据能够支撑的最大定位层级。"""
+
+    level: Literal["resource", "process", "thread", "syscall", "function", "call_path", "line"]
+    target: Optional[str] = None
+    fact_ids: list[str] = Field(default_factory=list)
+    file_path: Optional[str] = None
+    line_number: Optional[int] = None
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class AnalysisTreeDecision(BaseModel):
+    """AI 树中的单个门控或叶子决策。"""
+
+    node_id: str
+    level: Literal["resource", "process", "thread", "syscall", "function", "call_path", "line"]
+    branch_key: str
+    decision: Literal["continue", "downgrade", "stop"]
+    leaf_status: Literal["clear_leaf", "conservative_leaf", "unknown_leaf"]
+    conflict_type: Optional[str] = None
+    evidence_family: list[str] = Field(default_factory=list)
+    conflict_candidates: list[str] = Field(default_factory=list)
+    next_evidence_requests: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class AnalysisGraphEntity(BaseModel):
+    """轻量图中的一个上下文实体。"""
+
+    entity_id: str
+    entity_type: Literal["trace", "endpoint", "service", "instance", "context", "call_path", "function", "line"]
+    label: str
+    evidence_ref: str
+    context_id: Optional[str] = None
+
+
+class AnalysisGraphLink(BaseModel):
+    """轻量图中的稳定回连关系。"""
+
+    source_id: str
+    target_id: str
+    relation: str
+    evidence_ref: str
+    stable: bool = True
+
+
+class GuardedAttribution(BaseModel):
+    """候选原因经过事实和现象约束后的归因状态。"""
+
+    candidate_id: str
+    status: Literal["supported", "weakened", "missing_evidence", "forbidden"]
+    supporting_fact_ids: list[str] = Field(default_factory=list)
+    opposing_fact_ids: list[str] = Field(default_factory=list)
+    missing_evidence: list[str] = Field(default_factory=list)
+    max_supported_level: Literal["resource", "process", "thread", "syscall", "function", "call_path", "line"] = "resource"
+
+
+class EvidenceChallengeTest(BaseModel):
+    """移除单条事实后归因结论的变化。"""
+
+    removed_fact_id: str
+    result: Literal["unchanged", "confidence_down", "downgrade_level", "forbidden"]
+    meaning: str
+
+
+class EvidenceChallenge(BaseModel):
+    """归因结论对关键事实的依赖关系。"""
+
+    candidate_id: str
+    critical_fact_ids: list[str] = Field(default_factory=list)
+    critical_fact_groups: list[list[str]] = Field(default_factory=list)
+    tests: list[EvidenceChallengeTest] = Field(default_factory=list)
+    conclusion_stability: Literal["stable", "fragile", "unsupported_without_key_fact"]
+
+
+class ConclusionBoundary(BaseModel):
+    """最终报告允许表达的结论范围。"""
+
+    can_claim_root_cause: bool
+    max_supported_level: Literal["resource", "process", "thread", "syscall", "function", "call_path", "line"] = "resource"
+    reason: str
+
+
+class EvidenceAttributionResult(BaseModel):
+    """供报告生成使用的受证据约束分析结果。"""
+
+    facts: list[AnalysisFact] = Field(default_factory=list)
+    symptoms: list[AnalysisSymptom] = Field(default_factory=list)
+    localizations: list[AnalysisLocalization] = Field(default_factory=list)
+    ai_tree: list[AnalysisTreeDecision] = Field(default_factory=list)
+    graph_entities: list[AnalysisGraphEntity] = Field(default_factory=list)
+    graph_links: list[AnalysisGraphLink] = Field(default_factory=list)
+    attributions: list[GuardedAttribution] = Field(default_factory=list)
+    evidence_challenges: list[EvidenceChallenge] = Field(default_factory=list)
+    missing_evidence: list[str] = Field(default_factory=list)
+    blocked_upgrades: list[str] = Field(default_factory=list)
+    collection_gaps: list[str] = Field(default_factory=list)
+    graph_extension_points: list[str] = Field(default_factory=list)
+    allowed_cause_ids: list[str] = Field(default_factory=list)
+    primary_cause_id: Optional[str] = None
+    stability_score: float = 0.0
+    primary_cause_reason: str = ""
+    conclusion_boundary: ConclusionBoundary
 
 
 class FeedbackPrior(BaseModel):
@@ -91,6 +219,25 @@ class DiagnosisReport(BaseModel):
     ranked_causes: list[CauseEntry]
     facts: list[str]
     not_enough_evidence: bool = False
+    analysis_result: Optional[EvidenceAttributionResult] = None
+    symptoms: list[AnalysisSymptom] = Field(default_factory=list)
+    localizations: list[AnalysisLocalization] = Field(default_factory=list)
+    ai_tree: list[AnalysisTreeDecision] = Field(default_factory=list)
+    graph_entities: list[AnalysisGraphEntity] = Field(default_factory=list)
+    graph_links: list[AnalysisGraphLink] = Field(default_factory=list)
+    attributions: list[GuardedAttribution] = Field(default_factory=list)
+    evidence_challenges: list[EvidenceChallenge] = Field(default_factory=list)
+    missing_evidence: list[str] = Field(default_factory=list)
+    blocked_upgrades: list[str] = Field(default_factory=list)
+    collection_gaps: list[str] = Field(default_factory=list)
+    graph_extension_points: list[str] = Field(default_factory=list)
+    primary_cause_id: Optional[str] = None
+    stability_score: float = 0.0
+    primary_cause_reason: str = ""
+    secondary_causes: list[str] = Field(default_factory=list)
+    correlated_symptoms: list[str] = Field(default_factory=list)
+    unsupported_causes: list[str] = Field(default_factory=list)
+    conclusion_boundary: Optional[ConclusionBoundary] = None
 
 
 class ValidatedReport(BaseModel):

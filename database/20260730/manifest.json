@@ -1,0 +1,170 @@
+{
+  "schema_version": "mini-drop-portable-dataset.v1",
+  "dataset_name": "bounded_cpu_memory_io_anomaly_20260730",
+  "created_at": "2026-07-30T04:04:03.336089Z",
+  "environment": {
+    "agent_id": "linux-worker-1",
+    "hostname": "worker1",
+    "target_pid": 1533,
+    "os": "Ubuntu Linux",
+    "host_core_count": 4
+  },
+  "workload": {
+    "duration_sec": 240,
+    "cpu_batches": 21748,
+    "max_cache_mib": 96,
+    "io_bytes": 370671616,
+    "file_rotations": 5
+  },
+  "collection": {
+    "completed_tasks": 4,
+    "artifact_files": 5,
+    "ai_diagnosis_id": "diag_20260730_040019_ba9094"
+  },
+  "files": [
+    {
+      "path": "analysis/diagnose_response.json",
+      "size_bytes": 4493,
+      "sha256": "21d21d7c1ec16653331001102292f58116c9136653c7dd908b232839f9d2afaf",
+      "format": "json"
+    },
+    {
+      "path": "analysis/diagnosis_detail.json",
+      "size_bytes": 8248,
+      "sha256": "e3b83b2b3b73333084b54880c0752dd6c5cebf377b5b57aff47e482e77df28f7",
+      "format": "json"
+    },
+    {
+      "path": "collection_summary.json",
+      "size_bytes": 2851,
+      "sha256": "066753e44f2e925e3d66ef3164cfec88efa279f4eee7e3956407502866e8b9a2",
+      "format": "json"
+    },
+    {
+      "path": "DATA_DICTIONARY.md",
+      "size_bytes": 3546,
+      "sha256": "16217c0bba2a77d394141411ccd3d2dd2d89f5480cfbd6c9784a835f03e4bc0b",
+      "format": "md"
+    },
+    {
+      "path": "README.md",
+      "size_bytes": 6517,
+      "sha256": "3948f4b8fb2d3022b5fd9e4eefbc11e20542023a9281fd46061e715781985b3d",
+      "format": "md"
+    },
+    {
+      "path": "source/complex_anomaly_workload.py",
+      "size_bytes": 5008,
+      "sha256": "fccadfeee6a25dccecba1d39133ca5458e7119ed381cd690c1b03a2026acb62c",
+      "format": "py"
+    },
+    {
+      "path": "source/workload.log",
+      "size_bytes": 6636,
+      "sha256": "effe31754e4f2109eabe1ae0dc2c66243811e6d4d41009d06e5320b51f55abe1",
+      "format": "log"
+    },
+    {
+      "path": "tasks/01_sys_metrics/artifacts.json",
+      "size_bytes": 1660,
+      "sha256": "adb657d8083634cde795dbfa15e5427315ebbdde60db5749770741a6b421a5d1",
+      "format": "json"
+    },
+    {
+      "path": "tasks/01_sys_metrics/events.json",
+      "size_bytes": 1714,
+      "sha256": "e25b8e29706a0fbe7e70773ec6ef29ff77702fd95890d59365414b4cfe67bc0a",
+      "format": "json"
+    },
+    {
+      "path": "tasks/01_sys_metrics/sys_metrics.json",
+      "size_bytes": 48757,
+      "sha256": "b6b741cc70b6209cb19de2fa0407f3b13f6f618b51d3f06fe30ddef8a4b4bf56",
+      "format": "json"
+    },
+    {
+      "path": "tasks/01_sys_metrics/task.json",
+      "size_bytes": 800,
+      "sha256": "30023a26194cd9b91df2c08ba82152a7404ee6211043b74174913ab7c25871d4",
+      "format": "json"
+    },
+    {
+      "path": "tasks/02_memory_smaps/artifacts.json",
+      "size_bytes": 993,
+      "sha256": "ca67e1a20cba2caa5713575e6b25f53f3e611b7dcdd9a31059fd5c7507533d4d",
+      "format": "json"
+    },
+    {
+      "path": "tasks/02_memory_smaps/events.json",
+      "size_bytes": 1638,
+      "sha256": "ec95cbe57fe58a0478846a0e4aec2dfbe23966047916e74c540b896aec987859",
+      "format": "json"
+    },
+    {
+      "path": "tasks/02_memory_smaps/memory_profile.json",
+      "size_bytes": 4411,
+      "sha256": "3c1291b5ef2a3500cf1576670228ed89fe68318c92f9f42424f0e67d7a5d8e19",
+      "format": "json"
+    },
+    {
+      "path": "tasks/02_memory_smaps/task.json",
+      "size_bytes": 765,
+      "sha256": "e7b2a5c532ed91a9efda1fd6b9b2145fe0a1556973cc3b1a0510bac781988673",
+      "format": "json"
+    },
+    {
+      "path": "tasks/03_python_profile/artifacts.json",
+      "size_bytes": 818,
+      "sha256": "9a688633b8f1bc65beb94b238d8a290b87faca60722ce15e6b100d300e331be3",
+      "format": "json"
+    },
+    {
+      "path": "tasks/03_python_profile/events.json",
+      "size_bytes": 1560,
+      "sha256": "5584be66ecb7e0c1d3b214df91a03220482e549217db69d7193c48ba717c64b5",
+      "format": "json"
+    },
+    {
+      "path": "tasks/03_python_profile/pyspy.svg",
+      "size_bytes": 43741,
+      "sha256": "bb6d5820a49c11fa5ab8e081db395d565b2bb350273c7424b39d4f8778ffd038",
+      "format": "svg"
+    },
+    {
+      "path": "tasks/03_python_profile/task.json",
+      "size_bytes": 726,
+      "sha256": "d1e36aab66af521bacbd2a5317aa448682bebe3351a57f055177714a3025d8f7",
+      "format": "json"
+    },
+    {
+      "path": "tasks/04_ebpf_io/artifacts.json",
+      "size_bytes": 1658,
+      "sha256": "a28b2332fcf05df0ba6b828da4c34222fe4b1a3a8fdc788dda038f9d9e83c685",
+      "format": "json"
+    },
+    {
+      "path": "tasks/04_ebpf_io/ebpf_metrics.json",
+      "size_bytes": 211,
+      "sha256": "6955e68f2a531116bc6f2c706022872e021f2c57aba45ef2a3cbcac794968086",
+      "format": "json"
+    },
+    {
+      "path": "tasks/04_ebpf_io/events.json",
+      "size_bytes": 1601,
+      "sha256": "ad2faebf3518d96455fc1591c84543c39fbbce7750baf0944949b28a62f1aed7",
+      "format": "json"
+    },
+    {
+      "path": "tasks/04_ebpf_io/io_latency.txt",
+      "size_bytes": 14224,
+      "sha256": "4fae64cb488fb9c335c114d614f4b21c3beb347629b189dcb25fbd48701229d4",
+      "format": "txt"
+    },
+    {
+      "path": "tasks/04_ebpf_io/task.json",
+      "size_bytes": 734,
+      "sha256": "377d0b2979ec2ce877faa413a961441ae80b85af1b460f52b0aaaced356ea973",
+      "format": "json"
+    }
+  ]
+}

@@ -520,12 +520,23 @@ class TestStoragePresign:
 class TestDiagnose:
     """诊断触发端点。"""
 
-    def test_diagnose_enqueues_report(self, client: TestClient):
+    def test_diagnose_enqueues_report(self, client: TestClient, monkeypatch):
         resp = client.post("/api/tasks", json={
             "name": "diag", "agent_id": "a1",
             "target_pid": 1, "collector_type": "perf_cpu",
         })
         task_id = resp.json()["data"]["task_id"]
+        repo.add_artifacts(task_id, [{
+            "artifact_type": "top_json",
+            "bucket": "mini-drop",
+            "object_key": f"tasks/{task_id}/top.json",
+            "content_type": "application/json",
+        }])
+        monkeypatch.setattr(
+            store,
+            "read_object_bytes",
+            lambda bucket, key: b'[{"name":"fib_hotspot","samples":100,"percent":68.5}]',
+        )
         diag = client.post(f"/api/tasks/{task_id}/diagnose").json()["data"]
         assert diag["diagnosis_id"].startswith("diag_")
         assert diag["report_id"].startswith("report_")
@@ -533,12 +544,20 @@ class TestDiagnose:
         assert "summary" in diag
         assert "ranked_causes" in diag
         assert "model" in diag
+        assert diag["analysis_strategy"] == "linear"
+        assert diag["analysis_pipeline"] == "evidence_to_attribution"
         assert len(diag["tool_results"]) >= 1
         assert diag["repair_plan"]["plan_id"].startswith("repair_")
+        assert "report" in diag
+        assert len(diag["ranked_causes"]) > 0
+        assert diag["report"]["primary_cause_id"] == diag["ranked_causes"][0]["cause_id"]
+        assert diag["report"]["analysis_result"] is not None
+        assert "stability_score" in diag["report"]
 
         detail = client.get(f"/api/diagnoses/{diag['diagnosis_id']}").json()["data"]
         assert detail["run"]["task_id"] == task_id
         assert len(detail["tool_results"]) >= 1
+        assert detail["report"]["report"]["primary_cause_id"] == diag["report"]["primary_cause_id"]
         history = client.get(f"/api/tasks/{task_id}/diagnoses").json()["data"]
         assert history[0]["id"] == diag["diagnosis_id"]
 
@@ -559,6 +578,20 @@ class TestDiagnose:
     def test_diagnose_404_for_nonexistent(self, client: TestClient):
         resp = client.post("/api/tasks/nope/diagnose")
         assert resp.status_code == 404
+
+    def test_diagnose_accepts_legacy_pipeline(self, client: TestClient):
+        resp = client.post("/api/tasks", json={
+            "name": "legacy-diag", "agent_id": "a1",
+            "target_pid": 1, "collector_type": "perf_cpu",
+        })
+        task_id = resp.json()["data"]["task_id"]
+
+        diag = client.post(
+            f"/api/tasks/{task_id}/diagnose",
+            params={"analysis_pipeline": "legacy"},
+        ).json()["data"]
+
+        assert diag["analysis_pipeline"] == "legacy"
 
     def test_diagnosis_detail_404_for_nonexistent(self, client: TestClient):
         resp = client.get("/api/diagnoses/diag_missing")

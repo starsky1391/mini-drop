@@ -58,24 +58,41 @@ def calibrate(
             baseline_support=baseline_support,
             cross_collector_agreement=cross_collector,
             feedback_prior=feedback_prior,
-            missing_evidence=c.missing_evidence,
+            missing_evidence=_unique_preserve_order(c.missing_evidence),
         ))
 
-    calibrated.sort(key=lambda c: c.final_confidence, reverse=True)
+    calibrated.sort(key=lambda c: (-c.final_confidence, c.candidate_id))
     return calibrated
 
 
-def format_for_llm(calibrated: list[CalibratedCause]) -> str:
+def format_for_llm(
+    calibrated: list[CalibratedCause],
+    primary_cause_id: str | None = None,
+) -> str:
     """将校准后的候选原因列表格式化为 LLM 输入。"""
     import json
+    if primary_cause_id:
+        calibrated = sorted(
+            calibrated,
+            key=lambda item: (
+                item.candidate_id != primary_cause_id,
+                -item.final_confidence,
+                item.candidate_id,
+            ),
+        )
+    else:
+        calibrated = sorted(
+            calibrated,
+            key=lambda item: (-item.final_confidence, item.candidate_id),
+        )
     items = []
     for c in calibrated:
         items.append({
             "candidate_id": c.candidate_id,
             "description": c.description,
             "final_confidence": round(c.final_confidence, 3),
-            "evidence_refs": c.evidence_refs,
-            "missing_evidence": c.missing_evidence,
+            "evidence_refs": _unique_preserve_order(c.evidence_refs),
+            "missing_evidence": _unique_preserve_order(c.missing_evidence),
         })
     return json.dumps(items, indent=2, ensure_ascii=False)
 
@@ -158,3 +175,14 @@ def _score_feedback_prior(c: CandidateCause, priors: dict[str, FeedbackPrior]) -
     if total == 0:
         return 0.50
     return prior.positive_count / total
+
+
+def _unique_preserve_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        unique.append(item)
+    return unique

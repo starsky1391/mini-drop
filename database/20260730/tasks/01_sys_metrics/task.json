@@ -1,0 +1,23 @@
+{
+  "id": "task_20260730_035620_603d19",
+  "name": "dataset mixed anomaly sys metrics",
+  "agent_id": "linux-worker-1",
+  "target_pid": 1533,
+  "collector_type": "sys_metrics",
+  "sample_rate": 11,
+  "duration_sec": 30,
+  "status": "DONE",
+  "status_reason": "系统多维指标分析已生成；系统指标采集完成: 30 个样本 | host CPU=25.3% | process CPU=1.00 cores | RSS=126251008 bytes",
+  "request_params": {
+    "name": "dataset mixed anomaly sys metrics",
+    "agent_id": "linux-worker-1",
+    "target_pid": 1533,
+    "collector_type": "sys_metrics",
+    "sample_rate": 11,
+    "duration_sec": 30,
+    "options": {}
+  },
+  "created_at": "2026-07-30T03:56:20.493957",
+  "started_at": "2026-07-30T03:56:21.109792",
+  "finished_at": "2026-07-30T03:56:56.307272"
+}

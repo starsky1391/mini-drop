@@ -80,6 +80,59 @@ class TestEvidenceCollection:
         ebpf_pos = text.index("ebpf_metrics")
         assert tf_pos < ebpf_pos
 
+    def test_evidence_index_is_compacted_by_default(self):
+        task = _StubTask()
+        ev = collect_evidence(
+            task_id="t1",
+            task_record=task,
+            evidence_index={
+                "stack_samples": [
+                    {
+                        "hot_frame": f"frame_{index}",
+                        "call_path": f"main;worker;frame_{index}",
+                        "stack_fragment": ["main", "worker", f"frame_{index}"],
+                    }
+                    for index in range(8)
+                ],
+                "context": {
+                    "call_path": "main;worker;frame_0",
+                    "endpoint": "/api/order/create",
+                },
+            },
+        )
+
+        text = evidence_to_json(ev)
+        data = json.loads(text)
+
+        assert "evidence_index_raw" not in data
+        assert len(data["evidence_index"]["stack_samples"]) == 5
+
+    def test_evidence_index_can_hydrate_requested_refs(self):
+        task = _StubTask()
+        ev = collect_evidence(
+            task_id="t1",
+            task_record=task,
+            evidence_index={
+                "stack_samples": [
+                    {
+                        "hot_frame": "compute_hotspot",
+                        "call_path": "main;worker;compute_hotspot",
+                        "stack_fragment": ["main", "worker", "compute_hotspot"],
+                        "wait_reason": "cpu_hotspot",
+                    }
+                ],
+                "context": {
+                    "call_path": "main;worker;compute_hotspot",
+                    "endpoint": "/api/order/create",
+                },
+            },
+        )
+
+        text = evidence_to_json(ev, requested_refs=["evidence_index.stack_samples[0].call_path"])
+        data = json.loads(text)
+
+        assert data["evidence_index_raw"]["stack_samples"][0]["call_path"] == "main;worker;compute_hotspot"
+
 
 # ── 候选规则 ──
 
@@ -260,6 +313,101 @@ class TestValidationAndParsing:
         assert report is not None
         assert issues == []
         assert report.summary == "CPU 热点在 fib"
+
+    def test_rejects_cause_outside_analysis_boundary(self):
+        evidence = EvidenceInput(
+            top_functions=[{"name": "fib", "samples": 100, "percent": 68.5}],
+            analysis_result={
+                "allowed_cause_ids": ["cpu_hotspot_recursive"],
+                "conclusion_boundary": {"can_claim_root_cause": True},
+                "primary_cause_id": "cpu_hotspot_recursive",
+                "stability_score": 0.91,
+                "primary_cause_reason": "function 层级更深、支持事实更多",
+                "symptoms": [],
+                "localizations": [],
+                "attributions": [],
+                "evidence_challenges": [],
+            },
+        )
+        raw = json.dumps({
+            "summary": "错误归因",
+            "ranked_causes": [{
+                "cause_id": "io_wait_high",
+                "confidence": 0.8,
+                "claim": "IO 等待是根因",
+                "evidence_refs": ["top_functions[0]"],
+                "uncertainties": [],
+                "verification_steps": [],
+            }],
+            "facts": ["fib 占 68.5%"],
+            "not_enough_evidence": False,
+        })
+
+        report, issues = _validate_and_parse(raw, evidence)
+
+        assert report is None
+        assert any("不在结构化分析允许的原因集合" in issue for issue in issues)
+
+    def test_analysis_result_is_attached_to_report(self):
+        evidence = EvidenceInput(
+            top_functions=[{"name": "fib", "samples": 100, "percent": 68.5}],
+            analysis_result={
+                "allowed_cause_ids": ["cpu_hotspot_recursive"],
+                "conclusion_boundary": {"can_claim_root_cause": True},
+                "primary_cause_id": "cpu_hotspot_recursive",
+                "stability_score": 0.91,
+                "primary_cause_reason": "function 层级更深、支持事实更多",
+                "symptoms": [{"symptom_id": "sym_cpu_utilization_high", "symptom_type": "cpu_utilization_high", "severity": "high", "fact_ids": ["fact_cpu_user_high"]}],
+                "localizations": [{"level": "function", "target": "fib", "fact_ids": ["fact_top_function_0", "fact_cpu_user_high"]}],
+                "attributions": [{"candidate_id": "cpu_hotspot_recursive", "status": "supported", "supporting_fact_ids": ["fact_cpu_user_high", "fact_top_function_0"], "opposing_fact_ids": [], "missing_evidence": [], "max_supported_level": "function"}],
+                "evidence_challenges": [{"candidate_id": "cpu_hotspot_recursive", "critical_fact_ids": ["fact_cpu_user_high", "fact_top_function_0"], "critical_fact_groups": [["fact_cpu_user_high", "fact_top_function_0"]], "tests": [], "conclusion_stability": "stable"}],
+            },
+        )
+        raw = json.dumps({
+            "summary": "CPU 热点",
+            "ranked_causes": [{
+                "cause_id": "cpu_hotspot_recursive",
+                "confidence": 0.85,
+                "claim": "fib 导致高 CPU",
+                "evidence_refs": ["top_functions[0]"],
+                "uncertainties": [],
+                "verification_steps": [],
+            }],
+            "facts": ["fib 占 68.5%"],
+            "not_enough_evidence": False,
+        })
+
+        report, issues = _validate_and_parse(raw, evidence)
+
+        assert report is not None
+        assert issues == []
+        assert report.analysis_result is not None
+        assert report.primary_cause_id == "cpu_hotspot_recursive"
+        assert report.stability_score == 0.91
+        assert report.conclusion_boundary is not None
+        assert report.ai_tree == []
+        assert report.graph_entities == []
+        assert report.graph_links == []
+        assert report.graph_extension_points == []
+
+    def test_requires_insufficient_flag_when_analysis_forbids_root_cause(self):
+        evidence = EvidenceInput(
+            analysis_result={
+                "allowed_cause_ids": [],
+                "conclusion_boundary": {"can_claim_root_cause": False},
+            },
+        )
+        raw = json.dumps({
+            "summary": "仍然给出结论",
+            "ranked_causes": [],
+            "facts": [],
+            "not_enough_evidence": False,
+        })
+
+        report, issues = _validate_and_parse(raw, evidence)
+
+        assert report is None
+        assert any("必须标记为证据不足" in issue for issue in issues)
 
     def test_bad_evidence_ref_rejected(self):
         evidence = EvidenceInput()
@@ -484,7 +632,7 @@ class TestFallback:
             assert result is not None
             assert result.model_name == "rule-engine-only"
 
-    def test_run_diagnosis_passes_sys_metrics_to_rules(self):
+    def test_run_diagnosis_does_not_promote_cpu_signal_without_hotspot(self):
         task = _StubTask()
         sys_metrics = {
             "sample_count": 10,
@@ -511,4 +659,5 @@ class TestFallback:
                 task_record=task,
                 sys_metrics=sys_metrics,
             )
-        assert result.report.ranked_causes[0].cause_id == "cpu_userland_hotspot"
+        assert result.report.ranked_causes == []
+        assert result.report.not_enough_evidence is True

@@ -1,0 +1,555 @@
+{
+  "generated_at": "2026-07-30T04:00:00+08:00",
+  "dataset_root": "C:\\1Project\\project_web\\mini-drop\\database\\20260730",
+  "replay_task_id": "dataset_20260730_composite_replay",
+  "replay_mode": "real_dataset_replay",
+  "notes": [
+    "本结果来自对 20260730 复合异常数据包的真实回放。",
+    "pyspy.svg 已提取为 top_functions 结构后再喂给现有 RCA 链路。",
+    "回放时未配置 DEEPSEEK_API_KEY，因此报告走 rule-engine-only 降级路径，但结构化 analysis_result 已生成并挂回报告。"
+  ],
+  "result": {
+    "model_name": "rule-engine-only",
+    "validated": true,
+    "summary": "未配置 DEEPSEEK_API_KEY，归因引擎使用规则候选与工具证据生成降级报告。",
+    "ranked_causes": [
+      {
+        "cause_id": "cpu_hotspot_recursive",
+        "confidence": 0.738,
+        "claim": "单一计算函数占 CPU 采样数比例过高，可能存在递归或密集型计算瓶颈",
+        "evidence_refs": [
+          "top_functions[0]",
+          "tool_results.get_flamegraph_top"
+        ],
+        "uncertainties": [
+          "缺少历史基线对比数据"
+        ],
+        "verification_steps": [
+          "补充采集或对比 baseline 后复核该结论"
+        ]
+      },
+      {
+        "cause_id": "python_userland_hotspot",
+        "confidence": 0.7,
+        "claim": "Python 用户态函数热点，与 perf 系统级热点一致，根因在应用层",
+        "evidence_refs": [
+          "top_functions",
+          "tool_results.get_flamegraph_top"
+        ],
+        "uncertainties": [],
+        "verification_steps": [
+          "补充采集或对比 baseline 后复核该结论"
+        ]
+      }
+    ],
+    "not_enough_evidence": false,
+    "primary_cause_id": "cpu_hotspot_recursive",
+    "stability_score": 0.97,
+    "boundary": {
+      "can_claim_root_cause": true,
+      "max_supported_level": "function",
+      "reason": "存在由关键事实共同支持且通过证据反问校验的归因结论。"
+    },
+    "analysis_result": {
+      "facts": [
+        {
+          "fact_id": "fact_cpu_user_normal",
+          "source": "sys_metrics",
+          "evidence_ref": "sys_metrics.summary",
+          "value": 24.9,
+          "status": "normal",
+          "threshold_band": "below"
+        },
+        {
+          "fact_id": "fact_iowait_low",
+          "source": "sys_metrics",
+          "evidence_ref": "sys_metrics.summary",
+          "value": 1.0,
+          "status": "normal",
+          "threshold_band": "below"
+        },
+        {
+          "fact_id": "fact_cpu_sys_normal",
+          "source": "sys_metrics",
+          "evidence_ref": "sys_metrics.summary",
+          "value": 0.4,
+          "status": "normal",
+          "threshold_band": "below"
+        },
+        {
+          "fact_id": "fact_load_normal",
+          "source": "sys_metrics",
+          "evidence_ref": "sys_metrics.summary",
+          "value": 0.95,
+          "status": "normal",
+          "threshold_band": "below"
+        },
+        {
+          "fact_id": "fact_top_function_0",
+          "source": "top_functions",
+          "evidence_ref": "top_functions[0]",
+          "value": {
+            "name": "cpu_hotspot",
+            "percent": 53.48
+          },
+          "status": "observed",
+          "threshold_band": "above"
+        },
+        {
+          "fact_id": "fact_memory_rss_normal",
+          "source": "sys_metrics",
+          "evidence_ref": "sys_metrics.summary",
+          "value": 120.4,
+          "status": "normal",
+          "threshold_band": "below"
+        },
+        {
+          "fact_id": "fact_memory_peak_normal",
+          "source": "sys_metrics",
+          "evidence_ref": "sys_metrics.summary",
+          "value": 120.87,
+          "status": "normal",
+          "threshold_band": "below"
+        },
+        {
+          "fact_id": "fact_fd_normal",
+          "source": "sys_metrics",
+          "evidence_ref": "sys_metrics.summary",
+          "value": 3.0,
+          "status": "normal",
+          "threshold_band": "below"
+        },
+        {
+          "fact_id": "fact_fd_stable",
+          "source": "sys_metrics",
+          "evidence_ref": "sys_metrics.summary",
+          "value": "stable",
+          "status": "normal",
+          "threshold_band": "unknown"
+        },
+        {
+          "fact_id": "fact_thread_normal",
+          "source": "sys_metrics",
+          "evidence_ref": "sys_metrics.summary",
+          "value": 4.0,
+          "status": "normal",
+          "threshold_band": "below"
+        },
+        {
+          "fact_id": "fact_network_rx_normal",
+          "source": "sys_metrics",
+          "evidence_ref": "sys_metrics.summary",
+          "value": 0.08920427066681377,
+          "status": "normal",
+          "threshold_band": "below"
+        },
+        {
+          "fact_id": "fact_network_tx_normal",
+          "source": "sys_metrics",
+          "evidence_ref": "sys_metrics.summary",
+          "value": 0.12446872772408304,
+          "status": "normal",
+          "threshold_band": "below"
+        },
+        {
+          "fact_id": "fact_io_latency_present",
+          "source": "ebpf_metrics",
+          "evidence_ref": "ebpf_metrics.io_latency_us",
+          "value": 438.0,
+          "status": "observed",
+          "threshold_band": "unknown"
+        }
+      ],
+      "symptoms": [
+        {
+          "symptom_id": "sym_function_hotspot",
+          "symptom_type": "function_hotspot",
+          "severity": "high",
+          "fact_ids": [
+            "fact_top_function_0"
+          ]
+        },
+        {
+          "symptom_id": "sym_io_latency_high",
+          "symptom_type": "io_latency_high",
+          "severity": "medium",
+          "fact_ids": [
+            "fact_io_latency_present"
+          ]
+        }
+      ],
+      "localizations": [
+        {
+          "level": "function",
+          "target": "cpu_hotspot",
+          "fact_ids": [
+            "fact_cpu_user_high",
+            "fact_top_function_0"
+          ]
+        },
+        {
+          "level": "resource",
+          "target": "io",
+          "fact_ids": [
+            "fact_io_latency_present"
+          ]
+        }
+      ],
+      "attributions": [
+        {
+          "candidate_id": "cross_cpu_plus_memory_leak",
+          "status": "missing_evidence",
+          "supporting_fact_ids": [
+            "fact_top_function_0"
+          ],
+          "opposing_fact_ids": [],
+          "missing_evidence": [
+            "跨证据候选需要至少两条互补事实共同支持。"
+          ],
+          "max_supported_level": "function"
+        },
+        {
+          "candidate_id": "cpu_hotspot_recursive",
+          "status": "supported",
+          "supporting_fact_ids": [
+            "fact_top_function_0"
+          ],
+          "opposing_fact_ids": [],
+          "missing_evidence": [],
+          "max_supported_level": "function"
+        },
+        {
+          "candidate_id": "io_wait_high",
+          "status": "supported",
+          "supporting_fact_ids": [
+            "fact_io_latency_present"
+          ],
+          "opposing_fact_ids": [
+            "fact_iowait_low"
+          ],
+          "missing_evidence": [],
+          "max_supported_level": "resource"
+        },
+        {
+          "candidate_id": "python_userland_hotspot",
+          "status": "supported",
+          "supporting_fact_ids": [
+            "fact_top_function_0"
+          ],
+          "opposing_fact_ids": [],
+          "missing_evidence": [],
+          "max_supported_level": "function"
+        }
+      ],
+      "evidence_challenges": [
+        {
+          "candidate_id": "cpu_hotspot_recursive",
+          "critical_fact_ids": [
+            "fact_top_function_0"
+          ],
+          "critical_fact_groups": [
+            [
+              "fact_top_function_0"
+            ]
+          ],
+          "tests": [
+            {
+              "removed_fact_id": "fact_top_function_0",
+              "result": "downgrade_level",
+              "meaning": "缺少函数热点事实后，只能定位到资源层，不能定位到具体函数。"
+            }
+          ],
+          "conclusion_stability": "stable"
+        },
+        {
+          "candidate_id": "io_wait_high",
+          "critical_fact_ids": [
+            "fact_io_latency_present"
+          ],
+          "critical_fact_groups": [
+            [
+              "fact_io_latency_present"
+            ]
+          ],
+          "tests": [
+            {
+              "removed_fact_id": "fact_io_latency_present",
+              "result": "forbidden",
+              "meaning": "缺少该关键事实后，当前归因结论不再成立。"
+            }
+          ],
+          "conclusion_stability": "fragile"
+        },
+        {
+          "candidate_id": "python_userland_hotspot",
+          "critical_fact_ids": [
+            "fact_top_function_0"
+          ],
+          "critical_fact_groups": [
+            [
+              "fact_top_function_0"
+            ]
+          ],
+          "tests": [
+            {
+              "removed_fact_id": "fact_top_function_0",
+              "result": "downgrade_level",
+              "meaning": "缺少函数热点事实后，只能定位到资源层，不能定位到具体函数。"
+            }
+          ],
+          "conclusion_stability": "stable"
+        }
+      ],
+      "allowed_cause_ids": [
+        "cpu_hotspot_recursive",
+        "python_userland_hotspot"
+      ],
+      "primary_cause_id": "cpu_hotspot_recursive",
+      "stability_score": 0.97,
+      "primary_cause_reason": "function 层级更深、支持事实 1 条、无明显反向证据、与定位层级一致",
+      "conclusion_boundary": {
+        "can_claim_root_cause": true,
+        "max_supported_level": "function",
+        "reason": "存在由关键事实共同支持且通过证据反问校验的归因结论。"
+      }
+    },
+    "tool_results": [
+      {
+        "tool_name": "get_flamegraph_top",
+        "status": "success",
+        "evidence_ref": "tool_results.get_flamegraph_top",
+        "input": {},
+        "output": {
+          "top_functions": [
+            {
+              "name": "cpu_hotspot",
+              "samples": 661,
+              "percent": 53.48
+            },
+            {
+              "name": "dumps",
+              "samples": 652,
+              "percent": 52.75
+            },
+            {
+              "name": "encode",
+              "samples": 652,
+              "percent": 52.75
+            },
+            {
+              "name": "iterencode",
+              "samples": 652,
+              "percent": 52.75
+            },
+            {
+              "name": "SHA256_Update (libcrypto.so.3)",
+              "samples": 40,
+              "percent": 3.24
+            },
+            {
+              "name": "<lambda>",
+              "samples": 32,
+              "percent": 2.59
+            },
+            {
+              "name": "synchronous_audit_io",
+              "samples": 7,
+              "percent": 0.57
+            },
+            {
+              "name": "fsync (libc.so.6)",
+              "samples": 5,
+              "percent": 0.4
+            },
+            {
+              "name": "<module>",
+              "samples": 4,
+              "percent": 0.32
+            },
+            {
+              "name": "main",
+              "samples": 4,
+              "percent": 0.32
+            }
+          ],
+          "top_percent": 53.48,
+          "sample_count": 2716
+        },
+        "error_message": null
+      },
+      {
+        "tool_name": "get_ebpf_latency_summary",
+        "status": "success",
+        "evidence_ref": "tool_results.get_ebpf_latency_summary",
+        "input": {},
+        "output": {
+          "total_samples": 438,
+          "dominant_bucket": "[128, 256)",
+          "histogram": {
+            "[64, 128)": 44,
+            "[128, 256)": 192,
+            "[256, 512)": 148,
+            "[512, 1000)": 31,
+            "[1000, 2000)": 16,
+            "[2000, 4000)": 5,
+            "[4000, 8000)": 2
+          }
+        },
+        "error_message": null
+      },
+      {
+        "tool_name": "compare_baseline",
+        "status": "missing",
+        "evidence_ref": "tool_results.compare_baseline",
+        "input": {},
+        "output": {},
+        "error_message": "缺少历史 baseline 对比"
+      },
+      {
+        "tool_name": "inspect_task_events",
+        "status": "success",
+        "evidence_ref": "tool_results.inspect_task_events",
+        "input": {},
+        "output": {
+          "events": [
+            {
+              "task_id": "task_20260730_035620_13b667",
+              "from_status": "UPLOADING",
+              "to_status": "ANALYZING",
+              "reason": "产物已记录，等待分析",
+              "actor": "server",
+              "metadata": {},
+              "created_at": "2026-07-30T03:57:26.453425"
+            },
+            {
+              "task_id": "task_20260730_035620_13b667",
+              "from_status": "ANALYZING",
+              "to_status": "DONE",
+              "reason": "内存时间序列分析已生成；内存采集完成: 30 个样本, RSS 120.4→120.4 MB (stable)",
+              "actor": "analyzer",
+              "metadata": {},
+              "created_at": "2026-07-30T03:57:26.469354"
+            },
+            {
+              "task_id": "task_20260730_035620_b06fb0",
+              "from_status": "PENDING",
+              "to_status": "RUNNING",
+              "reason": "Agent 心跳拉取待执行任务",
+              "actor": "server",
+              "metadata": {},
+              "created_at": "2026-07-30T03:57:26.491401"
+            },
+            {
+              "task_id": "task_20260730_035620_b06fb0",
+              "from_status": "RUNNING",
+              "to_status": "UPLOADING",
+              "reason": "py-spy 采集完成",
+              "actor": "agent",
+              "metadata": {},
+              "created_at": "2026-07-30T03:57:56.597589"
+            },
+            {
+              "task_id": "task_20260730_035620_b06fb0",
+              "from_status": "UPLOADING",
+              "to_status": "ANALYZING",
+              "reason": "产物已记录，等待分析",
+              "actor": "server",
+              "metadata": {},
+              "created_at": "2026-07-30T03:57:56.623782"
+            },
+            {
+              "task_id": "task_20260730_035620_b06fb0",
+              "from_status": "ANALYZING",
+              "to_status": "DONE",
+              "reason": "Analyzer 已生成火焰图和热点分析结果；py-spy 采集完成",
+              "actor": "analyzer",
+              "metadata": {},
+              "created_at": "2026-07-30T03:57:56.638169"
+            },
+            {
+              "task_id": "task_20260730_035620_7073b7",
+              "from_status": "PENDING",
+              "to_status": "RUNNING",
+              "reason": "Agent 心跳拉取待执行任务",
+              "actor": "server",
+              "metadata": {},
+              "created_at": "2026-07-30T03:57:56.659082"
+            },
+            {
+              "task_id": "task_20260730_035620_7073b7",
+              "from_status": "RUNNING",
+              "to_status": "UPLOADING",
+              "reason": "bpftrace IO 延迟采集完成，共 438 个样本",
+              "actor": "agent",
+              "metadata": {},
+              "created_at": "2026-07-30T03:58:26.757871"
+            },
+            {
+              "task_id": "task_20260730_035620_7073b7",
+              "from_status": "UPLOADING",
+              "to_status": "ANALYZING",
+              "reason": "产物已记录，等待分析",
+              "actor": "server",
+              "metadata": {},
+              "created_at": "2026-07-30T03:58:26.785948"
+            },
+            {
+              "task_id": "task_20260730_035620_7073b7",
+              "from_status": "ANALYZING",
+              "to_status": "DONE",
+              "reason": "eBPF IO 延迟分布已生成；bpftrace IO 延迟采集完成，共 438 个样本",
+              "actor": "analyzer",
+              "metadata": {},
+              "created_at": "2026-07-30T03:58:26.800922"
+            }
+          ],
+          "failure_reasons": []
+        },
+        "error_message": null
+      },
+      {
+        "tool_name": "check_agent_health",
+        "status": "success",
+        "evidence_ref": "tool_results.check_agent_health",
+        "input": {
+          "agent_id": "linux-worker-1"
+        },
+        "output": {
+          "agent_id": "linux-worker-1",
+          "status": "ONLINE",
+          "capabilities": [
+            "continuous_perf",
+            "ebpf_io",
+            "go_pprof",
+            "memory_smaps",
+            "perf_cpu",
+            "pyspy",
+            "sys_metrics"
+          ],
+          "last_heartbeat_at": "2026-07-30T04:00:17.799462"
+        },
+        "error_message": null
+      }
+    ],
+    "repair_plan": {
+      "plan_id": "repair_4fda654c0d",
+      "task_id": "dataset_20260730_composite_replay",
+      "cause_id": "cpu_hotspot_recursive",
+      "risk_level": "manual_only",
+      "actions": [
+        {
+          "action_id": "action_c227e571",
+          "action_type": "collect_more_evidence",
+          "risk_level": "manual_only",
+          "description": "当前证据不足，建议补充 baseline、火焰图 TopN 或 eBPF 延迟数据后重试。",
+          "command": null,
+          "payload": {},
+          "status": "planned",
+          "result": null
+        }
+      ],
+      "requires_user_confirm": true,
+      "status": "planned"
+    }
+  }
+}

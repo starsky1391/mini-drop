@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 
 from server.app.common_utils import status_value
 from server.app.rca.models import EvidenceInput
@@ -21,6 +22,7 @@ def collect_evidence(
     failure_events: list[str] | None = None,
     baseline_diff: dict | None = None,
     agent_stats: dict | None = None,
+    evidence_index: dict | None = None,
     tool_results: list[dict] | None = None,
 ) -> EvidenceInput:
     """从各数据源汇总结构化证据。
@@ -57,17 +59,29 @@ def collect_evidence(
         sys_metrics=sys_metrics,
         baseline_diff=baseline_diff,
         agent_stats=agent_stats or {},
+        evidence_index=evidence_index or {},
         tool_results=tool_results or [],
         suggestions=suggestions or [],
         failure_events=failure_events or [],
     )
 
 
-def evidence_to_json(evidence: EvidenceInput) -> str:
+def evidence_to_json(
+    evidence: EvidenceInput,
+    requested_refs: Iterable[str] | None = None,
+) -> str:
     """将 EvidenceInput 序列化为 LLM 输入的 JSON 字符串。
 
     输出字段顺序按重要性排列——越重要越靠后（近因效应）。
     """
+    parts = _build_llm_payload(evidence, requested_refs or [])
+    return json.dumps(parts, indent=2, ensure_ascii=False, default=str)
+
+
+def _build_llm_payload(
+    evidence: EvidenceInput,
+    requested_refs: Iterable[str],
+) -> dict:
     parts: dict = {}
 
     parts["task_metadata"] = evidence.task_metadata
@@ -91,6 +105,11 @@ def evidence_to_json(evidence: EvidenceInput) -> str:
     if evidence.agent_stats:
         parts["agent_stats"] = evidence.agent_stats
 
+    if evidence.evidence_index:
+        parts["evidence_index"] = _compact_index(evidence.evidence_index)
+        if _has_requested_evidence_index_ref(requested_refs):
+            parts["evidence_index_raw"] = _compact_index(evidence.evidence_index)
+
     if evidence.tool_results:
         parts["tool_results"] = evidence.tool_results
 
@@ -100,4 +119,61 @@ def evidence_to_json(evidence: EvidenceInput) -> str:
     if evidence.failure_events:
         parts["failure_events"] = evidence.failure_events[-3:]  # 最近 3 条
 
-    return json.dumps(parts, indent=2, ensure_ascii=False, default=str)
+    if evidence.analysis_result:
+        parts["analysis_result"] = evidence.analysis_result
+
+    return parts
+
+
+def _compact_index(value):
+    if isinstance(value, dict):
+        compact: dict = {}
+        for key, item in list(value.items())[:20]:
+            compact[str(key)] = _compact_index(item)
+        return compact
+    if isinstance(value, list):
+        return [_compact_index(item) for item in value[:5]]
+    return value
+
+
+def _normalize_requested_ref(ref: str) -> str:
+    normalized = str(ref or "").strip()
+    if normalized.startswith("evidence_index."):
+        normalized = normalized[len("evidence_index."):]
+    normalized = normalized.replace("[", ".").replace("]", "")
+    normalized = ".".join(part for part in normalized.split(".") if part)
+    return normalized
+
+
+def _has_requested_evidence_index_ref(requested_refs: Iterable[str]) -> bool:
+    for ref in requested_refs:
+        if str(ref or "").strip().startswith("evidence_index."):
+            return True
+    return False
+
+
+def _resolve_path(value: object, ref: str) -> object:
+    current = value
+    for part in ref.split("."):
+        if isinstance(current, dict):
+            if part not in current:
+                return _MISSING
+            current = current[part]
+            continue
+        if isinstance(current, list):
+            if not part.isdigit():
+                return _MISSING
+            index = int(part)
+            if index < 0 or index >= len(current):
+                return _MISSING
+            current = current[index]
+            continue
+        return _MISSING
+    return current
+
+
+class _MissingPath:
+    pass
+
+
+_MISSING = _MissingPath()

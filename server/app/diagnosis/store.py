@@ -330,6 +330,7 @@ class DiagnosisStore:
                 raw_artifact_ref=evidence.get("raw_artifact_ref"),
                 derived_artifact_ref=evidence.get("derived_artifact_ref"),
                 derivation_version=evidence.get("derivation_version", "v1"),
+                evidence_index_json=evidence.get("evidence_index", {}),
                 observed_value_json=evidence.get("observed_value", {}),
                 baseline_value_json=evidence.get("baseline_value", {}),
                 anomaly_score_json=evidence.get("anomaly_score", {}),
@@ -345,6 +346,23 @@ class DiagnosisStore:
             raise
         finally:
             session.close()
+
+    def get_evidence(self, evidence_id: str) -> dict[str, Any] | None:
+        session = new_session()
+        try:
+            model = session.get(DiagnosisEvidenceModel, evidence_id)
+            return model.to_dict() if model else None
+        finally:
+            session.close()
+
+    def resolve_evidence_ref(self, diagnosis_id: str, evidence_ref: str) -> dict[str, Any] | None:
+        for item in self.list_evidence(diagnosis_id):
+            if item.get("evidence_id") == evidence_ref:
+                return item
+            index = item.get("evidence_index") or {}
+            if _evidence_ref_in_index(evidence_ref, index):
+                return item
+        return None
 
     def list_evidence(self, diagnosis_id: str) -> list[dict[str, Any]]:
         session = new_session()
@@ -390,3 +408,33 @@ class DiagnosisStore:
         conclusions = item.get("conclusion_versions", [])
         item["latest_conclusion"] = conclusions[-1] if conclusions else None
         return item
+
+
+def _evidence_ref_in_index(evidence_ref: str, index: dict[str, Any]) -> bool:
+    if not isinstance(index, dict):
+        return False
+    normalized_ref = evidence_ref
+    if normalized_ref.startswith("evidence_index."):
+        normalized_ref = normalized_ref[len("evidence_index."):]
+    normalized_ref = normalized_ref.replace("[", ".").replace("]", "")
+    normalized_ref = ".".join(part for part in normalized_ref.split(".") if part and not part.isdigit())
+    normalized_paths = _collect_index_paths(index)
+    return normalized_ref in normalized_paths or evidence_ref in normalized_paths
+
+
+def _collect_index_paths(value: Any, prefix: str = "") -> set[str]:
+    paths: set[str] = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_text = str(key)
+            next_prefix = f"{prefix}.{key_text}" if prefix else key_text
+            paths.add(next_prefix)
+            paths.update(_collect_index_paths(item, next_prefix))
+        return paths
+    if isinstance(value, list):
+        for item in value:
+            paths.update(_collect_index_paths(item, prefix))
+        return paths
+    if prefix:
+        paths.add(prefix)
+    return paths

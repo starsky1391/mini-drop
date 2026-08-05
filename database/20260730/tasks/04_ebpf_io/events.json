@@ -1,0 +1,55 @@
+[
+  {
+    "task_id": "task_20260730_035620_7073b7",
+    "from_status": null,
+    "to_status": "PENDING",
+    "reason": "Web 请求创建任务",
+    "actor": "web",
+    "metadata": {
+      "name": "dataset mixed anomaly io latency",
+      "agent_id": "linux-worker-1",
+      "target_pid": 1533,
+      "collector_type": "ebpf_io",
+      "sample_rate": 11,
+      "duration_sec": 25,
+      "options": {}
+    },
+    "created_at": "2026-07-30T03:56:20.688047"
+  },
+  {
+    "task_id": "task_20260730_035620_7073b7",
+    "from_status": "PENDING",
+    "to_status": "RUNNING",
+    "reason": "Agent 心跳拉取待执行任务",
+    "actor": "server",
+    "metadata": {},
+    "created_at": "2026-07-30T03:57:56.659082"
+  },
+  {
+    "task_id": "task_20260730_035620_7073b7",
+    "from_status": "RUNNING",
+    "to_status": "UPLOADING",
+    "reason": "bpftrace IO 延迟采集完成，共 438 个样本",
+    "actor": "agent",
+    "metadata": {},
+    "created_at": "2026-07-30T03:58:26.757871"
+  },
+  {
+    "task_id": "task_20260730_035620_7073b7",
+    "from_status": "UPLOADING",
+    "to_status": "ANALYZING",
+    "reason": "产物已记录，等待分析",
+    "actor": "server",
+    "metadata": {},
+    "created_at": "2026-07-30T03:58:26.785948"
+  },
+  {
+    "task_id": "task_20260730_035620_7073b7",
+    "from_status": "ANALYZING",
+    "to_status": "DONE",
+    "reason": "eBPF IO 延迟分布已生成；bpftrace IO 延迟采集完成，共 438 个样本",
+    "actor": "analyzer",
+    "metadata": {},
+    "created_at": "2026-07-30T03:58:26.800922"
+  }
+]

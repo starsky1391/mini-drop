@@ -26,8 +26,11 @@ from typing import Any
 import grpc
 
 from agent.mini_drop_agent.collectors.base import CollectorTask
+from agent.mini_drop_agent.collectors.baseline import BaselineWindowCollector
 from agent.mini_drop_agent.collectors.continuous import ContinuousCollector
 from agent.mini_drop_agent.collectors.ebpf import EBPFCollector
+from agent.mini_drop_agent.collectors.off_cpu import OffCPUCollector
+from agent.mini_drop_agent.collectors.trace import TraceEndpointCollector
 from agent.mini_drop_agent.collectors.java_async import JavaAsyncProfilerCollector
 from agent.mini_drop_agent.collectors.memory import MemoryCollector
 from agent.mini_drop_agent.collectors.perf import PerfCollector
@@ -59,6 +62,9 @@ COLLECTORS = {
     "go_pprof": PprofCollector(),
     "memory_smaps": MemoryCollector(),
     "sys_metrics": SysMetricsCollector(),
+    "off_cpu_wait_profile": OffCPUCollector(),
+    "trace_endpoint_profile": TraceEndpointCollector(),
+    "baseline_window_profile": BaselineWindowCollector(),
 }
 
 CAPABILITIES = sorted(COLLECTORS.keys())

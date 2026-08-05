@@ -18,7 +18,13 @@ MANUAL_ONLY = "manual_only"
 
 
 def build_repair_plan(task_id: str, report: DiagnosisReport, evidence: EvidenceInput) -> RepairPlan:
-    cause = report.ranked_causes[0] if report.ranked_causes else None
+    analysis_result = evidence.analysis_result or {}
+    primary_cause_id = analysis_result.get("primary_cause_id")
+    cause = None
+    if primary_cause_id:
+        cause = next((item for item in report.ranked_causes if item.cause_id == primary_cause_id), None)
+    if cause is None:
+        cause = report.ranked_causes[0] if report.ranked_causes else None
     cause_id = cause.cause_id if cause else "insufficient_data"
     actions: list[RepairAction] = []
 

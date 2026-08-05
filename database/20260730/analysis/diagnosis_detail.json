@@ -1,0 +1,226 @@
+{
+  "run": {
+    "id": "diag_20260730_040019_ba9094",
+    "task_id": "task_20260730_035620_603d19",
+    "status": "DONE",
+    "model_name": "deepseek-chat",
+    "summary": "系统指标采集成功，但缺少火焰图、eBPF延迟和基线对比数据，无法进行深度归因。进程CPU占用约1核，RSS持续增长，IO写入约1.5MB/s，但证据不足以确定根因。",
+    "validated": true,
+    "retry_count": 0,
+    "created_at": "2026-07-30T04:00:19.641435",
+    "finished_at": "2026-07-30T04:01:24.134022"
+  },
+  "report": {
+    "id": "report_e962241175",
+    "diagnosis_id": "diag_20260730_040019_ba9094",
+    "report": {
+      "summary": "系统指标采集成功，但缺少火焰图、eBPF延迟和基线对比数据，无法进行深度归因。进程CPU占用约1核，RSS持续增长，IO写入约1.5MB/s，但证据不足以确定根因。",
+      "ranked_causes": [
+        {
+          "cause_id": "insufficient_data",
+          "confidence": 0.33,
+          "claim": "当前证据量不足以触发任何预置规则，建议补充采集。",
+          "evidence_refs": [
+            "tool_results.get_flamegraph_top.status",
+            "tool_results.get_ebpf_latency_summary.status",
+            "tool_results.compare_baseline.status"
+          ],
+          "uncertainties": [
+            "缺少火焰图TopN数据，无法定位CPU热点函数",
+            "缺少eBPF IO延迟样本，无法分析IO延迟分布",
+            "缺少历史基线对比，无法判断指标是否异常"
+          ],
+          "verification_steps": [
+            "重新采集并确保火焰图数据生成",
+            "启用eBPF IO采集器获取延迟分布",
+            "建立历史基线并执行compare_baseline工具"
+          ]
+        }
+      ],
+      "facts": [
+        "任务状态为DONE，采集到30个样本",
+        "主机CPU user_ratio约25%，iowait约1%",
+        "进程CPU normalized_core_usage约1.0，RSS约120MB且持续增长",
+        "进程IO write_bytes_per_second约1.5MB/s，read为0",
+        "容器无内存限制，当前内存约163MB",
+        "PSI IO some avg10最高0.19，存在IO压力",
+        "火焰图、eBPF延迟、基线对比数据均缺失"
+      ],
+      "not_enough_evidence": true
+    },
+    "ranked_causes": [
+      {
+        "cause_id": "insufficient_data",
+        "confidence": 0.33,
+        "claim": "当前证据量不足以触发任何预置规则，建议补充采集。",
+        "evidence_refs": [
+          "tool_results.get_flamegraph_top.status",
+          "tool_results.get_ebpf_latency_summary.status",
+          "tool_results.compare_baseline.status"
+        ],
+        "uncertainties": [
+          "缺少火焰图TopN数据，无法定位CPU热点函数",
+          "缺少eBPF IO延迟样本，无法分析IO延迟分布",
+          "缺少历史基线对比，无法判断指标是否异常"
+        ],
+        "verification_steps": [
+          "重新采集并确保火焰图数据生成",
+          "启用eBPF IO采集器获取延迟分布",
+          "建立历史基线并执行compare_baseline工具"
+        ]
+      }
+    ],
+    "confidence": 0.33,
+    "not_enough_evidence": true,
+    "created_at": "2026-07-30T04:01:24.114165"
+  },
+  "repair_plan": {
+    "id": "repair_5fda418f5d",
+    "diagnosis_id": "diag_20260730_040019_ba9094",
+    "cause_id": "insufficient_data",
+    "risk_level": "manual_only",
+    "actions": [
+      {
+        "action_id": "action_dfdedbca",
+        "action_type": "collect_more_evidence",
+        "risk_level": "manual_only",
+        "description": "当前证据不足，建议补充 baseline、火焰图 TopN 或 eBPF 延迟数据后重试。",
+        "command": null,
+        "payload": {},
+        "status": "planned",
+        "result": null
+      }
+    ],
+    "executed_actions": [],
+    "requires_user_confirm": true,
+    "status": "planned",
+    "created_at": "2026-07-30T04:01:24.123073"
+  },
+  "tool_results": [
+    {
+      "tool_name": "get_flamegraph_top",
+      "status": "missing",
+      "evidence_ref": "tool_results.get_flamegraph_top",
+      "input": {},
+      "output": {
+        "top_functions": [],
+        "top_percent": 0,
+        "sample_count": 0
+      },
+      "error_message": "缺少火焰图 TopN 数据",
+      "created_at": "2026-07-30T04:01:24.035441"
+    },
+    {
+      "tool_name": "get_ebpf_latency_summary",
+      "status": "missing",
+      "evidence_ref": "tool_results.get_ebpf_latency_summary",
+      "input": {},
+      "output": {
+        "total_samples": 0,
+        "dominant_bucket": null,
+        "histogram": {}
+      },
+      "error_message": "缺少 eBPF IO 延迟样本",
+      "created_at": "2026-07-30T04:01:24.079082"
+    },
+    {
+      "tool_name": "compare_baseline",
+      "status": "missing",
+      "evidence_ref": "tool_results.compare_baseline",
+      "input": {},
+      "output": {},
+      "error_message": "缺少历史 baseline 对比",
+      "created_at": "2026-07-30T04:01:24.088004"
+    },
+    {
+      "tool_name": "inspect_task_events",
+      "status": "success",
+      "evidence_ref": "tool_results.inspect_task_events",
+      "input": {},
+      "output": {
+        "events": [
+          {
+            "task_id": "task_20260730_035620_603d19",
+            "from_status": null,
+            "to_status": "PENDING",
+            "reason": "Web 请求创建任务",
+            "actor": "web",
+            "metadata": {
+              "name": "dataset mixed anomaly sys metrics",
+              "agent_id": "linux-worker-1",
+              "target_pid": 1533,
+              "collector_type": "sys_metrics",
+              "sample_rate": 11,
+              "duration_sec": 30,
+              "options": {}
+            },
+            "created_at": "2026-07-30 03:56:20.496928"
+          },
+          {
+            "task_id": "task_20260730_035620_603d19",
+            "from_status": "PENDING",
+            "to_status": "RUNNING",
+            "reason": "Agent 心跳拉取待执行任务",
+            "actor": "server",
+            "metadata": {},
+            "created_at": "2026-07-30 03:56:21.109732"
+          },
+          {
+            "task_id": "task_20260730_035620_603d19",
+            "from_status": "RUNNING",
+            "to_status": "UPLOADING",
+            "reason": "系统指标采集完成: 30 个样本 | host CPU=25.3% | process CPU=1.00 cores | RSS=126251008 bytes",
+            "actor": "agent",
+            "metadata": {},
+            "created_at": "2026-07-30 03:56:56.259670"
+          },
+          {
+            "task_id": "task_20260730_035620_603d19",
+            "from_status": "UPLOADING",
+            "to_status": "ANALYZING",
+            "reason": "产物已记录，等待分析",
+            "actor": "server",
+            "metadata": {},
+            "created_at": "2026-07-30 03:56:56.290949"
+          },
+          {
+            "task_id": "task_20260730_035620_603d19",
+            "from_status": "ANALYZING",
+            "to_status": "DONE",
+            "reason": "系统多维指标分析已生成；系统指标采集完成: 30 个样本 | host CPU=25.3% | process CPU=1.00 cores | RSS=126251008 bytes",
+            "actor": "analyzer",
+            "metadata": {},
+            "created_at": "2026-07-30 03:56:56.307209"
+          }
+        ],
+        "failure_reasons": []
+      },
+      "error_message": null,
+      "created_at": "2026-07-30T04:01:24.097184"
+    },
+    {
+      "tool_name": "check_agent_health",
+      "status": "success",
+      "evidence_ref": "tool_results.check_agent_health",
+      "input": {
+        "agent_id": "linux-worker-1"
+      },
+      "output": {
+        "agent_id": "linux-worker-1",
+        "status": "ONLINE",
+        "capabilities": [
+          "continuous_perf",
+          "ebpf_io",
+          "go_pprof",
+          "memory_smaps",
+          "perf_cpu",
+          "pyspy",
+          "sys_metrics"
+        ],
+        "last_heartbeat_at": "2026-07-30 04:00:17.799462"
+      },
+      "error_message": null,
+      "created_at": "2026-07-30T04:01:24.104783"
+    }
+  ]
+}

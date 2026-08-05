@@ -1,0 +1,1974 @@
+{
+  "schema_version": "sys_metrics.v2",
+  "task_id": "task_20260730_035620_603d19",
+  "mode": "timeseries",
+  "duration_sec": 30,
+  "sample_count": 30,
+  "host": {
+    "cpu": {
+      "user_ratio": 0.24900699457351735,
+      "system_ratio": 0.004138609411891537,
+      "iowait_ratio": 0.010088445187295373,
+      "core_count": 4
+    },
+    "load": {
+      "load1": 0.95,
+      "load5": 0.36,
+      "load1_window_avg": 0.8956666666666667,
+      "load1_slope_per_second": 0.004823962369971488
+    },
+    "memory": {
+      "total_bytes": 4104773632,
+      "available_bytes": 3491377152
+    },
+    "psi": {
+      "cpu_some_avg10": 0.0,
+      "memory_some_avg10": 0.0,
+      "io_some_avg10": 0.02
+    },
+    "network": {
+      "scope": "host",
+      "rx_bytes_per_second": 91.3451731628173,
+      "tx_bytes_per_second": 127.45597718946104
+    }
+  },
+  "process": {
+    "pid": 1533,
+    "start_time_ticks": 26189,
+    "cpu": {
+      "user_seconds_delta": 28.84,
+      "system_seconds_delta": 0.28,
+      "normalized_core_usage": 1.0033841729540702
+    },
+    "memory": {
+      "rss_bytes": 126251008,
+      "rss_slope_bytes_per_second": 327998.56779889355
+    },
+    "fd": {
+      "count": 3,
+      "growth_per_minute": 0.0
+    },
+    "io": {
+      "read_bytes_per_second": 0.0,
+      "write_bytes_per_second": 1508595.8223762363
+    },
+    "threads": {
+      "count": 4,
+      "growth_per_minute": 0.0
+    }
+  },
+  "container": {
+    "memory_limit_bytes": null,
+    "memory_current_bytes": 163393536,
+    "cpu_quota_cores": null
+  },
+  "summary": {
+    "avg_cpu_user_pct": 24.9,
+    "avg_cpu_sys_pct": 0.4,
+    "avg_cpu_iowait_pct": 1.0,
+    "host_core_count": 4,
+    "load1m": 0.95,
+    "load1m_window_avg": 0.8956666666666667,
+    "load1m_slope_per_second": 0.004823962369971488,
+    "process_cpu_core_usage": 1.0033841729540702,
+    "thread_count": 4,
+    "thread_growth_per_minute": 0.0,
+    "fd_count": 3,
+    "fd_growth_per_minute": 0.0,
+    "fd_trend": "stable",
+    "vmrss_mb": 120.4,
+    "vmrss_slope_bytes_per_second": 327998.56779889355,
+    "vmrss_trend": "increasing",
+    "process_read_bytes_per_second": 0.0,
+    "process_write_bytes_per_second": 1508595.8223762363,
+    "net_rx_kbps": 0.08920427066681377,
+    "net_tx_kbps": 0.12446872772408304
+  },
+  "samples": [
+    {
+      "ts": 1785383781.1353557,
+      "host_cpu_ticks": {
+        "user": 8854,
+        "nice": 0,
+        "system": 338,
+        "idle": 129800,
+        "iowait": 386,
+        "irq": 0,
+        "softirq": 81,
+        "steal": 0
+      },
+      "host_cpu": {},
+      "load": {
+        "load1": 0.81,
+        "load5": 0.28,
+        "load15": 0.1,
+        "load1m": 0.81,
+        "load5m": 0.28,
+        "load15m": 0.1
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3512393728
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.02
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 8648,
+        "stime_ticks": 80,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 349564928,
+        "rss_pages": 28378,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 136055183,
+        "read_bytes": 36864,
+        "write_bytes": 136065024,
+        "rss_bytes": 116731904,
+        "vmrss_kb": 113996,
+        "voluntary_switches": 56,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 108785664,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 71862,
+        "tx_bytes": 87712
+      }
+    },
+    {
+      "ts": 1785383782.13627,
+      "host_cpu_ticks": {
+        "user": 8954,
+        "nice": 0,
+        "system": 339,
+        "idle": 130093,
+        "iowait": 391,
+        "irq": 0,
+        "softirq": 82,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.25,
+        "system_ratio": 0.005,
+        "iowait_ratio": 0.0125,
+        "idle_ratio": 0.7325
+      },
+      "load": {
+        "load1": 0.81,
+        "load5": 0.28,
+        "load15": 0.1,
+        "load1m": 0.81,
+        "load5m": 0.28,
+        "load15m": 0.1
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3513143296
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.02
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 8747,
+        "stime_ticks": 81,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 350617600,
+        "rss_pages": 28410,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 137628047,
+        "read_bytes": 36864,
+        "write_bytes": 137637888,
+        "rss_bytes": 116776960,
+        "vmrss_kb": 114040,
+        "voluntary_switches": 56,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 110276608,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 71967,
+        "tx_bytes": 87896
+      }
+    },
+    {
+      "ts": 1785383783.1369855,
+      "host_cpu_ticks": {
+        "user": 9053,
+        "nice": 0,
+        "system": 341,
+        "idle": 130388,
+        "iowait": 395,
+        "irq": 0,
+        "softirq": 83,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24688279301745636,
+        "system_ratio": 0.007481296758104738,
+        "iowait_ratio": 0.00997506234413965,
+        "idle_ratio": 0.7356608478802993
+      },
+      "load": {
+        "load1": 0.83,
+        "load5": 0.29,
+        "load15": 0.11,
+        "load1m": 0.83,
+        "load5m": 0.29,
+        "load15m": 0.11
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3510730752
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.02
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 8846,
+        "stime_ticks": 82,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 351670272,
+        "rss_pages": 28666,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 139200911,
+        "read_bytes": 36864,
+        "write_bytes": 139210752,
+        "rss_bytes": 117829632,
+        "vmrss_kb": 115068,
+        "voluntary_switches": 56,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 112926720,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 72204,
+        "tx_bytes": 88067
+      }
+    },
+    {
+      "ts": 1785383784.1376863,
+      "host_cpu_ticks": {
+        "user": 9152,
+        "nice": 0,
+        "system": 342,
+        "idle": 130684,
+        "iowait": 398,
+        "irq": 0,
+        "softirq": 83,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24812030075187969,
+        "system_ratio": 0.002506265664160401,
+        "iowait_ratio": 0.007518796992481203,
+        "idle_ratio": 0.7418546365914787
+      },
+      "load": {
+        "load1": 0.83,
+        "load5": 0.29,
+        "load15": 0.11,
+        "load1m": 0.83,
+        "load5m": 0.29,
+        "load15m": 0.11
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3506069504
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.02
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 8945,
+        "stime_ticks": 84,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 352722944,
+        "rss_pages": 28922,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 140773775,
+        "read_bytes": 36864,
+        "write_bytes": 140783616,
+        "rss_bytes": 118882304,
+        "vmrss_kb": 116096,
+        "voluntary_switches": 56,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 115863552,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 72204,
+        "tx_bytes": 88067
+      }
+    },
+    {
+      "ts": 1785383785.1383545,
+      "host_cpu_ticks": {
+        "user": 9252,
+        "nice": 0,
+        "system": 343,
+        "idle": 130962,
+        "iowait": 419,
+        "irq": 0,
+        "softirq": 84,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24937655860349128,
+        "system_ratio": 0.004987531172069825,
+        "iowait_ratio": 0.05236907730673317,
+        "idle_ratio": 0.6932668329177057
+      },
+      "load": {
+        "load1": 0.83,
+        "load5": 0.29,
+        "load15": 0.11,
+        "load1m": 0.83,
+        "load5m": 0.29,
+        "load15m": 0.11
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3507535872
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.01
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 9045,
+        "stime_ticks": 84,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 353775616,
+        "rss_pages": 29178,
+        "fd_count": 4,
+        "rchar": 1128282,
+        "wchar": 142084624,
+        "read_bytes": 36864,
+        "write_bytes": 142094336,
+        "rss_bytes": 119934976,
+        "vmrss_kb": 117124,
+        "voluntary_switches": 58,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 118251520,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 72204,
+        "tx_bytes": 88067
+      }
+    },
+    {
+      "ts": 1785383786.1393282,
+      "host_cpu_ticks": {
+        "user": 9351,
+        "nice": 0,
+        "system": 344,
+        "idle": 131257,
+        "iowait": 422,
+        "irq": 0,
+        "softirq": 85,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24812030075187969,
+        "system_ratio": 0.005012531328320802,
+        "iowait_ratio": 0.007518796992481203,
+        "idle_ratio": 0.7393483709273183
+      },
+      "load": {
+        "load1": 0.83,
+        "load5": 0.29,
+        "load15": 0.11,
+        "load1m": 0.83,
+        "load5m": 0.29,
+        "load15m": 0.11
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3504787456
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.01
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 9145,
+        "stime_ticks": 85,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 354828288,
+        "rss_pages": 29434,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 143395344,
+        "read_bytes": 36864,
+        "write_bytes": 143405056,
+        "rss_bytes": 120987648,
+        "vmrss_kb": 118152,
+        "voluntary_switches": 58,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 120725504,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 72204,
+        "tx_bytes": 88349
+      }
+    },
+    {
+      "ts": 1785383787.1399856,
+      "host_cpu_ticks": {
+        "user": 9451,
+        "nice": 0,
+        "system": 346,
+        "idle": 131552,
+        "iowait": 426,
+        "irq": 0,
+        "softirq": 85,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24937655860349128,
+        "system_ratio": 0.004987531172069825,
+        "iowait_ratio": 0.00997506234413965,
+        "idle_ratio": 0.7356608478802993
+      },
+      "load": {
+        "load1": 0.83,
+        "load5": 0.29,
+        "load15": 0.11,
+        "load1m": 0.83,
+        "load5m": 0.29,
+        "load15m": 0.11
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3497922560
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.19
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 9244,
+        "stime_ticks": 86,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 355880960,
+        "rss_pages": 29690,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 144968208,
+        "read_bytes": 36864,
+        "write_bytes": 144977920,
+        "rss_bytes": 122040320,
+        "vmrss_kb": 119180,
+        "voluntary_switches": 58,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 123494400,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 72358,
+        "tx_bytes": 88415
+      }
+    },
+    {
+      "ts": 1785383788.1410112,
+      "host_cpu_ticks": {
+        "user": 9551,
+        "nice": 0,
+        "system": 347,
+        "idle": 131846,
+        "iowait": 429,
+        "irq": 0,
+        "softirq": 86,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.2506265664160401,
+        "system_ratio": 0.005012531328320802,
+        "iowait_ratio": 0.007518796992481203,
+        "idle_ratio": 0.7368421052631579
+      },
+      "load": {
+        "load1": 0.84,
+        "load5": 0.3,
+        "load15": 0.11,
+        "load1m": 0.84,
+        "load5m": 0.3,
+        "load15m": 0.11
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3491426304
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.19
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 9344,
+        "stime_ticks": 87,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 356933632,
+        "rss_pages": 29946,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 146541072,
+        "read_bytes": 36864,
+        "write_bytes": 146550784,
+        "rss_bytes": 123092992,
+        "vmrss_kb": 120208,
+        "voluntary_switches": 58,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 125988864,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 72700,
+        "tx_bytes": 88704
+      }
+    },
+    {
+      "ts": 1785383789.1421025,
+      "host_cpu_ticks": {
+        "user": 9650,
+        "nice": 0,
+        "system": 349,
+        "idle": 132141,
+        "iowait": 432,
+        "irq": 0,
+        "softirq": 86,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24812030075187969,
+        "system_ratio": 0.005012531328320802,
+        "iowait_ratio": 0.007518796992481203,
+        "idle_ratio": 0.7393483709273183
+      },
+      "load": {
+        "load1": 0.84,
+        "load5": 0.3,
+        "load15": 0.11,
+        "load1m": 0.84,
+        "load5m": 0.3,
+        "load15m": 0.11
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3492851712
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.16
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 9442,
+        "stime_ticks": 89,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 357986304,
+        "rss_pages": 30202,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 147851792,
+        "read_bytes": 36864,
+        "write_bytes": 147861504,
+        "rss_bytes": 124145664,
+        "vmrss_kb": 121236,
+        "voluntary_switches": 58,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 128479232,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 72700,
+        "tx_bytes": 88770
+      }
+    },
+    {
+      "ts": 1785383790.1427066,
+      "host_cpu_ticks": {
+        "user": 9749,
+        "nice": 0,
+        "system": 350,
+        "idle": 132436,
+        "iowait": 436,
+        "irq": 0,
+        "softirq": 86,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24812030075187969,
+        "system_ratio": 0.002506265664160401,
+        "iowait_ratio": 0.010025062656641603,
+        "idle_ratio": 0.7393483709273183
+      },
+      "load": {
+        "load1": 0.84,
+        "load5": 0.3,
+        "load15": 0.11,
+        "load1m": 0.84,
+        "load5m": 0.3,
+        "load15m": 0.11
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3492945920
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.16
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 9542,
+        "stime_ticks": 89,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 359038976,
+        "rss_pages": 30458,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 149424786,
+        "read_bytes": 36864,
+        "write_bytes": 149434368,
+        "rss_bytes": 125198336,
+        "vmrss_kb": 122264,
+        "voluntary_switches": 63,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 131211264,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 72700,
+        "tx_bytes": 88770
+      }
+    },
+    {
+      "ts": 1785383791.1433992,
+      "host_cpu_ticks": {
+        "user": 9848,
+        "nice": 0,
+        "system": 351,
+        "idle": 132730,
+        "iowait": 440,
+        "irq": 0,
+        "softirq": 86,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24874371859296482,
+        "system_ratio": 0.002512562814070352,
+        "iowait_ratio": 0.010050251256281407,
+        "idle_ratio": 0.7386934673366834
+      },
+      "load": {
+        "load1": 0.84,
+        "load5": 0.3,
+        "load15": 0.11,
+        "load1m": 0.84,
+        "load5m": 0.3,
+        "load15m": 0.11
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3492548608
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.13
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 9641,
+        "stime_ticks": 91,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30603,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 150997650,
+        "read_bytes": 36864,
+        "write_bytes": 151007232,
+        "rss_bytes": 125796352,
+        "vmrss_kb": 122848,
+        "voluntary_switches": 63,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 133406720,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 72700,
+        "tx_bytes": 88770
+      }
+    },
+    {
+      "ts": 1785383792.1439888,
+      "host_cpu_ticks": {
+        "user": 9948,
+        "nice": 0,
+        "system": 352,
+        "idle": 133025,
+        "iowait": 444,
+        "irq": 0,
+        "softirq": 87,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24937655860349128,
+        "system_ratio": 0.004987531172069825,
+        "iowait_ratio": 0.00997506234413965,
+        "idle_ratio": 0.7356608478802993
+      },
+      "load": {
+        "load1": 0.84,
+        "load5": 0.3,
+        "load15": 0.11,
+        "load1m": 0.84,
+        "load5m": 0.3,
+        "load15m": 0.11
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3494084608
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.13
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 9741,
+        "stime_ticks": 92,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30714,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 152570514,
+        "read_bytes": 36864,
+        "write_bytes": 152580096,
+        "rss_bytes": 126251008,
+        "vmrss_kb": 123292,
+        "voluntary_switches": 63,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 135200768,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 72854,
+        "tx_bytes": 89118
+      }
+    },
+    {
+      "ts": 1785383793.1445932,
+      "host_cpu_ticks": {
+        "user": 10047,
+        "nice": 0,
+        "system": 353,
+        "idle": 133320,
+        "iowait": 447,
+        "irq": 0,
+        "softirq": 87,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24874371859296482,
+        "system_ratio": 0.002512562814070352,
+        "iowait_ratio": 0.007537688442211055,
+        "idle_ratio": 0.7412060301507538
+      },
+      "load": {
+        "load1": 0.93,
+        "load5": 0.33,
+        "load15": 0.12,
+        "load1m": 0.93,
+        "load5m": 0.33,
+        "load15m": 0.12
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3487670272
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.1
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 9841,
+        "stime_ticks": 93,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30714,
+        "fd_count": 4,
+        "rchar": 1128282,
+        "wchar": 154143378,
+        "read_bytes": 36864,
+        "write_bytes": 154152960,
+        "rss_bytes": 126251008,
+        "vmrss_kb": 123292,
+        "voluntary_switches": 63,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 136863744,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 73025,
+        "tx_bytes": 89302
+      }
+    },
+    {
+      "ts": 1785383794.1452076,
+      "host_cpu_ticks": {
+        "user": 10147,
+        "nice": 0,
+        "system": 355,
+        "idle": 133615,
+        "iowait": 450,
+        "irq": 0,
+        "softirq": 88,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24937655860349128,
+        "system_ratio": 0.007481296758104738,
+        "iowait_ratio": 0.007481296758104738,
+        "idle_ratio": 0.7356608478802993
+      },
+      "load": {
+        "load1": 0.93,
+        "load5": 0.33,
+        "load15": 0.12,
+        "load1m": 0.93,
+        "load5m": 0.33,
+        "load15m": 0.12
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3488948224
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.1
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 9940,
+        "stime_ticks": 94,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30714,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 155454098,
+        "read_bytes": 36864,
+        "write_bytes": 155463680,
+        "rss_bytes": 126251008,
+        "vmrss_kb": 123292,
+        "voluntary_switches": 63,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 138534912,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 73196,
+        "tx_bytes": 89473
+      }
+    },
+    {
+      "ts": 1785383795.1458464,
+      "host_cpu_ticks": {
+        "user": 10246,
+        "nice": 0,
+        "system": 356,
+        "idle": 133909,
+        "iowait": 454,
+        "irq": 0,
+        "softirq": 88,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24874371859296482,
+        "system_ratio": 0.002512562814070352,
+        "iowait_ratio": 0.010050251256281407,
+        "idle_ratio": 0.7386934673366834
+      },
+      "load": {
+        "load1": 0.93,
+        "load5": 0.33,
+        "load15": 0.12,
+        "load1m": 0.93,
+        "load5m": 0.33,
+        "load15m": 0.12
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3490590720
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.08
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 10039,
+        "stime_ticks": 95,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30738,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 157027093,
+        "read_bytes": 36864,
+        "write_bytes": 157036544,
+        "rss_bytes": 126251008,
+        "vmrss_kb": 123292,
+        "voluntary_switches": 66,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 140333056,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 73196,
+        "tx_bytes": 89473
+      }
+    },
+    {
+      "ts": 1785383796.14656,
+      "host_cpu_ticks": {
+        "user": 10346,
+        "nice": 0,
+        "system": 357,
+        "idle": 134204,
+        "iowait": 457,
+        "irq": 0,
+        "softirq": 89,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.25,
+        "system_ratio": 0.005,
+        "iowait_ratio": 0.0075,
+        "idle_ratio": 0.7375
+      },
+      "load": {
+        "load1": 0.93,
+        "load5": 0.33,
+        "load15": 0.12,
+        "load1m": 0.93,
+        "load5m": 0.33,
+        "load15m": 0.12
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3483987968
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.08
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 10138,
+        "stime_ticks": 96,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30738,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 158599957,
+        "read_bytes": 36864,
+        "write_bytes": 158609408,
+        "rss_bytes": 126251008,
+        "vmrss_kb": 123292,
+        "voluntary_switches": 66,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 141811712,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 73196,
+        "tx_bytes": 89473
+      }
+    },
+    {
+      "ts": 1785383797.147301,
+      "host_cpu_ticks": {
+        "user": 10446,
+        "nice": 0,
+        "system": 359,
+        "idle": 134499,
+        "iowait": 461,
+        "irq": 0,
+        "softirq": 89,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24937655860349128,
+        "system_ratio": 0.004987531172069825,
+        "iowait_ratio": 0.00997506234413965,
+        "idle_ratio": 0.7356608478802993
+      },
+      "load": {
+        "load1": 0.93,
+        "load5": 0.33,
+        "load15": 0.12,
+        "load1m": 0.93,
+        "load5m": 0.33,
+        "load15m": 0.12
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3485499392
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.07
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 10237,
+        "stime_ticks": 97,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30738,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 160172821,
+        "read_bytes": 36864,
+        "write_bytes": 160182272,
+        "rss_bytes": 126251008,
+        "vmrss_kb": 123292,
+        "voluntary_switches": 66,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 143540224,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 73350,
+        "tx_bytes": 89821
+      }
+    },
+    {
+      "ts": 1785383798.1478724,
+      "host_cpu_ticks": {
+        "user": 10545,
+        "nice": 0,
+        "system": 360,
+        "idle": 134794,
+        "iowait": 464,
+        "irq": 0,
+        "softirq": 89,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24874371859296482,
+        "system_ratio": 0.002512562814070352,
+        "iowait_ratio": 0.007537688442211055,
+        "idle_ratio": 0.7412060301507538
+      },
+      "load": {
+        "load1": 0.94,
+        "load5": 0.34,
+        "load15": 0.13,
+        "load1m": 0.94,
+        "load5m": 0.34,
+        "load15m": 0.13
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3488378880
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.07
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 10337,
+        "stime_ticks": 98,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30738,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 161745685,
+        "read_bytes": 36864,
+        "write_bytes": 161755136,
+        "rss_bytes": 126251008,
+        "vmrss_kb": 123292,
+        "voluntary_switches": 66,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 145129472,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 73350,
+        "tx_bytes": 89821
+      }
+    },
+    {
+      "ts": 1785383799.1485062,
+      "host_cpu_ticks": {
+        "user": 10644,
+        "nice": 0,
+        "system": 361,
+        "idle": 135089,
+        "iowait": 468,
+        "irq": 0,
+        "softirq": 90,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.2475,
+        "system_ratio": 0.005,
+        "iowait_ratio": 0.01,
+        "idle_ratio": 0.7375
+      },
+      "load": {
+        "load1": 0.94,
+        "load5": 0.34,
+        "load15": 0.13,
+        "load1m": 0.94,
+        "load5m": 0.34,
+        "load15m": 0.13
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3490148352
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.05
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 10436,
+        "stime_ticks": 99,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30738,
+        "fd_count": 4,
+        "rchar": 1128282,
+        "wchar": 163318549,
+        "read_bytes": 36864,
+        "write_bytes": 163328000,
+        "rss_bytes": 126251008,
+        "vmrss_kb": 123292,
+        "voluntary_switches": 66,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 146677760,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 73521,
+        "tx_bytes": 90005
+      }
+    },
+    {
+      "ts": 1785383800.1494498,
+      "host_cpu_ticks": {
+        "user": 10745,
+        "nice": 0,
+        "system": 362,
+        "idle": 135385,
+        "iowait": 471,
+        "irq": 0,
+        "softirq": 91,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.2512437810945274,
+        "system_ratio": 0.004975124378109453,
+        "iowait_ratio": 0.007462686567164179,
+        "idle_ratio": 0.736318407960199
+      },
+      "load": {
+        "load1": 0.94,
+        "load5": 0.34,
+        "load15": 0.13,
+        "load1m": 0.94,
+        "load5m": 0.34,
+        "load15m": 0.13
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3491364864
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.05
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 10536,
+        "stime_ticks": 100,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30738,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 164629400,
+        "read_bytes": 36864,
+        "write_bytes": 164642816,
+        "rss_bytes": 126251008,
+        "vmrss_kb": 123292,
+        "voluntary_switches": 68,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 147816448,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 73692,
+        "tx_bytes": 90176
+      }
+    },
+    {
+      "ts": 1785383801.1501288,
+      "host_cpu_ticks": {
+        "user": 10844,
+        "nice": 0,
+        "system": 363,
+        "idle": 135681,
+        "iowait": 474,
+        "irq": 0,
+        "softirq": 91,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24812030075187969,
+        "system_ratio": 0.002506265664160401,
+        "iowait_ratio": 0.007518796992481203,
+        "idle_ratio": 0.7418546365914787
+      },
+      "load": {
+        "load1": 0.94,
+        "load5": 0.34,
+        "load15": 0.13,
+        "load1m": 0.94,
+        "load5m": 0.34,
+        "load15m": 0.13
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3493134336
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.04
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 10636,
+        "stime_ticks": 101,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30738,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 166202264,
+        "read_bytes": 36864,
+        "write_bytes": 166215680,
+        "rss_bytes": 126251008,
+        "vmrss_kb": 123292,
+        "voluntary_switches": 68,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 149417984,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 73692,
+        "tx_bytes": 90176
+      }
+    },
+    {
+      "ts": 1785383802.1511264,
+      "host_cpu_ticks": {
+        "user": 10944,
+        "nice": 0,
+        "system": 364,
+        "idle": 135976,
+        "iowait": 477,
+        "irq": 0,
+        "softirq": 92,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.25,
+        "system_ratio": 0.005,
+        "iowait_ratio": 0.0075,
+        "idle_ratio": 0.7375
+      },
+      "load": {
+        "load1": 0.94,
+        "load5": 0.34,
+        "load15": 0.13,
+        "load1m": 0.94,
+        "load5m": 0.34,
+        "load15m": 0.13
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3493236736
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.04
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 10735,
+        "stime_ticks": 101,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30738,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 167775128,
+        "read_bytes": 36864,
+        "write_bytes": 167788544,
+        "rss_bytes": 126251008,
+        "vmrss_kb": 123292,
+        "voluntary_switches": 68,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 151236608,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 73846,
+        "tx_bytes": 90524
+      }
+    },
+    {
+      "ts": 1785383803.1517403,
+      "host_cpu_ticks": {
+        "user": 11043,
+        "nice": 0,
+        "system": 365,
+        "idle": 136271,
+        "iowait": 480,
+        "irq": 0,
+        "softirq": 93,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24812030075187969,
+        "system_ratio": 0.005012531328320802,
+        "iowait_ratio": 0.007518796992481203,
+        "idle_ratio": 0.7393483709273183
+      },
+      "load": {
+        "load1": 0.94,
+        "load5": 0.35,
+        "load15": 0.13,
+        "load1m": 0.94,
+        "load5m": 0.35,
+        "load15m": 0.13
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3494817792
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.03
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 10835,
+        "stime_ticks": 103,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30738,
+        "fd_count": 4,
+        "rchar": 1128282,
+        "wchar": 169347992,
+        "read_bytes": 36864,
+        "write_bytes": 169361408,
+        "rss_bytes": 126251008,
+        "vmrss_kb": 123292,
+        "voluntary_switches": 68,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 152784896,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 73846,
+        "tx_bytes": 90524
+      }
+    },
+    {
+      "ts": 1785383804.1523826,
+      "host_cpu_ticks": {
+        "user": 11143,
+        "nice": 0,
+        "system": 366,
+        "idle": 136567,
+        "iowait": 483,
+        "irq": 0,
+        "softirq": 93,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.25,
+        "system_ratio": 0.0025,
+        "iowait_ratio": 0.0075,
+        "idle_ratio": 0.74
+      },
+      "load": {
+        "load1": 0.94,
+        "load5": 0.35,
+        "load15": 0.13,
+        "load1m": 0.94,
+        "load5m": 0.35,
+        "load15m": 0.13
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3496284160
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.03
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 10935,
+        "stime_ticks": 103,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30738,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 170658712,
+        "read_bytes": 36864,
+        "write_bytes": 170672128,
+        "rss_bytes": 126251008,
+        "vmrss_kb": 123292,
+        "voluntary_switches": 68,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 154099712,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 73846,
+        "tx_bytes": 90524
+      }
+    },
+    {
+      "ts": 1785383805.1530244,
+      "host_cpu_ticks": {
+        "user": 11243,
+        "nice": 0,
+        "system": 367,
+        "idle": 136862,
+        "iowait": 487,
+        "irq": 0,
+        "softirq": 93,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.25,
+        "system_ratio": 0.0025,
+        "iowait_ratio": 0.01,
+        "idle_ratio": 0.7375
+      },
+      "load": {
+        "load1": 0.94,
+        "load5": 0.35,
+        "load15": 0.13,
+        "load1m": 0.94,
+        "load5m": 0.35,
+        "load15m": 0.13
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3497762816
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.03
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 11034,
+        "stime_ticks": 104,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30738,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 172231707,
+        "read_bytes": 36864,
+        "write_bytes": 172244992,
+        "rss_bytes": 126251008,
+        "vmrss_kb": 123292,
+        "voluntary_switches": 70,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 155799552,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 74017,
+        "tx_bytes": 90708
+      }
+    },
+    {
+      "ts": 1785383806.153807,
+      "host_cpu_ticks": {
+        "user": 11342,
+        "nice": 0,
+        "system": 368,
+        "idle": 137157,
+        "iowait": 490,
+        "irq": 0,
+        "softirq": 93,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24874371859296482,
+        "system_ratio": 0.002512562814070352,
+        "iowait_ratio": 0.007537688442211055,
+        "idle_ratio": 0.7412060301507538
+      },
+      "load": {
+        "load1": 0.94,
+        "load5": 0.35,
+        "load15": 0.13,
+        "load1m": 0.94,
+        "load5m": 0.35,
+        "load15m": 0.13
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3497467904
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.03
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 11134,
+        "stime_ticks": 105,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30738,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 173804571,
+        "read_bytes": 36864,
+        "write_bytes": 173817856,
+        "rss_bytes": 126251008,
+        "vmrss_kb": 123292,
+        "voluntary_switches": 70,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 157241344,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 74188,
+        "tx_bytes": 90879
+      }
+    },
+    {
+      "ts": 1785383807.154683,
+      "host_cpu_ticks": {
+        "user": 11442,
+        "nice": 0,
+        "system": 369,
+        "idle": 137452,
+        "iowait": 493,
+        "irq": 0,
+        "softirq": 94,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.25,
+        "system_ratio": 0.005,
+        "iowait_ratio": 0.0075,
+        "idle_ratio": 0.7375
+      },
+      "load": {
+        "load1": 0.94,
+        "load5": 0.35,
+        "load15": 0.13,
+        "load1m": 0.94,
+        "load5m": 0.35,
+        "load15m": 0.13
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3494879232
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.02
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 11233,
+        "stime_ticks": 106,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30627,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 175377435,
+        "read_bytes": 36864,
+        "write_bytes": 175390720,
+        "rss_bytes": 125796352,
+        "vmrss_kb": 122848,
+        "voluntary_switches": 70,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 158564352,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 74342,
+        "tx_bytes": 91227
+      }
+    },
+    {
+      "ts": 1785383808.1556826,
+      "host_cpu_ticks": {
+        "user": 11541,
+        "nice": 0,
+        "system": 371,
+        "idle": 137748,
+        "iowait": 497,
+        "irq": 0,
+        "softirq": 94,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24688279301745636,
+        "system_ratio": 0.004987531172069825,
+        "iowait_ratio": 0.00997506234413965,
+        "idle_ratio": 0.7381546134663342
+      },
+      "load": {
+        "load1": 0.95,
+        "load5": 0.36,
+        "load15": 0.14,
+        "load1m": 0.95,
+        "load5m": 0.36,
+        "load15m": 0.14
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3496648704
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.02
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 11332,
+        "stime_ticks": 107,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30738,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 176950299,
+        "read_bytes": 36864,
+        "write_bytes": 176963584,
+        "rss_bytes": 126251008,
+        "vmrss_kb": 123292,
+        "voluntary_switches": 70,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 160415744,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 74342,
+        "tx_bytes": 91227
+      }
+    },
+    {
+      "ts": 1785383809.1565623,
+      "host_cpu_ticks": {
+        "user": 11640,
+        "nice": 0,
+        "system": 372,
+        "idle": 138044,
+        "iowait": 499,
+        "irq": 0,
+        "softirq": 94,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.24874371859296482,
+        "system_ratio": 0.002512562814070352,
+        "iowait_ratio": 0.005025125628140704,
+        "idle_ratio": 0.7437185929648241
+      },
+      "load": {
+        "load1": 0.95,
+        "load5": 0.36,
+        "load15": 0.14,
+        "load1m": 0.95,
+        "load5m": 0.36,
+        "load15m": 0.14
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3497861120
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.02
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 11432,
+        "stime_ticks": 107,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30738,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 178261019,
+        "read_bytes": 36864,
+        "write_bytes": 178274304,
+        "rss_bytes": 126251008,
+        "vmrss_kb": 123292,
+        "voluntary_switches": 70,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 161742848,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 74342,
+        "tx_bytes": 91227
+      }
+    },
+    {
+      "ts": 1785383810.157141,
+      "host_cpu_ticks": {
+        "user": 11740,
+        "nice": 0,
+        "system": 373,
+        "idle": 138339,
+        "iowait": 503,
+        "irq": 0,
+        "softirq": 94,
+        "steal": 0
+      },
+      "host_cpu": {
+        "user_ratio": 0.25,
+        "system_ratio": 0.0025,
+        "iowait_ratio": 0.01,
+        "idle_ratio": 0.7375
+      },
+      "load": {
+        "load1": 0.95,
+        "load5": 0.36,
+        "load15": 0.14,
+        "load1m": 0.95,
+        "load5m": 0.36,
+        "load15m": 0.14
+      },
+      "host_memory": {
+        "total_bytes": 4104773632,
+        "available_bytes": 3491377152
+      },
+      "psi": {
+        "cpu_some_avg10": 0.0,
+        "memory_some_avg10": 0.0,
+        "io_some_avg10": 0.02
+      },
+      "process": {
+        "pid": 1533,
+        "utime_ticks": 11532,
+        "stime_ticks": 108,
+        "num_threads": 4,
+        "start_time_ticks": 26189,
+        "vsize_bytes": 360091648,
+        "rss_pages": 30738,
+        "fd_count": 3,
+        "rchar": 1128282,
+        "wchar": 179834014,
+        "read_bytes": 36864,
+        "write_bytes": 179847168,
+        "rss_bytes": 126251008,
+        "vmrss_kb": 123292,
+        "voluntary_switches": 72,
+        "nonvoluntary_switches": 1
+      },
+      "container": {
+        "memory_limit_bytes": null,
+        "memory_current_bytes": 163393536,
+        "cpu_quota_cores": null
+      },
+      "host_network": {
+        "rx_bytes": 74513,
+        "tx_bytes": 91411
+      }
+    }
+  ]
+}

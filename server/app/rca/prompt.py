@@ -17,7 +17,15 @@ _CORE_CONSTRAINTS = """
    并在 confidence 中如实反映不确定性（<0.4 表示证据不足）。
 4. confidence 值必须在 0.0 到 1.0 之间。
 5. 必须输出合法 JSON，不要输出 markdown 代码块标记，直接输出 JSON。
-6. 候选原因列表中的 candidate_id 必须存在于你输出的 ranked_causes 中。
+6. 输出的每个 ranked_causes.cause_id 必须来自候选原因列表。
+7. 如果当前证据包含 analysis_result，只能输出其 allowed_cause_ids 中的 cause_id。
+8. 如果 analysis_result.conclusion_boundary.can_claim_root_cause 为 false，必须将
+   not_enough_evidence 设为 true，且 ranked_causes 不能为空时每条 confidence 必须低于 0.4。
+9. 如果 analysis_result.primary_cause_id 存在，ranked_causes 的第一项应优先使用该 cause_id，
+   不得将其他允许原因重排为新的主因。
+10. 如果 analysis_result.stability_score 较高，应在 summary 和 claim 中保持与结构化主因一致的叙述。
+11. 如果 analysis_result.missing_evidence / blocked_upgrades / collection_gaps 存在，
+    必须在 summary 或 facts 中明确说明当前结论卡在哪个定位层级，以及还缺哪些采集能力。
 """
 
 # ── 输出 Schema ──
@@ -38,6 +46,9 @@ _OUTPUT_SCHEMA = """
     }
   ],
   "facts": ["从证据中提取的客观事实列表"],
+  "missing_evidence": ["缺少哪些关键证据"],
+  "blocked_upgrades": ["哪些升级被阻断，以及阻断原因"],
+  "collection_gaps": ["当前采集器还缺什么能力"],
   "not_enough_evidence": false
 }
 """

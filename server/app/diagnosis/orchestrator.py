@@ -35,7 +35,7 @@ from server.app.schemas import CreateTaskRequest, MAX_SAMPLE_RATE, MAX_TASK_DURA
 PLANNER_VERSION = "diagnosis-orchestrator-v1"
 ACTIVE_TASK_STATUSES = {"PENDING", "RUNNING", "UPLOADING", "ANALYZING"}
 TERMINAL_TASK_STATUSES = {"DONE", "FAILED"}
-STRUCTURED_ARTIFACT_TYPES = {"top_json", "ebpf_metrics", "sys_metrics", "memory_json"}
+STRUCTURED_ARTIFACT_TYPES = {"top_json", "ebpf_metrics", "sys_metrics", "memory_json", "depth_evidence_json"}
 ALLOWED_DIAGNOSIS_TRANSITIONS = {
     "CREATED": {"UNDERSTANDING", "USER_CANCELED", "FAILED"},
     "UNDERSTANDING": {"PLANNING", "NEEDS_SCOPE_CONFIRMATION", "TOPOLOGY_UNAVAILABLE", "FAILED"},
@@ -454,6 +454,15 @@ class DiagnosisOrchestrator:
                 "diagnosis_step_id": step_id,
                 "probe_id": definition.probe_id,
                 "registered_probe": True,
+                "collector_context": {
+                    "task_id": step["diagnosis_id"],
+                    "collector_kind": definition.runner_task_kind,
+                    "target_pid": target["pid"],
+                    "agent_id": target["agent_id"],
+                    "service_id": target.get("service_id"),
+                    "instance_id": target.get("instance_id"),
+                    "host_id": target.get("host_id"),
+                },
             },
         ))
         self.store.update_probe(step_id, status="SCHEDULED", task_id=task.id)
@@ -522,6 +531,7 @@ class DiagnosisOrchestrator:
                 sys_metrics=values.get("sys_metrics") if isinstance(values.get("sys_metrics"), dict) else None,
                 failure_events=[event.get("reason", "") for event in task_events if event.get("reason")],
                 agent_stats=self.repo.agent_metrics.get(task.agent_id, {}),
+                evidence_index=values.get("depth_evidence_json") if isinstance(values.get("depth_evidence_json"), dict) else {},
             )
             candidates = generate_candidates(evidence, self.repo.get_feedback_priors())
             calibrated = calibrate(candidates, evidence, self.repo.get_feedback_priors())

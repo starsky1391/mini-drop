@@ -1,0 +1,55 @@
+[
+  {
+    "task_id": "task_20260730_035620_b06fb0",
+    "from_status": null,
+    "to_status": "PENDING",
+    "reason": "Web 请求创建任务",
+    "actor": "web",
+    "metadata": {
+      "name": "dataset mixed anomaly python profile",
+      "agent_id": "linux-worker-1",
+      "target_pid": 1533,
+      "collector_type": "pyspy",
+      "sample_rate": 49,
+      "duration_sec": 25,
+      "options": {}
+    },
+    "created_at": "2026-07-30T03:56:20.593661"
+  },
+  {
+    "task_id": "task_20260730_035620_b06fb0",
+    "from_status": "PENDING",
+    "to_status": "RUNNING",
+    "reason": "Agent 心跳拉取待执行任务",
+    "actor": "server",
+    "metadata": {},
+    "created_at": "2026-07-30T03:57:26.491401"
+  },
+  {
+    "task_id": "task_20260730_035620_b06fb0",
+    "from_status": "RUNNING",
+    "to_status": "UPLOADING",
+    "reason": "py-spy 采集完成",
+    "actor": "agent",
+    "metadata": {},
+    "created_at": "2026-07-30T03:57:56.597589"
+  },
+  {
+    "task_id": "task_20260730_035620_b06fb0",
+    "from_status": "UPLOADING",
+    "to_status": "ANALYZING",
+    "reason": "产物已记录，等待分析",
+    "actor": "server",
+    "metadata": {},
+    "created_at": "2026-07-30T03:57:56.623782"
+  },
+  {
+    "task_id": "task_20260730_035620_b06fb0",
+    "from_status": "ANALYZING",
+    "to_status": "DONE",
+    "reason": "Analyzer 已生成火焰图和热点分析结果；py-spy 采集完成",
+    "actor": "analyzer",
+    "metadata": {},
+    "created_at": "2026-07-30T03:57:56.638169"
+  }
+]

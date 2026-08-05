@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 import asyncio
 import json as _json
 import queue as _queue
-from typing import Optional
+from typing import Any, Optional
 
 from server.app.common_utils import status_value
 from server.app.ai_provider import get_ai_settings
@@ -41,7 +41,9 @@ from server.app.nlp.summarizer import summarize, suggest_followup
 from server.app.diagnosis import DiagnosisOrchestrator
 from server.app.diagnosis.probe_registry import list_probes as list_registered_probes
 from server.app.diagnosis.schemas import ApprovalRequest, CreateDiagnosisRequest
+from server.app.rca.pipelines import normalize_pipeline_id
 from server.app.rca.report import run_diagnosis_context
+from server.app.rca.strategies import normalize_strategy_id
 from server.app.schemas import (
     APIResponse,
     CreateTaskRequest,
@@ -601,16 +603,33 @@ def presign_url(bucket: str = "mini-drop", key: str = "", expires: int = 3600) -
 
 
 @app.post("/api/tasks/{task_id}/diagnose")
-def diagnose_task(task_id: str) -> APIResponse:
+def diagnose_task(
+    task_id: str,
+    analysis_strategy: Optional[str] = None,
+    analysis_pipeline: Optional[str] = None,
+) -> APIResponse:
     task = repo.tasks.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
+    try:
+        selected_strategy = normalize_strategy_id(
+            analysis_strategy or os.getenv("MINI_DROP_RCA_STRATEGY", "linear")
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        selected_pipeline = normalize_pipeline_id(
+            analysis_pipeline or os.getenv("MINI_DROP_RCA_PIPELINE", "evidence_to_attribution")
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # 收集已有 artifacts 中的结构化数据
     artifacts = repo.artifacts.get(task_id, [])
     top_functions = _extract_artifact_json(artifacts, "top_json")
     ebpf_metrics = _extract_artifact_json(artifacts, "ebpf_metrics")
     sys_metrics = _extract_artifact_json(artifacts, "sys_metrics")
+    evidence_index = _extract_artifact_json(artifacts, "depth_evidence_json")
 
     task_events = [repo.as_dict(e) for e in repo.events if e.task_id == task_id]
     agent_record = repo.agents.get(task.agent_id)
@@ -623,11 +642,14 @@ def diagnose_task(task_id: str) -> APIResponse:
         top_functions=top_functions,
         ebpf_metrics=ebpf_metrics,
         sys_metrics=sys_metrics,
+        evidence_index=evidence_index if isinstance(evidence_index, dict) else None,
         failure_events=[event.get("reason", "") for event in task_events if event.get("reason")],
         feedback_priors=repo.get_feedback_priors(),
         task_events=task_events,
         agent_record=agent_record,
         repo=repo,
+        analysis_strategy=selected_strategy,
+        analysis_pipeline=selected_pipeline,
     )
     report = outcome.report
     ranked_causes = [c.model_dump() for c in report.report.ranked_causes]
@@ -685,9 +707,12 @@ def diagnose_task(task_id: str) -> APIResponse:
         "diagnosis_id": diagnosis_id,
         "report_id": report_id,
         "task_id": task_id,
+        "analysis_strategy": selected_strategy,
+        "analysis_pipeline": selected_pipeline,
         "model": report.model_name,
         "validated": report.validated,
         "summary": report.report.summary,
+        "report": report.report.model_dump(),
         "ranked_causes": ranked_causes,
         "facts": report.report.facts,
         "not_enough_evidence": report.report.not_enough_evidence,

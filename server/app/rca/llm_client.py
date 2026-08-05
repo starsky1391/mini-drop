@@ -10,7 +10,13 @@ import re
 import time
 
 from server.app.ai_provider import chat_completions, get_ai_settings, is_feature_enabled
-from server.app.rca.models import CauseEntry, DiagnosisReport, EvidenceInput, ValidatedReport
+from server.app.rca.models import (
+    CauseEntry,
+    DiagnosisReport,
+    EvidenceAttributionResult,
+    EvidenceInput,
+    ValidatedReport,
+)
 from server.app.rca.prompt import build_system_prompt, build_user_message
 
 
@@ -53,6 +59,7 @@ def diagnose(
             raw = _call_deepseek(messages, model_name)
             report, issues = _validate_and_parse(raw, evidence)
             if not issues:
+                report = _attach_analysis_result(report, evidence)
                 return ValidatedReport(
                     task_id=task_id,
                     model_name=model_name,
@@ -82,12 +89,12 @@ def diagnose(
         task_id=task_id,
         model_name=model_name,
         evidence_snapshot=json.loads(evidence_json) if evidence_json else {},
-        report=DiagnosisReport(
+        report=_attach_analysis_result(DiagnosisReport(
             summary=f"归因失败（已重试 {MAX_RETRIES} 次）: {last_error}",
             ranked_causes=[],
             facts=[],
             not_enough_evidence=True,
-        ),
+        ), evidence),
         validated=False,
         validation_issues=[last_error],
         retry_count=MAX_RETRIES,
@@ -132,8 +139,16 @@ def _call_deepseek(messages: list[dict], model: str) -> str:
         raise RuntimeError(f"DeepSeek API 返回 {resp.status_code}: {resp.text[:300]}")
 
     body = resp.json()
-    content = body["choices"][0]["message"]["content"]
-    return content
+    message = body["choices"][0]["message"]
+    content = message.get("content")
+    if isinstance(content, str) and content.strip():
+        return content
+
+    reasoning_content = message.get("reasoning_content")
+    if isinstance(reasoning_content, str) and reasoning_content.strip():
+        return reasoning_content
+
+    raise RuntimeError("DeepSeek API 返回的消息缺少可解析内容")
 
 
 
@@ -178,13 +193,92 @@ def _validate_and_parse(raw: str, evidence: EvidenceInput) -> tuple[DiagnosisRep
     elif not report.ranked_causes and not report.not_enough_evidence:
         issues.append("ranked_causes 为空但 not_enough_evidence=false")
 
+    analysis_result = evidence.analysis_result or {}
+    if analysis_result:
+        allowed_cause_ids = set(analysis_result.get("allowed_cause_ids", []))
+        boundary = analysis_result.get("conclusion_boundary", {})
+        can_claim_root_cause = bool(boundary.get("can_claim_root_cause", False))
+        primary_cause_id = analysis_result.get("primary_cause_id")
+        stability_score = float(analysis_result.get("stability_score", 0.0) or 0.0)
+
+        for i, cause in enumerate(report.ranked_causes):
+            if cause.cause_id not in allowed_cause_ids:
+                issues.append(
+                    f"ranked_causes[{i}].cause_id '{cause.cause_id}' 不在结构化分析允许的原因集合中"
+                )
+
+        if primary_cause_id and report.ranked_causes and report.ranked_causes[0].cause_id != primary_cause_id:
+            issues.append(
+                f"ranked_causes[0].cause_id '{report.ranked_causes[0].cause_id}' 必须优先与结构化主因 '{primary_cause_id}' 一致"
+            )
+
+        boundary_reason = str(boundary.get("reason", "") or "")
+        if boundary_reason and any(
+            token in boundary_reason
+            for token in ("off_cpu_wait_profile", "trace_endpoint_profile", "baseline_window_profile")
+        ):
+            if not (
+                report.missing_evidence
+                or report.blocked_upgrades
+                or report.collection_gaps
+            ):
+                issues.append("结构化边界已经说明缺少采集能力，报告也必须同步输出 missing_evidence / blocked_upgrades / collection_gaps")
+
+        if not can_claim_root_cause:
+            if not report.not_enough_evidence:
+                issues.append("结构化分析禁止根因结论时，报告必须标记为证据不足")
+            for i, cause in enumerate(report.ranked_causes):
+                if cause.confidence >= 0.4:
+                    issues.append(
+                        f"ranked_causes[{i}] 在证据不足时 confidence 必须低于 0.4"
+                    )
+        elif primary_cause_id and stability_score >= 0.7 and report.ranked_causes:
+            if report.ranked_causes[0].confidence < report.ranked_causes[-1].confidence:
+                issues.append("高稳定性场景下 ranked_causes 应保持主因优先且置信度不低于后续候选")
+
     if issues:
         return None, issues
 
-    return report, []
+    return _attach_analysis_result(report, evidence), []
 
 
-def _extract_json(raw: str) -> str | None:
+def _attach_analysis_result(report: DiagnosisReport, evidence: EvidenceInput) -> DiagnosisReport:
+    """把结构化分析结果挂回最终报告对象，保证最终输出形态完整。"""
+    analysis_result = evidence.analysis_result or {}
+    if not analysis_result:
+        return report
+
+    normalized_result = dict(analysis_result)
+    boundary = dict(normalized_result.get("conclusion_boundary") or {})
+    boundary.setdefault("reason", normalized_result.get("primary_cause_reason", ""))
+    boundary.setdefault("max_supported_level", "resource")
+    normalized_result["conclusion_boundary"] = boundary
+
+    analysis_result_model = EvidenceAttributionResult.model_validate(normalized_result)
+    return report.model_copy(update={
+        "analysis_result": analysis_result_model,
+        "symptoms": analysis_result_model.symptoms,
+        "localizations": analysis_result_model.localizations,
+        "ai_tree": analysis_result_model.ai_tree,
+        "graph_entities": analysis_result_model.graph_entities,
+        "graph_links": analysis_result_model.graph_links,
+        "attributions": analysis_result_model.attributions,
+        "evidence_challenges": analysis_result_model.evidence_challenges,
+        "missing_evidence": analysis_result_model.missing_evidence,
+        "blocked_upgrades": analysis_result_model.blocked_upgrades,
+        "collection_gaps": analysis_result_model.collection_gaps,
+        "graph_extension_points": analysis_result_model.graph_extension_points,
+        "primary_cause_id": analysis_result_model.primary_cause_id,
+        "stability_score": analysis_result_model.stability_score,
+        "primary_cause_reason": analysis_result_model.primary_cause_reason,
+        "secondary_causes": analysis_result.get("secondary_causes", []),
+        "correlated_symptoms": analysis_result.get("correlated_symptoms", []),
+        "unsupported_causes": analysis_result.get("unsupported_causes", []),
+        "conclusion_boundary": analysis_result_model.conclusion_boundary,
+    })
+
+
+def _extract_json(raw: str | None) -> str | None:
     """从 LLM 原始输出中提取 JSON。
 
     处理以下情况：
@@ -192,6 +286,8 @@ def _extract_json(raw: str) -> str | None:
       - ```json ... ``` 包裹
       - ``` ... ``` 包裹
     """
+    if not raw:
+        return None
     text = raw.strip()
 
     # 尝试匹配 ```json ... ``` 或 ``` ... ```
@@ -230,6 +326,9 @@ def _collect_evidence_paths(evidence: EvidenceInput) -> dict[str, set[str]]:
     if evidence.agent_stats:
         paths["agent_stats"] = set(evidence.agent_stats.keys())
 
+    if evidence.evidence_index:
+        paths["evidence_index"] = _collect_index_paths(evidence.evidence_index)
+
     if evidence.task_metadata:
         paths["task_metadata"] = set(evidence.task_metadata.keys())
 
@@ -259,6 +358,27 @@ def _collect_evidence_paths(evidence: EvidenceInput) -> dict[str, set[str]]:
     if evidence.sys_metrics:
         paths["sys_metrics"] = set(evidence.sys_metrics.keys()) if isinstance(evidence.sys_metrics, dict) else set()
 
+    if evidence.analysis_result:
+        paths["analysis_result"] = set(evidence.analysis_result.keys())
+
+    return paths
+
+
+def _collect_index_paths(value, prefix: str = "") -> set[str]:
+    paths: set[str] = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_text = str(key)
+            next_prefix = f"{prefix}.{key_text}" if prefix else key_text
+            paths.add(next_prefix)
+            paths.update(_collect_index_paths(item, next_prefix))
+        return paths
+    if isinstance(value, list):
+        for item in value:
+            paths.update(_collect_index_paths(item, prefix))
+        return paths
+    if prefix:
+        paths.add(prefix)
     return paths
 
 
@@ -329,15 +449,16 @@ def _fallback_report(task_id: str, evidence: EvidenceInput, candidates_json: str
         ))
 
     not_enough = len(ranked) == 0
+    report = DiagnosisReport(
+        summary="未配置 DEEPSEEK_API_KEY，归因引擎使用规则候选与工具证据生成降级报告。",
+        ranked_causes=ranked,
+        facts=evidence.suggestions if evidence.suggestions else ["无规则命中"],
+        not_enough_evidence=not_enough,
+    )
     return ValidatedReport(
         task_id=task_id,
         model_name="rule-engine-only",
         evidence_snapshot=evidence.model_dump() if isinstance(evidence, EvidenceInput) else {},
-        report=DiagnosisReport(
-            summary="未配置 DEEPSEEK_API_KEY，归因引擎使用规则候选与工具证据生成降级报告。",
-            ranked_causes=ranked,
-            facts=evidence.suggestions if evidence.suggestions else ["无规则命中"],
-            not_enough_evidence=not_enough,
-        ),
+        report=_attach_analysis_result(report, evidence),
         validated=True,
     )

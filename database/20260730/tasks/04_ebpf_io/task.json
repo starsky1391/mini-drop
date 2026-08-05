@@ -1,0 +1,23 @@
+{
+  "id": "task_20260730_035620_7073b7",
+  "name": "dataset mixed anomaly io latency",
+  "agent_id": "linux-worker-1",
+  "target_pid": 1533,
+  "collector_type": "ebpf_io",
+  "sample_rate": 11,
+  "duration_sec": 25,
+  "status": "DONE",
+  "status_reason": "eBPF IO 延迟分布已生成；bpftrace IO 延迟采集完成，共 438 个样本",
+  "request_params": {
+    "name": "dataset mixed anomaly io latency",
+    "agent_id": "linux-worker-1",
+    "target_pid": 1533,
+    "collector_type": "ebpf_io",
+    "sample_rate": 11,
+    "duration_sec": 25,
+    "options": {}
+  },
+  "created_at": "2026-07-30T03:56:20.687072",
+  "started_at": "2026-07-30T03:57:56.659190",
+  "finished_at": "2026-07-30T03:58:26.800988"
+}
