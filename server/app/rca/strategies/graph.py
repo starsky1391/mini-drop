@@ -79,8 +79,11 @@ class GraphCausalRCAAnalyzer:
         calibrated = calibrate(ranked, evidence, context.feedback_priors)
         if context.analysis_pipeline == "evidence_to_attribution":
             analysis_result = analyze_evidence(base_evidence, candidates)
+            analysis_payload = analysis_result.model_dump()
+            if context.structured_evidence is not None:
+                analysis_payload["structured_evidence"] = context.structured_evidence
             evidence = evidence.model_copy(update={
-                "analysis_result": analysis_result.model_dump(),
+                "analysis_result": analysis_payload,
             })
             allowed_cause_ids = set(analysis_result.allowed_cause_ids)
             calibrated = [

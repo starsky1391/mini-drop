@@ -231,6 +231,7 @@ class DiagnosisReport(BaseModel):
     blocked_upgrades: list[str] = Field(default_factory=list)
     collection_gaps: list[str] = Field(default_factory=list)
     graph_extension_points: list[str] = Field(default_factory=list)
+    structured_evidence: Optional[dict[str, Any]] = None
     primary_cause_id: Optional[str] = None
     stability_score: float = 0.0
     primary_cause_reason: str = ""

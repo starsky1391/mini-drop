@@ -24,6 +24,7 @@ def run_diagnosis(
     model_name: str | None = None,
     analysis_strategy: str | None = None,
     analysis_pipeline: str | None = None,
+    structured_evidence: dict | None = None,
 ) -> ValidatedReport:
     """执行一次完整的智能归因。"""
     return run_diagnosis_context(
@@ -41,6 +42,7 @@ def run_diagnosis(
         model_name=model_name,
         analysis_strategy=analysis_strategy,
         analysis_pipeline=analysis_pipeline,
+        structured_evidence=structured_evidence,
     ).report
 
 
@@ -63,6 +65,7 @@ def run_diagnosis_context(
     auto_execute_safe: bool = True,
     analysis_strategy: str | None = None,
     analysis_pipeline: str | None = None,
+    structured_evidence: dict | None = None,
 ) -> DiagnosisOutcome:
     """执行带工具证据和修复计划的完整诊断。"""
     strategy = get_strategy(analysis_strategy or os.getenv("MINI_DROP_RCA_STRATEGY", "linear"))
@@ -87,4 +90,5 @@ def run_diagnosis_context(
         repo=repo,
         auto_execute_safe=auto_execute_safe,
         analysis_pipeline=pipeline,
+        structured_evidence=structured_evidence,
     ))

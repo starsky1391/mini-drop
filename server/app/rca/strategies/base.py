@@ -29,6 +29,7 @@ class AnalysisContext:
     repo: Any | None = None
     auto_execute_safe: bool = True
     analysis_pipeline: str = "evidence_to_attribution"
+    structured_evidence: dict | None = None
 
 
 class RCAAnalysisStrategy(Protocol):

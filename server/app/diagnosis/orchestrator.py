@@ -29,13 +29,14 @@ from server.app.event_bus import BUS
 from server.app.rca.calibrator import calibrate
 from server.app.rca.candidates import generate_candidates
 from server.app.rca.evidence import collect_evidence
+from server.app.diagnosis.evidence_structurer import rca_inputs_from_structured, structure_artifact_evidence
 from server.app.schemas import CreateTaskRequest, MAX_SAMPLE_RATE, MAX_TASK_DURATION_SEC, MIN_SAMPLE_RATE
 
 
 PLANNER_VERSION = "diagnosis-orchestrator-v1"
 ACTIVE_TASK_STATUSES = {"PENDING", "RUNNING", "UPLOADING", "ANALYZING"}
 TERMINAL_TASK_STATUSES = {"DONE", "FAILED"}
-STRUCTURED_ARTIFACT_TYPES = {"top_json", "ebpf_metrics", "sys_metrics", "memory_json", "depth_evidence_json"}
+STRUCTURED_ARTIFACT_TYPES = {"top_json", "flamegraph_json", "ebpf_metrics", "sys_metrics", "memory_json", "depth_evidence_json"}
 ALLOWED_DIAGNOSIS_TRANSITIONS = {
     "CREATED": {"UNDERSTANDING", "USER_CANCELED", "FAILED"},
     "UNDERSTANDING": {"PLANNING", "NEEDS_SCOPE_CONFIRMATION", "TOPOLOGY_UNAVAILABLE", "FAILED"},
@@ -508,17 +509,41 @@ class DiagnosisOrchestrator:
             artifacts = self.repo.artifacts.get(task.id, [])
             evidence_ids = [self._add_task_evidence(diagnosis_id, task)]
             structured = self._structured_artifacts(artifacts)
+            artifact_values = {kind: value for kind, value, _ in structured}
+            flamegraph_svg = next(
+                (self._read_artifact_text(artifact) for artifact in artifacts if artifact.get("artifact_type") == "flamegraph_svg"),
+                None,
+            )
+            if flamegraph_svg:
+                artifact_values["flamegraph_svg"] = flamegraph_svg
+            structured_evidence = structure_artifact_evidence(
+                task_id=task.id,
+                artifacts=artifacts,
+                artifact_values=artifact_values,
+            )
+            structured_inputs = rca_inputs_from_structured(structured_evidence)
+            evidence_ids.append(self._add_artifact_evidence(
+                diagnosis_id,
+                task,
+                "structured_evidence_json",
+                structured_evidence.model_dump(mode="json"),
+                {"object_key": f"task:{task.id}:artifact:structured_evidence_json"},
+            ))
             for artifact_type, value, artifact in structured:
                 evidence_ids.append(self._add_artifact_evidence(
                     diagnosis_id, task, artifact_type, value, artifact,
                 ))
             if status == "FAILED":
                 failed_targets.append(f"{task.agent_id}:{task.target_pid}")
-            if not structured:
+            if not structured and not structured_evidence.artifact_refs:
                 missing.append(f"{task.id}:structured_artifact")
                 continue
 
-            values = {kind: value for kind, value, _ in structured}
+            values = {**structured_inputs, **artifact_values}
+            values["artifact_refs"] = structured_evidence.artifact_refs
+            values["stack_summary"] = structured_evidence.stack_summary
+            values["call_path_hotspots"] = structured_evidence.call_path_hotspots
+            values["confidence_inputs"] = structured_evidence.confidence_inputs
             task_observations.append(
                 self._build_task_observation(diagnosis_id, task, values, evidence_ids)
             )
@@ -526,12 +551,12 @@ class DiagnosisOrchestrator:
             evidence = collect_evidence(
                 task_id=task.id,
                 task_record=task,
-                top_functions=values.get("top_json") if isinstance(values.get("top_json"), list) else None,
+                top_functions=values.get("top_functions") if isinstance(values.get("top_functions"), list) else None,
                 ebpf_metrics=values.get("ebpf_metrics") if isinstance(values.get("ebpf_metrics"), dict) else None,
                 sys_metrics=values.get("sys_metrics") if isinstance(values.get("sys_metrics"), dict) else None,
                 failure_events=[event.get("reason", "") for event in task_events if event.get("reason")],
                 agent_stats=self.repo.agent_metrics.get(task.agent_id, {}),
-                evidence_index=values.get("depth_evidence_json") if isinstance(values.get("depth_evidence_json"), dict) else {},
+                evidence_index=values.get("evidence_index") if isinstance(values.get("evidence_index"), dict) else {},
             )
             candidates = generate_candidates(evidence, self.repo.get_feedback_priors())
             calibrated = calibrate(candidates, evidence, self.repo.get_feedback_priors())
@@ -613,7 +638,7 @@ class DiagnosisOrchestrator:
     ) -> dict[str, Any]:
         target = self._target_for_task(diagnosis_id, task)
         summary = _sys_summary(values.get("sys_metrics"))
-        top_items = values.get("top_json") if isinstance(values.get("top_json"), list) else []
+        top_items = values.get("top_functions") if isinstance(values.get("top_functions"), list) else values.get("top_json") if isinstance(values.get("top_json"), list) else []
         top_name = str((top_items[0] or {}).get("name", "")) if top_items else ""
         top_percent = float((top_items[0] or {}).get("percent", 0.0) or 0.0) if top_items else 0.0
         pressure = _pressure_flags(summary, values)
@@ -1018,6 +1043,28 @@ class DiagnosisOrchestrator:
             return None
         return None
 
+    def _read_artifact_text(self, artifact: dict[str, Any]) -> str | None:
+        metadata = artifact.get("metadata", {})
+        if "text" in metadata and isinstance(metadata["text"], str):
+            return metadata["text"]
+        try:
+            local_path = artifact.get("local_path")
+            if local_path:
+                root = Path(os.getenv("MINI_DROP_ARTIFACT_ROOT", "/tmp/mini-drop")).resolve()
+                path = Path(local_path).expanduser().resolve()
+                if (path == root or root in path.parents) and path.is_file():
+                    if path.stat().st_size > 2 * 1024 * 1024:
+                        return None
+                    return path.read_text(encoding="utf-8", errors="replace")
+            object_key = artifact.get("object_key")
+            if object_key:
+                raw = storage.read_object_bytes(artifact.get("bucket", "mini-drop"), object_key)
+                if len(raw) <= 2 * 1024 * 1024:
+                    return raw.decode("utf-8", errors="replace")
+        except Exception:
+            return None
+        return None
+
     def _build_topology_snapshot(self, request, intent) -> dict[str, Any]:
         nodes: dict[str, dict[str, Any]] = {}
         edges: list[dict[str, Any]] = []
@@ -1291,7 +1338,7 @@ def _pressure_flags(summary: dict[str, Any], values: dict[str, Any]) -> dict[str
     fd_count = _num(summary.get("fd_count"))
     fd_max = _num(summary.get("fd_max"))
     threads = _num(summary.get("thread_count"))
-    top_items = values.get("top_json") if isinstance(values.get("top_json"), list) else []
+    top_items = values.get("top_functions") if isinstance(values.get("top_functions"), list) else values.get("top_json") if isinstance(values.get("top_json"), list) else []
     top_percent = _num((top_items[0] or {}).get("percent")) if top_items else 0.0
     return {
         "cpu": cpu_user + cpu_sys >= 75 or top_percent >= 45,

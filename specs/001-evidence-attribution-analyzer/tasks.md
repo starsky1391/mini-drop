@@ -234,3 +234,34 @@
 6. Finish Task Group F before Task Group G so the future upgrade points are based on a stable current graph layer.
 7. Finish Task Group H before Task Group I so conflict resolution is settled before hotspot ownership is refined.
 8. Finish Task Group I before Task Group J so ownership edges exist before the next-evidence feedback loop is tuned.
+
+### Task Group K - 证据结构化处理层契约
+
+- [x] K001 Add a non-AI evidence structuring module for artifact-to-evidence conversion.
+- [x] K002 Define stable structured outputs for `artifact_refs`, `top_functions`, `stack_summary`, `call_path_hotspots`, `evidence_index`, and `confidence_inputs`.
+- [x] K003 Add tests proving the same artifact inputs produce deterministic structured evidence.
+
+**Outcome**: Raw and semi-raw collector artifacts become compact, referenceable evidence before RCA analysis.
+
+### Task Group L - Artifact 入口接入
+
+- [x] L001 Update task diagnosis artifact loading so `top_json`, `depth_evidence_json`, `flamegraph_json`, `flamegraph_svg`, `sys_metrics`, and `ebpf_metrics` are passed through the structuring layer.
+- [x] L002 Update diagnosis session analysis so reusable structured artifacts are normalized before RCA evidence is collected.
+- [x] L003 Ensure large raw artifacts and SVG payloads stay as references unless explicitly requested by `evidence_ref`.
+
+**Outcome**: RCA no longer depends on whether a collector produced the exact final JSON contract up front.
+
+### Task Group M - RCA 消费与验证
+
+- [x] M001 Update RCA evidence collection to consume structured `top_functions` and `evidence_index` without introducing new attribution logic.
+- [x] M002 Add tests proving pyspy-style SVG-only artifacts do not get sent to LLM as raw payloads but still leave audit references.
+- [x] M003 Add tests proving depth evidence produces `stack_summary`, `call_path_hotspots`, and confidence inputs usable by AI tree and graph collation.
+- [x] M004 Run focused RCA and diagnosis tests after the structuring layer is connected.
+
+**Outcome**: AI 树和 Evidence-to-Attribution receive compact structured evidence, reducing hallucination and token waste.
+
+### Suggested Execution Order For K-M
+
+1. Finish K first to lock the non-AI contract.
+2. Finish L next so HTTP diagnosis and diagnosis sessions share the same normalized evidence input.
+3. Finish M last to prove RCA consumes the new structure without treating it as root-cause judgment.

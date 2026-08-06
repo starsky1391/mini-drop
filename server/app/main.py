@@ -39,6 +39,7 @@ from server.app.nlp.intent_parser import parse_intent
 from server.app.nlp.process_resolver import resolve_pid
 from server.app.nlp.summarizer import summarize, suggest_followup
 from server.app.diagnosis import DiagnosisOrchestrator
+from server.app.diagnosis.evidence_structurer import rca_inputs_from_structured, structure_artifact_evidence
 from server.app.diagnosis.probe_registry import list_probes as list_registered_probes
 from server.app.diagnosis.schemas import ApprovalRequest, CreateDiagnosisRequest
 from server.app.rca.pipelines import normalize_pipeline_id
@@ -626,10 +627,21 @@ def diagnose_task(
 
     # 收集已有 artifacts 中的结构化数据
     artifacts = repo.artifacts.get(task_id, [])
-    top_functions = _extract_artifact_json(artifacts, "top_json")
-    ebpf_metrics = _extract_artifact_json(artifacts, "ebpf_metrics")
-    sys_metrics = _extract_artifact_json(artifacts, "sys_metrics")
-    evidence_index = _extract_artifact_json(artifacts, "depth_evidence_json")
+    artifact_values = {
+        "top_json": _extract_artifact_json(artifacts, "top_json"),
+        "flamegraph_json": _extract_artifact_json(artifacts, "flamegraph_json"),
+        "flamegraph_svg": _extract_artifact_text(artifacts, "flamegraph_svg"),
+        "ebpf_metrics": _extract_artifact_json(artifacts, "ebpf_metrics"),
+        "sys_metrics": _extract_artifact_json(artifacts, "sys_metrics"),
+        "memory_json": _extract_artifact_json(artifacts, "memory_json"),
+        "depth_evidence_json": _extract_artifact_json(artifacts, "depth_evidence_json"),
+    }
+    structured_evidence = structure_artifact_evidence(
+        task_id=task_id,
+        artifacts=artifacts,
+        artifact_values=artifact_values,
+    )
+    rca_inputs = rca_inputs_from_structured(structured_evidence)
 
     task_events = [repo.as_dict(e) for e in repo.events if e.task_id == task_id]
     agent_record = repo.agents.get(task.agent_id)
@@ -639,10 +651,10 @@ def diagnose_task(
     outcome = run_diagnosis_context(
         task_id=task_id,
         task_record=task,
-        top_functions=top_functions,
-        ebpf_metrics=ebpf_metrics,
-        sys_metrics=sys_metrics,
-        evidence_index=evidence_index if isinstance(evidence_index, dict) else None,
+        top_functions=rca_inputs["top_functions"],
+        ebpf_metrics=rca_inputs["ebpf_metrics"],
+        sys_metrics=rca_inputs["sys_metrics"],
+        evidence_index=rca_inputs["evidence_index"],
         failure_events=[event.get("reason", "") for event in task_events if event.get("reason")],
         feedback_priors=repo.get_feedback_priors(),
         task_events=task_events,
@@ -650,6 +662,7 @@ def diagnose_task(
         repo=repo,
         analysis_strategy=selected_strategy,
         analysis_pipeline=selected_pipeline,
+        structured_evidence=structured_evidence.model_dump(mode="json"),
     )
     report = outcome.report
     ranked_causes = [c.model_dump() for c in report.report.ranked_causes]
@@ -717,6 +730,7 @@ def diagnose_task(
         "facts": report.report.facts,
         "not_enough_evidence": report.report.not_enough_evidence,
         "tool_results": [item.model_dump() for item in outcome.tool_results],
+        "structured_evidence": report.report.structured_evidence,
         "repair_plan": repair_plan_data,
     })
 
@@ -834,6 +848,43 @@ def _extract_artifact_json(artifacts: list[dict], artifact_type: str) -> dict | 
                     error=type(exc).__name__,
                 )
                 return None
+    return None
+
+
+def _extract_artifact_text(artifacts: list[dict], artifact_type: str) -> str | None:
+    """从 artifacts 列表中提取指定类型的文本数据。"""
+    for art in artifacts:
+        if art.get("artifact_type") != artifact_type:
+            continue
+        try:
+            local_path = art.get("local_path", "")
+            path = _resolve_artifact_path_or_none(local_path)
+            if path is not None:
+                if path.stat().st_size > 2 * 1024 * 1024:
+                    return None
+                return path.read_text(encoding="utf-8", errors="replace")
+            if art.get("object_key"):
+                text = _read_artifact_object_text(art)
+                if len(text) <= 2 * 1024 * 1024:
+                    return text
+        except HTTPException as exc:
+            log_event(
+                "warning",
+                "artifact_text_unavailable",
+                artifact_type=artifact_type,
+                local_path=art.get("local_path", ""),
+                status_code=exc.status_code,
+            )
+            return None
+        except Exception as exc:
+            log_event(
+                "warning",
+                "artifact_text_parse_failed",
+                artifact_type=artifact_type,
+                local_path=art.get("local_path", ""),
+                error=type(exc).__name__,
+            )
+            return None
     return None
 
 

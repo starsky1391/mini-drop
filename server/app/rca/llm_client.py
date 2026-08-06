@@ -268,6 +268,7 @@ def _attach_analysis_result(report: DiagnosisReport, evidence: EvidenceInput) ->
         "blocked_upgrades": analysis_result_model.blocked_upgrades,
         "collection_gaps": analysis_result_model.collection_gaps,
         "graph_extension_points": analysis_result_model.graph_extension_points,
+        "structured_evidence": evidence.analysis_result.get("structured_evidence") if evidence.analysis_result else None,
         "primary_cause_id": analysis_result_model.primary_cause_id,
         "stability_score": analysis_result_model.stability_score,
         "primary_cause_reason": analysis_result_model.primary_cause_reason,

@@ -1295,3 +1295,176 @@ flowchart LR
 - [x] 已补齐证据请求闭环
 - [x] 已将补证请求与缺失证据族绑定
 - [x] 已保证同一证据缺口下的请求列表稳定
+
+## 17. 证据结构化处理层
+
+当前采集链路仍存在一个硬缺口：采集器已经能够产出 `pyspy.svg`、`perf.data`、`flamegraph_json`、`top_json`、`sys_metrics`、`depth_evidence_json` 等产物，但 RCA / AI 树真正能稳定理解的是结构化证据，而不是原始图像、二进制采样文件或体积较大的半原始数据。
+
+因此需要在采集器产物和证据归因之间新增一层：
+
+```text
+采集器
+  -> 原始/半原始产物
+  -> Evidence Structuring
+  -> 结构化证据
+  -> Evidence-to-Attribution / AI 树
+```
+
+这一层的定位必须保持清晰：
+
+- 它不是 AI。
+- 它不做 root cause 判断。
+- 它不生成候选原因。
+- 它只把采集结果转换为可检索、可引用、可压缩、可反问的证据对象。
+
+### 17.1 输入与输出
+
+输入包括：
+
+- `flamegraph_svg`，例如 `pyspy.svg`
+- `flamegraph_json`
+- `top_json`
+- `depth_evidence_json`
+- `sys_metrics`
+- `ebpf_metrics`
+- `memory_json`
+- `raw` / `perf.data` 的元数据引用
+
+输出统一为 `structured_evidence`：
+
+```json
+{
+  "version": 1,
+  "task_id": "task-1",
+  "artifact_refs": [],
+  "top_functions": [],
+  "stack_summary": {},
+  "call_path_hotspots": [],
+  "evidence_index": {},
+  "confidence_inputs": {}
+}
+```
+
+其中各字段职责如下：
+
+| 字段 | 作用 |
+|---|---|
+| `artifact_refs` | 保留原始产物引用，支持审计和按需取证 |
+| `top_functions` | 标准 TopN 函数热点，供事实归一直接消费 |
+| `stack_summary` | 对栈样本、热点帧、等待原因、上下文的压缩摘要 |
+| `call_path_hotspots` | 将热点函数与调用路径、endpoint、service、instance 回连 |
+| `evidence_index` | RCA 默认消费的紧凑索引，支持按 `evidence_ref` 局部取证 |
+| `confidence_inputs` | 给稳定性和置信判断使用的非归因输入，例如样本数、覆盖率、上下文完整度 |
+
+### 17.2 处理规则
+
+推荐转换规则如下：
+
+| 原始/半原始产物 | 结构化结果 | 说明 |
+|---|---|---|
+| `top_json` | `top_functions` | 直接规范字段、排序、截断 |
+| `depth_evidence_json` | `stack_summary`、`evidence_index`、`call_path_hotspots` | 复用深采集标准摘要 |
+| `flamegraph_json` | `stack_summary`、`top_functions` | 当 `top_json` 缺失时从火焰图树提取热点摘要 |
+| `flamegraph_svg` | `artifact_refs` | SVG 默认只存引用，不送入 AI；只有缺少结构化热点时才尝试轻量提取 title 文本 |
+| `sys_metrics` | `confidence_inputs.system_pressure` | 提供系统压力背景，不直接代表根因 |
+| `ebpf_metrics` | `confidence_inputs.wait_or_io_signal` | 提供等待或 IO 证据背景 |
+| `raw` / `perf.data` | `artifact_refs.raw` | 只保留引用，不进入 LLM 上下文 |
+
+默认策略是：
+
+```text
+能消费 JSON 摘要就不消费 SVG。
+能消费结构化索引就不消费原始栈。
+能引用 raw artifact 就不把 raw 内容送入 AI。
+```
+
+### 17.3 pyspy 示例
+
+`pyspy` 当前可能只产出：
+
+```text
+flamegraph_svg
+```
+
+结构化处理层需要至少补出：
+
+```text
+artifact_refs.flamegraph_svg
+top_functions
+stack_summary
+evidence_index
+confidence_inputs
+```
+
+示例：
+
+```json
+{
+  "top_functions": [
+    {
+      "name": "microservices_test.common.busy_cpu",
+      "percent": 72.4,
+      "samples": 138,
+      "evidence_ref": "structured_evidence.top_functions[0]"
+    }
+  ],
+  "stack_summary": {
+    "dominant_hot_frame": "microservices_test.common.busy_cpu",
+    "dominant_percent": 72.4,
+    "sample_count": 138,
+    "has_call_path": true,
+    "has_wait_reason": false,
+    "evidence_ref": "structured_evidence.stack_summary"
+  },
+  "call_path_hotspots": [
+    {
+      "function": "microservices_test.common.busy_cpu",
+      "percent": 72.4,
+      "samples": 138,
+      "call_path": ["gateway", "order", "busy_cpu"],
+      "endpoint": "/api/order/create",
+      "service_id": "order-service",
+      "instance_id": "order-1",
+      "evidence_ref": "structured_evidence.call_path_hotspots[0]"
+    }
+  ],
+  "confidence_inputs": {
+    "sample_count": 138,
+    "dominant_percent": 72.4,
+    "context_completeness": "medium",
+    "token_safety": "compact_summary_only"
+  }
+}
+```
+
+### 17.4 与现有 RCA 的接入方式
+
+接入时不新增另一套归因协议，而是把结构化输出映射回现有字段：
+
+| 结构化层输出 | 现有消费字段 |
+|---|---|
+| `top_functions` | `EvidenceInput.top_functions` |
+| `evidence_index` | `EvidenceInput.evidence_index` |
+| `confidence_inputs` | `EvidenceInput.evidence_index.confidence_inputs` |
+| `call_path_hotspots` | `EvidenceInput.evidence_index.call_path_hotspots` |
+| `artifact_refs` | `EvidenceInput.evidence_index.artifact_refs` |
+
+这样 Analyzer 原有的 `facts / symptoms / localizations / attributions / evidence_challenges / ai_tree / graph_links` 不需要换协议，只是拿到更完整、更稳定、更节省 token 的证据输入。
+
+### 17.5 稳定性要求
+
+结构化处理层必须满足：
+
+- 同一组 artifacts 多次处理，输出字段顺序和热点排序稳定。
+- TopN 只按明确数值排序，数值相同再按函数名排序。
+- 原始 SVG、raw perf 等大产物默认只作为引用，不进入 LLM。
+- `evidence_ref` 必须稳定，不能依赖随机 id。
+- 当无法解析出热点时，必须输出空结构和 `confidence_inputs.parse_status=insufficient_structured_signal`，而不是猜函数名。
+
+### 17.6 已完成项
+
+- [x] 已新增证据结构化处理层方案
+- [x] 已新增结构化层任务分组
+- [x] 已实现 `top_json / depth_evidence_json / flamegraph_json / flamegraph_svg / sys_metrics` 的最小结构化闭环
+- [x] 已让 RCA 入口优先消费结构化证据
+- [x] 已补充结构化层稳定性与 token 安全测试

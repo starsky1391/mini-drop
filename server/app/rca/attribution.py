@@ -323,6 +323,23 @@ def _derive_depth_facts(evidence: EvidenceInput) -> list[AnalysisFact]:
         return []
 
     facts: list[AnalysisFact] = []
+    stack_summary = index.get("stack_summary", {})
+    if isinstance(stack_summary, dict):
+        dominant_frame = str(stack_summary.get("dominant_hot_frame") or "").strip()
+        if dominant_frame:
+            facts.append(AnalysisFact(
+                fact_id="fact_depth_stack_summary",
+                source="evidence_index",
+                evidence_ref="evidence_index.stack_summary",
+                value={
+                    "dominant_hot_frame": dominant_frame,
+                    "dominant_percent": float(stack_summary.get("dominant_percent", 0.0) or 0.0),
+                    "sample_count": int(stack_summary.get("sample_count", 0) or 0),
+                    "parse_status": str(stack_summary.get("parse_status") or ""),
+                },
+                threshold_band="unknown",
+            ))
+
     stack_samples = index.get("stack_samples", [])
     if isinstance(stack_samples, list):
         for position, item in enumerate(stack_samples[:3], start=1):
@@ -342,6 +359,33 @@ def _derive_depth_facts(evidence: EvidenceInput) -> list[AnalysisFact]:
                     "call_path": call_path,
                     "stack_fragment": stack_fragment,
                     "wait_reason": str(item.get("wait_reason") or ""),
+                    "context_id": str(item.get("context_id") or ""),
+                },
+                threshold_band="unknown",
+            ))
+
+    call_path_hotspots = index.get("call_path_hotspots", [])
+    if isinstance(call_path_hotspots, list):
+        for position, item in enumerate(call_path_hotspots[:3], start=1):
+            if not isinstance(item, dict):
+                continue
+            function = str(item.get("function") or "")
+            call_path = item.get("call_path") if isinstance(item.get("call_path"), list) else []
+            endpoint = str(item.get("endpoint") or "")
+            if not function and not call_path and not endpoint:
+                continue
+            facts.append(AnalysisFact(
+                fact_id=f"fact_depth_call_path_hotspot_{position}",
+                source="evidence_index",
+                evidence_ref=f"evidence_index.call_path_hotspots[{position - 1}]",
+                value={
+                    "function": function,
+                    "call_path": call_path,
+                    "endpoint": endpoint,
+                    "service_id": str(item.get("service_id") or ""),
+                    "instance_id": str(item.get("instance_id") or ""),
+                    "percent": float(item.get("percent", 0.0) or 0.0),
+                    "samples": int(item.get("samples", 0) or 0),
                     "context_id": str(item.get("context_id") or ""),
                 },
                 threshold_band="unknown",
@@ -509,6 +553,22 @@ def _derive_localizations(
             target=str(top.get("name", "unknown")),
             fact_ids=["fact_cpu_user_high", "fact_top_function_0"],
         ))
+    if "fact_depth_stack_summary" in fact_by_id:
+        summary = fact_by_id["fact_depth_stack_summary"].value
+        localizations.append(AnalysisLocalization(
+            level="function",
+            target=str(summary.get("dominant_hot_frame", "unknown")),
+            fact_ids=["fact_depth_stack_summary"],
+            evidence_refs=["evidence_index.stack_summary"],
+        ))
+    if "fact_depth_call_path_hotspot_1" in fact_by_id:
+        hotspot = fact_by_id["fact_depth_call_path_hotspot_1"].value
+        localizations.append(AnalysisLocalization(
+            level="call_path",
+            target=";".join(hotspot.get("call_path", [])) or str(hotspot.get("function", "unknown")),
+            fact_ids=["fact_depth_call_path_hotspot_1"],
+            evidence_refs=["evidence_index.call_path_hotspots[0]"],
+        ))
     if "io_wait_high" in symptom_types or "io_latency_high" in symptom_types:
         ids = [
             fact_id
@@ -589,6 +649,17 @@ def _derive_depth_localizations(
                 target=call_path,
                 fact_ids=["fact_depth_context"] if "fact_depth_context" in fact_map else [],
                 evidence_refs=["evidence_index.context"] if "fact_depth_context" in fact_map else [],
+            ))
+    if isinstance(index.get("call_path_hotspots"), list) and not any(item.level == "call_path" for item in localizations):
+        hotspot = next((item for item in index.get("call_path_hotspots", []) if isinstance(item, dict) and item.get("call_path")), None)
+        if isinstance(hotspot, dict):
+            call_path = hotspot.get("call_path") if isinstance(hotspot.get("call_path"), list) else []
+            target = ";".join(call_path) if call_path else str(hotspot.get("function") or "unknown")
+            localizations.append(AnalysisLocalization(
+                level="call_path",
+                target=target,
+                fact_ids=["fact_depth_call_path_hotspot_1"] if "fact_depth_call_path_hotspot_1" in fact_map else [],
+                evidence_refs=["evidence_index.call_path_hotspots[0]"],
             ))
     return localizations
 
@@ -1498,6 +1569,68 @@ def _derive_graph_context(
             add_link(f"endpoint:{endpoint}", f"service:{service}", "served_by", "evidence_index.context.service")
         if service and instance:
             add_link(f"service:{service}", f"instance:{instance}", "runs_on", "evidence_index.context.instance")
+
+    hotspots = index.get("call_path_hotspots", [])
+    if isinstance(hotspots, list):
+        for item in hotspots[:3]:
+            if not isinstance(item, dict):
+                continue
+            function = str(item.get("function") or "").strip()
+            call_path = item.get("call_path") if isinstance(item.get("call_path"), list) else []
+            endpoint = str(item.get("endpoint") or "").strip()
+            service = str(item.get("service_id") or "").strip()
+            instance = str(item.get("instance_id") or "").strip()
+            hotspot_context_id = str(item.get("context_id") or "").strip()
+            if function:
+                add_entity(AnalysisGraphEntity(
+                    entity_id=f"function:{function}",
+                    entity_type="function",
+                    label=function,
+                    evidence_ref="evidence_index.call_path_hotspots",
+                    context_id=hotspot_context_id or context_id or None,
+                ))
+            if call_path:
+                path_text = ";".join(call_path)
+                add_entity(AnalysisGraphEntity(
+                    entity_id=f"call_path:{path_text}",
+                    entity_type="call_path",
+                    label=path_text,
+                    evidence_ref="evidence_index.call_path_hotspots",
+                    context_id=hotspot_context_id or context_id or None,
+                ))
+                if function:
+                    add_link(f"call_path:{path_text}", f"function:{function}", "owns_hotspot", "evidence_index.call_path_hotspots")
+                    add_link(f"call_path:{path_text}", f"function:{function}", "contains_hotspot", "evidence_index.call_path_hotspots")
+            if endpoint:
+                add_entity(AnalysisGraphEntity(
+                    entity_id=f"endpoint:{endpoint}",
+                    entity_type="endpoint",
+                    label=endpoint,
+                    evidence_ref="evidence_index.call_path_hotspots",
+                    context_id=hotspot_context_id or context_id or None,
+                ))
+                if call_path:
+                    add_link(f"call_path:{';'.join(call_path)}", f"endpoint:{endpoint}", "invokes", "evidence_index.call_path_hotspots")
+            if service:
+                add_entity(AnalysisGraphEntity(
+                    entity_id=f"service:{service}",
+                    entity_type="service",
+                    label=service,
+                    evidence_ref="evidence_index.call_path_hotspots",
+                    context_id=hotspot_context_id or context_id or None,
+                ))
+                if endpoint:
+                    add_link(f"endpoint:{endpoint}", f"service:{service}", "served_by", "evidence_index.call_path_hotspots")
+            if instance:
+                add_entity(AnalysisGraphEntity(
+                    entity_id=f"instance:{instance}",
+                    entity_type="instance",
+                    label=instance,
+                    evidence_ref="evidence_index.call_path_hotspots",
+                    context_id=hotspot_context_id or context_id or None,
+                ))
+                if service:
+                    add_link(f"service:{service}", f"instance:{instance}", "runs_on", "evidence_index.call_path_hotspots")
 
     for localization in localizations:
         if localization.level == "function" and localization.target:
