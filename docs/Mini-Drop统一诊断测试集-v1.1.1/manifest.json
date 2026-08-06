@@ -1,0 +1,404 @@
+{
+  "dataset": "mini-drop-team-unified-diagnosis-benchmark",
+  "version": "1.1.1",
+  "case_schema_version": "1.0",
+  "policy": {
+    "shared_by_all_strategies": true,
+    "minimum_repetitions": 3,
+    "warmup_runs": 1,
+    "require_expected_root_cause": true,
+    "require_evidence_refs": true,
+    "allow_unknown": true
+  },
+  "sources": [
+    {
+      "source_id": "synthetic-fixture",
+      "tier": "T0",
+      "url": null,
+      "purpose": "implementation_neutral_contract_replay",
+      "reference_ids": [],
+      "license": "team-authored test fixture",
+      "resource_profile": "each implementation may create equivalent local input"
+    },
+    {
+      "source_id": "otel-demo",
+      "tier": "T1",
+      "url": "https://github.com/open-telemetry/opentelemetry-demo",
+      "revision": "3684411da9a4dc3e77cddfef929a630d6f5af6c5",
+      "purpose": "runnable_multiservice_fault_scenarios",
+      "reference_ids": [
+        "otel-demo-repo",
+        "otel-demo-feature-flags"
+      ],
+      "license": "Apache-2.0",
+      "resource_profile": "Docker/Kubernetes runnable; enable one documented flag per run"
+    },
+    {
+      "source_id": "rcaeval",
+      "tier": "T2",
+      "url": "https://github.com/phamquiluan/RCAEval",
+      "revision": "08bfdb540af629433f5104b96c15cab660b89f09",
+      "purpose": "large_scale_offline_telemetry_rca",
+      "reference_ids": [
+        "rcaeval-repo",
+        "rcaeval-paper",
+        "rcaeval-data"
+      ],
+      "license": "mixed, inspect LICENSES before importing baseline code",
+      "resource_profile": "recommended 8 CPU, 16 GB RAM, 50 GB disk; RE2 archive about 4.21 GB"
+    },
+    {
+      "source_id": "swe-perf-filtered",
+      "tier": "T3",
+      "url": "https://arxiv.org/abs/2507.12415",
+      "purpose": "source_localization_patch_and_before_after",
+      "admission": "only_cases_stable_under_repeated_local_measurement",
+      "reference_ids": [
+        "swe-perf-paper",
+        "swe-perf-audit"
+      ],
+      "resource_profile": "admit only repeated cross-run stable cases; never trust the reference patch without replay"
+    }
+  ],
+  "core_cases": [
+    {
+      "case_id": "T1-CPU-001",
+      "source_id": "otel-demo",
+      "fault_type": "CPU_HOTSPOT",
+      "trigger": "adServiceHighCpu",
+      "expected_scope": "service",
+      "expected_root_cause": "ad service synthetic high CPU path",
+      "required_evidence": [
+        "cpu_metric_change",
+        "profile_hot_function"
+      ],
+      "expected_terminal_class": "PERFORMANCE",
+      "snapshot_roles": [
+        "incident",
+        "baseline",
+        "verification"
+      ],
+      "topology_mode": "single_host_single_agent",
+      "agent_deployment": "one_agent_per_host",
+      "minimum_repetitions": 3,
+      "oracle_visibility": "evaluation_only",
+      "reference_ids": [
+        "otel-demo-feature-flags"
+      ],
+      "case_file": "cases/T1-CPU-001.json"
+    },
+    {
+      "case_id": "T1-MEM-001",
+      "source_id": "otel-demo",
+      "fault_type": "MEMORY_LEAK",
+      "trigger": "emailMemoryLeak",
+      "expected_scope": "service",
+      "expected_root_cause": "email service retained memory growth",
+      "required_evidence": [
+        "rss_growth",
+        "memory_profile_growth"
+      ],
+      "expected_terminal_class": "PERFORMANCE",
+      "snapshot_roles": [
+        "incident",
+        "baseline",
+        "verification"
+      ],
+      "topology_mode": "single_host_single_agent",
+      "agent_deployment": "one_agent_per_host",
+      "minimum_repetitions": 3,
+      "oracle_visibility": "evaluation_only",
+      "reference_ids": [
+        "otel-demo-feature-flags"
+      ],
+      "case_file": "cases/T1-MEM-001.json"
+    },
+    {
+      "case_id": "T1-GC-001",
+      "source_id": "otel-demo",
+      "fault_type": "GC_PRESSURE",
+      "trigger": "adServiceManualGc",
+      "expected_scope": "service",
+      "expected_root_cause": "manual full garbage collection in ad service",
+      "required_evidence": [
+        "gc_pause_or_count_change",
+        "latency_correlation"
+      ],
+      "expected_terminal_class": "PERFORMANCE",
+      "snapshot_roles": [
+        "incident",
+        "baseline",
+        "verification"
+      ],
+      "topology_mode": "single_host_single_agent",
+      "agent_deployment": "one_agent_per_host",
+      "minimum_repetitions": 3,
+      "oracle_visibility": "evaluation_only",
+      "reference_ids": [
+        "otel-demo-feature-flags"
+      ],
+      "case_file": "cases/T1-GC-001.json"
+    },
+    {
+      "case_id": "T1-IO-001",
+      "source_id": "synthetic-fixture",
+      "fault_type": "IO_CONTENTION",
+      "trigger": "shared_io_contention",
+      "expected_scope": "host",
+      "expected_root_cause": "shared host IO contention",
+      "required_evidence": [
+        "io_latency_distribution",
+        "peer_pressure"
+      ],
+      "expected_terminal_class": "PERFORMANCE",
+      "snapshot_roles": [
+        "incident",
+        "baseline",
+        "verification"
+      ],
+      "topology_mode": "single_host_single_agent",
+      "agent_deployment": "one_agent_per_host",
+      "minimum_repetitions": 3,
+      "oracle_visibility": "evaluation_only",
+      "reference_ids": [],
+      "case_file": "cases/T1-IO-001.json"
+    },
+    {
+      "case_id": "T1-NET-001",
+      "source_id": "otel-demo",
+      "fault_type": "NETWORK_LATENCY",
+      "trigger": "imageSlowLoad",
+      "expected_scope": "dependency_edge",
+      "expected_root_cause": "injected delay on frontend image path",
+      "required_evidence": [
+        "trace_edge_latency",
+        "service_latency_change"
+      ],
+      "expected_terminal_class": "PERFORMANCE",
+      "snapshot_roles": [
+        "incident",
+        "baseline",
+        "verification"
+      ],
+      "topology_mode": "single_host_single_agent",
+      "agent_deployment": "one_agent_per_host",
+      "minimum_repetitions": 3,
+      "oracle_visibility": "evaluation_only",
+      "reference_ids": [
+        "otel-demo-feature-flags"
+      ],
+      "case_file": "cases/T1-NET-001.json"
+    },
+    {
+      "case_id": "T1-QUEUE-001",
+      "source_id": "otel-demo",
+      "fault_type": "QUEUE_BACKLOG",
+      "trigger": "kafkaQueueProblems",
+      "expected_scope": "service_and_dependency",
+      "expected_root_cause": "producer overload plus consumer delay",
+      "required_evidence": [
+        "queue_lag_growth",
+        "producer_consumer_rate_gap"
+      ],
+      "expected_terminal_class": "PERFORMANCE",
+      "snapshot_roles": [
+        "incident",
+        "baseline",
+        "verification"
+      ],
+      "topology_mode": "single_host_single_agent",
+      "agent_deployment": "one_agent_per_host",
+      "minimum_repetitions": 3,
+      "oracle_visibility": "evaluation_only",
+      "reference_ids": [
+        "otel-demo-feature-flags"
+      ],
+      "case_file": "cases/T1-QUEUE-001.json"
+    },
+    {
+      "case_id": "T1-DOWNSTREAM-001",
+      "source_id": "otel-demo",
+      "fault_type": "DOWNSTREAM_UNREACHABLE",
+      "trigger": "paymentServiceUnreachable",
+      "expected_scope": "dependency_edge",
+      "expected_root_cause": "checkout uses unreachable payment service address",
+      "required_evidence": [
+        "trace_error_edge",
+        "connection_error"
+      ],
+      "expected_terminal_class": "RELIABILITY",
+      "snapshot_roles": [
+        "incident",
+        "peer",
+        "verification"
+      ],
+      "topology_mode": "multi_host_single_agent_each",
+      "agent_deployment": "one_agent_per_host",
+      "minimum_repetitions": 3,
+      "oracle_visibility": "evaluation_only",
+      "reference_ids": [
+        "otel-demo-feature-flags"
+      ],
+      "minimum_hosts": 2,
+      "case_file": "cases/T1-DOWNSTREAM-001.json"
+    },
+    {
+      "case_id": "T1-LOAD-001",
+      "source_id": "otel-demo",
+      "fault_type": "LOAD_SATURATION",
+      "trigger": "loadgeneratorFloodHomepage",
+      "expected_scope": "service_cluster",
+      "expected_root_cause": "homepage traffic flood saturates service resources",
+      "required_evidence": [
+        "request_rate_change",
+        "resource_saturation",
+        "latency_change"
+      ],
+      "expected_terminal_class": "PERFORMANCE",
+      "snapshot_roles": [
+        "incident",
+        "baseline",
+        "verification"
+      ],
+      "topology_mode": "multi_host_single_agent_each",
+      "agent_deployment": "one_agent_per_host",
+      "minimum_repetitions": 3,
+      "oracle_visibility": "evaluation_only",
+      "reference_ids": [
+        "otel-demo-feature-flags"
+      ],
+      "minimum_hosts": 2,
+      "case_file": "cases/T1-LOAD-001.json"
+    },
+    {
+      "case_id": "T1-NOISY-001",
+      "source_id": "synthetic-fixture",
+      "fault_type": "NOISY_NEIGHBOR",
+      "trigger": "same_host_cpu_noise",
+      "expected_scope": "host_and_peer",
+      "expected_root_cause": "peer workload consumes shared host CPU",
+      "required_evidence": [
+        "target_cpu_profile",
+        "peer_cpu_pressure"
+      ],
+      "expected_terminal_class": "PERFORMANCE",
+      "snapshot_roles": [
+        "incident",
+        "peer",
+        "verification"
+      ],
+      "topology_mode": "single_host_multi_process_single_agent",
+      "agent_deployment": "one_agent_per_host",
+      "minimum_repetitions": 3,
+      "oracle_visibility": "evaluation_only",
+      "reference_ids": [],
+      "case_file": "cases/T1-NOISY-001.json"
+    },
+    {
+      "case_id": "T1-CODE-001",
+      "source_id": "synthetic-fixture",
+      "fault_type": "SOURCE_HOTSPOT",
+      "trigger": "self_code_hotspot",
+      "expected_scope": "function",
+      "expected_root_cause": "target process contains dominant hot function",
+      "required_evidence": [
+        "profile_hot_function",
+        "source_location"
+      ],
+      "expected_terminal_class": "PERFORMANCE",
+      "snapshot_roles": [
+        "incident",
+        "baseline",
+        "verification"
+      ],
+      "topology_mode": "single_host_single_agent",
+      "agent_deployment": "one_agent_per_host",
+      "minimum_repetitions": 3,
+      "oracle_visibility": "evaluation_only",
+      "reference_ids": [],
+      "case_file": "cases/T1-CODE-001.json"
+    }
+  ],
+  "references": [
+    {
+      "reference_id": "otel-demo-repo",
+      "type": "repository",
+      "title": "OpenTelemetry Astronomy Shop Demo",
+      "url": "https://github.com/open-telemetry/opentelemetry-demo",
+      "license": "Apache-2.0"
+    },
+    {
+      "reference_id": "otel-demo-feature-flags",
+      "type": "documentation",
+      "title": "OpenTelemetry Demo Feature Flags",
+      "url": "https://opentelemetry.io/docs/demo/feature-flags/"
+    },
+    {
+      "reference_id": "rcaeval-repo",
+      "type": "repository",
+      "title": "RCAEval benchmark",
+      "url": "https://github.com/phamquiluan/RCAEval",
+      "license": "MIT for project-owned code and datasets; bundled baselines retain their own licenses"
+    },
+    {
+      "reference_id": "rcaeval-paper",
+      "type": "paper",
+      "title": "RCAEval: A Benchmark for Root Cause Analysis of Microservice Systems with Telemetry Data",
+      "url": "https://openreview.net/forum?id=qHaowcDTzP",
+      "venue": "ACM Web Conference Companion 2025"
+    },
+    {
+      "reference_id": "rcaeval-data",
+      "type": "dataset",
+      "title": "RCAEval dataset archive",
+      "url": "https://doi.org/10.5281/zenodo.14590730"
+    },
+    {
+      "reference_id": "openrca-repo",
+      "type": "repository",
+      "title": "OpenRCA",
+      "url": "https://github.com/microsoft/OpenRCA",
+      "license": "MIT"
+    },
+    {
+      "reference_id": "openrca-paper",
+      "type": "paper",
+      "title": "OpenRCA: Can Large Language Models Locate the Root Cause of Software Failures?",
+      "url": "https://openreview.net/forum?id=M4qNIzQYpd",
+      "venue": "ICLR 2025"
+    },
+    {
+      "reference_id": "holmesgpt-repo",
+      "type": "repository",
+      "title": "HolmesGPT SRE Agent",
+      "url": "https://github.com/HolmesGPT/holmesgpt",
+      "license": "Apache-2.0"
+    },
+    {
+      "reference_id": "pyroscope-repo",
+      "type": "repository",
+      "title": "Grafana Pyroscope",
+      "url": "https://github.com/grafana/pyroscope",
+      "license": "AGPL-3.0"
+    },
+    {
+      "reference_id": "pyrca-paper",
+      "type": "paper",
+      "title": "PyRCA: A Library for Metric-based Root Cause Analysis",
+      "url": "https://arxiv.org/abs/2306.11417"
+    },
+    {
+      "reference_id": "swe-perf-paper",
+      "type": "paper",
+      "title": "SWE-Perf: Can Language Models Optimize Code Performance on Real-World Repositories?",
+      "url": "https://arxiv.org/abs/2507.12415"
+    },
+    {
+      "reference_id": "swe-perf-audit",
+      "type": "paper",
+      "title": "Are Performance-Optimization Benchmarks Reliably Measuring Coding Agents?",
+      "url": "https://arxiv.org/abs/2607.01211"
+    }
+  ],
+  "distribution": "implementation_neutral_team_shared"
+}

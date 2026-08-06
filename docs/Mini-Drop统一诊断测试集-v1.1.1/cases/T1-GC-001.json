@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0",
+  "case_id": "T1-GC-001",
+  "title": "Ad service manual GC pressure",
+  "source_id": "otel-demo",
+  "fault_type": "GC_PRESSURE",
+  "query": "The ad service has latency spikes; determine whether GC is responsible.",
+  "trigger": {
+    "adapter": "otel_feature_flag",
+    "action": "adServiceManualGc",
+    "parameters": {}
+  },
+  "topology": {
+    "mode": "single_host_single_agent",
+    "agent_deployment": "one_agent_per_host",
+    "minimum_hosts": 1
+  },
+  "evidence_plan": {
+    "snapshot_roles": [
+      "incident",
+      "baseline",
+      "verification"
+    ],
+    "required_evidence": [
+      "gc_pause_or_count_change",
+      "latency_correlation"
+    ]
+  },
+  "oracle": {
+    "expected_scope": "service",
+    "expected_root_cause": "manual full garbage collection in ad service",
+    "expected_terminal_class": "PERFORMANCE",
+    "expected_location_type": "self",
+    "expected_domain_type": "runtime",
+    "expected_classification": "runtime_pressure"
+  },
+  "execution": {
+    "warmup_runs": 1,
+    "repetitions": 3,
+    "timeout_seconds": 600
+  },
+  "reference_ids": [
+    "otel-demo-feature-flags"
+  ]
+}

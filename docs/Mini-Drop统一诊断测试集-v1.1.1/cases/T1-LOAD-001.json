@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "case_id": "T1-LOAD-001",
+  "title": "Homepage traffic saturation",
+  "source_id": "otel-demo",
+  "fault_type": "LOAD_SATURATION",
+  "query": "Homepage latency rose during a traffic surge; locate saturated services.",
+  "trigger": {
+    "adapter": "otel_feature_flag",
+    "action": "loadgeneratorFloodHomepage",
+    "parameters": {}
+  },
+  "topology": {
+    "mode": "multi_host_single_agent_each",
+    "agent_deployment": "one_agent_per_host",
+    "minimum_hosts": 2
+  },
+  "evidence_plan": {
+    "snapshot_roles": [
+      "incident",
+      "baseline",
+      "verification"
+    ],
+    "required_evidence": [
+      "request_rate_change",
+      "resource_saturation",
+      "latency_change"
+    ]
+  },
+  "oracle": {
+    "expected_scope": "service_cluster",
+    "expected_root_cause": "homepage traffic flood saturates service resources",
+    "expected_terminal_class": "PERFORMANCE",
+    "expected_location_type": "self",
+    "expected_domain_type": "cpu",
+    "expected_classification": "self_code_or_process_pressure"
+  },
+  "execution": {
+    "warmup_runs": 1,
+    "repetitions": 3,
+    "timeout_seconds": 600
+  },
+  "reference_ids": [
+    "otel-demo-feature-flags"
+  ]
+}

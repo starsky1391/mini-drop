@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mini-drop.example/schema/diagnosis-output-v1.json",
+  "title": "Mini-Drop unified diagnosis output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case_id",
+    "run_id",
+    "implementation_id",
+    "strategy",
+    "status",
+    "root_causes",
+    "unknown",
+    "snapshot_refs",
+    "tool_calls",
+    "elapsed_ms",
+    "unsafe_auto_execute_count"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "case_id": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "implementation_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "strategy": {
+      "enum": [
+        "CONSTRAINED_HYBRID",
+        "DECISION_TREE",
+        "EXPLORATORY",
+        "OTHER"
+      ]
+    },
+    "status": {
+      "enum": [
+        "COMPLETED",
+        "PARTIAL_COMPLETED",
+        "INSUFFICIENT_EVIDENCE",
+        "UNSUPPORTED",
+        "FAILED"
+      ]
+    },
+    "root_causes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "rank",
+          "entity_type",
+          "entity_id",
+          "reason",
+          "confidence",
+          "evidence_refs"
+        ],
+        "properties": {
+          "rank": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "entity_type": {
+            "type": "string"
+          },
+          "entity_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "unknown": {
+      "type": "boolean"
+    },
+    "snapshot_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "tool_calls": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "elapsed_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "unsafe_auto_execute_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}

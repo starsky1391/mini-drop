@@ -53,6 +53,23 @@ bash demo/demo.sh
 # 4. 浏览器打开 http://localhost 查看火焰图与诊断
 ```
 
+### 微服务测试集群
+
+如果你要专门测试 AI 树、链路回连和补证闭环，可以直接起一组独立的测试微服务：
+
+```bash
+make microservices
+python -m microservices_test.smoke_check --base-url http://127.0.0.1:18084 --repeat 2
+```
+
+服务列表：
+
+- `gateway`：统一入口，负责把请求分发到业务服务
+- `order`：CPU 热点、line 热点、稳定重复路径、链路串联
+- `inventory`：off-CPU 等待和锁竞争
+- `payment`：冲突场景，制造 CPU + 等待混合证据
+- `loadgen`：自动压测器，循环触发多场景
+
 > **纯净 Ubuntu 22.04 首次运行**：需要安装 `make` 和 Docker，见下方[环境要求](#环境要求)和[部署与运维](#部署与运维)章节。
 
 **本地运行（无 Docker）：**

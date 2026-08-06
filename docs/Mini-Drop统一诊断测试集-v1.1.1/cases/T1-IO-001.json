@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "case_id": "T1-IO-001",
+  "title": "Shared host IO contention",
+  "source_id": "synthetic-fixture",
+  "fault_type": "IO_CONTENTION",
+  "query": "The target service is slow during disk activity; locate shared IO contention.",
+  "trigger": {
+    "adapter": "implementation_defined",
+    "action": "shared_io_contention",
+    "parameters": {}
+  },
+  "topology": {
+    "mode": "single_host_single_agent",
+    "agent_deployment": "one_agent_per_host",
+    "minimum_hosts": 1
+  },
+  "evidence_plan": {
+    "snapshot_roles": [
+      "incident",
+      "baseline",
+      "verification"
+    ],
+    "required_evidence": [
+      "io_latency_distribution",
+      "peer_pressure"
+    ]
+  },
+  "oracle": {
+    "expected_scope": "host",
+    "expected_root_cause": "shared host IO contention",
+    "expected_terminal_class": "PERFORMANCE",
+    "expected_location_type": "shared_resource",
+    "expected_domain_type": "io",
+    "expected_classification": "shared_resource_contention"
+  },
+  "execution": {
+    "warmup_runs": 1,
+    "repetitions": 3,
+    "timeout_seconds": 600
+  },
+  "reference_ids": []
+}

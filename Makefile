@@ -1,6 +1,6 @@
 PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,$(if $(wildcard .venv/Scripts/python.exe),.venv/Scripts/python.exe,python))
 
-.PHONY: server agent analyzer test coverage lint fmt demo proto deploy deploy-down
+.PHONY: server agent analyzer test coverage lint fmt demo proto deploy deploy-down microservices microservices-down
 
 proto:
 	cd proto && bash compile.sh
@@ -39,3 +39,10 @@ deploy:
 
 deploy-down:
 	docker compose down
+
+microservices:
+	docker build -f deploy/dockerfiles/microservices-test.Dockerfile -t mini-drop-microservices-test:latest .
+	docker compose -f docker-compose.microservices.yml up -d
+
+microservices-down:
+	docker compose -f docker-compose.microservices.yml down

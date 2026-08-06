@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "case_id": "T1-CPU-001",
+  "run_id": "run-001",
+  "implementation_id": "team-member-a",
+  "strategy": "CONSTRAINED_HYBRID",
+  "status": "COMPLETED",
+  "root_causes": [
+    {
+      "rank": 1,
+      "entity_type": "service",
+      "entity_id": "ad-service",
+      "reason": "CPU samples are concentrated in the injected high-CPU path.",
+      "confidence": 0.91,
+      "evidence_refs": [
+        "snapshot-incident-001",
+        "profile-001"
+      ]
+    }
+  ],
+  "unknown": false,
+  "snapshot_refs": [
+    "snapshot-baseline-001",
+    "snapshot-incident-001",
+    "snapshot-verification-001"
+  ],
+  "tool_calls": 4,
+  "elapsed_ms": 12800,
+  "unsafe_auto_execute_count": 0,
+  "notes": "Example only; replace with evidence produced by each implementation."
+}

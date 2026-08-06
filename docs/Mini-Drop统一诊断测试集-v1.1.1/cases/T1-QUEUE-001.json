@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0",
+  "case_id": "T1-QUEUE-001",
+  "title": "Kafka producer consumer imbalance",
+  "source_id": "otel-demo",
+  "fault_type": "QUEUE_BACKLOG",
+  "query": "Kafka lag is increasing; locate the producer or consumer bottleneck.",
+  "trigger": {
+    "adapter": "otel_feature_flag",
+    "action": "kafkaQueueProblems",
+    "parameters": {}
+  },
+  "topology": {
+    "mode": "single_host_single_agent",
+    "agent_deployment": "one_agent_per_host",
+    "minimum_hosts": 1
+  },
+  "evidence_plan": {
+    "snapshot_roles": [
+      "incident",
+      "baseline",
+      "verification"
+    ],
+    "required_evidence": [
+      "queue_lag_growth",
+      "producer_consumer_rate_gap"
+    ]
+  },
+  "oracle": {
+    "expected_scope": "service_and_dependency",
+    "expected_root_cause": "producer overload plus consumer delay",
+    "expected_terminal_class": "PERFORMANCE",
+    "expected_location_type": "downstream",
+    "expected_domain_type": "runtime",
+    "expected_classification": "downstream_dependency"
+  },
+  "execution": {
+    "warmup_runs": 1,
+    "repetitions": 3,
+    "timeout_seconds": 600
+  },
+  "reference_ids": [
+    "otel-demo-feature-flags"
+  ]
+}

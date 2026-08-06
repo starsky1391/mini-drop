@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mini-drop.example/schema/diagnosis-case-v1.json",
+  "title": "Mini-Drop unified diagnosis case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case_id",
+    "title",
+    "source_id",
+    "fault_type",
+    "query",
+    "trigger",
+    "topology",
+    "evidence_plan",
+    "oracle",
+    "execution",
+    "reference_ids"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^T[0-9]+-[A-Z]+-[0-9]{3}$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 3
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fault_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "query": {
+      "type": "string",
+      "minLength": 3
+    },
+    "trigger": {
+      "type": "object"
+    },
+    "topology": {
+      "type": "object"
+    },
+    "evidence_plan": {
+      "type": "object"
+    },
+    "oracle": {
+      "type": "object"
+    },
+    "execution": {
+      "type": "object"
+    },
+    "reference_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

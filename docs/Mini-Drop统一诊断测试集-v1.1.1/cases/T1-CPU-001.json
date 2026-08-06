@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0",
+  "case_id": "T1-CPU-001",
+  "title": "Ad service CPU hotspot",
+  "source_id": "otel-demo",
+  "fault_type": "CPU_HOTSPOT",
+  "query": "The ad service CPU and latency increased; locate the service and hot function.",
+  "trigger": {
+    "adapter": "otel_feature_flag",
+    "action": "adServiceHighCpu",
+    "parameters": {}
+  },
+  "topology": {
+    "mode": "single_host_single_agent",
+    "agent_deployment": "one_agent_per_host",
+    "minimum_hosts": 1
+  },
+  "evidence_plan": {
+    "snapshot_roles": [
+      "incident",
+      "baseline",
+      "verification"
+    ],
+    "required_evidence": [
+      "cpu_metric_change",
+      "profile_hot_function"
+    ]
+  },
+  "oracle": {
+    "expected_scope": "service",
+    "expected_root_cause": "ad service synthetic high CPU path",
+    "expected_terminal_class": "PERFORMANCE",
+    "expected_location_type": "self",
+    "expected_domain_type": "cpu",
+    "expected_classification": "self_code_or_process_pressure"
+  },
+  "execution": {
+    "warmup_runs": 1,
+    "repetitions": 3,
+    "timeout_seconds": 600
+  },
+  "reference_ids": [
+    "otel-demo-feature-flags"
+  ]
+}

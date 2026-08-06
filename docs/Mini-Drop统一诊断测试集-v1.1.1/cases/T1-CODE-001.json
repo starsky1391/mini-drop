@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "case_id": "T1-CODE-001",
+  "title": "Source-level hot function",
+  "source_id": "synthetic-fixture",
+  "fault_type": "SOURCE_HOTSPOT",
+  "query": "Locate the dominant hot function and source location in the target process.",
+  "trigger": {
+    "adapter": "implementation_defined",
+    "action": "self_code_hotspot",
+    "parameters": {}
+  },
+  "topology": {
+    "mode": "single_host_single_agent",
+    "agent_deployment": "one_agent_per_host",
+    "minimum_hosts": 1
+  },
+  "evidence_plan": {
+    "snapshot_roles": [
+      "incident",
+      "baseline",
+      "verification"
+    ],
+    "required_evidence": [
+      "profile_hot_function",
+      "source_location"
+    ]
+  },
+  "oracle": {
+    "expected_scope": "function",
+    "expected_root_cause": "target process contains dominant hot function",
+    "expected_terminal_class": "PERFORMANCE",
+    "expected_location_type": "self",
+    "expected_domain_type": "cpu",
+    "expected_classification": "self_code_or_process_pressure"
+  },
+  "execution": {
+    "warmup_runs": 1,
+    "repetitions": 3,
+    "timeout_seconds": 600
+  },
+  "reference_ids": []
+}

@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "case_id": "T1-NOISY-001",
+  "title": "Same-host noisy neighbor",
+  "source_id": "synthetic-fixture",
+  "fault_type": "NOISY_NEIGHBOR",
+  "query": "The target is slow but has no local hotspot; check same-host peers.",
+  "trigger": {
+    "adapter": "implementation_defined",
+    "action": "same_host_cpu_noise",
+    "parameters": {}
+  },
+  "topology": {
+    "mode": "single_host_multi_process_single_agent",
+    "agent_deployment": "one_agent_per_host",
+    "minimum_hosts": 1
+  },
+  "evidence_plan": {
+    "snapshot_roles": [
+      "incident",
+      "peer",
+      "verification"
+    ],
+    "required_evidence": [
+      "target_cpu_profile",
+      "peer_cpu_pressure"
+    ]
+  },
+  "oracle": {
+    "expected_scope": "host_and_peer",
+    "expected_root_cause": "peer workload consumes shared host CPU",
+    "expected_terminal_class": "PERFORMANCE",
+    "expected_location_type": "same_host",
+    "expected_domain_type": "cpu",
+    "expected_classification": "same_host_noisy_neighbor"
+  },
+  "execution": {
+    "warmup_runs": 1,
+    "repetitions": 3,
+    "timeout_seconds": 600
+  },
+  "reference_ids": []
+}

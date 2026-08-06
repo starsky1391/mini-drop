@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0",
+  "case_id": "T1-DOWNSTREAM-001",
+  "title": "Payment service unreachable",
+  "source_id": "otel-demo",
+  "fault_type": "DOWNSTREAM_UNREACHABLE",
+  "query": "Checkout failures increased; locate the unreachable downstream service.",
+  "trigger": {
+    "adapter": "otel_feature_flag",
+    "action": "paymentServiceUnreachable",
+    "parameters": {}
+  },
+  "topology": {
+    "mode": "multi_host_single_agent_each",
+    "agent_deployment": "one_agent_per_host",
+    "minimum_hosts": 2
+  },
+  "evidence_plan": {
+    "snapshot_roles": [
+      "incident",
+      "peer",
+      "verification"
+    ],
+    "required_evidence": [
+      "trace_error_edge",
+      "connection_error"
+    ]
+  },
+  "oracle": {
+    "expected_scope": "dependency_edge",
+    "expected_root_cause": "checkout uses unreachable payment service address",
+    "expected_terminal_class": "RELIABILITY",
+    "expected_location_type": "downstream",
+    "expected_domain_type": "network",
+    "expected_classification": "downstream_dependency"
+  },
+  "execution": {
+    "warmup_runs": 1,
+    "repetitions": 3,
+    "timeout_seconds": 600
+  },
+  "reference_ids": [
+    "otel-demo-feature-flags"
+  ]
+}
