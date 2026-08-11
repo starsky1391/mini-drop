@@ -265,3 +265,141 @@
 1. Finish K first to lock the non-AI contract.
 2. Finish L next so HTTP diagnosis and diagnosis sessions share the same normalized evidence input.
 3. Finish M last to prove RCA consumes the new structure without treating it as root-cause judgment.
+
+### Task Group N - 证据请求受限映射
+
+- [x] N001 Define the mapping from `next_evidence_requests` values to registered `ProbeDefinition` entries without adding a new nexttask protocol.
+- [x] N002 Add a structured follow-up request / plan record carrying `diagnosis_id`, `parent_task_id`, `evidence_gap`, probe id, risk level, and execution policy.
+- [x] N003 Add tests proving unknown AI evidence requests are ignored and registered requests map deterministically.
+
+**Outcome**: AI tree requests become safe, auditable `ProbePlan` candidates.
+
+### Task Group O - 诊断会话去重与预算
+
+- [x] O001 Track generated and executed evidence gaps per `diagnosis_id`.
+- [x] O002 Prevent the same `diagnosis_id + evidence_gap` from generating another follow-up task by default.
+- [x] O003 Enforce existing diagnosis budget and terminal-state checks before creating follow-up tasks.
+- [x] O004 Add tests proving repeated analysis does not create duplicate follow-up tasks.
+
+**Outcome**: The evidence loop cannot spin indefinitely on one unresolved gap.
+
+### Task Group P - 自动执行策略
+
+- [x] P001 Add global default and per-diagnosis override for `safe_only`, `all_registered`, and `manual` follow-up execution.
+- [x] P002 Auto-start eligible low-risk follow-up probes and route high-risk probes according to the selected policy.
+- [x] P003 Preserve registered-probe, approval, platform, and budget constraints for all policies.
+- [x] P004 Add tests for safe-only default, explicit high-risk automatic execution, and manual approval mode.
+
+**Outcome**: Follow-up evidence is automatic by default within controlled policy boundaries.
+
+### Task Group Q - 结果回灌与持续诊断
+
+- [x] Q001 Re-enter the existing diagnosis progression after a follow-up child task reaches a terminal state.
+- [x] Q002 Re-run structuring and AI tree analysis against the same `diagnosis_id` with the new evidence.
+- [x] Q003 Stop when the tree reaches a terminal leaf, the session budget is exhausted, or no new request is executable.
+- [x] Q004 Add end-to-end tests for collect -> analyze -> next_evidence_requests -> follow-up probe -> re-analyze.
+
+**Outcome**: Task-driven diagnosis becomes an automatic evidence-questioning loop without implementing Persistent Agent yet.
+
+### Task Group R - Persistent Agent 后续路线
+
+- [x] R001 Document the future lightweight persistent trigger agent boundary and lifecycle.
+- [x] R002 Document future ring-buffer / rolling-profile evidence retention and trigger snapshot behavior.
+- [x] R003 Verify the current follow-up task and structured evidence contracts can be reused by a future triggered diagnosis session.
+
+**Outcome**: Persistent monitoring remains an explicit upgrade path, not an unfinished partial implementation.
+
+### Task Group S - 证据同窗协议
+
+- [x] S001 Add evidence window metadata fields: `trigger_event_id`, `evidence_cohort_id`, `collection_mode`, `window_start`, `window_end`, and `timing_relation`.
+- [x] S002 Extend structured evidence output so every artifact-derived evidence item can carry window metadata without changing root-cause logic.
+- [x] S003 Add validation for allowed `collection_mode` and `timing_relation` values.
+- [x] S004 Add tests proving same-window and delayed-follow-up evidence are represented distinctly.
+
+**Outcome**: Analyzer can tell whether evidence belongs to the same abnormal window, a manual window, or a delayed follow-up.
+
+### Task Group T - Analysis Session 普适入口
+
+- [x] T001 Define an `analysis_session` creation path for ordinary completed tasks that do not already belong to a diagnosis session.
+- [x] T002 Auto-structure completed task artifacts and attach them to the analysis session as `manual_single` or `manual_group` evidence.
+- [x] T003 Expose the latest staged analysis result on the task detail or analysis-session detail API.
+- [x] T004 Reuse existing Evidence-to-Attribution and AI tree logic instead of creating a second RCA path.
+- [x] T005 Add tests proving a normal task can produce a staged conclusion without the user first creating a diagnosis.
+
+**Outcome**: Conclusions can be published from ordinary collection tasks, while diagnosis sessions remain the active deep-diagnosis entry.
+
+### Task Group U - Persistent Evidence Trigger 最小闭环
+
+- [x] U001 Define the `trigger_event` schema with target, baseline window, trigger window, trigger signal, confidence, and action.
+- [x] U002 Add a lightweight sliding-window evaluator for relative shifts in CPU, latency, thread count, iowait, memory, or error bursts.
+- [x] U003 Map trigger types to registered collector groups without allowing trigger rules to emit root-cause conclusions.
+- [x] U004 Create an `evidence_cohort_id` for each triggered collector group and pass it to all child tasks.
+- [x] U005 Add tests proving trigger events create collector groups with shared cohort metadata and no attribution result.
+
+**Outcome**: The system can capture suspicious evidence windows before the user manually starts diagnosis.
+
+### Task Group V - Rolling Buffer / Triggered Snapshot
+
+- [x] V001 Define rolling buffer retention settings for low-cost metrics, endpoint summaries, trace summaries, and lightweight stack summaries.
+- [x] V002 Add snapshot metadata for `snapshot_id`, `trigger_event_id`, `evidence_cohort_id`, pre-window, post-window, and artifact refs.
+- [x] V003 Freeze the pre-trigger and post-trigger window when a trigger event fires.
+- [x] V004 Feed frozen snapshots through the existing evidence structuring layer as `rolling_snapshot` evidence.
+- [x] V005 Add tests proving frozen snapshots keep stable artifact references and do not send raw large payloads to the AI path.
+
+**Outcome**: Short-lived incidents can retain before-and-after evidence without always-on heavy profiling.
+
+### Task Group W - AI 树同窗证据裁决
+
+- [x] W001 Update Evidence-to-Attribution to include timing metadata in facts, evidence challenges, and conclusion boundaries.
+- [x] W002 Prevent `delayed_followup` evidence from directly refuting stronger `same_window` evidence.
+- [x] W003 Add a conflict branch for contradictory same-window evidence from different collectors.
+- [x] W004 Update report output to state conclusion window, timing relation, delayed-follow-up reproduction status, and non-refutable evidence boundaries.
+- [x] W005 Add tests proving delayed non-reproduction downgrades certainty only when no stronger same-window evidence exists.
+
+**Outcome**: AI tree conclusions become stable across transient incidents and do not overinterpret late follow-up data.
+
+### Task Group X - WatchSubscription 驱动的 Persistent Agent Runtime
+
+- [x] X001 Document the watch-subscription control plane so Persistent Agent knows which target to observe without relying on diagnosis tasks.
+- [x] X002 Add watch subscription, watch lease, registry, and runtime models.
+- [x] X003 Expose API endpoints to create/list watches, list agent watch leases, disable watches, and evaluate watch windows.
+- [x] X004 Reuse `evaluate_persistent_trigger` from watch runtime without allowing watch rules to emit root-cause conclusions.
+- [x] X005 Add tests proving active watches create agent leases and triggered evaluations update `trigger_event_id` / `evidence_cohort_id`.
+- [x] X006 Add a frontend Persistent Watch page for creating watches, viewing leases, and seeing recent trigger/cohort metadata.
+
+**Outcome**: Persistent Agent has a visible control-plane answer for "who am I monitoring?" while diagnosis remains separate from watch observation.
+
+### Task Group Y - WatchIncident / Frozen Evidence Inbox
+
+- [x] Y001 Document the save-first trigger chain: freeze rolling snapshot, persist trigger/cohort, then run policy-controlled short probes.
+- [x] Y002 Add `trigger_action` to watch subscriptions with `freeze_only`, R1-limited `freeze_and_safe_probe`, and `auto_all_registered` behavior.
+- [x] Y003 Add `WatchIncident` so each abnormal window is appended instead of overwriting `last_trigger`.
+- [x] Y004 Bind each incident to `trigger_event_id`, `evidence_cohort_id`, `snapshot_id`, `snapshot_refs`, and `collector_tasks`.
+- [x] Y005 Add API support for listing incidents under a watch.
+- [x] Y006 Update the Persistent Watch frontend into an expandable watch -> incident view.
+- [x] Y007 Add tests proving multiple incidents are retained and `freeze_only` creates no collector tasks.
+
+**Outcome**: Frozen abnormal windows remain available for later AI tree analysis even when the transient issue has already disappeared.
+
+### Task Group Z - WatchIncident -> AI 树分析入口
+
+- [x] Z001 Store same-window structured evidence on each `WatchIncident`.
+- [x] Z002 Add API support for analyzing a frozen incident without creating a fake collector task.
+- [x] Z003 Reuse the existing Evidence-to-Attribution / AI tree engine with a read-only incident task context.
+- [x] Z004 Disable automatic repair execution for incident-originated analysis.
+- [x] Z005 Write analysis status, analysis session id, and analysis result back to the incident.
+- [x] Z006 Enable the frontend incident "AI 树分析" action and show the returned summary/status.
+- [x] Z007 Add tests proving incident analysis uses the frozen same-window evidence cohort.
+
+**Outcome**: A frozen abnormal window can be analyzed after the transient issue disappears, without pretending delayed probes can reconstruct lost runtime state.
+
+### Suggested Execution Order For S-Z
+
+1. Finish S first so every later feature can carry window and cohort metadata.
+2. Finish T next so ordinary task results can publish staged conclusions through the same analyzer.
+3. Finish U after S and T so persistent triggers reuse the same task and analysis contracts.
+4. Finish V after U so rolling snapshots freeze around real trigger events.
+5. Finish W last so AI tree timing rules operate on complete metadata from both manual and triggered evidence.
+6. Finish X after W so watch subscriptions can reuse trigger/cohort contracts and expose them in the UI.
+7. Finish Y after X so every watch can retain multiple frozen abnormal windows for later AI tree analysis.
+8. Finish Z after Y so each frozen abnormal window can enter AI tree analysis as a first-class object.

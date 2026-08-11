@@ -9,6 +9,7 @@ const TaskResult = lazy(() => import("./pages/TaskResult"));
 const DiagnosisHistory = lazy(() => import("./pages/DiagnosisHistory"));
 const AIDiagnosis = lazy(() => import("./pages/AIDiagnosis"));
 const AgentDetail = lazy(() => import("./pages/AgentDetail"));
+const PersistentWatch = lazy(() => import("./pages/PersistentWatch"));
 const Settings = lazy(() => import("./pages/Settings"));
 
 const Lazy = ({ children }) => (
@@ -38,6 +39,10 @@ export default function Router() {
           <Route
             path="/diagnoses"
             element={<Lazy><DiagnosisHistory /></Lazy>}
+          />
+          <Route
+            path="/persistent-watch"
+            element={<Lazy><PersistentWatch /></Lazy>}
           />
           <Route
             path="/agent/:agentId"

@@ -8,18 +8,51 @@ from __future__ import annotations
 
 import html
 import re
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
 TOP_LIMIT = 10
 HOTSPOT_LIMIT = 10
+CollectionMode = Literal[
+    "manual_single",
+    "manual_group",
+    "triggered_group",
+    "rolling_snapshot",
+    "delayed_followup",
+    "baseline_window",
+]
+TimingRelation = Literal[
+    "same_window",
+    "pre_trigger_window",
+    "post_trigger_window",
+    "delayed_followup",
+    "stale_window",
+    "unknown",
+]
+
+
+class EvidenceWindowMetadata(BaseModel):
+    trigger_event_id: str | None = None
+    evidence_cohort_id: str | None = None
+    collection_mode: CollectionMode = "manual_single"
+    window_start: str | None = None
+    window_end: str | None = None
+    trigger_observed_at: str | None = None
+    timing_relation: TimingRelation = "unknown"
 
 
 class StructuredEvidence(BaseModel):
     version: int = 1
     task_id: str
+    trigger_event_id: str | None = None
+    evidence_cohort_id: str | None = None
+    collection_mode: CollectionMode = "manual_single"
+    window_start: str | None = None
+    window_end: str | None = None
+    trigger_observed_at: str | None = None
+    timing_relation: TimingRelation = "unknown"
     artifact_refs: list[dict[str, Any]] = Field(default_factory=list)
     top_functions: list[dict[str, Any]] = Field(default_factory=list)
     stack_summary: dict[str, Any] = Field(default_factory=dict)
@@ -36,19 +69,23 @@ def structure_artifact_evidence(
     task_id: str,
     artifacts: list[dict[str, Any]],
     artifact_values: dict[str, Any] | None = None,
+    evidence_window: dict[str, Any] | EvidenceWindowMetadata | None = None,
 ) -> StructuredEvidence:
     """Convert raw and semi-raw collector artifacts into compact evidence."""
     values = artifact_values or {}
-    artifact_refs = _build_artifact_refs(task_id, artifacts)
+    window = _normalize_evidence_window(evidence_window or values.get("evidence_window"))
+    window_json = window.model_dump(mode="json")
+    artifact_refs = _with_window_metadata(_build_artifact_refs(task_id, artifacts), window_json)
     top_functions = _normalize_top_functions(values.get("top_json"))
     if not top_functions:
         top_functions = _top_from_flamegraph_tree(values.get("flamegraph_json"))
     if not top_functions:
         top_functions = _top_from_flamegraph_svg(values.get("flamegraph_svg"))
+    top_functions = _with_window_metadata(top_functions, window_json)
 
     depth = values.get("depth_evidence_json") if isinstance(values.get("depth_evidence_json"), dict) else {}
-    stack_summary = _build_stack_summary(depth, top_functions, artifact_refs)
-    call_path_hotspots = _build_call_path_hotspots(depth, top_functions)
+    stack_summary = {**_build_stack_summary(depth, top_functions, artifact_refs), "evidence_window": window_json}
+    call_path_hotspots = _with_window_metadata(_build_call_path_hotspots(depth, top_functions), window_json)
     confidence_inputs = _build_confidence_inputs(
         top_functions=top_functions,
         stack_summary=stack_summary,
@@ -57,6 +94,7 @@ def structure_artifact_evidence(
         sys_metrics=values.get("sys_metrics"),
         ebpf_metrics=values.get("ebpf_metrics"),
     )
+    confidence_inputs["evidence_window"] = window_json
     evidence_index = _build_evidence_index(
         artifact_refs=artifact_refs,
         depth=depth,
@@ -64,8 +102,16 @@ def structure_artifact_evidence(
         call_path_hotspots=call_path_hotspots,
         confidence_inputs=confidence_inputs,
     )
+    evidence_index["evidence_window"] = window_json
     return StructuredEvidence(
         task_id=task_id,
+        trigger_event_id=window.trigger_event_id,
+        evidence_cohort_id=window.evidence_cohort_id,
+        collection_mode=window.collection_mode,
+        window_start=window.window_start,
+        window_end=window.window_end,
+        trigger_observed_at=window.trigger_observed_at,
+        timing_relation=window.timing_relation,
         artifact_refs=artifact_refs,
         top_functions=top_functions,
         stack_summary=stack_summary,
@@ -88,6 +134,18 @@ def rca_inputs_from_structured(structured: StructuredEvidence) -> dict[str, Any]
     }
 
 
+def _normalize_evidence_window(value: Any) -> EvidenceWindowMetadata:
+    if isinstance(value, EvidenceWindowMetadata):
+        return value
+    if isinstance(value, dict):
+        return EvidenceWindowMetadata.model_validate(value)
+    return EvidenceWindowMetadata()
+
+
+def _with_window_metadata(items: list[dict[str, Any]], window: dict[str, Any]) -> list[dict[str, Any]]:
+    return [{**item, "evidence_window": window} for item in items]
+
+
 def _build_artifact_refs(task_id: str, artifacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     refs: list[dict[str, Any]] = []
     for artifact in sorted(artifacts, key=lambda item: (str(item.get("artifact_type", "")), str(item.get("filename", "")))):
@@ -99,6 +157,7 @@ def _build_artifact_refs(task_id: str, artifacts: list[dict[str, Any]]) -> list[
             "size_bytes": int(artifact.get("size_bytes") or 0),
             "object_key": str(artifact.get("object_key") or ""),
             "local_path": str(artifact.get("local_path") or ""),
+            "raw_payload_policy": str(artifact.get("raw_payload_policy") or "references_only"),
             "evidence_ref": f"task:{task_id}:artifact:{artifact_type}",
         })
     return refs

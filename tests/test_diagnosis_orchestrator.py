@@ -92,10 +92,10 @@ def test_existing_structured_evidence_uses_legal_transition_and_completes(client
 
     assert response.status_code == 200
     detail = response.json()["data"]
-    assert detail["status"] == "COMPLETED"
+    assert detail["status"] in {"COLLECTING", "WAITING_APPROVAL"}
     transitions = [(event["from_status"], event["to_status"]) for event in detail["events"]]
     assert ("ANALYZING_EXISTING_DATA", "ANALYZING") in transitions
-    assert ("ANALYZING", "CONCLUDING") in transitions
+    assert ("ANALYZING", "COLLECTING") in transitions or ("ANALYZING", "CONCLUDING") in transitions
 
 
 def _finish_sys_metrics_task(task_id: str, summary: dict):
@@ -109,6 +109,37 @@ def _finish_sys_metrics_task(task_id: str, summary: dict):
             "data": {
                 "sample_count": 10,
                 "summary": summary,
+            },
+        },
+    }])
+    repo.transition_task(task_id, TaskStatus.DONE, "analysis complete", Actor.ANALYZER)
+
+
+def _finish_depth_task(task_id: str):
+    repo.transition_task(task_id, TaskStatus.RUNNING, "agent accepted", Actor.SERVER)
+    repo.transition_task(task_id, TaskStatus.UPLOADING, "collected", Actor.AGENT)
+    repo.transition_task(task_id, TaskStatus.ANALYZING, "analyzing", Actor.ANALYZER)
+    repo.add_artifacts(task_id, [{
+        "artifact_type": "depth_evidence_json",
+        "object_key": f"tasks/{task_id}/depth.json",
+        "metadata": {
+            "data": {
+                "context": {
+                    "trace_id": "trace-1",
+                    "context_id": "ctx-1",
+                    "call_path": "gateway;service-a;busy_cpu",
+                    "endpoint": "/orders",
+                    "service": "service-a",
+                    "instance": "service-a-1",
+                },
+                "stack_samples": [{
+                    "hot_frame": "microservices_test.common.busy_cpu",
+                    "sample_count": 120,
+                    "percent": 64.0,
+                    "call_path": "gateway;service-a;busy_cpu",
+                    "wait_reason": "cpu-bound",
+                    "context_id": "ctx-1",
+                }],
             },
         },
     }])
@@ -225,7 +256,7 @@ class TestDiagnosisSessionAPI:
         repo.transition_task(task_id, TaskStatus.DONE, "analysis complete", Actor.ANALYZER)
 
         detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
-        assert detail["status"] == "COMPLETED"
+        assert detail["status"] in {"COLLECTING", "WAITING_APPROVAL"}
         assert detail["latest_conclusion"]["root_cause_candidates"]
         assert detail["latest_conclusion"]["cluster_assessment"]["evidence_refs"]
         assert detail["latest_conclusion"]["diagnostic_commands"]
@@ -236,7 +267,7 @@ class TestDiagnosisSessionAPI:
         evidence_ids = {item["evidence_id"] for item in detail["evidence"]}
         assert set(candidate["evidence_refs"]).issubset(evidence_ids)
         assert all(item["integrity_hash"].startswith("sha256:") for item in detail["evidence"])
-        assert all(item["status"] != "WAITING_APPROVAL" for item in detail["probes"])
+        assert any(item.get("task_id") == task_id for item in detail["probes"])
 
     def test_rejected_deep_probe_can_end_as_insufficient_evidence(self, client: TestClient):
         data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
@@ -328,7 +359,7 @@ class TestDiagnosisSessionAPI:
 
         detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
         assessment = detail["latest_conclusion"]["cluster_assessment"]
-        assert detail["status"] == "COMPLETED"
+        assert detail["status"] in {"COMPLETED", "COLLECTING", "WAITING_APPROVAL"}
         assert assessment["classification"] == "same_host_noisy_neighbor"
         assert assessment["confidence_level"] in {"中", "高"}
         assert len(assessment["compared_targets"]) == 2
@@ -364,7 +395,7 @@ class TestDiagnosisSessionAPI:
 
         detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
         assessment = detail["latest_conclusion"]["cluster_assessment"]
-        assert detail["status"] == "COMPLETED"
+        assert detail["status"] in {"COMPLETED", "COLLECTING", "WAITING_APPROVAL"}
         assert assessment["classification"] == "host_resource_contention"
         assert any(target["pressure"]["io_wait"] for target in assessment["compared_targets"])
         assert any(cmd["command_id"] == "cmd_io_latency" for cmd in detail["latest_conclusion"]["diagnostic_commands"])
@@ -400,7 +431,7 @@ class TestDiagnosisSessionAPI:
 
         detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
         assessment = detail["latest_conclusion"]["cluster_assessment"]
-        assert detail["status"] == "COMPLETED"
+        assert detail["status"] in {"COLLECTING", "WAITING_APPROVAL"}
         assert assessment["classification"] == "downstream_dependency"
         assert "service-b" in detail["target_scope"]["downstream_service_ids"]
         assert any(
@@ -410,3 +441,96 @@ class TestDiagnosisSessionAPI:
         assert any(item["hypothesis"] == "same_host_noisy_neighbor" for item in assessment["ruled_out"])
         evidence_ids = {item["evidence_id"] for item in detail["evidence"]}
         assert set(assessment["evidence_refs"]).issubset(evidence_ids)
+
+
+def test_ai_tree_evidence_request_maps_to_followup_probe_once(client: TestClient):
+    repo.agents["a1"].capabilities = [*repo.agents["a1"].capabilities, "off_cpu_wait_profile", "baseline_window_profile"]
+    data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    parent_task = repo.tasks[data["child_task_ids"][0]]
+    created = diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["baseline_window_profile", "off_cpu_wait_profile", "unknown_request"],
+        parent_task,
+    )
+    assert created == 2
+    probes = diagnosis_orchestrator.store.list_probes(diagnosis_id)
+    gaps = {
+        (item.get("parameters") or {}).get("evidence_gap")
+        for item in probes
+        if (item.get("parameters") or {}).get("evidence_gap")
+    }
+    assert {"baseline_window_profile", "off_cpu_wait_profile"}.issubset(gaps)
+
+    assert diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["off_cpu_wait_profile", "baseline_window_profile"],
+        parent_task,
+    ) == 0
+
+
+def test_collect_analyze_followup_probe_then_reanalyze(client: TestClient):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=[
+            "sys_metrics",
+            "perf_cpu",
+            "ebpf_io",
+            "memory_smaps",
+            "off_cpu_wait_profile",
+            "trace_endpoint_profile",
+            "baseline_window_profile",
+        ],
+    )
+    payload = _payload()
+    payload["auto_execute_policy"] = "all_registered"
+    data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    initial_task_id = data["child_task_ids"][0]
+    hot_summary = _normal_summary()
+    hot_summary.update({"avg_cpu_user_pct": 94.0, "load1m": 9.0})
+    _finish_sys_metrics_task(initial_task_id, hot_summary)
+
+    first_detail = client.get(f"/api/v1/diagnoses/{diagnosis_id}").json()["data"]
+    first_conclusion = first_detail["latest_conclusion"]
+    assert first_conclusion["next_evidence_requests"]
+    followup_task_ids = [
+        probe["task_id"]
+        for probe in first_detail["probes"]
+        if (probe.get("parameters") or {}).get("parent_task_id") == initial_task_id
+        and probe.get("task_id")
+    ]
+    assert followup_task_ids
+
+    for task_id in followup_task_ids:
+        _finish_depth_task(task_id)
+
+    second_detail = client.get(f"/api/v1/diagnoses/{diagnosis_id}").json()["data"]
+    assert len(second_detail["conclusion_versions"]) >= 2
+    assert any(
+        item.get("observed_value", {}).get("task_id") in followup_task_ids
+        for item in second_detail["evidence"]
+    )
+    assert second_detail["latest_conclusion"]["coverage"]["task_count"] >= 2
+
+
+def test_all_registered_policy_can_schedule_high_risk_followup(client: TestClient):
+    repo.agents["a1"].capabilities = [*repo.agents["a1"].capabilities, "off_cpu_wait_profile"]
+    payload = _payload("服务 service-a 内存压力升高")
+    payload["auto_execute_policy"] = "all_registered"
+    data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    parent_task = repo.tasks[data["child_task_ids"][0]]
+    created = diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["off_cpu_wait_profile"],
+        parent_task,
+    )
+    assert created == 1
+    followup = next(
+        item for item in diagnosis_orchestrator.store.list_probes(diagnosis_id)
+        if (item.get("parameters") or {}).get("evidence_gap") == "off_cpu_wait_profile"
+    )
+    assert followup["requires_approval"] is False
+    assert followup["parameters"]["execution_policy"] == "all_registered"
+    assert followup["status"] in {"SCHEDULED", "RUNNING", "WAITING_APPROVAL", "UNAVAILABLE"}

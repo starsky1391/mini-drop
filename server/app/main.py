@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 import asyncio
 import json as _json
 import queue as _queue
+from types import SimpleNamespace
 from typing import Any, Optional
 
 from server.app.common_utils import status_value
@@ -39,9 +40,19 @@ from server.app.nlp.intent_parser import parse_intent
 from server.app.nlp.process_resolver import resolve_pid
 from server.app.nlp.summarizer import summarize, suggest_followup
 from server.app.diagnosis import DiagnosisOrchestrator
-from server.app.diagnosis.evidence_structurer import rca_inputs_from_structured, structure_artifact_evidence
+from server.app.diagnosis.evidence_structurer import (
+    StructuredEvidence,
+    rca_inputs_from_structured,
+    structure_artifact_evidence,
+)
 from server.app.diagnosis.probe_registry import list_probes as list_registered_probes
 from server.app.diagnosis.schemas import ApprovalRequest, CreateDiagnosisRequest
+from server.app.diagnosis.watch_runtime import (
+    CreateWatchSubscriptionRequest,
+    PersistentAgentRuntime,
+    WatchEvaluationRequest,
+    WatchRegistry,
+)
 from server.app.rca.pipelines import normalize_pipeline_id
 from server.app.rca.report import run_diagnosis_context
 from server.app.rca.strategies import normalize_strategy_id
@@ -58,6 +69,8 @@ from server.app import storage as store
 
 repo = SqlRepository()
 diagnosis_orchestrator = DiagnosisOrchestrator(repo)
+watch_registry = WatchRegistry()
+watch_runtime = PersistentAgentRuntime(watch_registry, repo)
 
 
 @asynccontextmanager
@@ -497,7 +510,12 @@ def get_task(task_id: str) -> APIResponse:
     task = repo.tasks.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
-    return APIResponse(data=_task_view(task).model_dump())
+    data = _task_view(task).model_dump()
+    if status_value(task.status) == "DONE":
+        data["latest_analysis"] = _ensure_task_analysis_session(task_id)
+    else:
+        data["latest_analysis"] = _latest_task_analysis(task_id)
+    return APIResponse(data=data)
 
 
 @app.delete("/api/tasks/{task_id}")
@@ -603,29 +621,54 @@ def presign_url(bucket: str = "mini-drop", key: str = "", expires: int = 3600) -
     return APIResponse(data={"url": url, "expires_sec": expires})
 
 
-@app.post("/api/tasks/{task_id}/diagnose")
-def diagnose_task(
+def _latest_task_analysis(task_id: str) -> dict[str, Any] | None:
+    runs = repo.list_diagnoses_for_task(task_id)
+    if not runs:
+        return None
+    latest = repo.get_diagnosis(runs[0]["id"])
+    if latest is None:
+        return None
+    run = latest["run"]
+    report = latest.get("report") or {}
+    report_json = report.get("report") or {}
+    return {
+        "analysis_session_id": run["id"],
+        "diagnosis_id": run["id"],
+        "task_id": run["task_id"],
+        "status": run["status"],
+        "summary": run.get("summary", ""),
+        "validated": run.get("validated", False),
+        "analysis_pipeline": report_json.get("analysis_pipeline"),
+        "analysis_strategy": report_json.get("analysis_strategy"),
+        "not_enough_evidence": report.get("not_enough_evidence"),
+        "report": report_json,
+        "ranked_causes": report.get("ranked_causes", []),
+    }
+
+
+def _ensure_task_analysis_session(task_id: str) -> dict[str, Any] | None:
+    latest = _latest_task_analysis(task_id)
+    if latest is not None:
+        return latest
+    return _run_task_analysis(
+        task_id=task_id,
+        selected_strategy=normalize_strategy_id(os.getenv("MINI_DROP_RCA_STRATEGY", "linear")),
+        selected_pipeline=normalize_pipeline_id(os.getenv("MINI_DROP_RCA_PIPELINE", "evidence_to_attribution")),
+        collection_mode="manual_single",
+    )
+
+
+def _run_task_analysis(
+    *,
     task_id: str,
-    analysis_strategy: Optional[str] = None,
-    analysis_pipeline: Optional[str] = None,
-) -> APIResponse:
+    selected_strategy: str,
+    selected_pipeline: str,
+    collection_mode: str = "manual_single",
+) -> dict[str, Any]:
     task = repo.tasks.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
-    try:
-        selected_strategy = normalize_strategy_id(
-            analysis_strategy or os.getenv("MINI_DROP_RCA_STRATEGY", "linear")
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    try:
-        selected_pipeline = normalize_pipeline_id(
-            analysis_pipeline or os.getenv("MINI_DROP_RCA_PIPELINE", "evidence_to_attribution")
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # 收集已有 artifacts 中的结构化数据
     artifacts = repo.artifacts.get(task_id, [])
     artifact_values = {
         "top_json": _extract_artifact_json(artifacts, "top_json"),
@@ -640,6 +683,7 @@ def diagnose_task(
         task_id=task_id,
         artifacts=artifacts,
         artifact_values=artifact_values,
+        evidence_window={"collection_mode": collection_mode, "timing_relation": "unknown"},
     )
     rca_inputs = rca_inputs_from_structured(structured_evidence)
 
@@ -713,15 +757,16 @@ def diagnose_task(
         retry_count=report.retry_count,
     )
     record_diagnosis(diag_status)
-
     notify_diagnosis_complete(task_id, diagnosis_id, diag_status)
 
-    return APIResponse(data={
+    return {
+        "analysis_session_id": diagnosis_id,
         "diagnosis_id": diagnosis_id,
         "report_id": report_id,
         "task_id": task_id,
         "analysis_strategy": selected_strategy,
         "analysis_pipeline": selected_pipeline,
+        "collection_mode": collection_mode,
         "model": report.model_name,
         "validated": report.validated,
         "summary": report.report.summary,
@@ -732,7 +777,146 @@ def diagnose_task(
         "tool_results": [item.model_dump() for item in outcome.tool_results],
         "structured_evidence": report.report.structured_evidence,
         "repair_plan": repair_plan_data,
-    })
+    }
+
+
+def _run_watch_incident_analysis(
+    *,
+    incident_id: str,
+    analysis_strategy: Optional[str] = None,
+    analysis_pipeline: Optional[str] = None,
+) -> dict[str, Any]:
+    incident = watch_registry.get_incident(incident_id)
+    if incident is None:
+        raise HTTPException(status_code=404, detail="异常窗口不存在")
+    watch = watch_registry.get(incident.watch_id)
+    if watch is None:
+        raise HTTPException(status_code=404, detail="监视订阅不存在")
+    try:
+        selected_strategy = normalize_strategy_id(
+            analysis_strategy or os.getenv("MINI_DROP_RCA_STRATEGY", "linear")
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        selected_pipeline = normalize_pipeline_id(
+            analysis_pipeline or os.getenv("MINI_DROP_RCA_PIPELINE", "evidence_to_attribution")
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    structured = StructuredEvidence.model_validate(incident.structured_evidence)
+    rca_inputs = rca_inputs_from_structured(structured)
+    task_id = f"watch_incident:{incident.incident_id}"
+    task_record = SimpleNamespace(
+        id=task_id,
+        name=f"Watch incident analysis {incident.incident_id}",
+        agent_id=watch.target.agent_id,
+        target_pid=watch.target.target_pid,
+        collector_type="rolling_snapshot",
+        sample_rate=0,
+        duration_sec=0,
+        status="DONE",
+        status_reason="Frozen watch incident same-window snapshot",
+        request_params={
+            "watch_id": watch.watch_id,
+            "incident_id": incident.incident_id,
+            "trigger_event_id": incident.trigger_event_id,
+            "evidence_cohort_id": incident.evidence_cohort_id,
+            "collection_mode": "rolling_snapshot",
+            "timing_relation": "same_window",
+        },
+    )
+    task_events = [
+        {
+            "task_id": task_id,
+            "to_status": "DONE",
+            "reason": "WatchIncident 冻结现场进入 AI 树分析",
+            "metadata": task_record.request_params,
+        }
+    ]
+    agent_record = repo.agents.get(watch.target.agent_id)
+    model_name = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+    outcome = run_diagnosis_context(
+        task_id=task_id,
+        task_record=task_record,
+        top_functions=rca_inputs["top_functions"],
+        ebpf_metrics=rca_inputs["ebpf_metrics"],
+        sys_metrics=rca_inputs["sys_metrics"],
+        evidence_index=rca_inputs["evidence_index"],
+        failure_events=[],
+        feedback_priors=repo.get_feedback_priors(),
+        task_events=task_events,
+        agent_record=agent_record,
+        repo=repo,
+        auto_execute_safe=False,
+        analysis_strategy=selected_strategy,
+        analysis_pipeline=selected_pipeline,
+        structured_evidence=structured.model_dump(mode="json"),
+    )
+    report = outcome.report
+    ranked_causes = [cause.model_dump() for cause in report.report.ranked_causes]
+    analysis_session_id = f"analysis_{incident.incident_id}"
+    return {
+        "analysis_session_id": analysis_session_id,
+        "incident_id": incident.incident_id,
+        "watch_id": watch.watch_id,
+        "trigger_event_id": incident.trigger_event_id,
+        "evidence_cohort_id": incident.evidence_cohort_id,
+        "analysis_strategy": selected_strategy,
+        "analysis_pipeline": selected_pipeline,
+        "collection_mode": "rolling_snapshot",
+        "timing_relation": "same_window",
+        "model": report.model_name,
+        "validated": report.validated,
+        "summary": report.report.summary,
+        "report": report.report.model_dump(),
+        "ranked_causes": ranked_causes,
+        "facts": report.report.facts,
+        "not_enough_evidence": report.report.not_enough_evidence,
+        "tool_results": [item.model_dump() for item in outcome.tool_results],
+        "structured_evidence": report.report.structured_evidence,
+        "repair_plan": outcome.repair_plan.model_dump() if outcome.repair_plan is not None else None,
+    }
+
+
+@app.post("/api/tasks/{task_id}/diagnose")
+def diagnose_task(
+    task_id: str,
+    analysis_strategy: Optional[str] = None,
+    analysis_pipeline: Optional[str] = None,
+) -> APIResponse:
+    if task_id not in repo.tasks:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    try:
+        selected_strategy = normalize_strategy_id(
+            analysis_strategy or os.getenv("MINI_DROP_RCA_STRATEGY", "linear")
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        selected_pipeline = normalize_pipeline_id(
+            analysis_pipeline or os.getenv("MINI_DROP_RCA_PIPELINE", "evidence_to_attribution")
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return APIResponse(data=_run_task_analysis(
+        task_id=task_id,
+        selected_strategy=selected_strategy,
+        selected_pipeline=selected_pipeline,
+        collection_mode="manual_single",
+    ))
+
+
+@app.get("/api/tasks/{task_id}/analysis-session")
+def get_task_analysis_session(task_id: str) -> APIResponse:
+    task = repo.tasks.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if status_value(task.status) != "DONE":
+        return APIResponse(data=_latest_task_analysis(task_id))
+    return APIResponse(data=_ensure_task_analysis_session(task_id))
 
 
 @app.get("/api/tasks/{task_id}/diagnoses")
@@ -817,6 +1001,104 @@ def approve_diagnosis_probe(diagnosis_id: str, payload: ApprovalRequest) -> APIR
 @app.get("/api/v1/probes")
 def list_probe_definitions() -> APIResponse:
     return APIResponse(data=[probe.model_dump(mode="json") for probe in list_registered_probes()])
+
+
+# ── Persistent Agent watch subscriptions ─────────────────────
+
+
+@app.post("/api/v1/watches")
+def create_watch_subscription(payload: CreateWatchSubscriptionRequest) -> APIResponse:
+    if payload.target.agent_id not in repo.agents:
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+    watch = watch_registry.create(payload)
+    return APIResponse(data=watch.model_dump(mode="json"))
+
+
+@app.get("/api/v1/watches")
+def list_watch_subscriptions(
+    agent_id: str = "",
+    include_disabled: bool = False,
+) -> APIResponse:
+    items = watch_registry.list(
+        agent_id=agent_id or None,
+        include_disabled=include_disabled,
+    )
+    return APIResponse(data={"items": [item.model_dump(mode="json") for item in items]})
+
+
+@app.get("/api/v1/watches/{watch_id}")
+def get_watch_subscription(watch_id: str) -> APIResponse:
+    watch = watch_registry.get(watch_id)
+    if watch is None:
+        raise HTTPException(status_code=404, detail="监视订阅不存在")
+    data = watch.model_dump(mode="json")
+    data["incidents"] = [item.model_dump(mode="json") for item in watch_registry.list_incidents(watch_id)]
+    return APIResponse(data=data)
+
+
+@app.delete("/api/v1/watches/{watch_id}")
+def disable_watch_subscription(watch_id: str) -> APIResponse:
+    watch = watch_registry.disable(watch_id)
+    if watch is None:
+        raise HTTPException(status_code=404, detail="监视订阅不存在")
+    return APIResponse(data=watch.model_dump(mode="json"))
+
+
+@app.get("/api/v1/watches/{watch_id}/incidents")
+def list_watch_incidents(watch_id: str) -> APIResponse:
+    if watch_registry.get(watch_id) is None:
+        raise HTTPException(status_code=404, detail="监视订阅不存在")
+    items = watch_registry.list_incidents(watch_id)
+    return APIResponse(data={"items": [item.model_dump(mode="json") for item in items]})
+
+
+@app.post("/api/v1/watch-incidents/{incident_id}/analyze")
+def analyze_watch_incident(
+    incident_id: str,
+    analysis_strategy: Optional[str] = None,
+    analysis_pipeline: Optional[str] = None,
+) -> APIResponse:
+    incident = watch_registry.get_incident(incident_id)
+    if incident is None:
+        raise HTTPException(status_code=404, detail="异常窗口不存在")
+    if not incident.structured_evidence:
+        raise HTTPException(status_code=409, detail="异常窗口缺少结构化证据，无法分析")
+    watch_registry.update_incident_analysis(incident_id, analysis_status="analyzing")
+    try:
+        result = _run_watch_incident_analysis(
+            incident_id=incident_id,
+            analysis_strategy=analysis_strategy,
+            analysis_pipeline=analysis_pipeline,
+        )
+    except Exception:
+        watch_registry.update_incident_analysis(incident_id, analysis_status="not_started")
+        raise
+    analyzed = watch_registry.update_incident_analysis(
+        incident_id,
+        analysis_status="needs_evidence" if result.get("not_enough_evidence") else "analyzed",
+        analysis_session_id=result["analysis_session_id"],
+        analysis_result=result,
+    )
+    return APIResponse(data=analyzed.model_dump(mode="json"))
+
+
+@app.get("/api/v1/agents/{agent_id}/watch-leases")
+def list_agent_watch_leases(agent_id: str) -> APIResponse:
+    if agent_id not in repo.agents:
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+    leases = watch_runtime.list_leases(agent_id)
+    return APIResponse(data={"items": [lease.model_dump(mode="json") for lease in leases]})
+
+
+@app.post("/api/v1/watches/{watch_id}/evaluate")
+def evaluate_watch_subscription(watch_id: str, payload: WatchEvaluationRequest) -> APIResponse:
+    try:
+        result = watch_runtime.evaluate(watch_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="监视订阅不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return APIResponse(data=result.model_dump(mode="json"))
 
 
 def _extract_artifact_json(artifacts: list[dict], artifact_type: str) -> dict | None:

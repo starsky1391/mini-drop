@@ -107,6 +107,7 @@ class CreateDiagnosisRequest(StrictModel):
     query: str = Field(min_length=3, max_length=2000)
     context: DiagnosisContext = Field(default_factory=DiagnosisContext)
     budget_profile: Literal["production_safe", "staging", "development"] = "production_safe"
+    auto_execute_policy: Literal["safe_only", "all_registered", "manual"] | None = None
     budget: Optional[DiagnosisBudget] = None
 
 

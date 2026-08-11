@@ -67,6 +67,15 @@ class AnalysisFact(BaseModel):
     value: Any
     status: Literal["observed", "normal"] = "observed"
     threshold_band: Literal["below", "near", "above", "unknown"] = "unknown"
+    evidence_window: dict[str, Any] = Field(default_factory=dict)
+    timing_relation: Literal[
+        "same_window",
+        "pre_trigger_window",
+        "post_trigger_window",
+        "delayed_followup",
+        "stale_window",
+        "unknown",
+    ] = "unknown"
 
 
 class AnalysisSymptom(BaseModel):
@@ -152,6 +161,21 @@ class EvidenceChallenge(BaseModel):
     critical_fact_groups: list[list[str]] = Field(default_factory=list)
     tests: list[EvidenceChallengeTest] = Field(default_factory=list)
     conclusion_stability: Literal["stable", "fragile", "unsupported_without_key_fact"]
+    evidence_window: dict[str, Any] = Field(default_factory=dict)
+    timing_relation: Literal[
+        "same_window",
+        "pre_trigger_window",
+        "post_trigger_window",
+        "delayed_followup",
+        "stale_window",
+        "unknown",
+    ] = "unknown"
+    delayed_followup_reproduction_status: Literal[
+        "not_applicable",
+        "reproduced",
+        "not_reproduced",
+        "unknown",
+    ] = "not_applicable"
 
 
 class ConclusionBoundary(BaseModel):
@@ -160,6 +184,22 @@ class ConclusionBoundary(BaseModel):
     can_claim_root_cause: bool
     max_supported_level: Literal["resource", "process", "thread", "syscall", "function", "call_path", "line"] = "resource"
     reason: str
+    conclusion_window: dict[str, Any] = Field(default_factory=dict)
+    timing_relation: Literal[
+        "same_window",
+        "pre_trigger_window",
+        "post_trigger_window",
+        "delayed_followup",
+        "stale_window",
+        "unknown",
+    ] = "unknown"
+    delayed_followup_reproduction_status: Literal[
+        "not_applicable",
+        "reproduced",
+        "not_reproduced",
+        "unknown",
+    ] = "not_applicable"
+    non_refutable_evidence_boundaries: list[str] = Field(default_factory=list)
 
 
 class EvidenceAttributionResult(BaseModel):

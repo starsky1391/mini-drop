@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from server.app import storage as store
 from server.app.database import init_db, reset_engine
-from server.app.main import _ensure_minio_bucket_with_retry, app, repo
+from server.app.main import _ensure_minio_bucket_with_retry, app, repo, watch_registry
 from server.app.models import Base
 from server.app.prometheus_metrics import REGISTRY
 from server.app.state_machine import Actor, TaskStatus
@@ -26,6 +26,9 @@ def _reset_repo(monkeypatch):
     """每个测试使用独立 SQLite 内存库，确保用例间无状态交叉。"""
     monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("MINI_DROP_AI_API_KEY", raising=False)
+    monkeypatch.delenv("MINI_DROP_AI_BASE_URL", raising=False)
+    monkeypatch.setenv("MINI_DROP_AI_ENABLED", "none")
     monkeypatch.delenv("MINI_DROP_API_AUTH_ENABLED", raising=False)
     monkeypatch.delenv("MINI_DROP_API_KEY", raising=False)
     REGISTRY.clear()
@@ -33,6 +36,7 @@ def _reset_repo(monkeypatch):
     init_db()
     repo._task_queues.clear()
     repo.agent_metrics.clear()
+    watch_registry.clear()
     repo.register_agent("agent_local_demo", "demo-host", "10.0.0.10")
     repo.register_agent("a1", "agent-one", "10.0.0.11")
     repo.register_agent("a2", "agent-two", "10.0.0.12")
@@ -165,6 +169,153 @@ class TestAgents:
         agents = data if isinstance(data, list) else data.get("items", [])
         agent = next(item for item in agents if item["id"] == "a1")
         assert agent["latest_metrics"]["self"]["cpu_percent"] == 1.5
+
+
+class TestWatchSubscriptions:
+    def test_create_watch_and_list_agent_lease(self, client: TestClient):
+        resp = client.post("/api/v1/watches", json={
+            "name": "order service watch",
+            "target": {
+                "agent_id": "a1",
+                "target_pid": 4242,
+                "service_id": "order-service",
+                "instance_id": "order-1",
+                "endpoint": "/orders",
+            },
+            "watch_profile": "low_cost_default",
+            "enabled_collectors": ["sys_metrics", "light_stack"],
+            "retention_seconds": 120,
+        })
+
+        assert resp.status_code == 200
+        watch = resp.json()["data"]
+        assert watch["watch_id"].startswith("watch_")
+        assert watch["status"] == "active"
+
+        leases = client.get("/api/v1/agents/a1/watch-leases").json()["data"]["items"]
+        assert len(leases) == 1
+        assert leases[0]["watch_id"] == watch["watch_id"]
+        assert leases[0]["target"]["target_pid"] == 4242
+
+    def test_watch_evaluate_creates_triggered_collector_tasks(self, client: TestClient):
+        repo.register_agent(
+            "a1",
+            "agent-one",
+            "10.0.0.11",
+            capabilities=["sys_metrics", "perf_cpu"],
+        )
+        watch = client.post("/api/v1/watches", json={
+            "name": "cpu shift watch",
+            "target": {
+                "agent_id": "a1",
+                "target_pid": 4242,
+                "service_id": "order-service",
+            },
+        }).json()["data"]
+
+        payload = {
+            "baseline_window": {
+                "start": "2026-08-11T10:00:00Z",
+                "end": "2026-08-11T10:00:30Z",
+                "samples": [{"cpu_percent": 20.0}, {"cpu_percent": 20.0}],
+            },
+            "trigger_window": {
+                "start": "2026-08-11T10:05:00Z",
+                "end": "2026-08-11T10:05:30Z",
+                "samples": [{"cpu_percent": 55.0}, {"cpu_percent": 55.0}],
+            },
+        }
+        resp = client.post(f"/api/v1/watches/{watch['watch_id']}/evaluate", json=payload)
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["trigger"]["trigger_event"]["trigger_type"] == "cpu_shift"
+        assert data["incident"]["incident_id"].startswith("inc_")
+        assert data["incident"]["snapshot_id"].startswith("snap_")
+        assert data["incident"]["status"] == "collecting"
+        assert data["watch"]["last_trigger_event_id"] == data["trigger"]["trigger_event"]["trigger_event_id"]
+        assert data["trigger"]["evidence_cohort_id"] is not None
+        assert [task["probe_id"] for task in data["trigger"]["collector_tasks"]] == ["host_process_metrics"]
+        assert data["trigger"]["skipped_probe_ids"] == ["process_cpu_profile"]
+
+        incidents = client.get(f"/api/v1/watches/{watch['watch_id']}/incidents").json()["data"]["items"]
+        assert len(incidents) == 1
+        assert incidents[0]["trigger_event_id"] == data["trigger"]["trigger_event"]["trigger_event_id"]
+        assert incidents[0]["evidence_cohort_id"] == data["trigger"]["evidence_cohort_id"]
+
+    def test_freeze_only_watch_does_not_auto_create_collector_tasks(self, client: TestClient):
+        repo.register_agent(
+            "a1",
+            "agent-one",
+            "10.0.0.11",
+            capabilities=["sys_metrics", "perf_cpu"],
+        )
+        watch = client.post("/api/v1/watches", json={
+            "name": "freeze first watch",
+            "target": {
+                "agent_id": "a1",
+                "target_pid": 4242,
+            },
+            "trigger_action": "freeze_only",
+        }).json()["data"]
+
+        resp = client.post(f"/api/v1/watches/{watch['watch_id']}/evaluate", json={
+            "baseline_window": {
+                "start": "2026-08-11T10:00:00Z",
+                "end": "2026-08-11T10:00:30Z",
+                "samples": [{"cpu_percent": 20.0}, {"cpu_percent": 20.0}],
+            },
+            "trigger_window": {
+                "start": "2026-08-11T10:05:00Z",
+                "end": "2026-08-11T10:05:30Z",
+                "samples": [{"cpu_percent": 55.0}, {"cpu_percent": 55.0}],
+            },
+        })
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["incident"]["status"] == "frozen"
+        assert data["trigger"]["collector_tasks"] == []
+
+    def test_watch_incident_can_start_ai_tree_analysis_from_frozen_snapshot(self, client: TestClient):
+        repo.register_agent(
+            "a1",
+            "agent-one",
+            "10.0.0.11",
+            capabilities=["sys_metrics", "perf_cpu"],
+        )
+        watch = client.post("/api/v1/watches", json={
+            "name": "incident analysis watch",
+            "target": {
+                "agent_id": "a1",
+                "target_pid": 4242,
+                "service_id": "order-service",
+            },
+            "trigger_action": "freeze_only",
+        }).json()["data"]
+        triggered = client.post(f"/api/v1/watches/{watch['watch_id']}/evaluate", json={
+            "baseline_window": {
+                "start": "2026-08-11T10:00:00Z",
+                "end": "2026-08-11T10:00:30Z",
+                "samples": [{"cpu_percent": 20.0}, {"cpu_percent": 20.0}],
+            },
+            "trigger_window": {
+                "start": "2026-08-11T10:05:00Z",
+                "end": "2026-08-11T10:05:30Z",
+                "samples": [{"cpu_percent": 55.0}, {"cpu_percent": 55.0}],
+            },
+        }).json()["data"]
+        incident_id = triggered["incident"]["incident_id"]
+
+        resp = client.post(f"/api/v1/watch-incidents/{incident_id}/analyze")
+
+        assert resp.status_code == 200
+        incident = resp.json()["data"]
+        assert incident["analysis_status"] in {"analyzed", "needs_evidence"}
+        assert incident["analysis_session_id"] == f"analysis_{incident_id}"
+        assert incident["analysis_result"]["incident_id"] == incident_id
+        assert incident["analysis_result"]["evidence_cohort_id"] == triggered["trigger"]["evidence_cohort_id"]
+        assert incident["analysis_result"]["timing_relation"] == "same_window"
 
 
 class TestCreateTask:
@@ -519,6 +670,40 @@ class TestStoragePresign:
 
 class TestDiagnose:
     """诊断触发端点。"""
+
+    def test_done_task_auto_creates_analysis_session_on_task_detail(self, client: TestClient, monkeypatch):
+        resp = client.post("/api/tasks", json={
+            "name": "auto-analysis", "agent_id": "a1",
+            "target_pid": 1, "collector_type": "perf_cpu",
+        })
+        task_id = resp.json()["data"]["task_id"]
+        repo.transition_task(task_id, TaskStatus.RUNNING, "agent accepted", Actor.SERVER)
+        repo.transition_task(task_id, TaskStatus.UPLOADING, "collected", Actor.AGENT)
+        repo.transition_task(task_id, TaskStatus.ANALYZING, "analyzing", Actor.ANALYZER)
+        repo.add_artifacts(task_id, [{
+            "artifact_type": "top_json",
+            "bucket": "mini-drop",
+            "object_key": f"tasks/{task_id}/top.json",
+            "content_type": "application/json",
+        }])
+        monkeypatch.setattr(
+            store,
+            "read_object_bytes",
+            lambda bucket, key: b'[{"name":"fib_hotspot","samples":100,"percent":68.5}]',
+        )
+        repo.transition_task(task_id, TaskStatus.DONE, "analysis complete", Actor.ANALYZER)
+
+        detail = client.get(f"/api/tasks/{task_id}").json()["data"]
+        latest = detail["latest_analysis"]
+        assert latest["analysis_session_id"].startswith("diag_")
+        assert latest["task_id"] == task_id
+        assert latest["analysis_pipeline"] == "evidence_to_attribution"
+        assert latest["report"]["structured_evidence"]["collection_mode"] == "manual_single"
+
+        second = client.get(f"/api/tasks/{task_id}/analysis-session").json()["data"]
+        history = client.get(f"/api/tasks/{task_id}/diagnoses").json()["data"]
+        assert second["analysis_session_id"] == latest["analysis_session_id"]
+        assert len(history) == 1
 
     def test_diagnose_enqueues_report(self, client: TestClient, monkeypatch):
         resp = client.post("/api/tasks", json={

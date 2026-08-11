@@ -204,6 +204,40 @@ export function listProbeDefinitions() {
   return api.get("/v1/probes");
 }
 
+// ── Persistent Watch ──────────────────────────────────────────
+
+export function createWatchSubscription(payload) {
+  return api.post("/v1/watches", payload);
+}
+
+export function listWatchSubscriptions(params = {}) {
+  return api.get("/v1/watches", { params }).then(itemsOf);
+}
+
+export function getWatchSubscription(watchId) {
+  return api.get(`/v1/watches/${watchId}`);
+}
+
+export function listWatchIncidents(watchId) {
+  return api.get(`/v1/watches/${watchId}/incidents`).then(itemsOf);
+}
+
+export function analyzeWatchIncident(incidentId, params = {}) {
+  return api.post(`/v1/watch-incidents/${incidentId}/analyze`, null, { params, timeout: 180000 });
+}
+
+export function disableWatchSubscription(watchId) {
+  return api.delete(`/v1/watches/${watchId}`);
+}
+
+export function listAgentWatchLeases(agentId) {
+  return api.get(`/v1/agents/${agentId}/watch-leases`).then(itemsOf);
+}
+
+export function evaluateWatchSubscription(watchId, payload) {
+  return api.post(`/v1/watches/${watchId}/evaluate`, payload);
+}
+
 // ── NLP 自然语言采集 ────────────────────────────────────────────
 
 export function nlpParse(query) {

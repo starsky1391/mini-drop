@@ -27,6 +27,11 @@ def _setup_e2e(monkeypatch):
     """每个 E2E 用例独立 SQLite + 预注册 Agent。"""
     monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("MINI_DROP_AI_API_KEY", raising=False)
+    monkeypatch.delenv("MINI_DROP_AI_BASE_URL", raising=False)
+    monkeypatch.setenv("MINI_DROP_AI_ENABLED", "none")
+    monkeypatch.delenv("MINI_DROP_API_AUTH_ENABLED", raising=False)
+    monkeypatch.delenv("MINI_DROP_API_KEY", raising=False)
     reset_engine()
     init_db()
     repo._task_queues.clear()

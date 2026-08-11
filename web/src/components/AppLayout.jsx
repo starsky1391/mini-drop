@@ -14,6 +14,7 @@ import {
   ApiOutlined,
   WifiOutlined,
   RobotOutlined,
+  RadarChartOutlined,
 } from "@ant-design/icons";
 import { getStoredApiKey, saveApiKey, createEventSource } from "../api/client";
 import ErrorBoundary from "../components/ErrorBoundary";
@@ -24,6 +25,7 @@ const { Sider, Header, Content } = Layout;
 const MENU_ITEMS = [
   { key: "/", icon: <DashboardOutlined />, label: "任务面板" },
   { key: "/ai-diagnosis", icon: <RobotOutlined />, label: "AI 集群诊断" },
+  { key: "/persistent-watch", icon: <RadarChartOutlined />, label: "持续监视" },
   { key: "/diagnoses", icon: <ExperimentOutlined />, label: "诊断历史" },
   { key: "/audit", icon: <AuditOutlined />, label: "审计日志" },
   { key: "/settings", icon: <SettingOutlined />, label: "系统设置" },

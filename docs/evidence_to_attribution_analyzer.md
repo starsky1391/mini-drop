@@ -1468,3 +1468,676 @@ confidence_inputs
 - [x] 已实现 `top_json / depth_evidence_json / flamegraph_json / flamegraph_svg / sys_metrics` 的最小结构化闭环
 - [x] 已让 RCA 入口优先消费结构化证据
 - [x] 已补充结构化层稳定性与 token 安全测试
+
+## 18. 任务驱动诊断闭环与 Persistent Agent 路线
+
+当前系统以任务驱动为主：用户创建诊断会话后，系统采集一批证据并自动进入 Analyzer。为了让 AI 树真正参与后续探测，本方案不新增 `nexttask` 接口，而是复用现有的：
+
+```text
+analysis_result.ai_tree[].next_evidence_requests
+```
+
+完整闭环如下：
+
+```text
+首批采集任务
+  -> 结构化证据
+  -> Evidence-to-Attribution / AI 树
+  -> next_evidence_requests
+  -> 受限证据请求映射
+  -> ProbePlan / 子任务
+  -> 采集结果回灌同一 diagnosis_id
+  -> 再次结构化与诊断
+```
+
+### 18.1 证据请求与任务计划的职责边界
+
+| 对象 | 职责 |
+|---|---|
+| `next_evidence_requests` | AI 树表达下一步需要补充的证据类型，不生成命令、不直接创建任务 |
+| `ProbeDefinition` | 系统白名单，定义证据类型对应的探针、风险、平台和预算成本 |
+| `ProbePlan` | 系统将证据请求映射成的可执行计划 |
+| 子任务 | 既有任务生命周期中的实际采集任务 |
+| `diagnosis_id` | 将首批任务、补证子任务和多轮分析关联为同一个诊断会话 |
+| `evidence_gap` | 说明本次请求解决哪个证据缺口，用于去重和审计 |
+
+AI 只能提出稳定的证据类型，例如：
+
+```text
+off_cpu_wait_profile
+trace_endpoint_profile
+baseline_window_profile
+```
+
+系统只允许将这些请求映射到已注册的 `ProbeDefinition`，不允许 AI 生成任意 shell 命令、未知采集器或未注册参数。
+
+### 18.2 自动执行策略
+
+默认使用全局安全策略，单次诊断可覆盖：
+
+```text
+auto_execute_policy = safe_only       # 默认：仅自动执行低风险探针
+auto_execute_policy = all_registered  # 显式允许注册探针自动执行，包括高风险
+
+auto_execute_policy = manual          # 所有补证任务等待人工审批
+```
+
+即使使用 `all_registered`，仍必须满足：
+
+- 只能执行注册探针。
+- 只能执行 AI 树输出的证据类型。
+- 必须通过诊断预算、平台能力和风险校验。
+- 记录 `parent_task_id`、`diagnosis_id`、`evidence_gap` 和风险等级。
+- 失败或已执行的请求不能无限重试。
+
+### 18.3 同一缺口默认去重
+
+同一诊断会话中，以下组合默认只允许生成一次补证任务：
+
+```text
+diagnosis_id + evidence_gap
+```
+
+这样可以避免 AI 树在证据未改善时不断重复生成同一探针。后续如需处理突发问题的有限复核，可增加显式的复核次数预算，但不作为第一阶段默认行为。
+
+### 18.4 诊断会话终止条件
+
+任务驱动闭环不是无限监控。会话在以下情况之一成立时结束：
+
+- AI 树进入 `clear_leaf`，证据足够稳定。
+- AI 树进入 `conservative_leaf` 或 `unknown_leaf`，继续补证收益不足或无法继续。
+- 进入 `INSUFFICIENT_EVIDENCE`、`BUDGET_EXHAUSTED`、`FAILED` 或 `USER_CANCELED`。
+- 所有已生成子任务和结构化证据均完成处理。
+
+这里结束的是当前诊断会话，不代表后续不能升级为持久化监测。
+
+### 18.5 Persistent Agent 后续路线
+
+突发 Bug 可能在用户创建任务时已经消失，任务驱动闭环无法补回已经错过的现场。因此 Persistent Agent 保留为后续演进方向，但不与第一阶段任务闭环混实现。
+
+推荐路线：
+
+```text
+阶段 1：任务驱动自动诊断闭环
+  采集 -> AI 树 -> next_evidence_requests -> ProbePlan -> 子任务 -> 再诊断
+
+阶段 2：轻量 Persistent Trigger Agent
+  常驻低成本指标 -> 保存短期窗口 -> 记录 trigger_event
+
+阶段 3：本地 ring buffer / rolling profile
+  持续保留最近窗口 -> 异常触发时冻结前后证据
+
+阶段 4：触发式诊断会话
+  冻结证据 -> 自动创建 diagnosis_id -> 复用同一结构化证据和 AI 树
+```
+
+Persistent Agent 的职责是保存现场和提供时间锚点，不直接判断 root cause。后续应复用当前 `ProbePlan`、子任务、`structured_evidence` 和 RCA 协议，而不是新建另一套诊断链路。
+
+### 18.6 本阶段完成项
+
+- [x] 已将 `next_evidence_requests` 解析为受限 ProbePlan
+- [x] 已自动创建补证子任务并回灌同一诊断会话
+- [x] 已实现同一 `diagnosis_id + evidence_gap` 默认去重
+- [x] 已实现 `safe_only / all_registered / manual` 执行策略
+- [x] 已补充任务驱动闭环测试
+- [x] 已记录 Persistent Agent、ring buffer 和触发式诊断后续路线
+
+## 19. 证据同窗性与 Persistent Evidence Trigger 方案
+
+任务驱动闭环已经解决了“证据不足后如何继续补证”的问题，但它仍然只能观察任务执行窗口内发生的事情。对于瞬时异常，用户创建任务或 AI 树请求补证时，异常现场可能已经消失。
+
+因此下一阶段不应把 Agent 升级成“自动诊断器”，而应增加一个轻量的证据触发与窗口管理层：
+
+```text
+Persistent Evidence Trigger
+  -> trigger_event
+  -> collector_group / rolling_snapshot
+  -> evidence_cohort
+  -> evidence_structuring
+  -> Evidence-to-Attribution / AI 树
+  -> 阶段性结论 / 补证请求 / 最终结论
+```
+
+该方案的核心不是“自动判断根因”，而是：
+
+- 用轻量偏移检测捕捉值得采证的时间窗口。
+- 用 `evidence_cohort_id` 保证多采集器证据同窗。
+- 用 `timing_relation` 防止延迟补采被错误当作反证。
+- 复用现有结构化证据层、AI 树、`ProbeDefinition` 和任务生命周期。
+
+### 19.1 当前已具备与仍缺失的能力
+
+前一阶段已经具备诊断会话内的自动分析能力：
+
+```text
+diagnosis 会话内
+  -> 首批采集任务
+  -> 结构化证据
+  -> AI 树分析
+  -> next_evidence_requests
+  -> 补证 ProbePlan
+  -> 回灌同一 diagnosis_id
+```
+
+下一阶段缺的不是重新实现这条闭环，而是补齐三个入口与协议：
+
+| 能力 | 当前状态 | 下一阶段目标 |
+|---|---|---|
+| 诊断会话内结构化分析 | 已具备 | 继续复用 |
+| 诊断会话内补证闭环 | 已具备 | 继续复用 |
+| 普通采集任务完成后自动分析 | 未形成统一入口 | 自动创建或绑定 `analysis_session` |
+| 异常发生前后的现场保存 | 未形成协议 | 引入 `trigger_event` 与 `evidence_cohort` |
+| 不同时间窗口证据裁决 | 未显式建模 | 引入 `timing_relation` |
+
+### 19.2 核心对象
+
+#### `trigger_event`
+
+`trigger_event` 是时间锚点，只表示“这个窗口值得采证”，不表示根因成立。
+
+最小字段：
+
+```json
+{
+  "trigger_event_id": "evt_001",
+  "trigger_type": "cpu_shift",
+  "target": {
+    "service_id": "service-a",
+    "instance_id": "service-a-1",
+    "agent_id": "a1",
+    "pid": 1234
+  },
+  "observed_at": "2026-08-11T10:15:03Z",
+  "baseline_window": {
+    "start": "2026-08-11T10:10:03Z",
+    "end": "2026-08-11T10:15:03Z"
+  },
+  "trigger_window": {
+    "start": "2026-08-11T10:14:48Z",
+    "end": "2026-08-11T10:15:03Z"
+  },
+  "trigger_signal": {
+    "metric": "cpu_user_pct",
+    "baseline": 22.4,
+    "current": 81.7,
+    "shift_score": 3.8
+  },
+  "confidence": "suspected",
+  "action": "start_collector_group"
+}
+```
+
+#### `evidence_cohort`
+
+`evidence_cohort` 表示同一窗口内的一组证据。它将 metrics、trace、profile、off-CPU、日志窗口等结果绑定在一起，避免 Analyzer 把不同时间的证据混用。
+
+最小字段：
+
+```json
+{
+  "evidence_cohort_id": "cohort_001",
+  "trigger_event_id": "evt_001",
+  "target_scope": ["service-a-1"],
+  "collection_mode": "triggered_group",
+  "window_start": "2026-08-11T10:14:48Z",
+  "window_end": "2026-08-11T10:15:18Z",
+  "artifact_refs": ["sys_metrics", "perf_cpu", "trace_endpoint_profile"]
+}
+```
+
+#### `timing_relation`
+
+`timing_relation` 表示单份证据与触发窗口的时间关系。
+
+允许值建议为：
+
+```text
+same_window
+pre_trigger_window
+post_trigger_window
+delayed_followup
+stale_window
+unknown
+```
+
+AI 树必须遵守：
+
+```text
+delayed_followup 没复现，不能直接反证 same_window 的异常证据。
+```
+
+### 19.3 采集模式
+
+`collection_mode` 用于说明证据是如何产生的：
+
+| 模式 | 含义 |
+|---|---|
+| `manual_single` | 用户或系统主动创建的单个普通采集任务 |
+| `manual_group` | 用户或系统主动创建的一组同窗采集任务 |
+| `triggered_group` | Persistent Trigger 触发的一组采集任务 |
+| `rolling_snapshot` | 从本地 rolling buffer 冻结出的异常前后窗口 |
+| `delayed_followup` | AI 树在后续轮次请求的补证任务 |
+| `baseline_window` | 用于稳定性对比的基线窗口证据 |
+
+普通任务不应被排除在 Analyzer 之外。没有 `diagnosis_id` 时，系统应自动创建或绑定一个 `analysis_session`，并将该任务标记为 `manual_single` 或 `manual_group`。
+
+### 19.4 偏移触发，不做根因判断
+
+Persistent Trigger Agent 不使用固定阈值直接判断异常，更不输出根因。它只判断当前窗口相对最近基线是否出现明显偏移。
+
+示例信号：
+
+- 当前 CPU 明显高于最近 5 分钟均值或分位数。
+- 当前 P99 明显高于最近窗口。
+- 当前 thread count 或 fd count 增长速度异常。
+- 当前 iowait 出现短时突刺。
+- 当前 endpoint timeout 或 error 出现短时集中。
+
+这里允许少量规则，但规则只负责选择采集器：
+
+| 触发类型 | 建议采集组 |
+|---|---|
+| `cpu_shift` | `sys_metrics` + `perf_cpu` + `stack_summary` |
+| `latency_shift` | `trace_endpoint_profile` + `sys_metrics` |
+| `io_wait_shift` | `ebpf_io` + `off_cpu_wait_profile` + `sys_metrics` |
+| `thread_growth_shift` | `off_cpu_wait_profile` + `memory_smaps` |
+| `memory_growth_shift` | `memory_smaps` + `baseline_window_profile` |
+| `error_burst` | `logs_error_window` + `trace_endpoint_profile` |
+
+这些规则不产生 root cause，只产生“该采什么证据”的计划。
+
+### 19.5 Rolling Buffer / Triggered Snapshot
+
+Rolling Buffer 用于保存最近一段时间的低成本证据，触发时冻结异常前后窗口。
+
+对于瞬时异常，后续补深度任务不能被当成“恢复现场”。如果异常已经消失，延迟补证只能说明后续窗口是否复现，不能替代异常发生当下的同窗证据。
+
+因此触发后的推荐链路必须是保存现场优先：
+
+```text
+Persistent Agent 低成本常驻观察
+  -> 发现相对偏移
+  -> 立即冻结 rolling snapshot
+  -> 保存 trigger_event / evidence_cohort
+  -> 保存轻量栈 / trace summary / endpoint summary / metrics window
+  -> 同时按策略启动短窗口深采集
+  -> AI 树优先分析 same-window snapshot
+  -> 如果证据不足，再请求 delayed follow-up
+```
+
+关键原则：
+
+- `rolling_snapshot` 是瞬时异常的主现场证据。
+- `collector_tasks` 是触发后的补充证据，不是唯一证据来源。
+- `delayed_followup` 不是时光机，不能恢复未保存的异常现场。
+- AI 树应优先消费 `same_window` snapshot，再解释后续补证是否复现。
+- 默认策略建议为 `freeze_and_safe_probe`：先冻结现场，再自动启动 `R1` 低风险短窗口补采；`R2` 深采集需要 `auto_all_registered` 或后续审批策略。
+
+第一版建议：
+
+```text
+pre_window = 30s
+post_window = 30s
+max_retention = 5m
+```
+
+先保留低成本数据：
+
+- metrics ring buffer
+- endpoint latency summary
+- trace summary buffer
+- lightweight stack summary
+
+触发后生成 snapshot：
+
+```json
+{
+  "snapshot_id": "snap_001",
+  "trigger_event_id": "evt_001",
+  "evidence_cohort_id": "cohort_001",
+  "snapshot_type": "rolling_snapshot",
+  "pre_window_seconds": 30,
+  "post_window_seconds": 30,
+  "artifact_refs": [
+    "metrics_window_json",
+    "trace_summary_json",
+    "stack_summary_json"
+  ]
+}
+```
+
+更重的 continuous profiling 作为后续升级，不在第一版直接开启。
+
+### 19.6 AI 树同窗裁决要求
+
+AI 树需要理解同窗关系：
+
+- `same_window` 证据优先用于支持或挑战异常窗口内结论。
+- `delayed_followup` 只能说明后续窗口状态，不能直接推翻异常窗口。
+- `stale_window` 只能作为历史参考，不能作为主证据。
+- 多个 `same_window` 证据冲突时，进入冲突裁决分枝。
+- 只有 `trigger_event` 但缺少结构化证据时，输出“发现疑似窗口，但根因证据不足”。
+
+报告中应明确显示：
+
+```text
+结论适用窗口
+证据同窗关系
+延迟补采是否复现
+哪些证据不能互相反证
+```
+
+### 19.7 分阶段落地路线
+
+#### 阶段 1：证据同窗协议
+
+补齐 `trigger_event_id`、`evidence_cohort_id`、`collection_mode`、`window_start`、`window_end`、`timing_relation` 字段，让所有证据都能表达时间来源。
+
+#### 阶段 2：Analysis Session 普适入口
+
+诊断会话内自动分析已经具备。这里要补的是普通采集任务完成后的统一分析入口：
+
+```text
+普通 task DONE
+  -> 自动结构化证据
+  -> 自动创建或绑定 analysis_session
+  -> 生成阶段性结论
+```
+
+#### 阶段 3：Persistent Evidence Trigger
+
+新增轻量常驻触发器，维护滑动窗口，发现相对基线偏移后生成 `trigger_event`，并触发同窗 collector group。
+
+#### 阶段 4：Rolling Buffer / Triggered Snapshot
+
+在 Agent 本地保留最近 N 秒低成本证据，触发后冻结异常前后窗口，形成 `rolling_snapshot`。
+
+#### 阶段 5：AI 树同窗证据裁决
+
+让 Analyzer 使用 `timing_relation` 约束结论边界，避免延迟补采误反证异常现场证据。
+
+#### 阶段 6：WatchSubscription 驱动的 Persistent Agent Runtime
+
+补齐“agent 怎么知道自己监视谁”的控制面。诊断任务不直接驱动常驻监视，用户或系统先创建 `WatchSubscription`，Agent 通过 `WatchLease` 获得自己负责的监视对象。
+
+```text
+WatchSubscription
+  -> WatchLease
+  -> PersistentAgentRuntime
+  -> evaluate_persistent_trigger
+  -> trigger_event / evidence_cohort / collector_tasks
+```
+
+这一阶段仍然只解决监视目标、低成本窗口和触发交接，不做根因判断。
+
+#### 阶段 7：WatchIncident / Frozen Evidence Inbox
+
+补齐“一个监视对象可能多次异常”的产品与数据模型。`WatchSubscription` 不再只保存最近一次触发，而是追加多个 `WatchIncident`，每个 incident 表示一次被冻结的异常现场。
+
+```text
+WatchSubscription
+  -> WatchIncident[]
+      -> trigger_event
+      -> evidence_cohort
+      -> rolling_snapshot
+      -> collector_tasks
+      -> analysis_session
+```
+
+前端以可展开列表展示：
+
+```text
+监视对象
+  -> 异常窗口列表
+      -> 冻结证据
+      -> 关联采集任务
+      -> AI 树分析状态
+```
+
+这使“已经冷冻现场但还没 AI 树分析”的异常不会丢失，也不会被覆盖为“最近一次触发”。
+
+#### 阶段 8：WatchIncident -> AI 树分析入口
+
+补齐“冷冻现场已经保存，但还没分析”的最后一段链路。AI 树分析对象不是整个 watch，而是某一次 `WatchIncident`。
+
+```text
+WatchIncident
+  -> structured_evidence
+  -> rca_inputs
+  -> Evidence-to-Attribution / AI tree
+  -> analysis_result
+  -> 回写 analysis_status
+```
+
+约束：
+
+- 分析优先使用 incident 内的 `same_window` frozen snapshot。
+- 不为了分析 incident 伪造采集任务。
+- 不把 delayed follow-up 当作恢复现场。
+- 从 incident 发起分析时不自动执行修复动作。
+- 第一版将分析结果挂回 incident；后续再升级为持久化 analysis session。
+
+### 19.8 本方案边界
+
+本阶段不做：
+
+- 不实现完整监控系统。
+- 不让 Persistent Trigger Agent 输出根因。
+- 不默认开启高成本 continuous profiling。
+- 不绕过现有 `ProbeDefinition`、审批和预算机制。
+- 不把 `WatchSubscription` 第一版直接落成数据库持久化表；当前先完成控制面协议、API、前端入口和运行时闭环。
+- 不把 `WatchIncident` 第一版直接等同为告警或 RCA；它只是被冻结的异常现场。
+
+本阶段要保证：
+
+- 任务驱动和触发式证据进入同一套结构化证据层。
+- 所有证据都能追溯到窗口、触发事件和采集模式。
+- AI 树发表结论时明确证据时间边界。
+- 前端能看到 agent 当前被要求监视哪些对象、最近是否触发过证据窗口。
+- 前端能展开监视对象，查看该对象下所有待分析或已分析的异常窗口。
+- 前端能从某个异常窗口发起 AI 树分析，并看到分析状态和摘要。
+
+### 19.9 分阶段完成项
+
+- [x] 阶段 1：已补齐证据同窗协议字段与结构化输出携带能力
+- [x] 阶段 2：Analysis Session 普适入口
+- [x] 阶段 3：Persistent Evidence Trigger 最小闭环
+- [x] 阶段 4：Rolling Buffer / Triggered Snapshot
+- [x] 阶段 5：AI 树同窗证据裁决
+- [x] 阶段 6：WatchSubscription 驱动的 Persistent Agent Runtime 与前端入口
+- [x] 阶段 7：WatchIncident / Frozen Evidence Inbox 可展开异常窗口
+- [x] 阶段 8：WatchIncident -> AI 树分析入口
+
+### 19.10 Persistent Agent 后续路线与复用验证
+
+未来的 Persistent Agent 仍然只做证据时间锚点和窗口管理，不进入根因判断。它的生命周期建议保持为：
+
+```text
+agent_start
+  -> register low-cost observers
+  -> maintain rolling buffers
+  -> emit trigger_event on relative shift
+  -> freeze rolling_snapshot
+  -> create or attach evidence_cohort
+  -> hand over to existing diagnosis / analysis session
+```
+
+边界要求：
+
+- Persistent Agent 只输出 `trigger_event`、`rolling_snapshot` 和 `evidence_cohort_id`。
+- Persistent Agent 不输出 `root_cause`、`ranked_causes`、`repair_plan`。
+- 触发规则只决定“是否值得采证”和“该启动哪组 collector”，不决定原因。
+- 高风险或中风险采集仍必须经过现有 `ProbeDefinition`、审批策略、预算和 capability 校验。
+
+Rolling Buffer 保留策略：
+
+| 证据族 | 默认保留 | 触发后行为 | 进入 AI 路径方式 |
+|---|---:|---|---|
+| low-cost metrics | 5 分钟 | 冻结 pre/post window | `sys_metrics.summary` 摘要 |
+| endpoint summary | 5 分钟 | 冻结 endpoint 聚合 | `evidence_index.context` 摘要 |
+| trace summary | 5 分钟 | 冻结 trace 上下文 | `call_path_hotspots` / context 摘要 |
+| lightweight stack summary | 2 分钟 | 冻结轻量栈摘要 | `top_functions` / `stack_summary` 摘要 |
+
+当前合同复用验证：
+
+- `trigger_event_id` 和 `evidence_cohort_id` 已能从触发器传入子采集任务。
+- `collection_mode=triggered_group` 和 `collection_mode=rolling_snapshot` 已进入结构化证据层。
+- `timing_relation` 已进入 facts、evidence challenges 和 conclusion boundary。
+- `next_evidence_requests` 已能通过现有 `ProbeDefinition` 映射为 follow-up probe。
+- follow-up probe 完成后会回到同一个 `diagnosis_id` 重新分析并生成新 conclusion version。
+
+因此未来升级成真正常驻进程时，不需要新建第二套归因链路，只要把 Persistent Agent 的输出接到现有：
+
+```text
+trigger_event / rolling_snapshot
+  -> structured_evidence
+  -> Evidence-to-Attribution / AI tree
+  -> diagnosis session / analysis session
+```
+
+### 19.11 WatchSubscription 驱动的 Persistent Agent 方案
+
+当前 `Persistent Trigger` 已能在给定 `target + baseline_window + trigger_window` 后生成 `trigger_event`、`evidence_cohort` 和同窗 collector group，但它本身不知道要监视哪个目标。因此需要增加独立控制面：
+
+```text
+用户 / 系统
+  -> 创建 WatchSubscription
+  -> Agent 查询 WatchLease
+  -> Agent 维护对应 target 的低成本窗口
+  -> Runtime 调用 Persistent Trigger
+  -> 生成 trigger_event / evidence_cohort / collector_tasks
+```
+
+核心原则：
+
+- `WatchSubscription` 表示“希望系统持续低成本观察哪个目标”。
+- `WatchLease` 表示“某个 agent 当前实际承担哪个观察对象”。
+- `PersistentAgentRuntime` 只把 watch 窗口送入触发器，不输出 RCA。
+- `DiagnosisTask` 只消费已有 `evidence_cohort` 或创建主动采集任务，不直接决定 agent 常驻观察面。
+
+最小对象：
+
+```json
+{
+  "watch_id": "watch_001",
+  "name": "order service watch",
+  "target": {
+    "agent_id": "agent_1",
+    "target_pid": 4242,
+    "service_id": "order-service",
+    "instance_id": "order-1",
+    "endpoint": "/orders"
+  },
+  "watch_profile": "low_cost_default",
+  "enabled_collectors": ["sys_metrics", "light_stack", "trace_window"],
+  "retention_seconds": 120,
+  "trigger_policy": "relative_shift_only",
+  "status": "active"
+}
+```
+
+前端要求：
+
+- 提供“持续监视”页面。
+- 能创建 watch subscription。
+- 能查看当前 active watch。
+- 能查看某个 agent 领取到的 watch lease。
+- 能看到最近触发的 `trigger_event_id`、`evidence_cohort_id` 和 `trigger_type`。
+- 页面文案必须明确：watch 只表示证据观察，不代表根因结论。
+
+第一版完成项：
+
+- [x] 已实现 `WatchSubscription`、`WatchLease`、`WatchRegistry` 和 `PersistentAgentRuntime`。
+- [x] 已提供 `/api/v1/watches`、`/api/v1/agents/{agent_id}/watch-leases`、`/api/v1/watches/{watch_id}/evaluate` API。
+- [x] 已验证 watch 能复用 `evaluate_persistent_trigger` 生成同窗 collector group。
+- [x] 已提供前端“持续监视”入口，用于创建 watch、查看 lease 和最近触发窗口。
+
+后续升级：
+
+- 将 `WatchRegistry` 从内存态升级为 SQL 持久化表。
+- 增加 agent 侧自动拉取 watch lease 的后台循环。
+- 增加每个 target 的 ring buffer 自动维护。
+- 增加 watch 预算、并发上限、冷却时间和资源保护策略。
+- 支持诊断任务自动复用最近相关 `evidence_cohort`。
+
+### 19.12 WatchIncident 与 Frozen Evidence Inbox
+
+`WatchIncident` 是一次异常窗口，不是一次根因结论。它用于承接“异常已经冻结，但还没有进入 AI 树分析”的中间状态。
+
+状态建议：
+
+| 状态 | 含义 |
+|---|---|
+| `frozen` | 已冻结现场，但没有自动补采任务 |
+| `collecting` | 已冻结现场，同时启动了低风险短窗口补采 |
+| `ready_for_analysis` | 证据已满足进入 AI 树的最低要求 |
+| `analyzing` | AI 树正在分析 |
+| `analyzed` | 已生成阶段性或最终结论 |
+| `needs_evidence` | AI 树认为证据不足，需要补证 |
+| `stale` | 历史窗口，只作为参考 |
+
+第一版最小字段：
+
+```json
+{
+  "incident_id": "inc_001",
+  "watch_id": "watch_001",
+  "trigger_event_id": "evt_001",
+  "evidence_cohort_id": "cohort_001",
+  "trigger_type": "cpu_shift",
+  "window_start": "2026-08-11T10:14:48Z",
+  "window_end": "2026-08-11T10:15:18Z",
+  "status": "collecting",
+  "analysis_status": "not_started",
+  "snapshot_id": "snap_001",
+  "snapshot_refs": ["rolling_metrics_summary", "rolling_stack_summary"],
+  "collector_tasks": ["task_001", "task_002"]
+}
+```
+
+第一版完成项：
+
+- [x] 触发时追加 `WatchIncident`，不覆盖历史异常窗口。
+- [x] 每个 incident 绑定 `trigger_event_id`、`evidence_cohort_id`、`snapshot_id`、`snapshot_refs` 和 `collector_tasks`。
+- [x] `freeze_only` 策略只冻结现场，不自动创建采集任务。
+- [x] `freeze_and_safe_probe` 策略先冻结现场，再创建 `R1` 低风险短窗口补采任务。
+- [x] 前端 `WatchSubscription` 父列表支持展开查看异常窗口。
+- [x] 已验证同一 watch 多次触发会产生多个 incident。
+
+后续升级：
+
+- 将 snapshot refs 接入证据查看器。
+- 将 collector task 状态实时同步到 incident。
+- 支持按 `ready_for_analysis / needs_evidence / analyzed` 筛选异常窗口。
+
+### 19.13 WatchIncident -> AI 树分析入口
+
+每个 `WatchIncident` 都保存同窗 `structured_evidence`，因此可以在异常已经结束后，基于冻结现场进入 AI 树分析。
+
+第一版链路：
+
+```text
+POST /api/v1/watch-incidents/{incident_id}/analyze
+  -> 读取 incident.structured_evidence
+  -> 转成 rca_inputs
+  -> 构造只读 synthetic task context
+  -> run_diagnosis_context(auto_execute_safe=False)
+  -> 回写 incident.analysis_status / analysis_session_id / analysis_result
+```
+
+这里的 synthetic task context 只用于兼容现有 RCA 引擎读取 `agent_id / target_pid / collector_type` 等元数据，不会写入任务表，也不会下发采集任务。
+
+第一版完成项：
+
+- [x] `WatchIncident` 已保存 `structured_evidence`。
+- [x] 已提供 `/api/v1/watch-incidents/{incident_id}/analyze`。
+- [x] 分析结果回写 `analysis_status`、`analysis_session_id` 和 `analysis_result`。
+- [x] 前端异常窗口行已启用“AI 树分析”按钮。
+- [x] 分析使用 `same_window` frozen snapshot，并关闭自动修复执行。
+
+后续升级：
+
+- 将 incident analysis 升级为可持久化 `analysis_session`。
+- 支持从 `analysis_result.next_evidence_requests` 继续生成 delayed follow-up probe。
+- 支持从 analyzed incident 跳转到完整报告页。
+- 支持把 collector task 完成后的新证据合并回同一个 incident/cohort 再分析。

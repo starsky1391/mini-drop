@@ -37,8 +37,11 @@ def analyze_evidence(
     candidates: Iterable[CandidateCause],
 ) -> EvidenceAttributionResult:
     """Build reportable attribution boundaries from existing RCA evidence."""
+    default_window = _evidence_window(evidence)
     facts = _derive_facts(evidence)
     facts.extend(_derive_depth_facts(evidence))
+    facts.extend(_derive_timed_window_facts(evidence))
+    facts = _apply_default_window(facts, default_window)
     fact_map = {fact.fact_id: fact for fact in facts}
     symptoms = _derive_symptoms(facts)
     localizations = _derive_localizations(facts, symptoms)
@@ -48,7 +51,7 @@ def analyze_evidence(
         for candidate in candidates
     ]
     challenges = [
-        _challenge(attribution)
+        _challenge(attribution, fact_map)
         for attribution in attributions
         if attribution.status == "supported"
     ]
@@ -77,6 +80,9 @@ def analyze_evidence(
         challenges,
         localizations,
     )
+    delayed_reproduction_status = _delayed_followup_reproduction_status(facts)
+    conclusion_window = _conclusion_window(facts, attributions, allowed)
+    timing_relation = _conclusion_timing_relation(facts, attributions, allowed)
     missing_evidence, blocked_upgrades, collection_gaps = _derive_collection_gaps(
         evidence,
         localizations,
@@ -92,7 +98,13 @@ def analyze_evidence(
             max_supported_level=max_level,
             missing_evidence=missing_evidence,
             blocked_upgrades=blocked_upgrades,
+            timing_relation=timing_relation,
+            delayed_followup_reproduction_status=delayed_reproduction_status,
         ),
+        conclusion_window=conclusion_window,
+        timing_relation=timing_relation,
+        delayed_followup_reproduction_status=delayed_reproduction_status,
+        non_refutable_evidence_boundaries=_non_refutable_evidence_boundaries(facts, attributions),
     )
     conflict_branch = _derive_conflict_branch(attributions, facts, primary_cause_id)
     ai_tree = _derive_ai_tree(
@@ -437,6 +449,78 @@ def _derive_depth_facts(evidence: EvidenceInput) -> list[AnalysisFact]:
     return facts
 
 
+def _derive_timed_window_facts(evidence: EvidenceInput) -> list[AnalysisFact]:
+    index = evidence.evidence_index or {}
+    if not isinstance(index, dict):
+        return []
+    timed_facts = index.get("timed_facts", [])
+    if not isinstance(timed_facts, list):
+        return []
+
+    facts: list[AnalysisFact] = []
+    for position, item in enumerate(timed_facts[:20], start=1):
+        if not isinstance(item, dict):
+            continue
+        fact_id = str(item.get("fact_id") or f"fact_timed_{position}").strip()
+        source = str(item.get("source") or "evidence_index.timed_facts").strip()
+        evidence_ref = str(item.get("evidence_ref") or f"evidence_index.timed_facts[{position - 1}]").strip()
+        status = "normal" if item.get("status") == "normal" else "observed"
+        threshold_band = str(item.get("threshold_band") or "unknown")
+        if threshold_band not in {"below", "near", "above", "unknown"}:
+            threshold_band = "unknown"
+        evidence_window = item.get("evidence_window") if isinstance(item.get("evidence_window"), dict) else {}
+        facts.append(AnalysisFact(
+            fact_id=fact_id,
+            source=source,
+            evidence_ref=evidence_ref,
+            value=item.get("value"),
+            status=status,
+            threshold_band=threshold_band,
+            evidence_window=evidence_window,
+            timing_relation=_timing_relation_from_window(evidence_window),
+        ))
+    return facts
+
+
+def _evidence_window(evidence: EvidenceInput) -> dict:
+    index = evidence.evidence_index or {}
+    if isinstance(index, dict) and isinstance(index.get("evidence_window"), dict):
+        return dict(index["evidence_window"])
+    for top in evidence.top_functions:
+        if isinstance(top, dict) and isinstance(top.get("evidence_window"), dict):
+            return dict(top["evidence_window"])
+    return {}
+
+
+def _apply_default_window(facts: list[AnalysisFact], default_window: dict) -> list[AnalysisFact]:
+    if not default_window:
+        return facts
+    result: list[AnalysisFact] = []
+    for fact in facts:
+        if fact.evidence_window:
+            result.append(fact)
+            continue
+        result.append(fact.model_copy(update={
+            "evidence_window": default_window,
+            "timing_relation": _timing_relation_from_window(default_window),
+        }))
+    return result
+
+
+def _timing_relation_from_window(window: dict) -> str:
+    relation = str(window.get("timing_relation") or "unknown")
+    if relation in {
+        "same_window",
+        "pre_trigger_window",
+        "post_trigger_window",
+        "delayed_followup",
+        "stale_window",
+        "unknown",
+    }:
+        return relation
+    return "unknown"
+
+
 def _derive_symptoms(facts: list[AnalysisFact]) -> list[AnalysisSymptom]:
     by_id = {fact.fact_id: fact for fact in facts}
     symptoms: list[AnalysisSymptom] = []
@@ -779,11 +863,18 @@ def _io_attribution(
     if supporting_fact_ids and (
         "io_wait_high" in symptom_types or "io_latency_high" in symptom_types
     ):
+        opposing_fact_ids = []
+        if "fact_iowait_low" in fact_ids and _can_fact_refute(
+            supporting_fact_ids,
+            "fact_iowait_low",
+            fact_map,
+        ):
+            opposing_fact_ids.append("fact_iowait_low")
         return GuardedAttribution(
             candidate_id=candidate.candidate_id,
             status="supported",
             supporting_fact_ids=supporting_fact_ids,
-            opposing_fact_ids=["fact_iowait_low"] if "fact_iowait_low" in fact_ids else [],
+            opposing_fact_ids=opposing_fact_ids,
             max_supported_level="resource",
         )
     missing = []
@@ -1062,7 +1153,10 @@ def _cross_attribution(
     )
 
 
-def _challenge(attribution: GuardedAttribution) -> EvidenceChallenge:
+def _challenge(
+    attribution: GuardedAttribution,
+    fact_map: dict[str, AnalysisFact],
+) -> EvidenceChallenge:
     tests: list[EvidenceChallengeTest] = []
     for fact_id in attribution.supporting_fact_ids:
         if attribution.max_supported_level == "function" and fact_id == "fact_top_function_0":
@@ -1077,6 +1171,7 @@ def _challenge(attribution: GuardedAttribution) -> EvidenceChallenge:
                 result="forbidden",
                 meaning="缺少该关键事实后，当前归因结论不再成立。",
             ))
+    evidence_window = _first_fact_window(attribution.supporting_fact_ids, fact_map)
     return EvidenceChallenge(
         candidate_id=attribution.candidate_id,
         critical_fact_ids=attribution.supporting_fact_ids,
@@ -1090,6 +1185,11 @@ def _challenge(attribution: GuardedAttribution) -> EvidenceChallenge:
                 and "fact_top_function_0" in attribution.supporting_fact_ids
             )
             else "fragile"
+        ),
+        evidence_window=evidence_window,
+        timing_relation=_timing_relation_from_window(evidence_window),
+        delayed_followup_reproduction_status=_facts_delayed_followup_status(
+            [fact_map[fact_id] for fact_id in attribution.supporting_fact_ids if fact_id in fact_map]
         ),
     )
 
@@ -1156,6 +1256,88 @@ def _select_primary_cause(
     if primary.max_supported_level == localization_level:
         reason_parts.append("与定位层级一致")
     return primary.candidate_id, "、".join(reason_parts), round(stability_score, 3)
+
+
+def _can_fact_refute(
+    supporting_fact_ids: list[str],
+    opposing_fact_id: str,
+    fact_map: dict[str, AnalysisFact],
+) -> bool:
+    opposing = fact_map.get(opposing_fact_id)
+    if opposing is None:
+        return False
+    if opposing.timing_relation in {"delayed_followup", "stale_window"}:
+        for fact_id in supporting_fact_ids:
+            supporting = fact_map.get(fact_id)
+            if supporting is not None and supporting.timing_relation == "same_window":
+                return False
+    return True
+
+
+def _first_fact_window(fact_ids: list[str], fact_map: dict[str, AnalysisFact]) -> dict:
+    for fact_id in fact_ids:
+        fact = fact_map.get(fact_id)
+        if fact is not None and fact.evidence_window:
+            return dict(fact.evidence_window)
+    return {}
+
+
+def _conclusion_window(
+    facts: list[AnalysisFact],
+    attributions: list[GuardedAttribution],
+    allowed: list[str],
+) -> dict:
+    fact_map = {fact.fact_id: fact for fact in facts}
+    allowed_set = set(allowed)
+    for attribution in attributions:
+        if attribution.candidate_id not in allowed_set:
+            continue
+        window = _first_fact_window(attribution.supporting_fact_ids, fact_map)
+        if window:
+            return window
+    return _first_fact_window([fact.fact_id for fact in facts], fact_map)
+
+
+def _conclusion_timing_relation(
+    facts: list[AnalysisFact],
+    attributions: list[GuardedAttribution],
+    allowed: list[str],
+) -> str:
+    window = _conclusion_window(facts, attributions, allowed)
+    return _timing_relation_from_window(window)
+
+
+def _delayed_followup_reproduction_status(facts: list[AnalysisFact]) -> str:
+    return _facts_delayed_followup_status(facts)
+
+
+def _facts_delayed_followup_status(facts: list[AnalysisFact]) -> str:
+    delayed = [fact for fact in facts if fact.timing_relation == "delayed_followup"]
+    if not delayed:
+        return "not_applicable"
+    if any(fact.status == "observed" for fact in delayed):
+        return "reproduced"
+    if all(fact.status == "normal" for fact in delayed):
+        return "not_reproduced"
+    return "unknown"
+
+
+def _non_refutable_evidence_boundaries(
+    facts: list[AnalysisFact],
+    attributions: list[GuardedAttribution],
+) -> list[str]:
+    fact_map = {fact.fact_id: fact for fact in facts}
+    boundaries: list[str] = []
+    for attribution in attributions:
+        if attribution.status != "supported":
+            continue
+        for fact_id in attribution.supporting_fact_ids:
+            fact = fact_map.get(fact_id)
+            if fact is not None and fact.timing_relation == "same_window":
+                text = f"{fact_id}:same_window evidence cannot be directly refuted by delayed_followup non-reproduction"
+                if text not in boundaries:
+                    boundaries.append(text)
+    return boundaries
 
 
 def _derive_collection_gaps(
@@ -1230,19 +1412,27 @@ def _build_boundary_reason(
     max_supported_level: str,
     missing_evidence: list[str],
     blocked_upgrades: list[str],
+    timing_relation: str,
+    delayed_followup_reproduction_status: str,
 ) -> str:
+    timing_note = ""
+    if timing_relation == "same_window" and delayed_followup_reproduction_status == "not_reproduced":
+        timing_note = " 延迟补采未复现只能降低后续确认度，不能直接反证同窗证据。"
+    elif timing_relation != "unknown":
+        timing_note = f" 结论窗口关系：{timing_relation}。"
+
     if can_claim_root_cause:
         if max_supported_level == "function":
-            return "当前证据已支持函数层结论，但仍缺少 off-CPU / trace 证据，无法继续上推到调用路径或等待机制。"
+            return "当前证据已支持函数层结论，但仍缺少 off-CPU / trace 证据，无法继续上推到调用路径或等待机制。" + timing_note
         if max_supported_level in {"process", "thread", "syscall"}:
-            return f"当前证据已稳定定位到 {max_supported_level} 层，但仍缺少更深层上下文采集，无法继续上推。"
-        return "存在由关键事实共同支持且通过证据反问校验的归因结论。"
+            return f"当前证据已稳定定位到 {max_supported_level} 层，但仍缺少更深层上下文采集，无法继续上推。" + timing_note
+        return "存在由关键事实共同支持且通过证据反问校验的归因结论。" + timing_note
 
     if blocked_upgrades:
-        return "；".join(blocked_upgrades[:2])
+        return "；".join(blocked_upgrades[:2]) + timing_note
     if missing_evidence:
-        return missing_evidence[0]
-    return "当前事实不足以稳定支持任何明确根因，只能保留现象或较粗定位层级。"
+        return missing_evidence[0] + timing_note
+    return "当前事实不足以稳定支持任何明确根因，只能保留现象或较粗定位层级。" + timing_note
 
 
 def _derive_next_evidence_requests(
@@ -1419,18 +1609,38 @@ def _derive_conflict_branch(
     primary_cause_id: str | None,
 ) -> dict | None:
     supported = [item for item in attributions if item.status == "supported"]
+    opposing_supported = [item for item in attributions if item.opposing_fact_ids]
     if len(supported) < 2:
-        return None
+        if not _has_same_window_opposition(opposing_supported, facts):
+            return None
+        candidate_ids = sorted(item.candidate_id for item in opposing_supported)
+        evidence_refs = _same_window_conflict_refs(opposing_supported, facts)
+        return {
+            "conflict_type": "same_window_collector_conflict",
+            "evidence_family": sorted({_candidate_domain(item.candidate_id) for item in opposing_supported}),
+            "conflict_candidates": candidate_ids,
+            "decision": "downgrade",
+            "leaf_status": "conservative_leaf",
+            "evidence_refs": evidence_refs,
+            "reason": (
+                "检测到 same_window_collector_conflict，同一异常窗口内不同采集器证据相互矛盾，"
+                "当前结论降级为保守叶子。"
+            ),
+        }
 
     families = sorted({
         _candidate_domain(item.candidate_id)
         for item in supported
     })
-    opposing_supported = [item for item in attributions if item.opposing_fact_ids]
     if len([family for family in families if family != "other"]) <= 1 and not opposing_supported:
         return None
 
-    conflict_type = "cross_family_conflict" if len([family for family in families if family != "other"]) > 1 else "opposing_evidence_conflict"
+    if _has_same_window_opposition(opposing_supported, facts):
+        conflict_type = "same_window_collector_conflict"
+    elif len([family for family in families if family != "other"]) > 1:
+        conflict_type = "cross_family_conflict"
+    else:
+        conflict_type = "opposing_evidence_conflict"
     candidate_ids = sorted(item.candidate_id for item in supported)
     evidence_refs = sorted({
         fact.evidence_ref
@@ -1451,6 +1661,39 @@ def _derive_conflict_branch(
         "evidence_refs": evidence_refs,
         "reason": reason,
     }
+
+
+def _has_same_window_opposition(
+    attributions: list[GuardedAttribution],
+    facts: list[AnalysisFact],
+) -> bool:
+    fact_map = {fact.fact_id: fact for fact in facts}
+    for attribution in attributions:
+        has_same_window_support = any(
+            (fact_map.get(fact_id) is not None and fact_map[fact_id].timing_relation == "same_window")
+            for fact_id in attribution.supporting_fact_ids
+        )
+        has_same_window_opposition = any(
+            (fact_map.get(fact_id) is not None and fact_map[fact_id].timing_relation == "same_window")
+            for fact_id in attribution.opposing_fact_ids
+        )
+        if has_same_window_support and has_same_window_opposition:
+            return True
+    return False
+
+
+def _same_window_conflict_refs(
+    attributions: list[GuardedAttribution],
+    facts: list[AnalysisFact],
+) -> list[str]:
+    fact_map = {fact.fact_id: fact for fact in facts}
+    refs = []
+    for attribution in attributions:
+        for fact_id in [*attribution.supporting_fact_ids, *attribution.opposing_fact_ids]:
+            fact = fact_map.get(fact_id)
+            if fact is not None and fact.timing_relation == "same_window" and fact.evidence_ref not in refs:
+                refs.append(fact.evidence_ref)
+    return sorted(refs)
 
 
 def _deepest_localization(localizations: list[AnalysisLocalization]) -> AnalysisLocalization | None:

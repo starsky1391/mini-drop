@@ -29,6 +29,8 @@ from server.app.event_bus import BUS
 from server.app.rca.calibrator import calibrate
 from server.app.rca.candidates import generate_candidates
 from server.app.rca.evidence import collect_evidence
+from server.app.rca.attribution import analyze_evidence
+from server.app.rca.models import CandidateCause, EvidenceInput
 from server.app.diagnosis.evidence_structurer import rca_inputs_from_structured, structure_artifact_evidence
 from server.app.schemas import CreateTaskRequest, MAX_SAMPLE_RATE, MAX_TASK_DURATION_SEC, MIN_SAMPLE_RATE
 
@@ -44,7 +46,7 @@ ALLOWED_DIAGNOSIS_TRANSITIONS = {
     "ANALYZING_EXISTING_DATA": {"ANALYZING", "COLLECTING", "WAITING_APPROVAL", "INSUFFICIENT_EVIDENCE", "FAILED"},
     "COLLECTING": {"ANALYZING", "WAITING_APPROVAL", "NEED_MORE_EVIDENCE", "BUDGET_EXHAUSTED", "FAILED"},
     "ANALYZING": {"CONCLUDING", "WAITING_APPROVAL", "COLLECTING", "INSUFFICIENT_EVIDENCE", "PARTIAL_COMPLETED", "FAILED"},
-    "WAITING_APPROVAL": {"COLLECTING", "NEED_MORE_EVIDENCE", "BUDGET_EXHAUSTED", "USER_CANCELED", "FAILED"},
+    "WAITING_APPROVAL": {"ANALYZING", "COLLECTING", "NEED_MORE_EVIDENCE", "BUDGET_EXHAUSTED", "USER_CANCELED", "FAILED"},
     "NEED_MORE_EVIDENCE": {"ANALYZING", "COLLECTING", "WAITING_APPROVAL", "INSUFFICIENT_EVIDENCE", "PARTIAL_COMPLETED", "FAILED"},
     "CONCLUDING": {"COMPLETED", "INSUFFICIENT_EVIDENCE", "PARTIAL_COMPLETED", "FAILED"},
 }
@@ -83,6 +85,7 @@ class DiagnosisOrchestrator:
                 "max_medium_risk_probes": budget.max_medium_risk_probes,
                 "no_automatic_remediation": True,
                 "registered_probes_only": True,
+                "auto_execute_policy": request.auto_execute_policy or os.getenv("MINI_DROP_DIAGNOSIS_AUTO_EXECUTE_POLICY", "safe_only"),
             },
             "resource_budget": budget.model_dump(mode="json"),
             "budget_used": budget_usage,
@@ -121,6 +124,8 @@ class DiagnosisOrchestrator:
                 "evidence_analysis_started",
             )
             if self._analyze_tasks(diagnosis_id, existing_tasks):
+                if self._last_followup_scheduled:
+                    return self.store.get_detail(diagnosis_id) or {}
                 self._transition(diagnosis_id, DiagnosisStatus.CONCLUDING, "conclusion_generated")
                 self._transition(diagnosis_id, DiagnosisStatus.COMPLETED, "diagnosis_completed")
                 return self.store.get_detail(diagnosis_id) or {}
@@ -293,6 +298,8 @@ class DiagnosisOrchestrator:
         if terminal_tasks:
             self._transition(diagnosis_id, DiagnosisStatus.ANALYZING, "evidence_analysis_started")
             informative = self._analyze_tasks(diagnosis_id, terminal_tasks)
+            if self._last_followup_scheduled:
+                return
             if informative:
                 for probe in self.store.list_probes(diagnosis_id):
                     if probe["status"] == "WAITING_APPROVAL":
@@ -376,7 +383,7 @@ class DiagnosisOrchestrator:
                     step_id=f"step_{hashlib.sha256(key.encode()).hexdigest()[:14]}",
                     probe_id=probe_id,
                     target=instance,
-                    parameters={"duration_sec": duration, "sample_rate": definition.default_sample_rate},
+                    parameters={"duration_sec": duration, "sample_rate": definition.default_sample_rate, "evidence_gap": self._probe_evidence_gap(probe_id)},
                     reason=f"用于区分 {', '.join(definition.applicable_hypotheses[:3])} 等候选假设",
                     risk_level=definition.risk_level,
                     requires_approval=definition.requires_approval,
@@ -411,8 +418,9 @@ class DiagnosisOrchestrator:
             self.store.update_probe(step_id, status="REJECTED_POLICY")
             return
         if definition.requires_approval and step["status"] != "APPROVED":
-            self.store.update_probe(step_id, status="WAITING_APPROVAL")
-            return
+            if (step.get("parameters") or {}).get("execution_policy") != "all_registered":
+                self.store.update_probe(step_id, status="WAITING_APPROVAL")
+                return
         self._enforce_service_scope(target.get("service_id"))
         try:
             duration = int(step["parameters"]["duration_sec"])
@@ -500,7 +508,9 @@ class DiagnosisOrchestrator:
         )
 
     def _analyze_tasks(self, diagnosis_id: str, tasks: list[Any]) -> bool:
+        self._last_followup_scheduled = False
         all_candidates: list[dict[str, Any]] = []
+        followup_requests: list[str] = []
         task_observations: list[dict[str, Any]] = []
         missing: list[str] = []
         failed_targets: list[str] = []
@@ -559,6 +569,11 @@ class DiagnosisOrchestrator:
                 evidence_index=values.get("evidence_index") if isinstance(values.get("evidence_index"), dict) else {},
             )
             candidates = generate_candidates(evidence, self.repo.get_feedback_priors())
+            analysis_result = analyze_evidence(evidence, candidates)
+            for tree_node in analysis_result.ai_tree:
+                for request_id in tree_node.next_evidence_requests:
+                    if request_id not in followup_requests:
+                        followup_requests.append(request_id)
             calibrated = calibrate(candidates, evidence, self.repo.get_feedback_priors())
             for candidate in calibrated:
                 if candidate.candidate_id == "insufficient_data":
@@ -619,6 +634,7 @@ class DiagnosisOrchestrator:
                 "execution": "manual_confirmation_required",
             }],
             "limitations": sorted(set(missing + (["部分目标采集失败"] if failed_targets else []))),
+            "next_evidence_requests": followup_requests,
             "coverage": {
                 "task_count": len(tasks),
                 "failed_targets": failed_targets,
@@ -627,7 +643,86 @@ class DiagnosisOrchestrator:
         }
         self._append_conclusion(diagnosis_id, conclusion)
         self._update_hypotheses(diagnosis_id, deduped)
+        if followup_requests and tasks:
+            self._plan_followup_requests(diagnosis_id, followup_requests, tasks[-1])
         return True
+
+    @staticmethod
+    def _probe_evidence_gap(probe_id: str) -> str:
+        return {
+            "process_off_cpu_profile": "off_cpu_wait_profile",
+            "process_trace_endpoint_profile": "trace_endpoint_profile",
+            "process_baseline_window": "baseline_window_profile",
+        }.get(probe_id, "")
+
+    def _plan_followup_requests(self, diagnosis_id: str, request_ids: list[str], parent_task) -> int:
+        """Map AI tree evidence requests to registered follow-up probe plans."""
+        session = self.store.get_session(diagnosis_id)
+        if session is None or session["status"] in TERMINAL_DIAGNOSIS_STATUSES:
+            return 0
+        target = self._target_for_task(diagnosis_id, parent_task)
+        existing_gaps = {
+            str((probe.get("parameters") or {}).get("evidence_gap") or "")
+            for probe in self.store.list_probes(diagnosis_id)
+        }
+        policy = str((session.get("risk_budget") or {}).get("auto_execute_policy") or "safe_only")
+        created = 0
+        self._last_followup_scheduled = False
+        request_map = {
+            "off_cpu_wait_profile": "process_off_cpu_profile",
+            "trace_endpoint_profile": "process_trace_endpoint_profile",
+            "baseline_window_profile": "process_baseline_window",
+        }
+        for evidence_gap in request_ids:
+            probe_id = request_map.get(evidence_gap)
+            if not probe_id or evidence_gap in existing_gaps:
+                continue
+            definition = get_probe(probe_id)
+            if definition is None:
+                continue
+            if definition.risk_level in {"R2", "R3"} and policy == "safe_only":
+                requires_approval = True
+            elif policy == "manual":
+                requires_approval = True
+            else:
+                requires_approval = False
+            key = f"{diagnosis_id}:followup:{evidence_gap}"
+            plan = ProbePlan(
+                step_id=f"step_{hashlib.sha256(key.encode()).hexdigest()[:14]}",
+                probe_id=probe_id,
+                target=target,
+                parameters={
+                    "duration_sec": min(definition.default_duration_seconds, definition.max_duration_seconds),
+                    "sample_rate": definition.default_sample_rate,
+                    "evidence_gap": evidence_gap,
+                    "parent_task_id": parent_task.id,
+                    "execution_policy": policy,
+                },
+                reason=f"AI 树请求补充证据: {evidence_gap}",
+                risk_level=definition.risk_level,
+                requires_approval=requires_approval,
+            )
+            self.store.add_probe({
+                **plan.model_dump(mode="json"),
+                "diagnosis_id": diagnosis_id,
+                "status": "WAITING_APPROVAL" if requires_approval else "PLANNED",
+            })
+            existing_gaps.add(evidence_gap)
+            created += 1
+            if not requires_approval:
+                self._schedule_probe(plan.step_id)
+        if created:
+            self._last_followup_scheduled = True
+            self._transition(
+                diagnosis_id,
+                DiagnosisStatus.WAITING_APPROVAL if policy == "manual" or any(
+                    probe.get("status") == "WAITING_APPROVAL"
+                    for probe in self.store.list_probes(diagnosis_id)
+                ) else DiagnosisStatus.COLLECTING,
+                "followup_evidence_requested",
+                {"evidence_gaps": [item for item in request_ids if item in existing_gaps]},
+            )
+        return created
 
     def _build_task_observation(
         self,

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 
+import pytest
+from pydantic import ValidationError
+
 from server.app.diagnosis.evidence_structurer import rca_inputs_from_structured, structure_artifact_evidence
 from server.app.rca.attribution import analyze_evidence
 from server.app.rca.evidence import collect_evidence, evidence_to_json
@@ -50,6 +53,54 @@ def test_structured_evidence_is_deterministic_for_same_artifacts():
     assert first.top_functions[0]["name"] == "busy_cpu"
     assert first.top_functions[0]["evidence_ref"] == "structured_evidence.top_functions[0]"
     assert first.confidence_inputs["token_safety"] == "compact_summary_only"
+
+
+def test_evidence_window_metadata_distinguishes_same_window_from_followup():
+    same_window = structure_artifact_evidence(
+        task_id="triggered_task",
+        artifacts=[{"artifact_type": "top_json", "filename": "top.json"}],
+        artifact_values={"top_json": [{"name": "busy_cpu", "samples": 70, "percent": 70.0}]},
+        evidence_window={
+            "trigger_event_id": "evt_001",
+            "evidence_cohort_id": "cohort_001",
+            "collection_mode": "triggered_group",
+            "window_start": "2026-08-11T10:14:48Z",
+            "window_end": "2026-08-11T10:15:18Z",
+            "trigger_observed_at": "2026-08-11T10:15:03Z",
+            "timing_relation": "same_window",
+        },
+    )
+    delayed = structure_artifact_evidence(
+        task_id="followup_task",
+        artifacts=[{"artifact_type": "top_json", "filename": "top.json"}],
+        artifact_values={"top_json": [{"name": "idle", "samples": 10, "percent": 10.0}]},
+        evidence_window={
+            "trigger_event_id": "evt_001",
+            "evidence_cohort_id": "cohort_001",
+            "collection_mode": "delayed_followup",
+            "window_start": "2026-08-11T10:18:00Z",
+            "window_end": "2026-08-11T10:18:15Z",
+            "trigger_observed_at": "2026-08-11T10:15:03Z",
+            "timing_relation": "delayed_followup",
+        },
+    )
+
+    assert same_window.collection_mode == "triggered_group"
+    assert same_window.timing_relation == "same_window"
+    assert same_window.top_functions[0]["evidence_window"]["timing_relation"] == "same_window"
+    assert same_window.evidence_index["evidence_window"]["evidence_cohort_id"] == "cohort_001"
+    assert delayed.collection_mode == "delayed_followup"
+    assert delayed.artifact_refs[0]["evidence_window"]["timing_relation"] == "delayed_followup"
+
+
+def test_evidence_window_metadata_rejects_unknown_modes():
+    with pytest.raises(ValidationError):
+        structure_artifact_evidence(
+            task_id="bad_window",
+            artifacts=[],
+            artifact_values={},
+            evidence_window={"collection_mode": "root_cause_guess", "timing_relation": "same_window"},
+        )
 
 
 def test_svg_only_artifact_stays_reference_only_in_llm_input():

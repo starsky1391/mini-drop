@@ -26,6 +26,9 @@ _CORE_CONSTRAINTS = """
 10. 如果 analysis_result.stability_score 较高，应在 summary 和 claim 中保持与结构化主因一致的叙述。
 11. 如果 analysis_result.missing_evidence / blocked_upgrades / collection_gaps 存在，
     必须在 summary 或 facts 中明确说明当前结论卡在哪个定位层级，以及还缺哪些采集能力。
+12. 如果 analysis_result.conclusion_boundary 包含 timing_relation、conclusion_window、
+    delayed_followup_reproduction_status 或 non_refutable_evidence_boundaries，
+    必须在 summary 或 facts 中说明结论窗口；延迟补采未复现不得被描述为直接反证同窗证据。
 """
 
 # ── 输出 Schema ──
