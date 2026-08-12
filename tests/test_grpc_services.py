@@ -127,6 +127,7 @@ class TestInitAgent:
     AGENT_ID = "test_agent_01"
 
     def test_register_creates_agent_record(self, grpc_fix: GrpcFixture):
+        profile = '{"schema_version":"1.0","summary":{"available":1},"collectors":[]}'
         resp = grpc_fix.init_stub.RegisterAgent(
             init_pb2.RegisterAgentRequest(
                 agent_id=self.AGENT_ID,
@@ -135,6 +136,7 @@ class TestInitAgent:
                 version="0.1.0",
                 os_info="Linux 5.15",
                 capabilities=["perf_cpu", "ebpf_io"],
+                collector_profile_json=profile,
             )
         )
         assert resp.heartbeat_interval_sec == 5
@@ -142,6 +144,7 @@ class TestInitAgent:
         assert agent.status == "ONLINE"
         assert agent.hostname == "test-host"
         assert "perf_cpu" in agent.capabilities
+        assert grpc_fix.repo.agent_metrics[self.AGENT_ID]["collector_profile"]["summary"]["available"] == 1
 
     def test_recovery_from_offline_writes_online_audit(self, grpc_fix: GrpcFixture):
         # 首次注册

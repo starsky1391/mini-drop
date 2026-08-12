@@ -1,5 +1,6 @@
 """HealthCheck gRPC 服务：1 Hz 心跳 + 任务下发。"""
 
+import json
 from typing import Any
 
 from server.app.generated import healthcheck_pb2, healthcheck_pb2_grpc, hotmethod_pb2
@@ -34,7 +35,7 @@ class HealthCheckService(healthcheck_pb2_grpc.HealthCheckServicer):
         response.pending = True
         task_desc = response.task_desc
         task_desc.task_id = task.id
-        task_desc.task_type = 0  # 通用任务
+        task_desc.task_type = self._task_type(task.collector_type)
         task_desc.profiler_type = self._profiler_type(task.collector_type)
         task_desc.timeout_sec = task.duration_sec + 30  # 留 30 秒余量
         task_desc.sample_argv.hz = task.sample_rate
@@ -43,6 +44,10 @@ class HealthCheckService(healthcheck_pb2_grpc.HealthCheckServicer):
         task_desc.sample_argv.callgraph = task.request_params.get("options", {}).get("callgraph", "fp")
         task_desc.sample_argv.event = task.request_params.get("options", {}).get("event", "cpu-cycles")
         task_desc.sample_argv.subprocess = task.request_params.get("options", {}).get("subprocess", False)
+        task_desc.script_content = json.dumps(
+            {"options": task.request_params.get("options", {})},
+            ensure_ascii=False,
+        )
         return response
 
     @staticmethod
@@ -62,6 +67,21 @@ class HealthCheckService(healthcheck_pb2_grpc.HealthCheckServicer):
             "memory_smaps": 5,
             "sys_metrics": 6,
             "continuous_perf": 7,
+            "baseline_window_profile": 7,
+            "off_cpu_wait_profile": 4,
+            "trace_endpoint_profile": 0,
+        }
+        return mapping.get(collector_type, 0)
+
+    @staticmethod
+    def _task_type(collector_type: str) -> int:
+        mapping: dict[str, int] = {
+            "trace_endpoint_profile": 2,
+            "off_cpu_wait_profile": 8,
+            "baseline_window_profile": 9,
+            "log_scan": 10,
+            "dependency_check": 11,
+            "redis_check": 12,
         }
         return mapping.get(collector_type, 0)
 

@@ -109,6 +109,55 @@ def test_watch_evaluation_reuses_persistent_trigger_and_updates_last_trigger():
     assert len(repo.tasks) == 1
 
 
+def test_watch_target_config_flows_into_triggered_collector_invocation():
+    repo = InMemoryRepository()
+    repo.register_agent(
+        "agent_1",
+        "host-1",
+        "10.0.0.1",
+        capabilities=["sys_metrics", "perf_cpu"],
+    )
+    registry = WatchRegistry()
+    runtime = PersistentAgentRuntime(registry, repo)
+    payload = _watch_payload().model_copy(update={
+        "target_config": {
+            "redis_target": {
+                "dependency_id": "order-redis",
+                "host": "order-redis.local",
+                "port": 6379,
+                "url": "redis://order-redis.local:6379",
+            },
+            "dependency_targets": [{
+                "dependency_id": "payment",
+                "protocol": "https",
+                "url": "https://payment.local/health",
+            }],
+        },
+    })
+    watch = registry.create(payload)
+    now = datetime(2026, 8, 11, 10, 0, tzinfo=timezone.utc)
+
+    result = runtime.evaluate(
+        watch.watch_id,
+        WatchEvaluationRequest(
+            baseline_window=_window(now, cpu_percent=20.0),
+            trigger_window=_window(now + timedelta(minutes=5), cpu_percent=55.0),
+        ),
+    )
+
+    collector_task = result.trigger.collector_tasks[0]
+    invocation = collector_task.collector_invocation
+    created_task = repo.tasks[collector_task.task_id]
+    task_invocation = created_task.request_params["options"]["collector_invocation"]
+
+    assert invocation["scope_source"] == "watch_subscription"
+    assert invocation["watch_id"] == watch.watch_id
+    assert invocation["target_config"]["redis_target"]["host"] == "order-redis.local"
+    assert task_invocation == invocation
+    assert created_task.request_params["options"]["target_config"] == payload.target_config
+    assert result.incident.collector_tasks[0].collector_invocation == invocation
+
+
 def test_watch_evaluation_appends_multiple_incidents_without_overwriting_history():
     repo = InMemoryRepository()
     repo.register_agent(

@@ -303,7 +303,10 @@ class InMemoryRepository:
 
     def record_agent_metrics(self, agent_id: str, metrics: dict[str, Any]) -> None:
         with self._lock:
-            self.agent_metrics[agent_id] = dict(metrics)
+            self.agent_metrics[agent_id] = {
+                **self.agent_metrics.get(agent_id, {}),
+                **dict(metrics),
+            }
 
     # ------------------------------------------------------------------
     # Artifacts

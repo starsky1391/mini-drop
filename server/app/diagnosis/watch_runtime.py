@@ -43,6 +43,7 @@ class WatchTarget(StrictModel):
 class CreateWatchSubscriptionRequest(StrictModel):
     name: str = Field(min_length=1, max_length=128)
     target: WatchTarget
+    target_config: dict[str, Any] = Field(default_factory=dict)
     watch_profile: WatchProfile = "low_cost_default"
     enabled_collectors: list[str] = Field(
         default_factory=lambda: ["sys_metrics", "light_stack", "trace_window"],
@@ -57,6 +58,7 @@ class WatchSubscription(StrictModel):
     watch_id: str
     name: str
     target: WatchTarget
+    target_config: dict[str, Any] = Field(default_factory=dict)
     watch_profile: WatchProfile
     enabled_collectors: list[str]
     retention_seconds: int
@@ -76,6 +78,7 @@ class WatchLease(StrictModel):
     watch_id: str
     agent_id: str
     target: WatchTarget
+    target_config: dict[str, Any] = Field(default_factory=dict)
     watch_profile: WatchProfile
     enabled_collectors: list[str]
     retention_seconds: int
@@ -127,6 +130,7 @@ class WatchRegistry:
             watch_id=f"watch_{uuid4().hex[:12]}",
             name=payload.name,
             target=payload.target,
+            target_config=payload.target_config,
             watch_profile=payload.watch_profile,
             enabled_collectors=list(dict.fromkeys(payload.enabled_collectors)),
             retention_seconds=payload.retention_seconds,
@@ -244,6 +248,7 @@ class PersistentAgentRuntime:
                     watch_id=watch.watch_id,
                     agent_id=watch.target.agent_id,
                     target=watch.target,
+                    target_config=watch.target_config,
                     watch_profile=watch.watch_profile,
                     enabled_collectors=watch.enabled_collectors,
                     retention_seconds=watch.retention_seconds,
@@ -265,6 +270,9 @@ class PersistentAgentRuntime:
                 target=TriggerTarget(**watch.target.model_dump()),
                 baseline_window=payload.baseline_window,
                 trigger_window=payload.trigger_window,
+                target_config=watch.target_config,
+                scope_source="watch_subscription",
+                watch_id=watch.watch_id,
             ),
             self.repo,
             create_collector_tasks=watch.trigger_action in {"freeze_and_safe_probe", "auto_all_registered"},

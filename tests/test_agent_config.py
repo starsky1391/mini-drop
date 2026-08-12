@@ -5,6 +5,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from agent.mini_drop_agent.config import load_config
+from agent.mini_drop_agent.collector_profile import build_collector_profile
 from agent.mini_drop_agent.main import CAPABILITIES, COLLECTORS, _apply_cos_config, _run_collector
 from server.app.generated import common_pb2
 
@@ -105,6 +106,22 @@ class TestAgentConfig:
         assert updated.minio_access_key == "server-ak"
         assert updated.minio_secret_key == "server-sk"
         assert updated.minio_bucket == "server-bucket"
+
+    def test_collector_profile_reports_managed_adapter_defaults(self, monkeypatch, tmp_path):
+        log_output = tmp_path / "logs.ndjson"
+        log_output.write_text("", encoding="utf-8")
+        monkeypatch.setenv("MINI_DROP_LOG_PIPELINE_OUTPUT", str(log_output))
+        monkeypatch.setenv("MINI_DROP_BLACKBOX_URL", "http://blackbox-exporter:9115")
+        monkeypatch.delenv("MINI_DROP_REDIS_EXPORTER_URL", raising=False)
+
+        profile = build_collector_profile(["log_scan", "dependency_check", "redis_check"])
+        collectors = {item["collector_type"]: item for item in profile["collectors"]}
+
+        assert profile["managed"] is True
+        assert collectors["log_scan"]["status"] == "available"
+        assert collectors["dependency_check"]["status"] in {"available", "degraded"}
+        assert collectors["dependency_check"]["default_options"]["blackbox_url"] == "http://blackbox-exporter:9115"
+        assert collectors["redis_check"]["status"] == "unavailable"
 
 
 class TestAgentCollectorDispatch:

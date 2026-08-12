@@ -46,6 +46,7 @@ const DEFAULT_FORM = {
   trigger_action: "freeze_and_safe_probe",
   retention_seconds: 120,
   enabled_collectors: ["sys_metrics", "light_stack", "trace_window"],
+  target_config_json: "",
 };
 
 function buildCpuShiftPayload() {
@@ -63,6 +64,20 @@ function buildCpuShiftPayload() {
       samples: [{ cpu_percent: 55 }, { cpu_percent: 56 }, { cpu_percent: 55 }],
     },
   };
+}
+
+function parseTargetConfig(value) {
+  const text = (value || "").trim();
+  if (!text) return {};
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+      throw new Error("目标配置必须是 JSON object");
+    }
+    return parsed;
+  } catch (err) {
+    throw new Error(`目标配置 JSON 无效：${err.message}`);
+  }
 }
 
 export default function PersistentWatch() {
@@ -121,6 +136,7 @@ export default function PersistentWatch() {
   async function handleCreate(values) {
     setSubmitting(true);
     try {
+      const targetConfig = parseTargetConfig(values.target_config_json);
       await createWatchSubscription({
         name: values.name,
         target: {
@@ -130,6 +146,7 @@ export default function PersistentWatch() {
           instance_id: values.instance_id || null,
           endpoint: values.endpoint || null,
         },
+        target_config: targetConfig,
         watch_profile: values.watch_profile,
         enabled_collectors: values.enabled_collectors,
         retention_seconds: values.retention_seconds,
@@ -211,6 +228,15 @@ export default function PersistentWatch() {
       dataIndex: "watch_profile",
       width: 150,
       render: (value) => <Tag color={value === "resource_guarded" ? "gold" : "cyan"}>{value}</Tag>,
+    },
+    {
+      title: "目标配置",
+      width: 120,
+      render: (_, record) => Object.keys(record.target_config || {}).length ? (
+        <Tag color="geekblue">已绑定</Tag>
+      ) : (
+        <Tag>未配置</Tag>
+      ),
     },
     {
       title: "最近触发",
@@ -497,6 +523,18 @@ export default function PersistentWatch() {
             <Col xs={24} md={8}>
               <Form.Item name="enabled_collectors" label="低成本观察族">
                 <Select mode="tags" tokenSeparators={[","]} />
+              </Form.Item>
+            </Col>
+            <Col xs={24}>
+              <Form.Item
+                name="target_config_json"
+                label="目标配置 JSON"
+                extra="可选。用于绑定 dependency_targets / redis_target / log_paths，触发采集时会写入 collector_invocation。"
+              >
+                <Input.TextArea
+                  rows={4}
+                  placeholder='{"redis_target":{"host":"order-redis","port":6379,"url":"redis://order-redis:6379"}}'
+                />
               </Form.Item>
             </Col>
           </Row>

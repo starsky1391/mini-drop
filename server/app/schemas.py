@@ -24,6 +24,9 @@ CollectorType = Literal[
     "off_cpu_wait_profile",
     "trace_endpoint_profile",
     "baseline_window_profile",
+    "log_scan",
+    "dependency_check",
+    "redis_check",
 ]
 MIN_TASK_DURATION_SEC = 1
 MAX_TASK_DURATION_SEC = 120

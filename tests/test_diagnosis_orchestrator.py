@@ -4,6 +4,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from server.app.database import init_db, reset_engine
+from server.app.diagnosis.audit_bundle import build_readiness_gate
+from server.app.diagnosis.benchmark_score import aggregate_results, score_audit_bundle
 from server.app.diagnosis import orchestrator as orchestrator_module
 from server.app.main import app, repo
 from server.app.main import diagnosis_orchestrator
@@ -98,6 +100,110 @@ def test_existing_structured_evidence_uses_legal_transition_and_completes(client
     assert ("ANALYZING", "COLLECTING") in transitions or ("ANALYZING", "CONCLUDING") in transitions
 
 
+def test_diagnosis_audit_bundle_exports_runtime_trace_and_readiness_gate(client: TestClient):
+    data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+    task_id = data["child_task_ids"][0]
+    summary = _normal_summary()
+    summary["avg_cpu_user_pct"] = 92.0
+    _finish_sys_metrics_task(task_id, summary)
+
+    detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
+    response = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}/audit-bundle")
+
+    assert response.status_code == 200
+    bundle = response.json()["data"]
+    assert bundle["diagnosis_id"] == data["diagnosis_id"]
+    assert bundle["runtime_trace"]
+    assert bundle["probes"]
+    assert bundle["child_task_ids"] == detail["child_task_ids"]
+    assert bundle["readiness_gate"]["status"] in {"PASS", "FAIL"}
+    assert any(check["name"] == "structured_evidence_non_empty" for check in bundle["readiness_gate"]["checks"])
+    assert any(
+        check["name"] == "required_collector_family_has_structured_artifact"
+        for check in bundle["readiness_gate"]["checks"]
+    )
+
+
+def test_readiness_gate_fails_completed_probe_without_structured_family_artifact():
+    bundle = {
+        "runtime_trace": [{"stage": "evidence"}],
+        "probes": [{
+            "probe_id": "process_dependency_check",
+            "task_id": "task_dependency",
+            "status": "COMPLETED",
+        }],
+        "child_task_ids": ["task_dependency"],
+        "tasks": [{"id": "task_dependency", "collector_type": "dependency_check"}],
+        "artifacts": [{"task_id": "task_dependency", "artifact_type": "raw"}],
+        "structured_evidence": {"version": 1},
+        "evidence_refs": ["ev_1"],
+    }
+
+    gate = build_readiness_gate(bundle)
+    check = next(item for item in gate["checks"] if item["name"] == "required_collector_family_has_structured_artifact")
+
+    assert gate["status"] == "FAIL"
+    assert check["status"] == "FAIL"
+
+
+def test_benchmark_score_module_scores_bundle_against_oracle(client: TestClient):
+    data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+    task_id = data["child_task_ids"][0]
+    summary = _normal_summary()
+    summary["avg_cpu_user_pct"] = 92.0
+    _finish_sys_metrics_task(task_id, summary)
+    bundle = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}/audit-bundle").json()["data"]
+    oracle = {
+        "case_id": "OB-SINGLE-CPU-001",
+        "expected": {
+            "location_type": "self",
+            "domain_type": "cpu",
+            "classification": "self_code_or_process_pressure",
+        },
+        "evidence": {"required_collectors": ["sys_metrics"], "minimum_independent_sources": 1},
+        "trace": {"runtime_required": True},
+    }
+
+    result = score_audit_bundle(bundle, oracle)
+    aggregate = aggregate_results([result])
+
+    assert result["case_id"] == "OB-SINGLE-CPU-001"
+    assert "root_cause" in result["dimensions"]
+    assert aggregate["run_count"] == 1
+
+
+def test_continuous_baseline_artifacts_are_structured_for_diagnosis(client: TestClient):
+    task_id = client.post("/api/tasks", json={
+        "name": "baseline-window",
+        "agent_id": "a1",
+        "target_pid": 1234,
+        "collector_type": "baseline_window_profile",
+        "duration_sec": 5,
+    }).json()["data"]["task_id"]
+    repo.transition_task(task_id, TaskStatus.RUNNING, "agent accepted", Actor.SERVER)
+    repo.transition_task(task_id, TaskStatus.UPLOADING, "collected", Actor.AGENT)
+    repo.transition_task(task_id, TaskStatus.ANALYZING, "analyzing", Actor.ANALYZER)
+    repo.add_artifacts(task_id, [
+        {
+            "artifact_type": "continuous_top_json",
+            "object_key": f"tasks/{task_id}/continuous_top_json.json",
+            "metadata": {"data": [{"name": "service.hot_loop", "samples": 80, "percent": 66.6}]},
+        },
+        {
+            "artifact_type": "continuous_summary",
+            "object_key": f"tasks/{task_id}/continuous_summary.json",
+            "metadata": {"data": {"window_count": 3, "drift": "high"}},
+        },
+    ])
+    repo.transition_task(task_id, TaskStatus.DONE, "analysis complete", Actor.ANALYZER)
+
+    detail = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+    bundle = client.get(f"/api/v1/diagnoses/{detail['diagnosis_id']}/audit-bundle").json()["data"]
+
+    assert bundle["structured_evidence"]
+    assert "service.hot_loop" in str(bundle["structured_evidence"])
+
+
 def _finish_sys_metrics_task(task_id: str, summary: dict):
     repo.transition_task(task_id, TaskStatus.RUNNING, "agent accepted", Actor.SERVER)
     repo.transition_task(task_id, TaskStatus.UPLOADING, "collected", Actor.AGENT)
@@ -144,6 +250,13 @@ def _finish_depth_task(task_id: str):
         },
     }])
     repo.transition_task(task_id, TaskStatus.DONE, "analysis complete", Actor.ANALYZER)
+
+
+def _task_for_step(step_id: str):
+    for task in repo.tasks.values():
+        if (task.request_params or {}).get("options", {}).get("diagnosis_step_id") == step_id:
+            return task
+    raise AssertionError(f"task not found for step {step_id}")
 
 
 def _normal_summary() -> dict:
@@ -330,6 +443,7 @@ class TestDiagnosisSessionAPI:
             capabilities=["sys_metrics", "perf_cpu", "ebpf_io", "memory_smaps"],
         )
         payload = _payload("service-a 变慢，判断是不是被同宿主其他服务影响")
+        payload["budget_profile"] = "development"
         payload["context"]["instances"].append({
             "service_id": "service-b",
             "instance_id": "service-b-1",
@@ -375,6 +489,7 @@ class TestDiagnosisSessionAPI:
             capabilities=["sys_metrics", "perf_cpu", "ebpf_io", "memory_smaps"],
         )
         payload = _payload("service-a 变慢，检查同宿主 I/O 争抢")
+        payload["budget_profile"] = "development"
         payload["context"]["instances"].append({
             "service_id": "service-b",
             "instance_id": "service-b-1",
@@ -406,6 +521,7 @@ class TestDiagnosisSessionAPI:
             capabilities=["sys_metrics", "perf_cpu", "ebpf_io", "memory_smaps"],
         )
         payload = _payload("service-a 延迟升高，逐层检查调用链真正根因")
+        payload["budget_profile"] = "development"
         payload["context"]["instances"].append({
             "service_id": "service-b",
             "instance_id": "service-b-1",
@@ -444,29 +560,163 @@ class TestDiagnosisSessionAPI:
 
 
 def test_ai_tree_evidence_request_maps_to_followup_probe_once(client: TestClient):
-    repo.agents["a1"].capabilities = [*repo.agents["a1"].capabilities, "off_cpu_wait_profile", "baseline_window_profile"]
+    repo.agents["a1"].capabilities = [
+        *repo.agents["a1"].capabilities,
+        "off_cpu_wait_profile",
+        "baseline_window_profile",
+        "log_scan",
+        "dependency_check",
+        "redis_check",
+    ]
     data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
     diagnosis_id = data["diagnosis_id"]
     parent_task = repo.tasks[data["child_task_ids"][0]]
     created = diagnosis_orchestrator._plan_followup_requests(
         diagnosis_id,
-        ["baseline_window_profile", "off_cpu_wait_profile", "unknown_request"],
+        ["baseline_window_profile", "off_cpu_wait_profile", "dependency_check", "log_scan", "redis_check", "unknown_request"],
         parent_task,
     )
-    assert created == 2
+    assert created == 5
     probes = diagnosis_orchestrator.store.list_probes(diagnosis_id)
     gaps = {
         (item.get("parameters") or {}).get("evidence_gap")
         for item in probes
         if (item.get("parameters") or {}).get("evidence_gap")
     }
-    assert {"baseline_window_profile", "off_cpu_wait_profile"}.issubset(gaps)
+    assert {
+        "baseline_window_profile",
+        "off_cpu_wait_profile",
+        "dependency_check",
+        "log_scan",
+        "redis_check",
+    }.issubset(gaps)
 
     assert diagnosis_orchestrator._plan_followup_requests(
         diagnosis_id,
-        ["off_cpu_wait_profile", "baseline_window_profile"],
+        ["off_cpu_wait_profile", "baseline_window_profile", "dependency_check", "log_scan", "redis_check"],
         parent_task,
     ) == 0
+
+
+def test_downstream_assessment_has_minimal_industrial_adapter_evidence_plan(client: TestClient):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=["sys_metrics", "log_scan", "dependency_check", "redis_check"],
+    )
+    repo.register_agent(
+        "a2", "host-2", "10.0.0.2",
+        capabilities=["sys_metrics", "log_scan", "dependency_check", "redis_check"],
+    )
+    payload = _payload("service-a 延迟升高，逐层检查调用链真正根因")
+    payload["budget_profile"] = "development"
+    payload["auto_execute_policy"] = "all_registered"
+    payload["context"]["instances"].append({
+        "service_id": "redis",
+        "instance_id": "redis-1",
+        "host_id": "host-2",
+        "agent_id": "a2",
+        "pid": 4321,
+        "environment": "production",
+    })
+    payload["context"]["dependencies"] = [{
+        "source_service": "service-a",
+        "target_service": "redis",
+        "relation": "CALLS",
+        "protocol": "redis",
+        "host": "127.0.0.1",
+        "port": 6379,
+        "confidence": "high",
+        "source": "test_topology",
+    }]
+
+    data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+    probes = _sys_metric_probe_by_instance(data)
+    downstream_hot = _normal_summary()
+    downstream_hot.update({"avg_cpu_user_pct": 91.0, "avg_cpu_sys_pct": 6.0, "load1m": 12.0})
+    _finish_sys_metrics_task(probes["service-a-1"]["task_id"], _normal_summary())
+    _finish_sys_metrics_task(probes["redis-1"]["task_id"], downstream_hot)
+
+    detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
+    all_gaps = {
+        (probe.get("parameters") or {}).get("evidence_gap")
+        for probe in detail["probes"]
+    }
+    followup = [
+        probe
+        for probe in detail["probes"]
+        if (probe.get("parameters") or {}).get("parent_task_id")
+    ]
+    gaps = {(probe.get("parameters") or {}).get("evidence_gap") for probe in followup}
+
+    assert detail["latest_conclusion"]["cluster_assessment"]["classification"] == "downstream_dependency"
+    assert {"dependency_check", "log_scan", "redis_check"}.issubset(all_gaps)
+    assert "redis_check" in gaps
+    dependency_probe = next(probe for probe in detail["probes"] if probe["probe_id"] == "process_dependency_check")
+    redis_probe = next(probe for probe in followup if probe["probe_id"] == "process_redis_check")
+    assert dependency_probe["parameters"]["targets"][0]["host"] == "127.0.0.1"
+    assert dependency_probe["parameters"]["targets"][0]["protocol"] == "redis"
+    assert redis_probe["parameters"]["host"] == "127.0.0.1"
+    assert redis_probe["parameters"]["port"] == 6379
+    assert redis_probe["parameters"]["collector_invocation"]["target_config"]["redis_target"]["url"] == "redis://127.0.0.1:6379"
+
+
+def test_target_scoped_redis_invocation_does_not_leak_between_diagnoses(client: TestClient):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=["sys_metrics", "perf_cpu", "ebpf_io", "memory_smaps", "dependency_check", "redis_check"],
+    )
+
+    def create_with_redis(service: str, redis_host: str, redis_port: int):
+        payload = _payload(f"{service} 延迟升高，检查 Redis 依赖")
+        payload["auto_execute_policy"] = "all_registered"
+        payload["context"]["service_id"] = service
+        payload["context"]["instances"][0]["service_id"] = service
+        payload["context"]["instances"][0]["instance_id"] = f"{service}-1"
+        payload["context"]["dependencies"] = [{
+            "source_service": service,
+            "target_service": f"{service}-redis",
+            "relation": "CALLS",
+            "protocol": "redis",
+            "host": redis_host,
+            "port": redis_port,
+            "confidence": "high",
+            "source": "test_topology",
+        }]
+        data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+        parent_task = repo.tasks[data["child_task_ids"][0]]
+        diagnosis_orchestrator._plan_followup_requests(
+            data["diagnosis_id"],
+            ["redis_check", "dependency_check"],
+            parent_task,
+        )
+        for probe in diagnosis_orchestrator.store.list_probes(data["diagnosis_id"]):
+            if (probe.get("parameters") or {}).get("evidence_gap") in {"redis_check", "dependency_check"}:
+                diagnosis_orchestrator._schedule_probe(probe["step_id"])
+        return client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
+
+    first = create_with_redis("service-a", "redis-a.local", 6379)
+    second = create_with_redis("service-b", "redis-b.local", 6380)
+
+    first_redis = next(
+        probe for probe in first["probes"]
+        if (probe.get("parameters") or {}).get("evidence_gap") == "redis_check"
+    )
+    second_redis = next(
+        probe for probe in second["probes"]
+        if (probe.get("parameters") or {}).get("evidence_gap") == "redis_check"
+    )
+
+    assert first_redis["parameters"]["collector_invocation"]["target_config"]["redis_target"]["url"] == "redis://redis-a.local:6379"
+    assert second_redis["parameters"]["collector_invocation"]["target_config"]["redis_target"]["url"] == "redis://redis-b.local:6380"
+    assert first_redis["parameters"]["collector_invocation"]["target_context"]["service_id"] == "service-a"
+    assert second_redis["parameters"]["collector_invocation"]["target_context"]["service_id"] == "service-b"
+
+    diagnosis_orchestrator._schedule_probe(first_redis["step_id"])
+    diagnosis_orchestrator._schedule_probe(second_redis["step_id"])
+    first_task = _task_for_step(first_redis["step_id"])
+    second_task = _task_for_step(second_redis["step_id"])
+    assert first_task.request_params["options"]["target_config"]["redis_target"]["host"] == "redis-a.local"
+    assert second_task.request_params["options"]["target_config"]["redis_target"]["host"] == "redis-b.local"
 
 
 def test_collect_analyze_followup_probe_then_reanalyze(client: TestClient):

@@ -208,6 +208,9 @@ export default function AgentDetail() {
     },
   ];
 
+  const collectorProfile = agent?.collector_profile || agent?.latest_metrics?.collector_profile || {};
+  const collectorItems = collectorProfile.collectors || [];
+
   if (loading) {
     return (
       <Space direction="vertical" size={SPACING.lg} style={{ width: "100%" }}>
@@ -332,6 +335,22 @@ export default function AgentDetail() {
               </div>
             )}
 
+            {collectorItems.length > 0 && (
+              <div style={{ marginTop: SPACING.md }}>
+                <Typography.Text type="secondary" style={{ fontSize: FONT_SIZES.sm }}>
+                  Managed Collector Profile：
+                </Typography.Text>
+                <Space size={[4, 4]} wrap style={{ marginTop: 4 }}>
+                  <Tag color="green">可用 {collectorProfile.summary?.available ?? 0}</Tag>
+                  <Tag color="orange">降级 {collectorProfile.summary?.degraded ?? 0}</Tag>
+                  <Tag color="red">不可用 {collectorProfile.summary?.unavailable ?? 0}</Tag>
+                  <Tag color={collectorProfile.managed ? "blue" : "default"}>
+                    {collectorProfile.managed ? "托管采集" : "手动采集"}
+                  </Tag>
+                </Space>
+              </div>
+            )}
+
             {/* 实时资源 */}
             {agent.latest_metrics?.self && (
               <div style={{ marginTop: SPACING.md }}>
@@ -383,6 +402,53 @@ export default function AgentDetail() {
           </Card>
         </Col>
       </Row>
+
+      {collectorItems.length > 0 && (
+        <Card
+          title={
+            <Space>
+              <ApiOutlined style={{ color: COLORS.primary }} />
+              采集能力面板
+            </Space>
+          }
+          size="small"
+        >
+          <Table
+            rowKey="collector_type"
+            dataSource={collectorItems}
+            pagination={false}
+            size="small"
+            columns={[
+              {
+                title: "证据族",
+                dataIndex: "collector_type",
+                width: 180,
+                render: (value) => <Tag>{value}</Tag>,
+              },
+              {
+                title: "状态",
+                dataIndex: "status",
+                width: 110,
+                render: (value) => {
+                  const color = value === "available" ? "green" : value === "degraded" ? "orange" : "red";
+                  const label = value === "available" ? "可用" : value === "degraded" ? "降级" : "不可用";
+                  return <Tag color={color}>{label}</Tag>;
+                },
+              },
+              {
+                title: "来源",
+                dataIndex: "source",
+                ellipsis: true,
+              },
+              {
+                title: "原因",
+                dataIndex: "reason",
+                ellipsis: true,
+              },
+            ]}
+          />
+        </Card>
+      )}
 
       {/* 关联任务 */}
       <Card

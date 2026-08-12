@@ -40,6 +40,7 @@ from server.app.nlp.intent_parser import parse_intent
 from server.app.nlp.process_resolver import resolve_pid
 from server.app.nlp.summarizer import summarize, suggest_followup
 from server.app.diagnosis import DiagnosisOrchestrator
+from server.app.diagnosis.audit_bundle import build_audit_bundle
 from server.app.diagnosis.evidence_structurer import (
     StructuredEvidence,
     rca_inputs_from_structured,
@@ -428,6 +429,7 @@ def list_agents(
     for agent in repo.agents.values():
         item = repo.as_dict(agent)
         item["latest_metrics"] = getattr(repo, "agent_metrics", {}).get(agent.id, {})
+        item["collector_profile"] = item["latest_metrics"].get("collector_profile", {})
         all_items.append(item)
     total = len(all_items)
     page = all_items[offset:offset + limit] if offset < total else []
@@ -678,7 +680,14 @@ def _run_task_analysis(
         "sys_metrics": _extract_artifact_json(artifacts, "sys_metrics"),
         "memory_json": _extract_artifact_json(artifacts, "memory_json"),
         "depth_evidence_json": _extract_artifact_json(artifacts, "depth_evidence_json"),
+        "continuous_top_json": _extract_artifact_json(artifacts, "continuous_top_json"),
+        "continuous_flamegraph_json": _extract_artifact_json(artifacts, "continuous_flamegraph_json"),
+        "continuous_summary": _extract_artifact_json(artifacts, "continuous_summary"),
+        "log_window_json": _extract_artifact_json(artifacts, "log_window_json"),
+        "dependency_check_json": _extract_artifact_json(artifacts, "dependency_check_json"),
+        "redis_check_json": _extract_artifact_json(artifacts, "redis_check_json"),
     }
+    artifact_values = _normalize_analysis_artifact_values(artifact_values)
     structured_evidence = structure_artifact_evidence(
         task_id=task_id,
         artifacts=artifacts,
@@ -987,6 +996,14 @@ def get_diagnosis_session(diagnosis_id: str) -> APIResponse:
     return APIResponse(data=data)
 
 
+@app.get("/api/v1/diagnoses/{diagnosis_id}/audit-bundle")
+def get_diagnosis_audit_bundle(diagnosis_id: str) -> APIResponse:
+    data = build_audit_bundle(diagnosis_id, diagnosis_orchestrator, repo)
+    if data is None:
+        raise HTTPException(status_code=404, detail="诊断会话不存在")
+    return APIResponse(data=data)
+
+
 @app.post("/api/v1/diagnoses/{diagnosis_id}/approvals")
 def approve_diagnosis_probe(diagnosis_id: str, payload: ApprovalRequest) -> APIResponse:
     try:
@@ -1210,6 +1227,20 @@ def _read_artifact_object_text(artifact: dict) -> str:
     except Exception as exc:
         log_event("warning", "artifact_object_read_failed", bucket=bucket, object_key=key, error=type(exc).__name__)
         raise HTTPException(status_code=404, detail="对象存储产物不存在") from exc
+
+
+def _normalize_analysis_artifact_values(values: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(values)
+    if normalized.get("top_json") is None and normalized.get("continuous_top_json") is not None:
+        normalized["top_json"] = normalized["continuous_top_json"]
+    if normalized.get("flamegraph_json") is None and normalized.get("continuous_flamegraph_json") is not None:
+        normalized["flamegraph_json"] = normalized["continuous_flamegraph_json"]
+    summary = normalized.get("continuous_summary")
+    if isinstance(summary, dict):
+        depth = normalized.get("depth_evidence_json") if isinstance(normalized.get("depth_evidence_json"), dict) else {}
+        depth.setdefault("baseline_summary", summary)
+        normalized["depth_evidence_json"] = depth
+    return normalized
 
 
 def _validate_presign_request(bucket: str, key: str) -> str:

@@ -28,16 +28,20 @@ import grpc
 from agent.mini_drop_agent.collectors.base import CollectorTask
 from agent.mini_drop_agent.collectors.baseline import BaselineWindowCollector
 from agent.mini_drop_agent.collectors.continuous import ContinuousCollector
+from agent.mini_drop_agent.collectors.dependency import DependencyCheckCollector
 from agent.mini_drop_agent.collectors.ebpf import EBPFCollector
 from agent.mini_drop_agent.collectors.off_cpu import OffCPUCollector
 from agent.mini_drop_agent.collectors.trace import TraceEndpointCollector
 from agent.mini_drop_agent.collectors.java_async import JavaAsyncProfilerCollector
+from agent.mini_drop_agent.collectors.log_scan import LogScanCollector
 from agent.mini_drop_agent.collectors.memory import MemoryCollector
 from agent.mini_drop_agent.collectors.perf import PerfCollector
 from agent.mini_drop_agent.collectors.pprof import PprofCollector
 from agent.mini_drop_agent.collectors.pyspy import PySpyCollector
+from agent.mini_drop_agent.collectors.redis_check import RedisCheckCollector
 from agent.mini_drop_agent.collectors.sys_metrics import SysMetricsCollector
 from agent.mini_drop_agent.artifact_upload import maybe_upload_artifacts
+from agent.mini_drop_agent.collector_profile import collector_profile_json
 from agent.mini_drop_agent.connection import GrpcConnection
 from agent.mini_drop_agent.config import AgentConfig, load_config
 from agent.mini_drop_agent.logging_utils import log_event
@@ -65,6 +69,9 @@ COLLECTORS = {
     "off_cpu_wait_profile": OffCPUCollector(),
     "trace_endpoint_profile": TraceEndpointCollector(),
     "baseline_window_profile": BaselineWindowCollector(),
+    "log_scan": LogScanCollector(),
+    "dependency_check": DependencyCheckCollector(),
+    "redis_check": RedisCheckCollector(),
 }
 
 CAPABILITIES = sorted(COLLECTORS.keys())
@@ -125,6 +132,7 @@ def _register(stub: init_pb2_grpc.InitAgentStub, config: AgentConfig) -> None:
             version="0.1.0",
             os_info=_os_info(),
             capabilities=CAPABILITIES,
+            collector_profile_json=collector_profile_json(CAPABILITIES),
         ),
         timeout=5,
     )
@@ -175,6 +183,16 @@ def _heartbeat(
             collector_type = _TASK_TYPE_COLLECTOR[task_type]
         else:
             collector_type = _profiler_to_collector(resp.task_desc.profiler_type)
+        options = {
+            "callgraph": resp.task_desc.sample_argv.callgraph,
+            "event": resp.task_desc.sample_argv.event,
+        }
+        try:
+            extra = json.loads(resp.task_desc.script_content or "{}")
+        except json.JSONDecodeError:
+            extra = {}
+        if isinstance(extra, dict) and isinstance(extra.get("options"), dict):
+            options.update(extra["options"])
         return {
             "id": resp.task_desc.task_id,
             "collector_type": collector_type,
@@ -182,10 +200,7 @@ def _heartbeat(
             "sample_rate": resp.task_desc.sample_argv.hz,
             "duration_sec": resp.task_desc.sample_argv.duration,
             "request_params": {
-                "options": {
-                    "callgraph": resp.task_desc.sample_argv.callgraph,
-                    "event": resp.task_desc.sample_argv.event,
-                },
+                "options": options,
             },
         }
     return None
@@ -402,7 +417,13 @@ _PROFILER_TO_COLLECTOR: dict[int, str] = {
 
 # task_type → collector_type 映射（MemCheck 等需要特殊路由的场景）
 _TASK_TYPE_COLLECTOR: dict[int, str] = {
+    2: "trace_endpoint_profile",
     4: "memory_smaps",     # MemCheck
+    8: "off_cpu_wait_profile",
+    9: "baseline_window_profile",
+    10: "log_scan",
+    11: "dependency_check",
+    12: "redis_check",
 }
 
 

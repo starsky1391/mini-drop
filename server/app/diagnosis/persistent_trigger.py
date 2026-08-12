@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from pydantic import Field
 
+from server.app.diagnosis.collector_invocation import build_collector_invocation
 from server.app.diagnosis.probe_registry import get_probe
 from server.app.diagnosis.schemas import StrictModel
 from server.app.schemas import CreateTaskRequest, MAX_SAMPLE_RATE, MAX_TASK_DURATION_SEC
@@ -74,6 +75,9 @@ class TriggerEvaluationRequest(StrictModel):
     target: TriggerTarget
     baseline_window: MetricWindow
     trigger_window: MetricWindow
+    target_config: dict[str, Any] = Field(default_factory=dict)
+    scope_source: Literal["persistent_trigger", "watch_subscription"] = "persistent_trigger"
+    watch_id: str | None = None
 
 
 class TriggeredCollectorTask(StrictModel):
@@ -82,6 +86,7 @@ class TriggeredCollectorTask(StrictModel):
     collector_type: str
     evidence_cohort_id: str
     trigger_event_id: str
+    collector_invocation: dict[str, Any] = Field(default_factory=dict)
 
 
 class TriggerEvaluationResult(StrictModel):
@@ -156,6 +161,22 @@ def evaluate_persistent_trigger(
         if not _agent_supports_probe(repo, request.target.agent_id, probe.required_capabilities):
             skipped_probe_ids.append(probe_id)
             continue
+        collector_invocation = build_collector_invocation(
+            scope_source=request.scope_source,
+            collector_family=probe.runner_task_kind,
+            probe_id=probe.probe_id,
+            watch_id=request.watch_id,
+            trigger_event_id=trigger_event.trigger_event_id,
+            evidence_cohort_id=evidence_cohort_id,
+            target_config=request.target_config,
+            target_context={
+                "agent_id": request.target.agent_id,
+                "service_id": request.target.service_id,
+                "instance_id": request.target.instance_id,
+                "pid": request.target.target_pid,
+                "endpoint": request.target.endpoint,
+            },
+        )
 
         task = repo.create_task(
             CreateTaskRequest(
@@ -178,6 +199,8 @@ def evaluate_persistent_trigger(
                     "window_start": request.trigger_window.start.isoformat(),
                     "window_end": request.trigger_window.end.isoformat(),
                     "trigger_observed_at": trigger_event.observed_at.isoformat(),
+                    "target_config": request.target_config,
+                    "collector_invocation": collector_invocation,
                 },
             )
         )
@@ -188,6 +211,7 @@ def evaluate_persistent_trigger(
                 collector_type=probe.runner_task_kind,
                 evidence_cohort_id=evidence_cohort_id,
                 trigger_event_id=trigger_event.trigger_event_id,
+                collector_invocation=collector_invocation,
             )
         )
 

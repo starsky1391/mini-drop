@@ -29,6 +29,7 @@ message RegisterAgentRequest {
   string version              = 4;  // Agent 版本号
   string os_info              = 5;  // OS 和内核信息，如 "Ubuntu 22.04, kernel 5.15"
   repeated string capabilities = 6; // 支持的采集器: ["perf_cpu","ebpf_io","pyspy","continuous_perf"]
+  string collector_profile_json = 7; // 采集能力状态 JSON：available/degraded/unavailable 与原因
 }
 
 

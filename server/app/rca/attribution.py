@@ -1352,7 +1352,14 @@ def _derive_collection_gaps(
     collection_gaps: list[str] = []
     tool_names = _tool_result_names(evidence)
     collector_type = str(evidence.task_metadata.get("collector_type", "") or "")
+    evidence_index = evidence.evidence_index or {}
+    evidence_index = evidence_index if isinstance(evidence_index, dict) else {}
     localization_levels = {item.level for item in localizations}
+    candidate_domains = {_candidate_domain(item.candidate_id) for item in attributions}
+    candidate_text = " ".join(
+        " ".join([str(item.candidate_id), *[str(missing) for missing in item.missing_evidence]])
+        for item in attributions
+    ).lower()
 
     def add_gap(capability: str, missing_text: str, blocked_text: str) -> None:
         if capability not in collection_gaps:
@@ -1394,6 +1401,46 @@ def _derive_collection_gaps(
         for item in attribution.missing_evidence:
             if item not in missing_evidence:
                 missing_evidence.append(item)
+
+    has_log_scan = _has_collection_capability(tool_names, collector_type, "log_scan") or bool(evidence_index.get("log_scan"))
+    has_dependency_check = (
+        _has_collection_capability(tool_names, collector_type, "dependency_check")
+        or bool(evidence_index.get("dependency_check"))
+    )
+    has_redis_check = _has_collection_capability(tool_names, collector_type, "redis_check") or bool(evidence_index.get("redis_check"))
+    dependency_suspected = (
+        "network" in candidate_domains
+        or "network" in candidate_text
+        or "net_" in candidate_text
+        or "downstream" in candidate_text
+        or "dependency" in candidate_text
+        or "latency" in candidate_text
+        or bool(evidence_index.get("log_scan", {}).get("evidence_index", {}).get("dependencies"))
+    )
+    redis_suspected = "redis" in candidate_text
+    log_suspected = dependency_suspected or any(
+        token in candidate_text
+        for token in ("error", "exception", "timeout", "failed", "unavailable", "oom")
+    )
+
+    if dependency_suspected and not has_dependency_check:
+        add_gap(
+            "dependency_check",
+            "缺少 dependency_check 证据，无法确认下游依赖的 DNS/TCP/HTTP/gRPC 可达性与延迟状态。",
+            "downstream_dependency -> concrete_dependency 仍被 dependency_check 阻断。",
+        )
+    if log_suspected and not has_log_scan:
+        add_gap(
+            "log_scan",
+            "缺少 log_scan 证据，无法提取异常日志簇、trace_id、endpoint 和依赖错误上下文。",
+            "downstream_dependency -> evidence_cluster 仍被 log_scan 阻断。",
+        )
+    if redis_suspected and not has_redis_check:
+        add_gap(
+            "redis_check",
+            "缺少 redis_check 证据，无法确认 Redis PING、INFO、SLOWLOG 和 LATENCY 状态。",
+            "redis_dependency -> concrete_redis_signal 仍被 redis_check 阻断。",
+        )
 
     if "function" in localization_levels and max_supported_level == "function":
         func_targets = [item.target for item in localizations if item.level == "function" and item.target]
@@ -1469,8 +1516,19 @@ def _derive_next_evidence_requests(
     if stability_score < 0.75 and "baseline_window_profile" in gap_set:
         add_request("baseline_window_profile")
 
+    for request_id in ("dependency_check", "log_scan", "redis_check"):
+        if request_id in gap_set:
+            add_request(request_id)
+
     if not requests:
-        for request_id in ("off_cpu_wait_profile", "trace_endpoint_profile", "baseline_window_profile"):
+        for request_id in (
+            "off_cpu_wait_profile",
+            "trace_endpoint_profile",
+            "baseline_window_profile",
+            "dependency_check",
+            "log_scan",
+            "redis_check",
+        ):
             if request_id in gap_set:
                 add_request(request_id)
 
@@ -1488,6 +1546,12 @@ def _derive_next_evidence_requests(
                 add_request("trace_endpoint_profile")
             elif "baseline_window_profile" in item:
                 add_request("baseline_window_profile")
+            elif "dependency_check" in item:
+                add_request("dependency_check")
+            elif "log_scan" in item:
+                add_request("log_scan")
+            elif "redis_check" in item:
+                add_request("redis_check")
 
     return requests
 

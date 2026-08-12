@@ -77,6 +77,11 @@ class DependencyEdge(StrictModel):
         "CALLS", "READS_FROM", "WRITES_TO", "PUBLISHES_TO",
         "CONSUMES_FROM", "SHARES_DEPENDENCY",
     ] = "CALLS"
+    protocol: Optional[Literal["dns", "tcp", "http", "https", "grpc", "redis"]] = None
+    host: Optional[str] = Field(default=None, max_length=256)
+    port: Optional[int] = Field(default=None, ge=1, le=65535)
+    url: Optional[str] = Field(default=None, max_length=2048)
+    path: Optional[str] = Field(default=None, max_length=512)
     effective_from: Optional[datetime] = None
     effective_to: Optional[datetime] = None
     confidence: Literal["high", "medium", "low"] = "medium"

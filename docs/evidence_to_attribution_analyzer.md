@@ -2141,3 +2141,360 @@ POST /api/v1/watch-incidents/{incident_id}/analyze
 - 支持从 `analysis_result.next_evidence_requests` 继续生成 delayed follow-up probe。
 - 支持从 analyzed incident 跳转到完整报告页。
 - 支持把 collector task 完成后的新证据合并回同一个 incident/cohort 再分析。
+
+## 20. AI Ops v2 Benchmark Readiness Gate
+
+本小节对应“方案 2”：先补齐评测前置门禁，再进入正式 90 轮 benchmark。它不替代 AI 树，也不直接提高根因准确率；它只回答一个更基础的问题：
+
+```text
+这轮诊断结果是否具备被 benchmark 公平评分的证据链条件？
+```
+
+如果门禁不通过，后续分数不能直接解释为“AI 归因能力差”，因为失败可能来自审计包缺失、collector fallback、artifact 未结构化、证据引用不可追溯等平台链路问题。
+
+### 20.1 目标
+
+方案 2 的目标是让正式评测前先具备以下能力：
+
+- 诊断会话可以导出完整 `/api/v1/diagnoses/{diagnosis_id}/audit-bundle`。
+- 审计包包含 runtime trace、probe plan、child task、artifact、evidence、structured evidence、conclusion 和 safety 信息。
+- 评测脚本可以离线导入 `server.app.diagnosis.benchmark_score` 并完成 deterministic scoring。
+- gRPC 下发时 `off_cpu_wait_profile`、`trace_endpoint_profile`、`baseline_window_profile` 不再静默退回 `perf_cpu`。
+- `continuous_top_json`、`continuous_flamegraph_json`、`continuous_summary` 可以进入结构化证据层。
+- readiness gate 能在正式跑 90 轮前暴露“证据链未闭合”的具体缺口。
+
+### 20.2 新增审计包结构
+
+审计包最小结构：
+
+```json
+{
+  "schema_version": "1.0",
+  "diagnosis_id": "diag_session_xxx",
+  "run": {},
+  "runtime_trace": [],
+  "topology_snapshot": {},
+  "probes": [],
+  "child_task_ids": [],
+  "tasks": [],
+  "artifacts": [],
+  "evidence": [],
+  "structured_evidence": {},
+  "evidence_refs": [],
+  "conclusion": {},
+  "latest_conclusion": {},
+  "safety": {},
+  "rollback": {},
+  "readiness_gate": {}
+}
+```
+
+其中 `runtime_trace` 来自诊断会话事件流，用于还原 intent、scope、probe plan、evidence、conclusion 等关键阶段。`structured_evidence` 来自 `structured_evidence_json`，用于证明 AI 树看到的是可检索、可引用的证据，而不是只看到 SVG 或半原始文本。
+
+### 20.3 Readiness Gate 检查项
+
+第一版门禁检查项：
+
+| 检查项 | 含义 | 不通过时的解释 |
+|---|---|---|
+| `audit_bundle_exists` | 审计包成功生成 | API 或导出流程不可用 |
+| `runtime_trace_non_empty` | 运行时审计轨迹非空 | 评分无法判断诊断过程是否真实发生 |
+| `probes_non_empty` | 诊断规划过探针 | 没有进入采证链路 |
+| `child_task_ids_non_empty` | 创建过子采集任务 | 诊断停在计划层，未进入任务执行 |
+| `artifact_count_non_zero` | 子任务上传了 artifact | 采集或上传链路未闭合 |
+| `structured_evidence_non_empty` | artifact 被结构化 | AI 树没有可消费证据 |
+| `evidence_refs_non_empty` | 结论引用了证据 | 结论不可追溯 |
+| `collector_type_not_fallback` | probe 与 task collector 匹配 | 存在静默 fallback 或假采集 |
+
+门禁的设计原则是“宁可提前失败，也不要假通过”。例如旧版审计包可能存在 `trace` 和 `evidence_manifest`，但如果没有新结构里的 `structured_evidence`、`tasks`、`artifacts`，仍然不应被当作新门禁通过。
+
+### 20.4 评分模块边界
+
+`benchmark_score` 是离线 deterministic scorer，不参与诊断过程，也不会把私有 oracle 传给系统被测侧。
+
+评分维度：
+
+| 维度 | 权重 | 说明 |
+|---|---:|---|
+| root cause | 40 | 位置、故障域、分类、根因实体 |
+| evidence | 25 | 必需采集器召回、证据引用有效率、独立证据源数量 |
+| trace | 20 | runtime trace 阶段覆盖 |
+| safety | 10 | 是否执行禁止动作 |
+| recovery | 5 | 需要恢复验证的 case 是否成功 |
+
+聚合输出包含：
+
+- case 级严格根因准确率。
+- run 级严格根因准确率。
+- 95% Wilson 区间。
+- 平均综合分。
+- 证据引用有效率。
+- runtime trace 覆盖率。
+- 重复运行输出一致率。
+
+### 20.5 Collector 映射门禁
+
+正式评测前必须保证 server 下发的 collector 类型与 agent 执行的 collector 类型一致。
+
+已明确的映射：
+
+| collector | server task_type | profiler_type | agent collector |
+|---|---:|---:|---|
+| `trace_endpoint_profile` | 2 | 0 | `trace_endpoint_profile` |
+| `off_cpu_wait_profile` | 8 | 4 | `off_cpu_wait_profile` |
+| `baseline_window_profile` | 9 | 7 | `baseline_window_profile` |
+| `log_scan` | 10 | 0 | `log_scan` |
+| `dependency_check` | 11 | 0 | `dependency_check` |
+| `redis_check` | 12 | 0 | `redis_check` |
+
+这里 `log_scan`、`dependency_check`、`redis_check` 已不再复用 trace/endpoint 作为占位，而是进入 Agent 专用 collector 路由。它们的实现边界是“工业采集器适配器”：Mini-Drop 不自研日志 tail、协议探测或 Redis RESP 采集，只读取 Fluent Bit / OTel、Blackbox Exporter、Redis Exporter 等成熟组件的输出，并转换为结构化 artifact。
+
+### 20.6 Baseline Artifact 结构化
+
+`baseline_window_profile` 可能输出 continuous 系列 artifact：
+
+```text
+continuous_top_json
+continuous_flamegraph_json
+continuous_summary
+```
+
+为避免“采到了但 AI 树看不到”，结构化入口会做兼容映射：
+
+```text
+continuous_top_json -> top_json
+continuous_flamegraph_json -> flamegraph_json
+continuous_summary -> depth_evidence_json.baseline_summary
+```
+
+该映射只改变 artifact 进入结构化层的方式，不改变根因判断逻辑。
+
+### 20.7 推荐测试顺序
+
+正式 90 轮前建议按三步走：
+
+1. 先跑 readiness gate，确认新审计包满足证据链门槛。
+2. 再跑 6 到 8 个代表 case 的 smoke，每个 case 先 1 次，看采集与结构化是否真实有效。
+3. 最后跑 30 个 case、每个 3 次的正式 benchmark。
+
+旧目录 `docs/ai_ops_v2_test/审计包` 中的历史包可用于评分回放和问题对照，但不代表新 readiness gate 已通过。新评测应使用当前代码重新导出的审计包。
+
+### 20.8 已完成项
+
+- [x] 已补齐 `/api/v1/diagnoses/{diagnosis_id}/audit-bundle` 导出接口。
+- [x] 已补齐 `server.app.diagnosis.benchmark_score` 离线评分模块。
+- [x] 已补齐 readiness gate 脚本 `docs/ai_ops_v2_test/评测脚本/check_readiness_gate.py`。
+- [x] 已修正评测脚本仓库根路径，避免从中文脚本目录执行时 import 失败。
+- [x] 已补齐 `trace_endpoint_profile`、`off_cpu_wait_profile`、`baseline_window_profile` 的 server/agent 显式映射。
+- [x] 已补齐 continuous baseline artifact 进入结构化证据层的兼容映射。
+- [x] 已增加 focused tests 覆盖审计包导出、评分模块、collector 映射和 baseline 结构化。
+- [x] 已补齐 `log_scan`、`dependency_check`、`redis_check` 的工业采集器适配器，分别输出 `log_window_json`、`dependency_check_json`、`redis_check_json`。
+- [x] 已补齐工业适配器 artifact metadata：`collector_family`、`evidence_window`、`trigger_event_id`、`evidence_cohort_id`、`collection_mode`、`timing_relation`。
+- [x] 已补齐 readiness gate：完成的 probe 如果缺少对应结构化 artifact，门禁失败。
+
+### 20.9 工业采集器适配层
+
+当前不再自研轻量 `log_scan`、`dependency_check`、`redis_check` 采集器。原因是日志 tail、多行合并、offset、文件轮转、DNS/TCP/HTTP/gRPC 探测、Redis ACL、INFO、SLOWLOG、LATENCY 等能力都有大量边界，长期维护会把 Mini-Drop 推向“自写一套不成熟观测采集器”。
+
+已落地的方向是工业采集器适配层：
+
+| 证据族 | 工业采集来源 | Mini-Drop 责任 | 结构化产物 |
+|---|---|---|---|
+| `log_scan` | Fluent Bit Tail/Multiline 或 OpenTelemetry Collector `filelogreceiver` | 读取采集输出、裁剪窗口、聚类、生成证据引用 | `log_window_json` |
+| `dependency_check` | Prometheus Blackbox Exporter `/probe` | 下发目标、读取 probe metrics、转换失败阶段和耗时 | `dependency_check_json` |
+| `redis_check` | Redis Exporter metrics，必要时受控 Redis 快照 | 汇总 Redis 连接、内存、慢命令、延迟事件 | `redis_check_json` |
+
+工业采集器负责：
+
+```text
+稳定采集、日志轮转、多行解析、协议细节、TLS/gRPC/Redis 边界、超时控制
+```
+
+Mini-Drop 负责：
+
+```text
+任务编排、证据窗口、artifact 保存、evidence_ref、结构化 evidence_index、AI 树补证请求
+```
+
+每个适配器的输出必须是结构化证据，而不是把原始日志或 exporter metrics 直接交给 AI：
+
+```text
+raw collector output
+  -> adapter normalization
+  -> structured artifact
+  -> evidence_index
+  -> AI tree / Evidence-to-Attribution
+```
+
+结构化产物最低要求：
+
+```text
+artifact_type
+collector_family
+evidence_window
+trigger_event_id
+evidence_cohort_id
+collection_mode
+timing_relation
+summary
+evidence_ref
+```
+
+后续仍需：
+
+- 将 readiness gate 结果接入前端诊断详情页，让用户看到“这份结论是否可评测 / 可审计”。
+- 为 runtime snapshot 建立统一证据族标记，使 `java_async`、`go_pprof`、`pyspy`、`off_cpu_wait_profile` 在 benchmark 里稳定归入 `runtime_snapshot`。
+- 基于结构化证据族实现最小必要采集器选择：例如 `downstream_dependency` 缺 `dependency_check` 时先请求 Blackbox 适配证据，缺 `log_scan` 时再请求日志适配证据，Redis 相关证据不足时再请求 Redis Exporter 适配证据。
+
+### 20.10 Managed Collector Profile
+
+上一节解决的是“不要自研轻量采集器”，但如果仍要求用户每次诊断手动配置 Fluent Bit、Blackbox Exporter、Redis Exporter，那么工业采集器会变成新的配置负担。因此本轮补齐的是托管采集器配置层：
+
+```text
+worker compose
+  -> 默认启动 Fluent Bit / Blackbox Exporter sidecar
+  -> Redis Exporter 作为可选 profile
+  -> Agent 启动时自动探测可用性
+  -> RegisterAgent 上报 CollectorProfile
+  -> Server 保存到 latest_metrics
+  -> /api/agents 暴露
+  -> Dashboard / AgentDetail 展示采集能力
+```
+
+`CollectorProfile` 不替代原有 `capabilities`：
+
+- `capabilities` 仍用于任务路由，表示 Agent 构建中注册了哪些 collector。
+- `collector_profile` 用于产品可用性，表示这些 collector 当前是否真的具备默认来源、sidecar、命令或 exporter endpoint。
+
+已完成项：
+
+- [x] Agent 侧新增 `CollectorProfile` 自动发现，覆盖 `log_scan`、`dependency_check`、`redis_check` 和 runtime 工具。
+- [x] `RegisterAgentRequest` 增加 `collector_profile_json`，Agent 注册时上报托管采集器状态。
+- [x] Server 将 profile 保存到 `latest_metrics.collector_profile`，并在 `/api/agents` 同步暴露 `collector_profile`。
+- [x] Worker compose 默认托管 Fluent Bit 和 Blackbox Exporter，分别提供日志管道输出和 DNS/TCP/HTTP 依赖探测能力。
+- [x] Redis Exporter 作为 `redis` compose profile 保留，未配置时前端显示为不可用，不伪装成已就绪。
+- [x] 前端 Dashboard 增加采集能力摘要，Agent 详情页增加采集能力表格。
+- [x] 已补充测试覆盖 profile 发现、注册持久化、API 暴露，并通过 worker compose 配置校验。
+
+这个层的意义不是让 Mini-Drop 自动猜出所有业务依赖，而是把“工业采集器是否可用”变成系统可见状态。用户不需要在每个诊断任务里重复填写采集器参数；系统可以先使用 worker 默认来源，缺失时在前端明确显示原因。
+
+默认行为：
+
+| 证据族 | 默认来源 | 用户是否必须每次配置 | 未就绪时行为 |
+|---|---|---:|---|
+| `log_scan` | Fluent Bit 输出 `/var/lib/mini-drop/logs/logs.ndjson` | 否 | profile 标记 `degraded` 或 `unavailable` |
+| `dependency_check` | `http://blackbox-exporter:9115` | 否 | profile 标记 `degraded` |
+| `redis_check` | Redis Exporter `redis` profile | 否，只有需要 Redis 专项证据时配置一次 | profile 标记 `unavailable` |
+
+后续升级方向：
+
+- 将 `CollectorProfile` 从注册时快照升级为周期性心跳刷新，避免 sidecar 后续异常但 UI 仍显示旧状态。
+- 在诊断创建页展示目标 Agent 的采集能力缺口，提前提示“这次结论最多能定位到哪一层”。
+- 将最小必要采集器选择接入 profile，可用时自动请求，缺失时输出明确的 `missing_evidence_family`。
+- Redis profile 可以进一步升级为 watch/topology 驱动：当 topology 中声明 Redis 依赖时，自动提示启用 Redis Exporter，而不是让用户自己猜。
+
+### 20.11 Target-Scoped Collector Invocation
+
+`CollectorProfile` 只能解决“Agent 有无能力”，不能解决“这次任务要采谁”。如果把 Redis 地址、依赖目标或日志选择器放在 Agent 注册配置里，会出现三个问题：
+
+- Agent 注册早于任务创建，注册时不知道后续要诊断哪个业务目标。
+- 同一个 Agent 可能同时监视多个服务、多个 watch、多个 Redis 依赖。
+- 全局 Redis 配置会让后续任务误用旧目标，造成证据串线。
+
+因此采集配置必须拆成三层：
+
+```text
+Agent CollectorProfile
+  -> 这个 worker 有没有 log_scan / dependency_check / redis_check 能力
+
+WatchSubscription / Diagnosis target_config
+  -> 这次要监视哪个服务、进程、endpoint、依赖、Redis、日志选择器
+
+CollectorTask collector_invocation
+  -> 本次实际采集的目标快照，绑定 task_id / diagnosis_step_id / evidence_cohort_id
+```
+
+正确链路：
+
+```text
+用户 / 系统创建诊断或 watch
+  -> context.dependencies / watch.target_config 声明目标
+  -> ProbePlan.parameters 写入 target_config
+  -> CreateTaskRequest.options 写入 collector_invocation
+  -> Agent collector 只读取本次 task options
+  -> structured artifact 原样保存 collector_invocation
+```
+
+已完成项：
+
+- [x] 已定义 `collector_invocation`，包含 `collector_family`、`scope_source`、`target_config`、`agent_id`、`service_id`、`instance_id`、`diagnosis_step_id`。
+- [x] `dependency_check` 使用本次任务的 `targets`，适配 Blackbox Exporter 多目标 `/probe?target=...&module=...`。
+- [x] `redis_check` 使用本次任务的 Redis target，适配 Redis Exporter 多目标 `/scrape?target=...` 或 fixture metrics。
+- [x] 结构化 artifact 输出 `collector_invocation`，让审计包能证明“这份证据采的是哪个目标”。
+- [x] 测试覆盖同一 Agent 两个诊断 / 两个 Redis 目标不会互相串配置。
+
+边界：
+
+- `CollectorProfile.redis_check = available` 只表示 Redis Exporter 工具链可用，不表示当前业务 Redis 已配置。
+- 没有 `target_config.redis_target` 时，`redis_check` 不能使用全局 Redis 地址冒充业务目标。
+- 不同 Redis ACL / 密码 / TLS 配置后续应通过 `secret_ref` 或 credential group 表达，不进入 LLM 输入，也不写入普通日志。
+
+### 20.12 统一 Watch 与诊断采集契约
+
+`Target-Scoped Collector Invocation` 不能只服务普通诊断，否则系统会形成两套目标路由协议：
+
+```text
+普通诊断：DiagnosisContext -> collector_invocation -> task options
+持续监视：WatchSubscription -> trigger collector_tasks
+```
+
+统一后的协议是：
+
+```text
+任意采集入口
+  -> target_config
+  -> collector_invocation
+  -> task options
+  -> Agent collector
+```
+
+其中：
+
+- 普通诊断的 `scope_source = diagnosis_target_scope`。
+- 持续监视的 `scope_source = watch_subscription`。
+- Agent collector 不关心任务来源，只读取 `collector_invocation.target_config`。
+
+已完成项：
+
+- [x] 新增共享 `build_collector_invocation` 构造器。
+- [x] 普通诊断编排和 Persistent Trigger 统一使用该构造器。
+- [x] `WatchSubscription` 与 `WatchLease` 增加 `target_config`。
+- [x] Watch 触发采集时将 `target_config` 写入 triggered task options。
+- [x] `WatchIncident.collector_tasks` 保存同一份 `collector_invocation`，便于前端和审计追溯。
+- [x] 前端持续监视创建页增加可选 `target_config` JSON 输入。
+
+示例：
+
+```json
+{
+  "scope_source": "watch_subscription",
+  "watch_id": "watch_order",
+  "collector_family": "sys_metrics",
+  "probe_id": "host_process_metrics",
+  "target_config": {
+    "redis_target": {
+      "host": "order-redis",
+      "port": 6379,
+      "url": "redis://order-redis:6379"
+    }
+  },
+  "target_context": {
+    "agent_id": "agent-1",
+    "service_id": "order-service",
+    "instance_id": "order-1",
+    "pid": 1234
+  }
+}
+```
+
+这样 watch 触发采集时也不会使用 Agent 全局 Redis 配置；每个 watch、incident、collector task 都有自己的目标快照。

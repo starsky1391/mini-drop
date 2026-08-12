@@ -361,6 +361,19 @@ export default function Dashboard() {
         },
       },
       {
+        title: "采集能力",
+        width: 120,
+        render: (_, record) => {
+          const summary = record.collector_profile?.summary || record.latest_metrics?.collector_profile?.summary;
+          if (!summary) return <Tag>未知</Tag>;
+          const degraded = summary.degraded || 0;
+          const unavailable = summary.unavailable || 0;
+          if (unavailable > 0) return <Tag color="red">缺失 {unavailable}</Tag>;
+          if (degraded > 0) return <Tag color="orange">降级 {degraded}</Tag>;
+          return <Tag color="green">可用</Tag>;
+        },
+      },
+      {
         title: "状态",
         dataIndex: "status",
         width: 100,

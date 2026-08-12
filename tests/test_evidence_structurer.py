@@ -216,6 +216,59 @@ def test_call_path_hotspots_feed_rca_graph_without_raw_stack_payload():
     assert any(item.entity_type == "endpoint" for item in result.graph_entities)
 
 
+def test_industrial_adapters_become_structured_evidence_families():
+    structured = structure_artifact_evidence(
+        task_id="industrial_adapter_task",
+        artifacts=[
+            {"artifact_type": "log_window_json", "filename": "log_window.json"},
+            {"artifact_type": "dependency_check_json", "filename": "dependency_check.json"},
+            {"artifact_type": "redis_check_json", "filename": "redis_check.json"},
+        ],
+        artifact_values={
+            "log_window_json": {
+                "evidence_window": {
+                    "trigger_event_id": "evt_1",
+                    "evidence_cohort_id": "cohort_1",
+                    "collection_mode": "triggered_group",
+                    "start": 1720000001,
+                    "end": 1720000002,
+                    "timing_relation": "same_window",
+                },
+                "summary": {"matched_lines": 2, "error_cluster_count": 1},
+                "error_clusters": [{"cluster_id": "log_cluster_1", "count": 2}],
+                "evidence_index": {"dependencies": ["redis"]},
+            },
+            "dependency_check_json": {
+                "summary": {"failed_dependencies": ["redis"]},
+                "checks": [{"dependency_id": "redis", "success": False}],
+            },
+            "redis_check_json": {
+                "connectivity": {"ping_ok": False, "error_type": "ConnectionRefusedError"},
+                "slowlog_summary": {"entry_count": 2},
+                "latency_summary": {"max_latency_ms": 30},
+            },
+        },
+    )
+
+    assert structured.confidence_inputs["has_log_signal"] is True
+    assert structured.confidence_inputs["has_dependency_signal"] is True
+    assert structured.confidence_inputs["has_redis_signal"] is True
+    assert structured.confidence_inputs["failed_dependency_count"] == 1
+    assert structured.confidence_inputs["log_error_cluster_count"] == 1
+    assert structured.confidence_inputs["redis_slowlog_entry_count"] == 2
+    assert structured.confidence_inputs["redis_max_latency_ms"] == 30
+    assert structured.evidence_cohort_id == "cohort_1"
+    assert structured.timing_relation == "same_window"
+    assert structured.confidence_inputs["collector_families"] == [
+        "dependency_check",
+        "log_scan",
+        "redis_check",
+    ]
+    assert structured.evidence_index["log_scan"]["summary"]["matched_lines"] == 2
+    assert structured.evidence_index["dependency_check"]["checks"][0]["dependency_id"] == "redis"
+    assert structured.evidence_index["redis_check"]["connectivity"]["ping_ok"] is False
+
+
 def test_structured_evidence_is_attached_to_final_report(monkeypatch):
     monkeypatch.setenv("MINI_DROP_AI_ENABLED", "none")
     structured = structure_artifact_evidence(

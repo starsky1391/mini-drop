@@ -15,6 +15,7 @@ from server.app import storage
 from server.app.ai_provider import get_ai_settings, is_feature_enabled
 from server.app.common_utils import status_value
 from server.app.diagnosis.intent import parse_diagnosis_intent
+from server.app.diagnosis.collector_invocation import build_collector_invocation
 from server.app.diagnosis.probe_registry import choose_probe_ids, get_probe
 from server.app.diagnosis.schemas import (
     ApprovalRequest,
@@ -38,7 +39,20 @@ from server.app.schemas import CreateTaskRequest, MAX_SAMPLE_RATE, MAX_TASK_DURA
 PLANNER_VERSION = "diagnosis-orchestrator-v1"
 ACTIVE_TASK_STATUSES = {"PENDING", "RUNNING", "UPLOADING", "ANALYZING"}
 TERMINAL_TASK_STATUSES = {"DONE", "FAILED"}
-STRUCTURED_ARTIFACT_TYPES = {"top_json", "flamegraph_json", "ebpf_metrics", "sys_metrics", "memory_json", "depth_evidence_json"}
+STRUCTURED_ARTIFACT_TYPES = {
+    "top_json",
+    "flamegraph_json",
+    "ebpf_metrics",
+    "sys_metrics",
+    "memory_json",
+    "depth_evidence_json",
+    "continuous_top_json",
+    "continuous_flamegraph_json",
+    "continuous_summary",
+    "log_window_json",
+    "dependency_check_json",
+    "redis_check_json",
+}
 ALLOWED_DIAGNOSIS_TRANSITIONS = {
     "CREATED": {"UNDERSTANDING", "USER_CANCELED", "FAILED"},
     "UNDERSTANDING": {"PLANNING", "NEEDS_SCOPE_CONFIRMATION", "TOPOLOGY_UNAVAILABLE", "FAILED"},
@@ -379,11 +393,24 @@ class DiagnosisOrchestrator:
                     continue
                 planned_duration += duration
                 key = f"{diagnosis_id}:{probe_id}:{instance['instance_id']}"
+                step_id = f"step_{hashlib.sha256(key.encode()).hexdigest()[:14]}"
+                collector_parameters = self._collector_probe_parameters(probe_id, target_scope, instance)
                 planned.append(ProbePlan(
-                    step_id=f"step_{hashlib.sha256(key.encode()).hexdigest()[:14]}",
+                    step_id=step_id,
                     probe_id=probe_id,
                     target=instance,
-                    parameters={"duration_sec": duration, "sample_rate": definition.default_sample_rate, "evidence_gap": self._probe_evidence_gap(probe_id)},
+                    parameters={
+                        "duration_sec": duration,
+                        "sample_rate": definition.default_sample_rate,
+                        "evidence_gap": self._probe_evidence_gap(probe_id),
+                        **collector_parameters,
+                        "collector_invocation": _collector_invocation(
+                            step={"diagnosis_id": diagnosis_id, "step_id": step_id},
+                            definition=definition,
+                            target=instance,
+                            collector_parameters=collector_parameters,
+                        ),
+                    },
                     reason=f"用于区分 {', '.join(definition.applicable_hypotheses[:3])} 等候选假设",
                     risk_level=definition.risk_level,
                     requires_approval=definition.requires_approval,
@@ -458,24 +485,78 @@ class DiagnosisOrchestrator:
             collector_type=definition.runner_task_kind,
             duration_sec=duration,
             sample_rate=sample_rate,
-            options={
-                "diagnosis_id": step["diagnosis_id"],
-                "diagnosis_step_id": step_id,
-                "probe_id": definition.probe_id,
-                "registered_probe": True,
-                "collector_context": {
-                    "task_id": step["diagnosis_id"],
-                    "collector_kind": definition.runner_task_kind,
-                    "target_pid": target["pid"],
-                    "agent_id": target["agent_id"],
-                    "service_id": target.get("service_id"),
-                    "instance_id": target.get("instance_id"),
-                    "host_id": target.get("host_id"),
-                },
-            },
+            options=self._task_options_for_probe(
+                step,
+                definition,
+                session.get("target_scope", {}),
+                target,
+            ),
         ))
         self.store.update_probe(step_id, status="SCHEDULED", task_id=task.id)
         self._append_child_task(step["diagnosis_id"], task.id, definition)
+
+    def _task_options_for_probe(
+        self,
+        step: dict[str, Any],
+        definition,
+        target_scope: dict[str, Any],
+        target: dict[str, Any],
+    ) -> dict[str, Any]:
+        collector_parameters = self._collector_probe_parameters(definition.probe_id, target_scope, target)
+        return {
+            "diagnosis_id": step["diagnosis_id"],
+            "diagnosis_step_id": step["step_id"],
+            "probe_id": definition.probe_id,
+            "registered_probe": True,
+            **collector_parameters,
+            "collector_context": {
+                "task_id": step["diagnosis_id"],
+                "collector_kind": definition.runner_task_kind,
+                "target_pid": target["pid"],
+                "agent_id": target["agent_id"],
+                "service_id": target.get("service_id"),
+                "instance_id": target.get("instance_id"),
+                "host_id": target.get("host_id"),
+            },
+            "collector_invocation": _collector_invocation(
+                step=step,
+                definition=definition,
+                target=target,
+                collector_parameters=collector_parameters,
+            ),
+        }
+
+    def _collector_probe_parameters(
+        self,
+        probe_id: str,
+        target_scope: dict[str, Any],
+        target: dict[str, Any],
+    ) -> dict[str, Any]:
+        if probe_id == "process_dependency_check":
+            targets = _dependency_targets(target_scope)
+            return {
+                "target_config": {"dependency_targets": targets},
+                "targets": targets,
+            } if targets else {
+                "target_config": {"dependency_targets": []},
+                "missing_dependency_targets": True,
+            }
+        if probe_id == "process_redis_check":
+            target_info = _redis_target(target_scope)
+            return {
+                "target_config": {"redis_target": target_info},
+                **target_info,
+            } if target_info else {
+                "target_config": {"redis_target": {}},
+                "missing_redis_target": True,
+            }
+        if probe_id == "process_log_scan":
+            log_paths = target.get("log_paths") or target_scope.get("log_paths")
+            return {
+                "target_config": {"log_paths": log_paths or []},
+                **({"log_paths": log_paths} if log_paths else {}),
+            }
+        return {}
 
     def _append_child_task(self, diagnosis_id: str, task_id: str, definition) -> None:
         session = self.store.get_session(diagnosis_id)
@@ -520,6 +601,7 @@ class DiagnosisOrchestrator:
             evidence_ids = [self._add_task_evidence(diagnosis_id, task)]
             structured = self._structured_artifacts(artifacts)
             artifact_values = {kind: value for kind, value, _ in structured}
+            artifact_values = _normalize_structured_artifact_values(artifact_values)
             flamegraph_svg = next(
                 (self._read_artifact_text(artifact) for artifact in artifacts if artifact.get("artifact_type") == "flamegraph_svg"),
                 None,
@@ -614,6 +696,9 @@ class DiagnosisOrchestrator:
                 break
 
         cluster_assessment = self._build_cluster_assessment(diagnosis_id, task_observations)
+        for request_id in _assessment_followup_requests(cluster_assessment, self.store.get_session(diagnosis_id) or {}):
+            if request_id not in followup_requests:
+                followup_requests.append(request_id)
         diagnostic_commands = self._build_reviewable_commands(
             diagnosis_id,
             task_observations,
@@ -653,6 +738,9 @@ class DiagnosisOrchestrator:
             "process_off_cpu_profile": "off_cpu_wait_profile",
             "process_trace_endpoint_profile": "trace_endpoint_profile",
             "process_baseline_window": "baseline_window_profile",
+            "process_log_scan": "log_scan",
+            "process_dependency_check": "dependency_check",
+            "process_redis_check": "redis_check",
         }.get(probe_id, "")
 
     def _plan_followup_requests(self, diagnosis_id: str, request_ids: list[str], parent_task) -> int:
@@ -672,6 +760,9 @@ class DiagnosisOrchestrator:
             "off_cpu_wait_profile": "process_off_cpu_profile",
             "trace_endpoint_profile": "process_trace_endpoint_profile",
             "baseline_window_profile": "process_baseline_window",
+            "log_scan": "process_log_scan",
+            "dependency_check": "process_dependency_check",
+            "redis_check": "process_redis_check",
         }
         for evidence_gap in request_ids:
             probe_id = request_map.get(evidence_gap)
@@ -687,8 +778,14 @@ class DiagnosisOrchestrator:
             else:
                 requires_approval = False
             key = f"{diagnosis_id}:followup:{evidence_gap}"
+            step_id = f"step_{hashlib.sha256(key.encode()).hexdigest()[:14]}"
+            collector_parameters = self._collector_probe_parameters(
+                probe_id,
+                session.get("target_scope", {}),
+                target,
+            )
             plan = ProbePlan(
-                step_id=f"step_{hashlib.sha256(key.encode()).hexdigest()[:14]}",
+                step_id=step_id,
                 probe_id=probe_id,
                 target=target,
                 parameters={
@@ -697,6 +794,13 @@ class DiagnosisOrchestrator:
                     "evidence_gap": evidence_gap,
                     "parent_task_id": parent_task.id,
                     "execution_policy": policy,
+                    **collector_parameters,
+                    "collector_invocation": _collector_invocation(
+                        step={"diagnosis_id": diagnosis_id, "step_id": step_id},
+                        definition=definition,
+                        target=target,
+                        collector_parameters=collector_parameters,
+                    ),
                 },
                 reason=f"AI 树请求补充证据: {evidence_gap}",
                 risk_level=definition.risk_level,
@@ -1227,6 +1331,23 @@ class DiagnosisOrchestrator:
             edge.target_service for edge in request.context.dependencies
             if edge.source_service == intent.target_service and edge.relation == "CALLS"
         }
+        dependency_targets = [
+            {
+                "dependency_id": edge.target_service,
+                "source_service": edge.source_service,
+                "target_service": edge.target_service,
+                "relation": edge.relation,
+                "protocol": edge.protocol,
+                "host": edge.host,
+                "port": edge.port,
+                "url": edge.url,
+                "path": edge.path,
+                "confidence": edge.confidence,
+                "source": edge.source,
+            }
+            for edge in request.context.dependencies
+            if edge.source_service == intent.target_service
+        ]
         downstream = [item for item in all_instances if item["service_id"] in downstream_services]
         ordered = target_instances + same_host + downstream
         unique = []
@@ -1247,6 +1368,7 @@ class DiagnosisOrchestrator:
             "instances": unique,
             "same_host_instance_ids": [item["instance_id"] for item in same_host],
             "downstream_service_ids": sorted(downstream_services),
+            "dependency_targets": dependency_targets,
             "max_topology_hops": budget.max_topology_hops,
         }
 
@@ -1520,6 +1642,111 @@ def _minimize(value: Any, depth: int = 0) -> Any:
     if isinstance(value, (int, float, bool)) or value is None:
         return value
     return str(value)[:256]
+
+
+def _normalize_structured_artifact_values(values: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(values)
+    if "top_json" not in normalized and "continuous_top_json" in normalized:
+        normalized["top_json"] = normalized["continuous_top_json"]
+    if "flamegraph_json" not in normalized and "continuous_flamegraph_json" in normalized:
+        normalized["flamegraph_json"] = normalized["continuous_flamegraph_json"]
+    summary = normalized.get("continuous_summary")
+    if isinstance(summary, dict):
+        depth = normalized.get("depth_evidence_json")
+        if not isinstance(depth, dict):
+            depth = {}
+        depth.setdefault("baseline_summary", summary)
+        normalized["depth_evidence_json"] = depth
+    return normalized
+
+
+def _dependency_targets(target_scope: dict[str, Any]) -> list[dict[str, Any]]:
+    dependencies = target_scope.get("dependency_targets") or []
+    targets = []
+    for item in dependencies:
+        if not isinstance(item, dict):
+            continue
+        if not (item.get("url") or item.get("host")):
+            continue
+        targets.append({
+            "dependency_id": item.get("dependency_id") or item.get("target_service") or item.get("host"),
+            "protocol": item.get("protocol") or ("http" if item.get("url") else "tcp"),
+            "host": item.get("host"),
+            "port": item.get("port"),
+            "url": item.get("url"),
+            "path": item.get("path") or "/",
+        })
+    return targets
+
+
+def _redis_target(target_scope: dict[str, Any]) -> dict[str, Any]:
+    for item in _dependency_targets(target_scope):
+        protocol = str(item.get("protocol") or "").lower()
+        text = " ".join(str(item.get(key) or "") for key in ("dependency_id", "host", "url")).lower()
+        if protocol == "redis" or "redis" in text:
+            host = item.get("host") or _host_from_url(str(item.get("url") or ""))
+            port = int(item.get("port") or 6379)
+            return {
+                "dependency_id": item.get("dependency_id"),
+                "protocol": "redis",
+                "host": host,
+                "port": port,
+                "url": item.get("url") or f"redis://{host}:{port}",
+            }
+    return {}
+
+
+def _collector_invocation(
+    *,
+    step: dict[str, Any],
+    definition,
+    target: dict[str, Any],
+    collector_parameters: dict[str, Any],
+) -> dict[str, Any]:
+    target_config = collector_parameters.get("target_config")
+    if not isinstance(target_config, dict):
+        target_config = {}
+    return build_collector_invocation(
+        scope_source="diagnosis_target_scope",
+        collector_family=definition.runner_task_kind,
+        probe_id=definition.probe_id,
+        diagnosis_id=step["diagnosis_id"],
+        diagnosis_step_id=step["step_id"],
+        target_config=target_config,
+        target_context={
+            "agent_id": target.get("agent_id"),
+            "service_id": target.get("service_id"),
+            "instance_id": target.get("instance_id"),
+            "host_id": target.get("host_id"),
+            "pid": target.get("pid"),
+        },
+    )
+
+
+def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str, Any]) -> list[str]:
+    classification = assessment.get("classification")
+    target_scope = session.get("target_scope", {}) if isinstance(session.get("target_scope"), dict) else {}
+    if classification != "downstream_dependency":
+        return []
+    requests = ["dependency_check", "log_scan"]
+    if any(
+        "redis" in " ".join(str(item.get(key) or "") for key in ("dependency_id", "protocol", "host", "url")).lower()
+        for item in target_scope.get("dependency_targets", [])
+        if isinstance(item, dict)
+    ):
+        requests.append("redis_check")
+    return requests
+
+
+def _host_from_url(url: str) -> str:
+    if "://" not in url:
+        return ""
+    try:
+        from urllib.parse import urlparse
+
+        return urlparse(url).hostname or ""
+    except Exception:
+        return ""
 
 
 def _candidate_matches_hypothesis(candidate_id: str, hypothesis_type: str) -> bool:

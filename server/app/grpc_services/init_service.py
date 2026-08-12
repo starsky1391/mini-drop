@@ -1,6 +1,7 @@
 """InitAgent gRPC 服务：Agent 注册与配置拉取。"""
 
 import os
+import json
 from typing import Any
 
 from server.app.generated import init_pb2, init_pb2_grpc
@@ -26,6 +27,11 @@ class InitAgentService(init_pb2_grpc.InitAgentServicer):
             capabilities=list(request.capabilities),
         )
         _ = agent  # register_agent 副作用已完成（包括 AGENT_ONLINE 审计日志）
+        if request.collector_profile_json and hasattr(self._repo, "record_agent_metrics"):
+            self._repo.record_agent_metrics(
+                request.agent_id,
+                {"collector_profile": _safe_json(request.collector_profile_json)},
+            )
         return init_pb2.RegisterAgentResponse(heartbeat_interval_sec=5)
 
     def FetchConfig(self, request: init_pb2.FetchConfigRequest, context) -> init_pb2.FetchConfigResponse:
@@ -44,3 +50,11 @@ class InitAgentService(init_pb2_grpc.InitAgentServicer):
                 region=os.getenv("MINIO_REGION", ""),
             )
         )
+
+
+def _safe_json(value: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {"schema_version": "1.0", "error": "invalid collector_profile_json"}
+    return parsed if isinstance(parsed, dict) else {"schema_version": "1.0", "error": "collector_profile_json is not an object"}

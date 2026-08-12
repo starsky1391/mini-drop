@@ -62,6 +62,9 @@ class StructuredEvidence(BaseModel):
     sys_metrics: dict[str, Any] | None = None
     ebpf_metrics: dict[str, Any] | None = None
     memory_json: dict[str, Any] | None = None
+    log_window_json: dict[str, Any] | None = None
+    dependency_check_json: dict[str, Any] | None = None
+    redis_check_json: dict[str, Any] | None = None
 
 
 def structure_artifact_evidence(
@@ -73,7 +76,7 @@ def structure_artifact_evidence(
 ) -> StructuredEvidence:
     """Convert raw and semi-raw collector artifacts into compact evidence."""
     values = artifact_values or {}
-    window = _normalize_evidence_window(evidence_window or values.get("evidence_window"))
+    window = _normalize_evidence_window(evidence_window or values.get("evidence_window") or _artifact_value_window(values))
     window_json = window.model_dump(mode="json")
     artifact_refs = _with_window_metadata(_build_artifact_refs(task_id, artifacts), window_json)
     top_functions = _normalize_top_functions(values.get("top_json"))
@@ -93,6 +96,9 @@ def structure_artifact_evidence(
         artifact_refs=artifact_refs,
         sys_metrics=values.get("sys_metrics"),
         ebpf_metrics=values.get("ebpf_metrics"),
+        log_window=values.get("log_window_json"),
+        dependency_check=values.get("dependency_check_json"),
+        redis_check=values.get("redis_check_json"),
     )
     confidence_inputs["evidence_window"] = window_json
     evidence_index = _build_evidence_index(
@@ -101,6 +107,9 @@ def structure_artifact_evidence(
         stack_summary=stack_summary,
         call_path_hotspots=call_path_hotspots,
         confidence_inputs=confidence_inputs,
+        log_window=values.get("log_window_json"),
+        dependency_check=values.get("dependency_check_json"),
+        redis_check=values.get("redis_check_json"),
     )
     evidence_index["evidence_window"] = window_json
     return StructuredEvidence(
@@ -121,6 +130,9 @@ def structure_artifact_evidence(
         sys_metrics=values.get("sys_metrics") if isinstance(values.get("sys_metrics"), dict) else None,
         ebpf_metrics=values.get("ebpf_metrics") if isinstance(values.get("ebpf_metrics"), dict) else None,
         memory_json=values.get("memory_json") if isinstance(values.get("memory_json"), dict) else None,
+        log_window_json=values.get("log_window_json") if isinstance(values.get("log_window_json"), dict) else None,
+        dependency_check_json=values.get("dependency_check_json") if isinstance(values.get("dependency_check_json"), dict) else None,
+        redis_check_json=values.get("redis_check_json") if isinstance(values.get("redis_check_json"), dict) else None,
     )
 
 
@@ -138,8 +150,31 @@ def _normalize_evidence_window(value: Any) -> EvidenceWindowMetadata:
     if isinstance(value, EvidenceWindowMetadata):
         return value
     if isinstance(value, dict):
-        return EvidenceWindowMetadata.model_validate(value)
+        return EvidenceWindowMetadata.model_validate(_normalize_window_keys(value))
     return EvidenceWindowMetadata()
+
+
+def _artifact_value_window(values: dict[str, Any]) -> dict[str, Any]:
+    for key in (
+        "log_window_json",
+        "dependency_check_json",
+        "redis_check_json",
+        "depth_evidence_json",
+        "continuous_summary",
+    ):
+        value = values.get(key)
+        if isinstance(value, dict) and isinstance(value.get("evidence_window"), dict):
+            return value["evidence_window"]
+    return {}
+
+
+def _normalize_window_keys(value: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(value)
+    if "window_start" not in normalized and "start" in normalized:
+        normalized["window_start"] = str(normalized["start"]) if normalized["start"] is not None else None
+    if "window_end" not in normalized and "end" in normalized:
+        normalized["window_end"] = str(normalized["end"]) if normalized["end"] is not None else None
+    return normalized
 
 
 def _with_window_metadata(items: list[dict[str, Any]], window: dict[str, Any]) -> list[dict[str, Any]]:
@@ -339,6 +374,9 @@ def _build_confidence_inputs(
     artifact_refs: list[dict[str, Any]],
     sys_metrics: Any,
     ebpf_metrics: Any,
+    log_window: Any,
+    dependency_check: Any,
+    redis_check: Any,
 ) -> dict[str, Any]:
     first_top = top_functions[0] if top_functions else {}
     context_completeness = "high" if call_path_hotspots else "medium" if stack_summary.get("has_call_path") else "low"
@@ -349,8 +387,16 @@ def _build_confidence_inputs(
         "context_completeness": context_completeness,
         "has_system_pressure": isinstance(sys_metrics, dict) and bool(sys_metrics),
         "has_wait_or_io_signal": isinstance(ebpf_metrics, dict) and bool(ebpf_metrics),
+        "has_log_signal": isinstance(log_window, dict) and bool(log_window.get("error_clusters")),
+        "has_dependency_signal": isinstance(dependency_check, dict) and bool(dependency_check.get("checks")),
+        "has_redis_signal": isinstance(redis_check, dict) and bool(redis_check),
+        "failed_dependency_count": _failed_dependency_count(dependency_check),
+        "log_error_cluster_count": _log_error_cluster_count(log_window),
+        "redis_slowlog_entry_count": _redis_slowlog_entry_count(redis_check),
+        "redis_max_latency_ms": _redis_max_latency_ms(redis_check),
         "parse_status": stack_summary.get("parse_status", "insufficient_structured_signal"),
         "artifact_types": artifact_types,
+        "collector_families": _collector_families(artifact_types),
         "token_safety": "compact_summary_only",
     }
 
@@ -362,13 +408,101 @@ def _build_evidence_index(
     stack_summary: dict[str, Any],
     call_path_hotspots: list[dict[str, Any]],
     confidence_inputs: dict[str, Any],
+    log_window: Any,
+    dependency_check: Any,
+    redis_check: Any,
 ) -> dict[str, Any]:
     index = dict(depth) if isinstance(depth, dict) else {}
     index["artifact_refs"] = artifact_refs
     index["stack_summary"] = stack_summary
     index["call_path_hotspots"] = call_path_hotspots
     index["confidence_inputs"] = confidence_inputs
+    if isinstance(log_window, dict):
+        index["log_scan"] = _compact_log_window(log_window)
+    if isinstance(dependency_check, dict):
+        index["dependency_check"] = _compact_dependency_check(dependency_check)
+    if isinstance(redis_check, dict):
+        index["redis_check"] = _compact_redis_check(redis_check)
     return index
+
+
+def _collector_families(artifact_types: list[str]) -> list[str]:
+    mapping = {
+        "log_window_json": "log_scan",
+        "dependency_check_json": "dependency_check",
+        "redis_check_json": "redis_check",
+        "top_json": "runtime_snapshot",
+        "flamegraph_json": "runtime_snapshot",
+        "depth_evidence_json": "runtime_snapshot",
+        "continuous_top_json": "runtime_snapshot",
+        "continuous_flamegraph_json": "runtime_snapshot",
+        "ebpf_metrics": "io_profile",
+        "sys_metrics": "sys_metrics",
+        "memory_json": "memory_profile",
+    }
+    return list(dict.fromkeys(mapping.get(item, item) for item in artifact_types))
+
+
+def _compact_log_window(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "summary": value.get("summary", {}),
+        "error_clusters": (value.get("error_clusters") or [])[:5],
+        "evidence_index": value.get("evidence_index", {}),
+    }
+
+
+def _compact_dependency_check(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "summary": value.get("summary", {}),
+        "checks": (value.get("checks") or [])[:10],
+    }
+
+
+def _compact_redis_check(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "connectivity": value.get("connectivity", {}),
+        "info_summary": value.get("info_summary", {}),
+        "slowlog_summary": value.get("slowlog_summary", {}),
+        "latency_summary": value.get("latency_summary", {}),
+    }
+
+
+def _failed_dependency_count(value: Any) -> int:
+    if not isinstance(value, dict):
+        return 0
+    summary = value.get("summary")
+    if isinstance(summary, dict) and isinstance(summary.get("failed_dependencies"), list):
+        return len(summary["failed_dependencies"])
+    checks = value.get("checks")
+    if isinstance(checks, list):
+        return sum(1 for item in checks if isinstance(item, dict) and item.get("success") is False)
+    return 0
+
+
+def _log_error_cluster_count(value: Any) -> int:
+    if not isinstance(value, dict):
+        return 0
+    summary = value.get("summary")
+    if isinstance(summary, dict):
+        count = _safe_int(summary.get("error_cluster_count"))
+        if count:
+            return count
+    clusters = value.get("error_clusters")
+    return len(clusters) if isinstance(clusters, list) else 0
+
+
+def _redis_slowlog_entry_count(value: Any) -> int:
+    if not isinstance(value, dict):
+        return 0
+    slowlog = value.get("slowlog_summary")
+    return _safe_int(slowlog.get("entry_count")) if isinstance(slowlog, dict) else 0
+
+
+def _redis_max_latency_ms(value: Any) -> float:
+    if not isinstance(value, dict):
+        return 0.0
+    latency = value.get("latency_summary")
+    return _safe_float(latency.get("max_latency_ms")) if isinstance(latency, dict) else 0.0
 
 
 def _safe_float(value: Any) -> float:

@@ -25,8 +25,14 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?set MINIO_SECRET_KEY}
       MINIO_BUCKET: ${MINIO_BUCKET:-mini-drop}
       MINIO_SECURE: ${MINIO_SECURE:-0}
+      MINI_DROP_MANAGED_COLLECTORS: ${MINI_DROP_MANAGED_COLLECTORS:-1}
+      MINI_DROP_LOG_AUTO_DISCOVER: ${MINI_DROP_LOG_AUTO_DISCOVER:-1}
+      MINI_DROP_LOG_PIPELINE_OUTPUT: ${MINI_DROP_LOG_PIPELINE_OUTPUT:-/var/lib/mini-drop/logs/logs.ndjson}
+      MINI_DROP_BLACKBOX_URL: ${MINI_DROP_BLACKBOX_URL:-http://blackbox-exporter:9115}
+      MINI_DROP_REDIS_EXPORTER_URL: ${MINI_DROP_REDIS_EXPORTER_URL:-}
     volumes:
       - ./deploy/certs:/certs:ro
+      - collector_logs:/var/lib/mini-drop/logs:ro
       - /sys/kernel/debug:/sys/kernel/debug
       - /lib/modules:/lib/modules:ro
     privileged: true
@@ -41,3 +47,37 @@ services:
       - no-new-privileges:true
       - seccomp:unconfined
     restart: unless-stopped
+
+  fluent-bit:
+    image: fluent/fluent-bit:3.2
+    environment:
+      MINI_DROP_LOG_PATHS: ${MINI_DROP_LOG_PATHS:-/host/var/log/*.log,/host/var/lib/docker/containers/*/*.log}
+    volumes:
+      - ./deploy/collectors/fluent-bit:/fluent-bit/etc:ro
+      - /var/log:/host/var/log:ro
+      - /var/lib/docker/containers:/host/var/lib/docker/containers:ro
+      - collector_logs:/buffers
+    command: ["/fluent-bit/bin/fluent-bit", "-c", "/fluent-bit/etc/fluent-bit.conf"]
+    restart: unless-stopped
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    command: ["--config.file=/etc/blackbox_exporter/blackbox.yml"]
+    expose:
+      - "9115"
+    volumes:
+      - ./deploy/collectors/blackbox/blackbox.yml:/etc/blackbox_exporter/blackbox.yml:ro
+    restart: unless-stopped
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0
+    profiles: ["redis"]
+    environment:
+      REDIS_ADDR: ${MINI_DROP_REDIS_ADDR:-redis://redis:6379}
+      REDIS_PASSWORD: ${MINI_DROP_REDIS_PASSWORD:-}
+    expose:
+      - "9121"
+    restart: unless-stopped
+
+volumes:
+  collector_logs:

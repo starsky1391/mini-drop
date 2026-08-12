@@ -362,6 +362,53 @@ def test_next_evidence_requests_are_stable_for_same_gap():
     assert root_a.next_evidence_requests == ["off_cpu_wait_profile", "trace_endpoint_profile"]
 
 
+def test_network_candidate_requests_minimal_dependency_and_log_collectors():
+    evidence = EvidenceInput(
+        sys_metrics={
+            "sample_count": 5,
+            "summary": {
+                "net_rx_kbps": 64000,
+                "net_tx_kbps": 70000,
+            },
+        },
+    )
+
+    result = analyze_evidence(
+        evidence,
+        [_candidate("network_io_correlation", ["sys_metrics.summary.net_rx_kbps", "sys_metrics.summary.net_tx_kbps"])],
+    )
+
+    root = next(item for item in result.ai_tree if item.node_id == "tree_root")
+    assert "dependency_check" in result.collection_gaps
+    assert "log_scan" in result.collection_gaps
+    assert root.next_evidence_requests[-2:] == ["dependency_check", "log_scan"]
+    assert "redis_check" not in root.next_evidence_requests
+
+
+def test_redis_missing_evidence_requests_redis_check_without_root_cause_upgrade():
+    evidence = EvidenceInput(
+        evidence_index={
+            "log_scan": {
+                "evidence_index": {"dependencies": ["redis"]},
+            },
+        },
+    )
+    candidate = CandidateCause(
+        candidate_id="downstream_redis_timeout",
+        description="redis timeout",
+        evidence_refs=[],
+        rule_score=0.5,
+        missing_evidence=["缺少 redis_check 证据"],
+    )
+
+    result = analyze_evidence(evidence, [candidate])
+
+    root = next(item for item in result.ai_tree if item.node_id == "tree_root")
+    assert result.conclusion_boundary.can_claim_root_cause is False
+    assert "redis_check" in result.collection_gaps
+    assert "redis_check" in root.next_evidence_requests
+
+
 def test_primary_cause_is_stable_in_llm_candidate_order():
     evidence = EvidenceInput(
         top_functions=[{"name": "compute_hotspot", "percent": 62.0}],

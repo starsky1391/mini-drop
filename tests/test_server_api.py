@@ -162,6 +162,11 @@ class TestAgents:
         repo.record_agent_metrics("a1", {
             "self": {"cpu_percent": 1.5, "rss_mb": 32.0, "read_kb_s": 0.1, "write_kb_s": 0.2},
             "children": {"children_count": 2},
+            "collector_profile": {
+                "schema_version": "1.0",
+                "summary": {"available": 2, "degraded": 1, "unavailable": 0},
+                "collectors": [],
+            },
         })
         resp = client.get("/api/agents")
         assert resp.status_code == 200
@@ -169,6 +174,7 @@ class TestAgents:
         agents = data if isinstance(data, list) else data.get("items", [])
         agent = next(item for item in agents if item["id"] == "a1")
         assert agent["latest_metrics"]["self"]["cpu_percent"] == 1.5
+        assert agent["collector_profile"]["summary"]["degraded"] == 1
 
 
 class TestWatchSubscriptions:
@@ -182,6 +188,13 @@ class TestWatchSubscriptions:
                 "instance_id": "order-1",
                 "endpoint": "/orders",
             },
+            "target_config": {
+                "redis_target": {
+                    "host": "order-redis.local",
+                    "port": 6379,
+                    "url": "redis://order-redis.local:6379",
+                },
+            },
             "watch_profile": "low_cost_default",
             "enabled_collectors": ["sys_metrics", "light_stack"],
             "retention_seconds": 120,
@@ -191,11 +204,13 @@ class TestWatchSubscriptions:
         watch = resp.json()["data"]
         assert watch["watch_id"].startswith("watch_")
         assert watch["status"] == "active"
+        assert watch["target_config"]["redis_target"]["host"] == "order-redis.local"
 
         leases = client.get("/api/v1/agents/a1/watch-leases").json()["data"]["items"]
         assert len(leases) == 1
         assert leases[0]["watch_id"] == watch["watch_id"]
         assert leases[0]["target"]["target_pid"] == 4242
+        assert leases[0]["target_config"]["redis_target"]["url"] == "redis://order-redis.local:6379"
 
     def test_watch_evaluate_creates_triggered_collector_tasks(self, client: TestClient):
         repo.register_agent(

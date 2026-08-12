@@ -9,9 +9,15 @@ def test_probe_registry_exposes_depth_probes():
     assert "process_off_cpu_profile" in probes
     assert "process_trace_endpoint_profile" in probes
     assert "process_baseline_window" in probes
+    assert "process_log_scan" in probes
+    assert "process_dependency_check" in probes
+    assert "process_redis_check" in probes
     assert get_probe("process_off_cpu_profile").runner_task_kind == "off_cpu_wait_profile"
     assert get_probe("process_trace_endpoint_profile").runner_task_kind == "trace_endpoint_profile"
     assert get_probe("process_baseline_window").runner_task_kind == "baseline_window_profile"
+    assert get_probe("process_log_scan").runner_task_kind == "log_scan"
+    assert get_probe("process_dependency_check").runner_task_kind == "dependency_check"
+    assert get_probe("process_redis_check").runner_task_kind == "redis_check"
 
 
 def test_choose_probe_ids_prefers_deeper_collection_for_cpu_and_latency():
@@ -23,9 +29,8 @@ def test_choose_probe_ids_prefers_deeper_collection_for_cpu_and_latency():
     ]
     assert choose_probe_ids("latency_increase")[:3] == [
         "host_process_metrics",
-        "process_trace_endpoint_profile",
-        "process_cpu_profile",
+        "process_dependency_check",
+        "process_log_scan",
     ]
     assert "process_off_cpu_profile" in choose_probe_ids("io_degradation")
     assert "process_baseline_window" in choose_probe_ids("memory_pressure")
-

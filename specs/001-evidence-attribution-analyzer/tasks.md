@@ -403,3 +403,146 @@
 6. Finish X after W so watch subscriptions can reuse trigger/cohort contracts and expose them in the UI.
 7. Finish Y after X so every watch can retain multiple frozen abnormal windows for later AI tree analysis.
 8. Finish Z after Y so each frozen abnormal window can enter AI tree analysis as a first-class object.
+
+### Task Group AA - AI Ops v2 Audit Bundle Export
+
+- [x] AA001 Add `/api/v1/diagnoses/{diagnosis_id}/audit-bundle` API.
+- [x] AA002 Export run metadata, runtime trace, topology snapshot, probes, child tasks, artifacts, evidence, structured evidence, evidence refs, conclusion, safety, rollback, and readiness gate.
+- [x] AA003 Return 404 for missing diagnosis sessions instead of emitting an empty benchmark bundle.
+- [x] AA004 Add tests proving audit bundles include runtime trace and readiness gate checks.
+
+**Outcome**: A diagnosis session can produce the audit artifact required by the AI Ops v2 evaluator.
+
+### Task Group AB - Benchmark Scoring Module
+
+- [x] AB001 Add `server.app.diagnosis.benchmark_score` with deterministic `score_audit_bundle`.
+- [x] AB002 Add `aggregate_results` with case/run accuracy, Wilson interval, evidence citation rate, trace coverage, unsafe action count, and repeat consistency.
+- [x] AB003 Support abstention oracle cases without forcing root-cause output.
+- [x] AB004 Verify `docs/ai_ops_v2_test/评测脚本/evaluate_diagnosis_bundles.py` can import the scoring module from the script directory.
+
+**Outcome**: The evaluator can score exported bundles offline without sending private oracle data to the diagnosis system.
+
+### Task Group AC - Collector Mapping Gate
+
+- [x] AC001 Map `trace_endpoint_profile`, `off_cpu_wait_profile`, and `baseline_window_profile` to explicit server task types.
+- [x] AC002 Map agent task type `2` to `trace_endpoint_profile` so trace endpoint probes do not silently fall back to `perf_cpu`.
+- [x] AC003 Map agent task types `8` and `9` to their intended collector routes.
+- [x] AC004 Add tests proving extended runtime collectors use explicit task-type routes.
+
+**Outcome**: Benchmark probe plans can verify that existing runtime collector execution is not a fake perf fallback.
+
+### Task Group AD - Baseline Artifact Structuring
+
+- [x] AD001 Accept `continuous_top_json`, `continuous_flamegraph_json`, and `continuous_summary` as structured artifact inputs.
+- [x] AD002 Normalize continuous baseline outputs into `top_json`, `flamegraph_json`, and `depth_evidence_json.baseline_summary` for RCA consumption.
+- [x] AD003 Apply the normalization in both diagnosis session analysis and ordinary task analysis.
+- [x] AD004 Add tests proving baseline window artifacts become structured evidence visible to audit bundles.
+
+**Outcome**: Baseline sampling outputs become usable evidence instead of orphaned collector artifacts.
+
+### Task Group AE - Readiness Gate Script
+
+- [x] AE001 Add `docs/ai_ops_v2_test/评测脚本/check_readiness_gate.py`.
+- [x] AE002 Check audit bundle existence, runtime trace, probes, child tasks, artifacts, structured evidence, evidence refs, and collector fallback.
+- [x] AE003 Write a machine-readable readiness report and return non-zero when any bundle fails.
+- [x] AE004 Smoke test the script against existing sample bundles to prove it reports concrete gaps.
+
+**Outcome**: Formal benchmark runs have a preflight gate that catches missing evidence chains before scores are interpreted.
+
+### Task Group AF - AI Ops v2 Documentation Sync
+
+- [x] AF001 Document Scheme 2 as an AI Ops v2 Benchmark Readiness Gate rather than a full benchmark platform.
+- [x] AF002 Document the audit bundle schema, readiness checks, collector mapping, baseline structuring, and recommended test order.
+- [x] AF003 Mark completed Scheme 2 items in `docs/evidence_to_attribution_analyzer.md`.
+- [x] AF004 Mark completed Scheme 2 tasks in this task file.
+
+**Outcome**: The implementation, benchmark readiness policy, and task tracking remain aligned.
+
+### Task Group AG - 工业采集器适配层
+
+**Purpose**: Replace self-built lightweight collectors with adapters around mature collectors. Mini-Drop only schedules, reads, structures, and indexes evidence; it does not reimplement log tailing, blackbox probing, or Redis protocol collection.
+
+- [x] AG001 Define industrial collector adapter contracts for `log_scan`, `dependency_check`, and `redis_check`, including adapter mode, external endpoint/config path, target selection, timeout, and evidence window metadata.
+- [x] AG002 Add `log_scan` adapter using Fluent Bit Tail / Multiline or OpenTelemetry Collector `filelogreceiver` output as the source of truth.
+- [x] AG003 Convert industrial log output into structured `log_window_json` with `summary`, `error_clusters`, `trace_ids`, `endpoints`, `dependencies`, `first_seen`, `last_seen`, and stable `evidence_ref` fields.
+- [x] AG004 Add `dependency_check` adapter using Prometheus Blackbox Exporter `/probe` as the source of truth for DNS, TCP, HTTP, HTTPS, and gRPC reachability.
+- [x] AG005 Convert Blackbox Exporter probe metrics into structured `dependency_check_json` with `checks`, `summary`, per-target duration, success state, failure phase, error type, and stable `evidence_ref` fields.
+- [x] AG006 Add `redis_check` adapter using Redis Exporter metrics as the source of truth, with an optional controlled Redis command snapshot only for evidence fields Redis Exporter cannot expose in the required window.
+- [x] AG007 Convert Redis Exporter / Redis snapshot data into structured `redis_check_json` with `connectivity`, `info_summary`, `slowlog_summary`, `latency_summary`, and stable `evidence_ref` fields.
+- [x] AG008 Ensure all three adapters output artifact metadata with `artifact_type`, `collector_family`, `evidence_window`, `trigger_event_id`, `evidence_cohort_id`, `collection_mode`, and `timing_relation`.
+- [x] AG009 Add adapter tests using recorded Fluent Bit / OTel, Blackbox Exporter, and Redis Exporter fixture outputs; tests must prove raw collector output is not sent directly to AI.
+- [x] AG010 Add readiness gate checks that fail when a required collector family is only planned or mapped but lacks the matching structured artifact.
+
+**Outcome**: `log_scan`, `dependency_check`, and `redis_check` become industrial-collector-backed evidence families with deterministic structured outputs.
+
+### Task Group AH - 最小必要采集器选择
+
+**Purpose**: Make AI tree follow-up requests choose the smallest required industrial-backed evidence family based on case type, existing evidence families, and missing evidence families.
+
+- [ ] AH001 Define a deterministic evidence-family inventory from structured evidence: `log_scan`, `dependency_check`, `redis_check`, `runtime_snapshot`, `sys_metrics`, `trace_endpoint_profile`, `baseline_window_profile`, and `network_profile`.
+- [ ] AH002 Implement missing-family detection for downstream, Redis, Payment, DNS, TCP, HTTP, gRPC, log-error, and runtime-snapshot cases without letting these rules emit root-cause conclusions.
+- [ ] AH003 Map `downstream_dependency` candidates to minimal follow-up order: `dependency_check` first, then `log_scan`, then domain-specific collectors such as `redis_check`.
+- [ ] AH004 Map Redis-specific candidates to `redis_check` only when `dependency_check` or `log_scan` has produced Redis-related evidence or the topology explicitly marks a Redis dependency.
+- [ ] AH005 Prevent duplicate follow-up requests when the same `diagnosis_id + evidence_family` already has a same-window or active follow-up artifact.
+- [ ] AH006 Add tests proving identical input evidence produces identical `next_evidence_requests` order across repeated runs.
+- [ ] AH007 Add tests proving delayed follow-up evidence cannot directly refute stronger same-window industrial collector evidence.
+
+**Outcome**: AI tree asks for the least necessary structured evidence instead of repeatedly launching broad or self-written collectors.
+
+### Task Group AI - 结构化证据消费与审计
+
+**Purpose**: Ensure industrial collector outputs enter the same Evidence-to-Attribution and audit bundle path as runtime snapshots.
+
+- [x] AI001 Extend the evidence structuring layer to normalize `log_window_json`, `dependency_check_json`, and `redis_check_json` into compact `evidence_index` sections.
+- [x] AI002 Add `confidence_inputs` fields for `has_log_signal`, `has_dependency_signal`, `has_redis_signal`, `failed_dependency_count`, `log_error_cluster_count`, and Redis slowlog/latency signals.
+- [x] AI003 Ensure LLM input receives compact summaries and `evidence_ref` values only; raw log lines, raw Prometheus metric dumps, and large exporter payloads remain referenced artifacts.
+- [x] AI004 Update audit bundle export so each structured artifact is visible under `artifacts`, `structured_evidence`, `evidence_refs`, and collector-family readiness checks.
+- [ ] AI005 Add tests proving required evidence families are scored only when the structured artifact exists, not when a probe was merely scheduled.
+
+**Outcome**: Industrial collector data is usable by AI tree, benchmark gate, and final reports without token-heavy raw payloads.
+
+### Suggested Execution Order For AG-AI
+
+1. Finish AG first so each mature collector has a stable adapter and structured artifact contract.
+2. Finish AI next so adapter outputs are visible to Evidence-to-Attribution, audit bundle, and readiness gate.
+3. Finish AH last so next-evidence selection can reason over real structured evidence families instead of planned collector names.
+
+### Task Group AJ - Managed Collector Profile
+
+**Purpose**: Make industrial collectors practical by hiding per-task configuration behind Agent-managed defaults, capability discovery, and UI visibility.
+
+- [x] AJ001 Add Agent-side `CollectorProfile` discovery for `log_scan`, `dependency_check`, `redis_check`, runtime tools, and degraded/unavailable reasons.
+- [x] AJ002 Report `CollectorProfile` during Agent registration without breaking existing `capabilities` task routing.
+- [x] AJ003 Keep `CollectorProfile` visible through `/api/agents` as both `collector_profile` and `latest_metrics.collector_profile`.
+- [x] AJ004 Add managed worker sidecars for Fluent Bit and Blackbox Exporter, with Redis Exporter as an optional compose profile.
+- [x] AJ005 Add default environment variables so Agent collectors can use managed sources without per-task options.
+- [x] AJ006 Show collector availability summary on the dashboard and detailed collector status on the Agent detail page.
+- [x] AJ007 Add tests for profile discovery, registration persistence, and API exposure.
+
+**Outcome**: Users can start the worker stack and let Mini-Drop discover collector availability instead of configuring each collector per diagnosis task.
+
+### Task Group AK - Target-Scoped Collector Invocation
+
+**Purpose**: Prevent Agent-level collector availability from being confused with per-watch or per-diagnosis target configuration. Agent registration answers "can this worker collect"; each probe/task invocation answers "what exact target is collected this time".
+
+- [x] AK001 Add a deterministic `collector_invocation` / `target_config` contract to probe parameters and task options.
+- [x] AK002 Keep `CollectorProfile` limited to capability/status discovery and remove any assumption that global Redis config means a business Redis target is ready.
+- [x] AK003 Make `dependency_check` tasks carry dependency targets from diagnosis/watch scope instead of relying on Agent registration-time config.
+- [x] AK004 Make `redis_check` tasks carry one Redis target snapshot from diagnosis/watch scope and preserve it in the structured artifact.
+- [x] AK005 Ensure industrial adapters output `collector_invocation` and per-target evidence refs so audit can prove which target was collected.
+- [x] AK006 Add tests proving one Agent can schedule different dependency/Redis targets without target configuration leakage.
+
+**Outcome**: Multiple watches, late-created tasks, and multiple Redis dependencies can share the same Agent-side industrial collectors without mixing target configuration.
+
+### Task Group AL - Unified Watch Collector Invocation
+
+**Purpose**: Make diagnosis-created tasks and watch-triggered tasks share one collector invocation contract, so Agent collectors never need to know whether a task came from manual diagnosis or persistent watch.
+
+- [x] AL001 Add a shared `build_collector_invocation` helper used by diagnosis and persistent trigger paths.
+- [x] AL002 Add `target_config` to watch subscriptions and watch leases.
+- [x] AL003 Pass `WatchSubscription.target_config` into persistent trigger evaluation.
+- [x] AL004 Write watch-scoped `collector_invocation` into triggered task options and incident collector task records.
+- [x] AL005 Add API/runtime tests proving watch target config flows into triggered collector invocation.
+- [x] AL006 Add frontend watch creation support for optional target config JSON.
+
+**Outcome**: Both ordinary diagnosis and persistent watch produce task options shaped as `target_config -> collector_invocation -> Agent collector`, avoiding two parallel target-routing protocols.
