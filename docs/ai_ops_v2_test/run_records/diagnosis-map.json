@@ -1,0 +1,152 @@
+{
+  "OB-ROBUST-SCOPE-001": [
+    "diag_session_20260811_100851_199c083c",
+    "diag_session_20260811_130756_7636bbcd",
+    "diag_session_20260811_113929_38a99407"
+  ],
+  "OB-COMPOUND-MEM-LOCK-001": [
+    "diag_session_20260811_121752_0c252979",
+    "diag_session_20260811_104033_50ee8f6d",
+    "diag_session_20260811_101023_c59ddde6"
+  ],
+  "OB-COMPOUND-STALE-REAL-001": [
+    "diag_session_20260811_114506_06100e31",
+    "diag_session_20260811_115808_1b71705f",
+    "diag_session_20260811_101153_c1ada379"
+  ],
+  "OB-SINGLE-DISK-001": [
+    "diag_session_20260811_125701_9adf92bc",
+    "diag_session_20260811_101344_8d5e783d",
+    "diag_session_20260811_120152_d8ef1509"
+  ],
+  "OB-NEG-TRANSIENT-001": [
+    "diag_session_20260811_101524_f37d3399",
+    "diag_session_20260811_130231_9e5fe431",
+    "diag_session_20260811_123908_bad6dcef"
+  ],
+  "OB-SINGLE-GO-LOCK-001": [
+    "diag_session_20260811_101807_7e87a54c",
+    "diag_session_20260811_124435_c668a184",
+    "diag_session_20260811_131648_d1f82f06"
+  ],
+  "OB-SINGLE-REDIS-001": [
+    "diag_session_20260811_102035_ab835b73",
+    "diag_session_20260811_125837_4704355f",
+    "diag_session_20260811_110228_fbdfd8ca"
+  ],
+  "OB-SINGLE-OOM-001": [
+    "diag_session_20260811_112311_935566b8",
+    "diag_session_20260811_121123_cc828a10",
+    "diag_session_20260811_103842_0d3bd99d"
+  ],
+  "OB-SINGLE-RUNTIME-STALL-001": [
+    "diag_session_20260811_132331_aacbec07",
+    "diag_session_20260811_104207_94d9a3d6",
+    "diag_session_20260811_130911_099e41ef"
+  ],
+  "OB-COMPOUND-DISK-NET-001": [
+    "diag_session_20260811_104457_bec0eb4e",
+    "diag_session_20260811_123529_0970d1f3",
+    "diag_session_20260811_111045_54a43e57"
+  ],
+  "OB-ROBUST-STALE-001": [
+    "diag_session_20260811_104726_9087f307",
+    "diag_session_20260811_130626_6770a653",
+    "diag_session_20260811_125145_aa859fa1"
+  ],
+  "OB-SINGLE-PAYMENT-001": [
+    "diag_session_20260811_105253_aa3411dd",
+    "diag_session_20260811_131407_e41b5028",
+    "diag_session_20260811_104858_9f2b282c"
+  ],
+  "OB-SINGLE-NETLOSS-001": [
+    "diag_session_20260811_112004_d0d0083c",
+    "diag_session_20260811_115959_8c0788af",
+    "diag_session_20260811_105122_7b386b7c"
+  ],
+  "OB-NEG-HEALTHY-001": [
+    "diag_session_20260811_105555_f8fa1927",
+    "diag_session_20260811_113227_dc59e7e7",
+    "diag_session_20260811_124658_32309dd2"
+  ],
+  "OB-COMPOUND-PAYMENT-REDIS-001": [
+    "diag_session_20260811_115138_fdf6a7be",
+    "diag_session_20260811_105825_63553ef2",
+    "diag_session_20260811_113741_c0a5504a"
+  ],
+  "OB-SINGLE-JAVA-LOCK-001": [
+    "diag_session_20260811_110034_494e10e7",
+    "diag_session_20260811_120815_d144e1e7",
+    "diag_session_20260811_130028_4597e468"
+  ],
+  "OB-SINGLE-PARTITION-001": [
+    "diag_session_20260811_110446_80b3b4de",
+    "diag_session_20260811_122240_1980b002",
+    "diag_session_20260811_114244_de538ea7"
+  ],
+  "OB-COMPOUND-OOM-RECOVERY-001": [
+    "diag_session_20260811_123724_3bf2bf60",
+    "diag_session_20260811_111240_a2af09a2",
+    "diag_session_20260811_121601_3b94c7dc"
+  ],
+  "OB-COMPOUND-NOISY-DOWNSTREAM-001": [
+    "diag_session_20260811_111453_e0aa2a8e",
+    "diag_session_20260811_125338_fd950360",
+    "diag_session_20260811_131156_7b7dbe09"
+  ],
+  "OB-ROBUST-COLLECTOR-FAIL-001": [
+    "diag_session_20260811_132043_79c3ae61",
+    "diag_session_20260811_121005_a0701187",
+    "diag_session_20260811_111641_db811097"
+  ],
+  "OB-COMPOUND-CROSS-WORKER-001": [
+    "diag_session_20260811_115540_711d5fe3",
+    "diag_session_20260811_112444_a2c936c3",
+    "diag_session_20260811_111757_31541223"
+  ],
+  "OB-SINGLE-PYTHON-LOCK-001": [
+    "diag_session_20260811_114637_36da4004",
+    "diag_session_20260811_114941_180ff9da",
+    "diag_session_20260811_112134_65c1ec43"
+  ],
+  "OB-ROBUST-CONFLICT-001": [
+    "diag_session_20260811_113115_9cbd06ca",
+    "diag_session_20260811_113001_b5eef930",
+    "diag_session_20260811_121924_28795d66"
+  ],
+  "OB-SINGLE-CPU-001": [
+    "diag_session_20260811_113511_b629174d",
+    "diag_session_20260811_120343_13b8ffdf",
+    "diag_session_20260811_123115_08c10b2d"
+  ],
+  "OB-SINGLE-HOST-IO-001": [
+    "diag_session_20260811_114042_5c9eff82",
+    "diag_session_20260811_122944_5445e83e",
+    "diag_session_20260811_123357_74d75f0c"
+  ],
+  "OB-SINGLE-NOISY-CPU-001": [
+    "diag_session_20260811_125529_479ca760",
+    "diag_session_20260811_114809_f7c12fb1",
+    "diag_session_20260811_132616_e2a02e2e"
+  ],
+  "OB-SINGLE-HOST-MEM-001": [
+    "diag_session_20260811_122057_a13f0368",
+    "diag_session_20260811_115406_f07f5149",
+    "diag_session_20260811_132157_e0b532b7"
+  ],
+  "OB-SINGLE-MEMLEAK-001": [
+    "diag_session_20260811_131913_cb9765b1",
+    "diag_session_20260811_130455_0a0bbd2c",
+    "diag_session_20260811_120606_d3586754"
+  ],
+  "OB-SINGLE-LATENCY-001": [
+    "diag_session_20260811_124228_012f27f4",
+    "diag_session_20260811_132845_34201d2a",
+    "diag_session_20260811_121350_1adbfb4a"
+  ],
+  "OB-ROBUST-DUPLICATE-001": [
+    "diag_session_20260811_122436_d762b4d2",
+    "diag_session_20260811_124923_069dc82e",
+    "diag_session_20260811_122721_0fe8154d"
+  ]
+}

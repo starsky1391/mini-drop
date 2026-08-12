@@ -1,0 +1,1492 @@
+{
+  "schema_version": "1.0",
+  "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+  "run": {
+    "status": "COMPLETED",
+    "created_at": "2026-08-11T11:00:34.081111",
+    "updated_at": "2026-08-11T11:01:09.077982",
+    "model_version": "deepseek-v4-flash",
+    "planner_version": "diagnosis-orchestrator-v1:constrained_hybrid",
+    "policy_profile": "production_safe",
+    "normalized_intent": {
+      "intent_type": "performance_diagnosis",
+      "symptom": "runtime_stall",
+      "target_service": "java-service",
+      "environment": "production",
+      "time_range": {
+        "start": "2026-08-11T10:30:30.728740Z",
+        "end": "2026-08-11T11:00:30.728740Z",
+        "source": "default_window"
+      },
+      "diagnosis_mode": "LIVE",
+      "analysis_strategy": "CONSTRAINED_HYBRID",
+      "evidence_time_policy": {
+        "max_clock_skew_seconds": 5,
+        "require_overlap": true,
+        "allow_reproduction_evidence": false
+      },
+      "scope": {
+        "self": true,
+        "same_host": true,
+        "downstream_hops": 1
+      },
+      "constraints": {
+        "no_high_risk_probe": true,
+        "registered_probes_only": true,
+        "no_automatic_remediation": true
+      },
+      "ambiguities": []
+    },
+    "target_scope": {
+      "target_service": "java-service",
+      "environment": "production",
+      "target_anchor": {
+        "service_id": "java-service",
+        "instance_id": "java-service-worker1-91754-r1-1786445994-0",
+        "host_id": "worker1",
+        "agent_id": "linux-worker-1",
+        "pid": 91754,
+        "container_id": null,
+        "cgroup_id": null,
+        "process_start_time": null,
+        "boot_id": null,
+        "environment": "production"
+      },
+      "instances": [
+        {
+          "service_id": "java-service",
+          "instance_id": "java-service-worker1-91754-r1-1786445994-0",
+          "host_id": "worker1",
+          "agent_id": "linux-worker-1",
+          "pid": 91754,
+          "container_id": null,
+          "cgroup_id": null,
+          "process_start_time": null,
+          "boot_id": null,
+          "environment": "production"
+        }
+      ],
+      "eligible_targets": [
+        {
+          "service_id": "java-service",
+          "instance_id": "java-service-worker1-91754-r1-1786445994-0",
+          "host_id": "worker1",
+          "agent_id": "linux-worker-1",
+          "pid": 91754,
+          "container_id": null,
+          "cgroup_id": null,
+          "process_start_time": null,
+          "boot_id": null,
+          "environment": "production"
+        }
+      ],
+      "excluded_targets": [],
+      "scope_completeness": "complete",
+      "same_host_instance_ids": [],
+      "downstream_service_ids": [],
+      "max_topology_hops": 1
+    }
+  },
+  "trace": [
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "sequence": 1,
+      "stage": "intent",
+      "component": "intent_parser",
+      "decision": "normalized_intent",
+      "summary": "Normalized the operator symptom as runtime_stall.",
+      "input_refs": [
+        "raw_query"
+      ],
+      "output_refs": [
+        "normalized_intent"
+      ],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "symptom": "runtime_stall",
+        "target_service": "java-service",
+        "ambiguities": [],
+        "model_enabled": true,
+        "model_version": "deepseek-v4-flash"
+      },
+      "previous_hash": null,
+      "recorded_at": "2026-08-11T11:00:34.092485+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:ca40befc2496823dedfb2944b4c3b0e28f35108aeb1b3d72df917cafe0a85fdb"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "sequence": 2,
+      "stage": "scope",
+      "component": "deterministic_scope_resolver",
+      "decision": "resolved_target_scope",
+      "summary": "Resolved 1 target instance(s); scope is complete.",
+      "input_refs": [
+        "normalized_intent",
+        "topo_20260811_110034_5ee052c9"
+      ],
+      "output_refs": [
+        "target_scope"
+      ],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "scope_completeness": "complete",
+        "instance_refs": [
+          "java-service-worker1-91754-r1-1786445994-0"
+        ],
+        "dependency_count": 0
+      },
+      "previous_hash": "sha256:ca40befc2496823dedfb2944b4c3b0e28f35108aeb1b3d72df917cafe0a85fdb",
+      "recorded_at": "2026-08-11T11:00:34.103540+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:8fe7ad6e3814fd1ffcb1b8ea52818c96b599079691755bc3c883278c1b201d67"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "sequence": 3,
+      "stage": "hypothesis",
+      "component": "deterministic_hypothesis_builder",
+      "decision": "initialized_candidates",
+      "summary": "Initialized 3 causal hypotheses before collection.",
+      "input_refs": [
+        "normalized_intent",
+        "target_scope"
+      ],
+      "output_refs": [
+        "hyp_1_lock_contention",
+        "hyp_2_runtime_stall",
+        "hyp_3_self_code_regression"
+      ],
+      "evidence_refs": [],
+      "alternatives": [
+        {
+          "id": "hyp_1_lock_contention",
+          "type": "LOCK_CONTENTION",
+          "status": "UNTESTED",
+          "score": 0,
+          "missing_evidence": []
+        },
+        {
+          "id": "hyp_2_runtime_stall",
+          "type": "RUNTIME_STALL",
+          "status": "UNTESTED",
+          "score": 0,
+          "missing_evidence": []
+        },
+        {
+          "id": "hyp_3_self_code_regression",
+          "type": "SELF_CODE_REGRESSION",
+          "status": "UNTESTED",
+          "score": 0,
+          "missing_evidence": []
+        }
+      ],
+      "details": {},
+      "previous_hash": "sha256:8fe7ad6e3814fd1ffcb1b8ea52818c96b599079691755bc3c883278c1b201d67",
+      "recorded_at": "2026-08-11T11:00:34.114463+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:5ea86cccc77fcec9caabfc7804a48c6da92e8c63a74c0474b47dbc2d60947f1e"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "sequence": 4,
+      "stage": "probe_plan",
+      "component": "evidence_planner_and_risk_gate",
+      "decision": "planned_registered_probes",
+      "summary": "Planned 2 registered probe(s); 0 require approval.",
+      "input_refs": [
+        "target_scope",
+        "hypothesis_graph"
+      ],
+      "output_refs": [
+        "step_3230a12175c2b9",
+        "step_9495ae1ae193c6"
+      ],
+      "evidence_refs": [],
+      "alternatives": [
+        {
+          "id": "step_3230a12175c2b9",
+          "probe_id": "runtime_thread_snapshot",
+          "status": "SCHEDULED",
+          "risk_level": "R1",
+          "requires_approval": false,
+          "reason": "用于区分 LOCK_CONTENTION, RUNTIME_STALL, JVM_GC_PRESSURE 等候选假设",
+          "target_ref": "java-service-worker1-91754-r1-1786445994-0"
+        },
+        {
+          "id": "step_9495ae1ae193c6",
+          "probe_id": "host_process_metrics",
+          "status": "SCHEDULED",
+          "risk_level": "R1",
+          "requires_approval": false,
+          "reason": "用于区分 CPU_SATURATION, HOST_MEMORY_PRESSURE, HOST_DISK_CONTENTION 等候选假设",
+          "target_ref": "java-service-worker1-91754-r1-1786445994-0"
+        }
+      ],
+      "details": {
+        "analysis_strategy": "CONSTRAINED_HYBRID"
+      },
+      "previous_hash": "sha256:5ea86cccc77fcec9caabfc7804a48c6da92e8c63a74c0474b47dbc2d60947f1e",
+      "recorded_at": "2026-08-11T11:00:34.411594+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:77473dbdcc4db58950016dceace1f5dba4de6b5831561d4d04480067504c61be"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "sequence": 5,
+      "stage": "evidence_curation",
+      "component": "evidence_guard.v1",
+      "decision": "curated_observations",
+      "summary": "Kept 2 observation(s), suppressed 0 duplicate(s), and found 0 conflict(s).",
+      "input_refs": [
+        "task:task_20260811_110034_3f20e2",
+        "task:task_20260811_110034_6c8e10"
+      ],
+      "output_refs": [
+        "ev_f0a7e951ff8a7889513d",
+        "ev_cc2c0d099e47d661aa3b",
+        "ev_9423f99f069aea900060",
+        "ev_2a01ec72b898156689e1"
+      ],
+      "evidence_refs": [
+        "ev_f0a7e951ff8a7889513d",
+        "ev_cc2c0d099e47d661aa3b",
+        "ev_9423f99f069aea900060",
+        "ev_2a01ec72b898156689e1"
+      ],
+      "alternatives": [],
+      "details": {
+        "source_families": [
+          "procfs_metrics",
+          "procfs_runtime"
+        ],
+        "quality_gate_passed": true,
+        "conflicts": []
+      },
+      "previous_hash": "sha256:77473dbdcc4db58950016dceace1f5dba4de6b5831561d4d04480067504c61be",
+      "recorded_at": "2026-08-11T11:01:08.874402+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:1d8ab9cb93b2bade2d80d6332af2b41365b8226b624b6ff35237c7e1825c01c0"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "sequence": 6,
+      "stage": "candidate_assessment",
+      "component": "domain_analyzers_and_candidate_calibrator",
+      "decision": "ranked_candidates",
+      "summary": "Derived 1 finding(s) and retained 0 candidate(s).",
+      "input_refs": [
+        "ev_f0a7e951ff8a7889513d",
+        "ev_cc2c0d099e47d661aa3b",
+        "ev_9423f99f069aea900060",
+        "ev_2a01ec72b898156689e1"
+      ],
+      "output_refs": [
+        "finding.runtime_blocking_analyzer.v1.java-service-worker1-91754-r1-1786445994-0.lock_contention"
+      ],
+      "evidence_refs": [
+        "ev_f0a7e951ff8a7889513d",
+        "ev_cc2c0d099e47d661aa3b"
+      ],
+      "alternatives": [],
+      "details": {
+        "findings": [
+          {
+            "finding_id": "finding.runtime_blocking_analyzer.v1.java-service-worker1-91754-r1-1786445994-0.lock_contention",
+            "finding_type": "lock_contention",
+            "severity": "critical",
+            "confidence_level": "高",
+            "evidence_refs": [
+              "ev_f0a7e951ff8a7889513d",
+              "ev_cc2c0d099e47d661aa3b"
+            ],
+            "contradicting_evidence_refs": [],
+            "missing_evidence": []
+          }
+        ]
+      },
+      "previous_hash": "sha256:1d8ab9cb93b2bade2d80d6332af2b41365b8226b624b6ff35237c7e1825c01c0",
+      "recorded_at": "2026-08-11T11:01:08.903742+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:38eebfed74b2e1eb595f8f9342e3c6aa1da5f40ce5ad160909dd8e532a2f994e"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "sequence": 7,
+      "stage": "causal_assessment",
+      "component": "deterministic_cluster_assessor",
+      "decision": "selected_root_cause",
+      "summary": "java 运行时锁等待线程占比达到 100%。",
+      "input_refs": [
+        "finding.runtime_blocking_analyzer.v1.java-service-worker1-91754-r1-1786445994-0.lock_contention",
+        "finding.cluster.runtime_lock_contention",
+        "ev_f0a7e951ff8a7889513d",
+        "ev_cc2c0d099e47d661aa3b",
+        "ev_9423f99f069aea900060",
+        "ev_2a01ec72b898156689e1"
+      ],
+      "output_refs": [
+        "finding.cluster.runtime_lock_contention"
+      ],
+      "evidence_refs": [
+        "ev_f0a7e951ff8a7889513d",
+        "ev_cc2c0d099e47d661aa3b",
+        "ev_9423f99f069aea900060",
+        "ev_2a01ec72b898156689e1"
+      ],
+      "alternatives": [],
+      "details": {
+        "classification": "runtime_lock_contention",
+        "confidence": 0.82,
+        "confidence_level": "高",
+        "confidence_factors": {
+          "scope_coverage": "medium",
+          "source_independence": "medium",
+          "discriminating_evidence": "medium"
+        },
+        "root_location": {
+          "type": "self",
+          "target_ref": "java-service-worker1-91754-r1-1786445994-0",
+          "evidence_refs": [
+            "ev_f0a7e951ff8a7889513d",
+            "ev_cc2c0d099e47d661aa3b"
+          ]
+        },
+        "domain_cause": {
+          "type": "runtime",
+          "subtype": "java_lock_contention",
+          "evidence_refs": [
+            "ev_f0a7e951ff8a7889513d",
+            "ev_cc2c0d099e47d661aa3b"
+          ]
+        }
+      },
+      "previous_hash": "sha256:38eebfed74b2e1eb595f8f9342e3c6aa1da5f40ce5ad160909dd8e532a2f994e",
+      "recorded_at": "2026-08-11T11:01:08.936744+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:b93ebc307db6174280b5b4c2d6a4049804e2a9d2a8f16a113d58a6c78fe3d7b2"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "sequence": 8,
+      "stage": "action_policy",
+      "component": "registered_action_renderer",
+      "decision": "validated_reviewable_actions",
+      "summary": "Rendered 2 registered, non-auto-executing action(s).",
+      "input_refs": [
+        "ev_f0a7e951ff8a7889513d",
+        "ev_cc2c0d099e47d661aa3b",
+        "ev_9423f99f069aea900060",
+        "ev_2a01ec72b898156689e1",
+        "finding.runtime_blocking_analyzer.v1.java-service-worker1-91754-r1-1786445994-0.lock_contention",
+        "finding.cluster.runtime_lock_contention"
+      ],
+      "output_refs": [
+        "act_review_session",
+        "act_low_risk_metrics"
+      ],
+      "evidence_refs": [
+        "ev_f0a7e951ff8a7889513d",
+        "ev_cc2c0d099e47d661aa3b",
+        "ev_9423f99f069aea900060",
+        "ev_2a01ec72b898156689e1"
+      ],
+      "alternatives": [
+        {
+          "id": "act_review_session",
+          "action_type": "inspect",
+          "risk_level": "R0",
+          "approval_policy": "read_only",
+          "requires_approval": false,
+          "auto_execute": false
+        },
+        {
+          "id": "act_low_risk_metrics",
+          "action_type": "collect",
+          "risk_level": "R1",
+          "approval_policy": "auto_low_risk",
+          "requires_approval": false,
+          "auto_execute": false
+        }
+      ],
+      "details": {},
+      "previous_hash": "sha256:b93ebc307db6174280b5b4c2d6a4049804e2a9d2a8f16a113d58a6c78fe3d7b2",
+      "recorded_at": "2026-08-11T11:01:08.983722+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:1a1731b449f051edac09b105c3cff251f849d37a5a19334f85781e9f82da8514"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "sequence": 9,
+      "stage": "report_verification",
+      "component": "report_verifier",
+      "decision": "accepted_report",
+      "summary": "Validated 4 evidence reference(s), 1 knowledge reference(s), and 2 action(s).",
+      "input_refs": [
+        "ev_f0a7e951ff8a7889513d",
+        "ev_cc2c0d099e47d661aa3b",
+        "ev_9423f99f069aea900060",
+        "ev_2a01ec72b898156689e1",
+        "jvm.gc.pressure",
+        "act_review_session",
+        "act_low_risk_metrics"
+      ],
+      "output_refs": [
+        "verified_report"
+      ],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "status": "passed",
+        "checked_evidence_refs": 4,
+        "checked_knowledge_refs": 1,
+        "checked_actions": 2,
+        "issues": []
+      },
+      "previous_hash": "sha256:1a1731b449f051edac09b105c3cff251f849d37a5a19334f85781e9f82da8514",
+      "recorded_at": "2026-08-11T11:01:09.017495+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:0f83a8672d1981f88cf3816c3c7af110780d7a174e57190c3c8477e69f92dff6"
+    }
+  ],
+  "trace_verification": {
+    "status": "passed",
+    "step_count": 9,
+    "runtime_step_count": 9,
+    "reconstructed_step_count": 0,
+    "issues": []
+  },
+  "evidence_manifest": [
+    {
+      "evidence_id": "ev_f0a7e951ff8a7889513d",
+      "source_type": "task_event",
+      "source_system": "mini_drop",
+      "query_or_probe": "runtime_snapshot",
+      "evidence_role": "incident",
+      "target": {
+        "agent_id": "linux-worker-1",
+        "pid": 91754
+      },
+      "data_quality": {
+        "completeness": "high",
+        "domains": [
+          "task"
+        ]
+      },
+      "integrity_hash": "sha256:3d5abb334412ccfdedd62a39fdf03892e3a2d2696ee788eadd34101154ddf3c1"
+    },
+    {
+      "evidence_id": "ev_cc2c0d099e47d661aa3b",
+      "source_type": "derived_artifact",
+      "source_system": "mini_drop_analyzer",
+      "query_or_probe": "runtime_snapshot",
+      "evidence_role": "incident",
+      "target": {
+        "agent_id": "linux-worker-1",
+        "pid": 91754
+      },
+      "data_quality": {
+        "completeness": "high",
+        "size_bytes": 4419,
+        "sample_count": 15,
+        "sampling_window_seconds": 15,
+        "quality_reasons": [],
+        "domains": [
+          "process",
+          "runtime"
+        ]
+      },
+      "integrity_hash": "sha256:3c6e23d9703da055026583663248407fd887a2033258fd44ef0e0993ad8dbc9e"
+    },
+    {
+      "evidence_id": "ev_9423f99f069aea900060",
+      "source_type": "task_event",
+      "source_system": "mini_drop",
+      "query_or_probe": "sys_metrics",
+      "evidence_role": "incident",
+      "target": {
+        "agent_id": "linux-worker-1",
+        "pid": 91754
+      },
+      "data_quality": {
+        "completeness": "high",
+        "domains": [
+          "task"
+        ]
+      },
+      "integrity_hash": "sha256:dae6d96fd0c81ebb0d4866b69b6916492e699e90d2dae610bed2d3adfdea6b0b"
+    },
+    {
+      "evidence_id": "ev_2a01ec72b898156689e1",
+      "source_type": "derived_artifact",
+      "source_system": "mini_drop_analyzer",
+      "query_or_probe": "sys_metrics",
+      "evidence_role": "incident",
+      "target": {
+        "agent_id": "linux-worker-1",
+        "pid": 91754
+      },
+      "data_quality": {
+        "completeness": "high",
+        "size_bytes": 47315,
+        "sample_count": 15,
+        "sampling_window_seconds": 15,
+        "quality_reasons": [],
+        "domains": [
+          "host",
+          "process",
+          "container"
+        ]
+      },
+      "integrity_hash": "sha256:45c66575d5dbf8dc68fc53c76ab5002a0e39eecaff1bb414d5cbbb5b93f5921b"
+    }
+  ],
+  "hypothesis_graph": {
+    "hypotheses": [
+      {
+        "hypothesis_id": "hyp_1_lock_contention",
+        "type": "LOCK_CONTENTION",
+        "description": "Lock Contention",
+        "affected_targets": [
+          "java-service-worker1-91754-r1-1786445994-0"
+        ],
+        "status": "INCONCLUSIVE",
+        "evidence_score": 20,
+        "supporting_evidence_refs": [],
+        "contradicting_evidence_refs": [],
+        "missing_evidence_requirements": [],
+        "score_components": {},
+        "next_probe_candidates": [
+          "runtime_thread_snapshot",
+          "host_process_metrics",
+          "process_cpu_profile"
+        ],
+        "history": [
+          {
+            "stage": "build_hypotheses",
+            "status": "UNTESTED",
+            "evidence_score": 0,
+            "reason": "根据症状、目标范围和已注册探针生成初始候选，尚未采集区分性证据。",
+            "evidence_refs": [],
+            "recorded_at": "2026-08-11T11:00:34.081026+00:00"
+          },
+          {
+            "stage": "assess_cluster",
+            "status": "INCONCLUSIVE",
+            "evidence_score": 20,
+            "reason": "当前证据尚不足以支持或排除该假设。",
+            "evidence_refs": [],
+            "recorded_at": "2026-08-11T11:01:09.039047+00:00"
+          }
+        ]
+      },
+      {
+        "hypothesis_id": "hyp_2_runtime_stall",
+        "type": "RUNTIME_STALL",
+        "description": "Runtime Stall",
+        "affected_targets": [
+          "java-service-worker1-91754-r1-1786445994-0"
+        ],
+        "status": "INCONCLUSIVE",
+        "evidence_score": 20,
+        "supporting_evidence_refs": [],
+        "contradicting_evidence_refs": [],
+        "missing_evidence_requirements": [],
+        "score_components": {},
+        "next_probe_candidates": [
+          "runtime_thread_snapshot",
+          "host_process_metrics",
+          "process_cpu_profile"
+        ],
+        "history": [
+          {
+            "stage": "build_hypotheses",
+            "status": "UNTESTED",
+            "evidence_score": 0,
+            "reason": "根据症状、目标范围和已注册探针生成初始候选，尚未采集区分性证据。",
+            "evidence_refs": [],
+            "recorded_at": "2026-08-11T11:00:34.081026+00:00"
+          },
+          {
+            "stage": "assess_cluster",
+            "status": "INCONCLUSIVE",
+            "evidence_score": 20,
+            "reason": "当前证据尚不足以支持或排除该假设。",
+            "evidence_refs": [],
+            "recorded_at": "2026-08-11T11:01:09.039047+00:00"
+          }
+        ]
+      },
+      {
+        "hypothesis_id": "hyp_3_self_code_regression",
+        "type": "SELF_CODE_REGRESSION",
+        "description": "Self Code Regression",
+        "affected_targets": [
+          "java-service-worker1-91754-r1-1786445994-0"
+        ],
+        "status": "INCONCLUSIVE",
+        "evidence_score": 20,
+        "supporting_evidence_refs": [],
+        "contradicting_evidence_refs": [],
+        "missing_evidence_requirements": [],
+        "score_components": {},
+        "next_probe_candidates": [
+          "runtime_thread_snapshot",
+          "host_process_metrics",
+          "process_cpu_profile"
+        ],
+        "history": [
+          {
+            "stage": "build_hypotheses",
+            "status": "UNTESTED",
+            "evidence_score": 0,
+            "reason": "根据症状、目标范围和已注册探针生成初始候选，尚未采集区分性证据。",
+            "evidence_refs": [],
+            "recorded_at": "2026-08-11T11:00:34.081026+00:00"
+          },
+          {
+            "stage": "assess_cluster",
+            "status": "INCONCLUSIVE",
+            "evidence_score": 20,
+            "reason": "当前证据尚不足以支持或排除该假设。",
+            "evidence_refs": [],
+            "recorded_at": "2026-08-11T11:01:09.039047+00:00"
+          }
+        ]
+      }
+    ],
+    "edges": [],
+    "updated_at": "2026-08-11T11:01:09.039047+00:00"
+  },
+  "probes": [
+    {
+      "step_id": "step_3230a12175c2b9",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "probe_id": "runtime_thread_snapshot",
+      "target": {
+        "service_id": "java-service",
+        "instance_id": "java-service-worker1-91754-r1-1786445994-0",
+        "host_id": "worker1",
+        "agent_id": "linux-worker-1",
+        "pid": 91754,
+        "container_id": null,
+        "cgroup_id": null,
+        "process_start_time": null,
+        "boot_id": null,
+        "environment": "production"
+      },
+      "parameters": {
+        "duration_sec": 15,
+        "sample_rate": 11
+      },
+      "reason": "用于区分 LOCK_CONTENTION, RUNTIME_STALL, JVM_GC_PRESSURE 等候选假设",
+      "risk_level": "R1",
+      "status": "COMPLETED",
+      "requires_approval": false,
+      "task_id": "task_20260811_110034_3f20e2",
+      "approved_by": null,
+      "approved_at": null,
+      "created_at": "2026-08-11T11:00:34.232899",
+      "updated_at": "2026-08-11T11:01:06.396330",
+      "retry_count": 0,
+      "error_code": null,
+      "error_message": null
+    },
+    {
+      "step_id": "step_9495ae1ae193c6",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "probe_id": "host_process_metrics",
+      "target": {
+        "service_id": "java-service",
+        "instance_id": "java-service-worker1-91754-r1-1786445994-0",
+        "host_id": "worker1",
+        "agent_id": "linux-worker-1",
+        "pid": 91754,
+        "container_id": null,
+        "cgroup_id": null,
+        "process_start_time": null,
+        "boot_id": null,
+        "environment": "production"
+      },
+      "parameters": {
+        "duration_sec": 15,
+        "sample_rate": 11
+      },
+      "reason": "用于区分 CPU_SATURATION, HOST_MEMORY_PRESSURE, HOST_DISK_CONTENTION 等候选假设",
+      "risk_level": "R1",
+      "status": "COMPLETED",
+      "requires_approval": false,
+      "task_id": "task_20260811_110034_6c8e10",
+      "approved_by": null,
+      "approved_at": null,
+      "created_at": "2026-08-11T11:00:34.242981",
+      "updated_at": "2026-08-11T11:01:08.705594",
+      "retry_count": 0,
+      "error_code": null,
+      "error_message": null
+    }
+  ],
+  "pipeline_nodes": [
+    {
+      "node_run_id": "diag_session_20260811_110034_494e10e7:understand_intent",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "node_name": "understand_intent",
+      "sequence": 1,
+      "status": "COMPLETED",
+      "attempt": 1,
+      "input_refs": [],
+      "output_refs": [
+        "normalized_intent"
+      ],
+      "metrics": {
+        "ambiguity_count": 0
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T11:00:34.124192",
+      "finished_at": "2026-08-11T11:00:34.135050",
+      "updated_at": "2026-08-11T11:00:34.135050"
+    },
+    {
+      "node_run_id": "diag_session_20260811_110034_494e10e7:resolve_scope",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "node_name": "resolve_scope",
+      "sequence": 2,
+      "status": "COMPLETED",
+      "attempt": 1,
+      "input_refs": [
+        "normalized_intent",
+        "topo_20260811_110034_5ee052c9"
+      ],
+      "output_refs": [
+        "target_scope",
+        "topo_20260811_110034_5ee052c9"
+      ],
+      "metrics": {
+        "instance_count": 1
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T11:00:34.146157",
+      "finished_at": "2026-08-11T11:00:34.158033",
+      "updated_at": "2026-08-11T11:00:34.158033"
+    },
+    {
+      "node_run_id": "diag_session_20260811_110034_494e10e7:build_hypotheses",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "node_name": "build_hypotheses",
+      "sequence": 3,
+      "status": "COMPLETED",
+      "attempt": 1,
+      "input_refs": [
+        "target_scope"
+      ],
+      "output_refs": [
+        "hyp_1_lock_contention",
+        "hyp_2_runtime_stall",
+        "hyp_3_self_code_regression"
+      ],
+      "metrics": {
+        "hypothesis_count": 3
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T11:00:34.172368",
+      "finished_at": "2026-08-11T11:00:34.184063",
+      "updated_at": "2026-08-11T11:00:34.184063"
+    },
+    {
+      "node_run_id": "diag_session_20260811_110034_494e10e7:plan_evidence",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "node_name": "plan_evidence",
+      "sequence": 4,
+      "status": "COMPLETED",
+      "attempt": 1,
+      "input_refs": [
+        "target_scope",
+        "hypothesis_graph"
+      ],
+      "output_refs": [
+        "step_3230a12175c2b9",
+        "step_9495ae1ae193c6"
+      ],
+      "metrics": {
+        "reusable_task_count": 0,
+        "planned_probe_count": 2
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T11:00:34.359470",
+      "finished_at": "2026-08-11T11:00:34.371320",
+      "updated_at": "2026-08-11T11:00:34.371320"
+    },
+    {
+      "node_run_id": "diag_session_20260811_110034_494e10e7:risk_gate",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "node_name": "risk_gate",
+      "sequence": 5,
+      "status": "COMPLETED",
+      "attempt": 1,
+      "input_refs": [
+        "step_3230a12175c2b9",
+        "step_9495ae1ae193c6"
+      ],
+      "output_refs": [
+        "step_3230a12175c2b9",
+        "step_9495ae1ae193c6"
+      ],
+      "metrics": {
+        "planned_probe_count": 2,
+        "approval_required_count": 0
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T11:00:34.381007",
+      "finished_at": "2026-08-11T11:00:34.390089",
+      "updated_at": "2026-08-11T11:00:34.390089"
+    },
+    {
+      "node_run_id": "diag_session_20260811_110034_494e10e7:run_probes",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "node_name": "run_probes",
+      "sequence": 6,
+      "status": "COMPLETED",
+      "attempt": 1,
+      "input_refs": [
+        "step_3230a12175c2b9",
+        "step_9495ae1ae193c6"
+      ],
+      "output_refs": [
+        "task:task_20260811_110034_3f20e2",
+        "task:task_20260811_110034_6c8e10"
+      ],
+      "metrics": {
+        "terminal_task_count": 2,
+        "failed_task_count": 0
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T11:00:34.401100",
+      "finished_at": "2026-08-11T11:01:08.723177",
+      "updated_at": "2026-08-11T11:01:08.723177"
+    },
+    {
+      "node_run_id": "diag_session_20260811_110034_494e10e7:normalize_evidence",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "node_name": "normalize_evidence",
+      "sequence": 7,
+      "status": "COMPLETED",
+      "attempt": 1,
+      "input_refs": [
+        "task:task_20260811_110034_3f20e2",
+        "task:task_20260811_110034_6c8e10"
+      ],
+      "output_refs": [
+        "ev_f0a7e951ff8a7889513d",
+        "ev_cc2c0d099e47d661aa3b",
+        "ev_9423f99f069aea900060",
+        "ev_2a01ec72b898156689e1"
+      ],
+      "metrics": {
+        "evidence_count": 4,
+        "observation_count": 2,
+        "suppressed_observation_count": 0,
+        "source_independence_count": 2,
+        "conflict_count": 0
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T11:01:08.755897",
+      "finished_at": "2026-08-11T11:01:08.864073",
+      "updated_at": "2026-08-11T11:01:08.864073"
+    },
+    {
+      "node_run_id": "diag_session_20260811_110034_494e10e7:analyze_evidence",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "node_name": "analyze_evidence",
+      "sequence": 8,
+      "status": "COMPLETED",
+      "attempt": 1,
+      "input_refs": [
+        "ev_f0a7e951ff8a7889513d",
+        "ev_cc2c0d099e47d661aa3b",
+        "ev_9423f99f069aea900060",
+        "ev_2a01ec72b898156689e1"
+      ],
+      "output_refs": [
+        "finding.runtime_blocking_analyzer.v1.java-service-worker1-91754-r1-1786445994-0.lock_contention"
+      ],
+      "metrics": {
+        "finding_count": 1,
+        "candidate_count": 0
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T11:01:08.883231",
+      "finished_at": "2026-08-11T11:01:08.893217",
+      "updated_at": "2026-08-11T11:01:08.893217"
+    },
+    {
+      "node_run_id": "diag_session_20260811_110034_494e10e7:assess_cluster",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "node_name": "assess_cluster",
+      "sequence": 9,
+      "status": "COMPLETED",
+      "attempt": 1,
+      "input_refs": [
+        "finding.runtime_blocking_analyzer.v1.java-service-worker1-91754-r1-1786445994-0.lock_contention",
+        "ev_f0a7e951ff8a7889513d",
+        "ev_cc2c0d099e47d661aa3b",
+        "ev_9423f99f069aea900060",
+        "ev_2a01ec72b898156689e1"
+      ],
+      "output_refs": [
+        "finding.cluster.runtime_lock_contention"
+      ],
+      "metrics": {
+        "classification": "runtime_lock_contention"
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T11:01:08.915150",
+      "finished_at": "2026-08-11T11:01:08.926744",
+      "updated_at": "2026-08-11T11:01:08.926744"
+    },
+    {
+      "node_run_id": "diag_session_20260811_110034_494e10e7:retrieve_knowledge",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "node_name": "retrieve_knowledge",
+      "sequence": 10,
+      "status": "COMPLETED",
+      "attempt": 1,
+      "input_refs": [
+        "finding.runtime_blocking_analyzer.v1.java-service-worker1-91754-r1-1786445994-0.lock_contention",
+        "finding.cluster.runtime_lock_contention"
+      ],
+      "output_refs": [
+        "jvm.gc.pressure"
+      ],
+      "metrics": {
+        "knowledge_count": 1
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T11:01:08.946183",
+      "finished_at": "2026-08-11T11:01:08.955202",
+      "updated_at": "2026-08-11T11:01:08.955202"
+    },
+    {
+      "node_run_id": "diag_session_20260811_110034_494e10e7:generate_actions",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "node_name": "generate_actions",
+      "sequence": 11,
+      "status": "COMPLETED",
+      "attempt": 1,
+      "input_refs": [
+        "ev_f0a7e951ff8a7889513d",
+        "ev_cc2c0d099e47d661aa3b",
+        "ev_9423f99f069aea900060",
+        "ev_2a01ec72b898156689e1",
+        "finding.runtime_blocking_analyzer.v1.java-service-worker1-91754-r1-1786445994-0.lock_contention",
+        "finding.cluster.runtime_lock_contention"
+      ],
+      "output_refs": [
+        "act_review_session",
+        "act_low_risk_metrics"
+      ],
+      "metrics": {
+        "action_count": 2
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T11:01:08.965535",
+      "finished_at": "2026-08-11T11:01:08.974609",
+      "updated_at": "2026-08-11T11:01:08.974609"
+    },
+    {
+      "node_run_id": "diag_session_20260811_110034_494e10e7:verify_report",
+      "diagnosis_id": "diag_session_20260811_110034_494e10e7",
+      "node_name": "verify_report",
+      "sequence": 12,
+      "status": "COMPLETED",
+      "attempt": 1,
+      "input_refs": [
+        "ev_f0a7e951ff8a7889513d",
+        "ev_cc2c0d099e47d661aa3b",
+        "ev_9423f99f069aea900060",
+        "ev_2a01ec72b898156689e1",
+        "jvm.gc.pressure",
+        "act_review_session",
+        "act_low_risk_metrics"
+      ],
+      "output_refs": [
+        "verified_report"
+      ],
+      "metrics": {
+        "status": "passed",
+        "checked_evidence_refs": 4,
+        "checked_knowledge_refs": 1,
+        "checked_actions": 2,
+        "issues": []
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T11:01:08.997214",
+      "finished_at": "2026-08-11T11:01:09.007742",
+      "updated_at": "2026-08-11T11:01:09.007742"
+    }
+  ],
+  "conclusion": {
+    "version": 1,
+    "generated_at": "2026-08-11T11:01:08.996499+00:00",
+    "summary": "java 运行时锁等待线程占比达到 100%。",
+    "evidence_scope": "incident",
+    "confidence_level": "高",
+    "cluster_assessment": {
+      "classification": "runtime_lock_contention",
+      "confidence": 0.82,
+      "confidence_level": "高",
+      "confidence_factors": {
+        "scope_coverage": "medium",
+        "source_independence": "medium",
+        "discriminating_evidence": "medium"
+      },
+      "summary": "java 运行时锁等待线程占比达到 100%。",
+      "evidence_refs": [
+        "ev_f0a7e951ff8a7889513d",
+        "ev_cc2c0d099e47d661aa3b",
+        "ev_9423f99f069aea900060",
+        "ev_2a01ec72b898156689e1"
+      ],
+      "compared_targets": [
+        {
+          "instance_id": "java-service-worker1-91754-r1-1786445994-0",
+          "service_id": "java-service",
+          "host_id": "worker1",
+          "agent_id": "linux-worker-1",
+          "pid": 91754,
+          "pressure": {
+            "cpu": false,
+            "io_wait": false,
+            "host_iowait_high": false,
+            "block_latency_high": false,
+            "process_io_rate_high": false,
+            "memory": false,
+            "fd": false,
+            "thread": false,
+            "load": false,
+            "disk_full": false,
+            "network_loss": false,
+            "oom": false,
+            "runtime_lock": true
+          },
+          "evidence_refs": [
+            "ev_f0a7e951ff8a7889513d",
+            "ev_cc2c0d099e47d661aa3b",
+            "ev_9423f99f069aea900060",
+            "ev_2a01ec72b898156689e1"
+          ],
+          "collector_types": [
+            "runtime_snapshot",
+            "sys_metrics"
+          ],
+          "collection_statuses": [
+            "DONE"
+          ],
+          "failure_kinds": [],
+          "observation_count": 2
+        }
+      ],
+      "ruled_out": [],
+      "root_location": {
+        "type": "self",
+        "target_ref": "java-service-worker1-91754-r1-1786445994-0",
+        "evidence_refs": [
+          "ev_f0a7e951ff8a7889513d",
+          "ev_cc2c0d099e47d661aa3b"
+        ]
+      },
+      "domain_cause": {
+        "type": "runtime",
+        "subtype": "java_lock_contention",
+        "evidence_refs": [
+          "ev_f0a7e951ff8a7889513d",
+          "ev_cc2c0d099e47d661aa3b"
+        ]
+      },
+      "contributing_causes": [
+        {
+          "domain": "runtime",
+          "subtype": "java_lock_contention",
+          "classification": "runtime_lock_contention",
+          "location_type": "self",
+          "target_ref": "java-service-worker1-91754-r1-1786445994-0",
+          "score": 0.869,
+          "confidence_level": "高",
+          "summary": "java 运行时锁等待线程占比达到 100%。",
+          "evidence_refs": [
+            "ev_f0a7e951ff8a7889513d",
+            "ev_cc2c0d099e47d661aa3b"
+          ],
+          "source_families": [
+            "procfs_runtime"
+          ]
+        }
+      ],
+      "is_compound": false
+    },
+    "root_location": {
+      "type": "self",
+      "target_ref": "java-service-worker1-91754-r1-1786445994-0",
+      "evidence_refs": [
+        "ev_f0a7e951ff8a7889513d",
+        "ev_cc2c0d099e47d661aa3b"
+      ]
+    },
+    "domain_cause": {
+      "type": "runtime",
+      "subtype": "java_lock_contention",
+      "evidence_refs": [
+        "ev_f0a7e951ff8a7889513d",
+        "ev_cc2c0d099e47d661aa3b"
+      ]
+    },
+    "findings": [
+      {
+        "finding_id": "finding.runtime_blocking_analyzer.v1.java-service-worker1-91754-r1-1786445994-0.lock_contention",
+        "analyzer_id": "runtime_blocking_analyzer.v1",
+        "category": "runtime",
+        "finding_type": "lock_contention",
+        "severity": "critical",
+        "confidence_level": "高",
+        "summary": "java 进程中锁等待线程峰值 43，占线程数 100%。",
+        "evidence_refs": [
+          "ev_f0a7e951ff8a7889513d",
+          "ev_cc2c0d099e47d661aa3b"
+        ],
+        "contradicting_evidence_refs": [],
+        "missing_evidence": [],
+        "facts": {
+          "runtime_type": "java",
+          "blocked_thread_ratio": 1.0,
+          "lock_waiter_count": 43.0,
+          "uninterruptible_threads": 0.0
+        },
+        "knowledge_ids": [
+          "runtime.java.lock_contention"
+        ]
+      },
+      {
+        "finding_id": "finding.cluster.runtime_lock_contention",
+        "analyzer_id": "cluster_assessor.v2",
+        "category": "cluster",
+        "finding_type": "runtime_lock_contention",
+        "severity": "warning",
+        "confidence_level": "高",
+        "summary": "java 运行时锁等待线程占比达到 100%。",
+        "evidence_refs": [
+          "ev_f0a7e951ff8a7889513d",
+          "ev_cc2c0d099e47d661aa3b",
+          "ev_9423f99f069aea900060",
+          "ev_2a01ec72b898156689e1"
+        ],
+        "contradicting_evidence_refs": [],
+        "missing_evidence": [],
+        "facts": {
+          "confidence_factors": {
+            "scope_coverage": "medium",
+            "source_independence": "medium",
+            "discriminating_evidence": "medium"
+          }
+        },
+        "knowledge_ids": [
+          "runtime.lock_contention",
+          "jvm.gc.pressure"
+        ]
+      }
+    ],
+    "root_cause_candidates": [],
+    "ruled_out": [],
+    "knowledge_refs": [
+      "jvm.gc.pressure"
+    ],
+    "knowledge_context": [
+      {
+        "knowledge_id": "jvm.gc.pressure",
+        "title": "JVM GC 暂停与分配压力",
+        "summary": "GC 压力需要结合暂停分位数、GC 时间占比、堆分代占用和分配速率判断。",
+        "applies_to": [
+          "runtime",
+          "jvm_gc_pressure"
+        ],
+        "required_evidence": [
+          "GC pause P95",
+          "GC 时间占比",
+          "堆分代占用"
+        ],
+        "caveats": [
+          "CPU 高可能是 GC 的原因，也可能是结果"
+        ],
+        "document": "jvm_gc.md"
+      }
+    ],
+    "actions": [
+      {
+        "action_id": "act_review_session",
+        "action_type": "inspect",
+        "title": "回看诊断证据链",
+        "collector_type": null,
+        "target": {
+          "service_id": null,
+          "instance_id": null,
+          "host_id": null,
+          "agent_id": null,
+          "pid": null,
+          "diagnosis_id": "diag_session_20260811_110034_494e10e7"
+        },
+        "parameters": {
+          "server_url": "http://localhost:8191",
+          "api_key_env": "MINI_DROP_API_KEY"
+        },
+        "renderer_version": "cli-renderer-v2",
+        "rendered_command": "micro-drop diagnosis-inspect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --diagnosis-id diag_session_20260811_110034_494e10e7",
+        "comment": "只读查询当前诊断会话，核对流水线、Finding、evidence_refs 和探针状态。",
+        "risk_level": "R0",
+        "approval_policy": "read_only",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_f0a7e951ff8a7889513d",
+          "ev_cc2c0d099e47d661aa3b",
+          "ev_9423f99f069aea900060",
+          "ev_2a01ec72b898156689e1"
+        ],
+        "confidence_level": "高",
+        "command_id": "cmd_review_session",
+        "command": "micro-drop diagnosis-inspect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --diagnosis-id diag_session_20260811_110034_494e10e7",
+        "confidence": 0.9
+      },
+      {
+        "action_id": "act_low_risk_metrics",
+        "action_type": "collect",
+        "title": "补充低风险系统指标",
+        "collector_type": "sys_metrics",
+        "target": {
+          "service_id": "java-service",
+          "instance_id": "java-service-worker1-91754-r1-1786445994-0",
+          "host_id": "worker1",
+          "agent_id": "linux-worker-1",
+          "pid": 91754,
+          "diagnosis_id": null
+        },
+        "parameters": {
+          "duration_sec": 15,
+          "sample_rate": 11,
+          "watch": true,
+          "server_url": "http://localhost:8191",
+          "api_key_env": "MINI_DROP_API_KEY"
+        },
+        "renderer_version": "cli-renderer-v2",
+        "rendered_command": "micro-drop collect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --agent linux-worker-1 --pid 91754 --collector sys_metrics --duration 15 --sample-rate 11 --watch",
+        "comment": "低开销采集 CPU、内存、线程、FD、网络与 I/O 等待趋势，适合复核当前判断。",
+        "risk_level": "R1",
+        "approval_policy": "auto_low_risk",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_f0a7e951ff8a7889513d",
+          "ev_cc2c0d099e47d661aa3b"
+        ],
+        "confidence_level": "高",
+        "command_id": "cmd_low_risk_metrics",
+        "command": "micro-drop collect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --agent linux-worker-1 --pid 91754 --collector sys_metrics --duration 15 --sample-rate 11 --watch",
+        "confidence": 0.9
+      }
+    ],
+    "diagnostic_commands": [
+      {
+        "action_id": "act_review_session",
+        "action_type": "inspect",
+        "title": "回看诊断证据链",
+        "collector_type": null,
+        "target": {
+          "service_id": null,
+          "instance_id": null,
+          "host_id": null,
+          "agent_id": null,
+          "pid": null,
+          "diagnosis_id": "diag_session_20260811_110034_494e10e7"
+        },
+        "parameters": {
+          "server_url": "http://localhost:8191",
+          "api_key_env": "MINI_DROP_API_KEY"
+        },
+        "renderer_version": "cli-renderer-v2",
+        "rendered_command": "micro-drop diagnosis-inspect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --diagnosis-id diag_session_20260811_110034_494e10e7",
+        "comment": "只读查询当前诊断会话，核对流水线、Finding、evidence_refs 和探针状态。",
+        "risk_level": "R0",
+        "approval_policy": "read_only",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_f0a7e951ff8a7889513d",
+          "ev_cc2c0d099e47d661aa3b",
+          "ev_9423f99f069aea900060",
+          "ev_2a01ec72b898156689e1"
+        ],
+        "confidence_level": "高",
+        "command_id": "cmd_review_session",
+        "command": "micro-drop diagnosis-inspect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --diagnosis-id diag_session_20260811_110034_494e10e7",
+        "confidence": 0.9
+      },
+      {
+        "action_id": "act_low_risk_metrics",
+        "action_type": "collect",
+        "title": "补充低风险系统指标",
+        "collector_type": "sys_metrics",
+        "target": {
+          "service_id": "java-service",
+          "instance_id": "java-service-worker1-91754-r1-1786445994-0",
+          "host_id": "worker1",
+          "agent_id": "linux-worker-1",
+          "pid": 91754,
+          "diagnosis_id": null
+        },
+        "parameters": {
+          "duration_sec": 15,
+          "sample_rate": 11,
+          "watch": true,
+          "server_url": "http://localhost:8191",
+          "api_key_env": "MINI_DROP_API_KEY"
+        },
+        "renderer_version": "cli-renderer-v2",
+        "rendered_command": "micro-drop collect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --agent linux-worker-1 --pid 91754 --collector sys_metrics --duration 15 --sample-rate 11 --watch",
+        "comment": "低开销采集 CPU、内存、线程、FD、网络与 I/O 等待趋势，适合复核当前判断。",
+        "risk_level": "R1",
+        "approval_policy": "auto_low_risk",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_f0a7e951ff8a7889513d",
+          "ev_cc2c0d099e47d661aa3b"
+        ],
+        "confidence_level": "高",
+        "command_id": "cmd_low_risk_metrics",
+        "command": "micro-drop collect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --agent linux-worker-1 --pid 91754 --collector sys_metrics --duration 15 --sample-rate 11 --watch",
+        "confidence": 0.9
+      }
+    ],
+    "recommendations": [
+      {
+        "recommendation_id": "rec_mitigation",
+        "category": "mitigation",
+        "title": "人工确认后的临时缓解",
+        "detail": "在确认业务容量和回滚方案后，可临时隔离或降低 java-service-worker1-91754-r1-1786445994-0 的流量；当前归因层级为 self，系统不会自动执行摘流、重启或迁移。",
+        "risk_level": "R3",
+        "execution": "manual_confirmation_required",
+        "evidence_refs": [
+          "ev_f0a7e951ff8a7889513d",
+          "ev_cc2c0d099e47d661aa3b",
+          "ev_9423f99f069aea900060",
+          "ev_2a01ec72b898156689e1"
+        ]
+      },
+      {
+        "recommendation_id": "rec_optimization",
+        "category": "optimization",
+        "title": "优化运行时暂停或锁竞争",
+        "detail": "结合 GC、线程和运行时 Profile 调整对象生命周期、堆配置或临界区。",
+        "risk_level": "R2",
+        "execution": "review_before_change",
+        "evidence_refs": [
+          "ev_f0a7e951ff8a7889513d",
+          "ev_cc2c0d099e47d661aa3b",
+          "ev_9423f99f069aea900060",
+          "ev_2a01ec72b898156689e1"
+        ]
+      },
+      {
+        "recommendation_id": "rec_validation",
+        "category": "validation",
+        "title": "使用同域证据验证优化效果",
+        "detail": "修复后保持相同目标、负载、采样参数和可比较时间窗重新采集，对比 P99、资源指标、TopN 与火焰图；覆盖不完整时不得宣称优化有效。",
+        "risk_level": "R1",
+        "execution": "recollect_and_compare",
+        "evidence_refs": [
+          "ev_f0a7e951ff8a7889513d",
+          "ev_cc2c0d099e47d661aa3b",
+          "ev_9423f99f069aea900060",
+          "ev_2a01ec72b898156689e1"
+        ]
+      }
+    ],
+    "next_best_action": {
+      "type": "verify",
+      "probe_id": "",
+      "title": "执行建议后验证恢复",
+      "description": "按建议执行处理后，系统会用相同参数重新采集并对比异常指标，判断是否真正恢复、是否有新退化。",
+      "needs_approval": false
+    },
+    "limitations": [],
+    "evidence_review": {
+      "input_observation_count": 2,
+      "effective_observation_count": 2,
+      "suppressed_observation_count": 0,
+      "suppressed": [],
+      "conflicts": [],
+      "source_families": [
+        "procfs_metrics",
+        "procfs_runtime"
+      ],
+      "source_independence_count": 2,
+      "effective_evidence_refs": [
+        "ev_f0a7e951ff8a7889513d",
+        "ev_cc2c0d099e47d661aa3b",
+        "ev_9423f99f069aea900060",
+        "ev_2a01ec72b898156689e1"
+      ],
+      "quality_gate_passed": true
+    },
+    "coverage": {
+      "task_count": 2,
+      "failed_targets": [],
+      "evidence_count": 4
+    },
+    "verification": {
+      "status": "passed",
+      "checked_evidence_refs": 4,
+      "checked_knowledge_refs": 1,
+      "checked_actions": 2,
+      "issues": []
+    },
+    "integrity_hash": "sha256:8c79293b5557b911c0440cedc6cbf526d05380a830fc38737c7c077a79252cfd"
+  },
+  "bundle_hash": "sha256:7a5c659e4cdcdd20aa9cbfccc784edbb004454d96ba9d801879ce076b02c5ea2"
+}

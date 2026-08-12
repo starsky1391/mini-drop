@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.0",
+  "environment_id": "hyperv-online-boutique-verified-vm",
+  "verified_at": "2026-08-11T04:29:27+08:00",
+  "verification_tier": "verified_vm",
+  "topology": {
+    "control": {"host": "control", "ip": "172.18.88.237", "vcpu": 4, "memory_mb": 5924},
+    "workers": [
+      {"host": "worker1", "ip": "172.18.90.144", "vcpu": 4, "memory_mb": 3914, "agent_id": "linux-worker-1"},
+      {"host": "worker2", "ip": "172.18.87.120", "vcpu": 4, "memory_mb": 3914, "agent_id": "linux-worker-2"}
+    ],
+    "runtime": "docker-swarm",
+    "cross_worker_network": "overlay"
+  },
+  "workload": {
+    "name": "Online Boutique",
+    "version": "v0.8.0",
+    "services": 12,
+    "image_bundle_sha256": "16faae2255ed376fa4f595a7820870775bf266bc317adb9a241143542c8f61db",
+    "all_nodes_loaded": true,
+    "all_services_running": true
+  },
+  "agents": {
+    "online": 2,
+    "process_scan_verified": true,
+    "sys_metrics_verified": true,
+    "perf_cpu_verified": true,
+    "ebpf_io_verified": true,
+    "runtime_snapshot_verified": true,
+    "swarm_actuation_verified": true,
+    "multi_worker_collection_verified": true
+  },
+  "ai_ops": {
+    "continuous_case_loop_verified": true,
+    "registered_action_execution_verified": true,
+    "cross_restart_action_idempotency_verified": true,
+    "rollback_path_available": true,
+    "business_recovery_verification_verified": true,
+    "stable_verification_count": 2,
+    "evidence_guard_verified": true,
+    "compound_incident_verified": true,
+    "verified_closed_loop_case": "case_20260810_193256_c207726c0c",
+    "verified_closed_loop_diagnosis": "diag_session_20260810_193321_e690252f"
+  },
+  "limits": [
+    "Both Worker VMs share one physical Hyper-V host, so physical failure-domain isolation is not covered.",
+    "Official registries remain unreachable from the VMs; deployment uses a checksum-verified offline image bundle.",
+    "Request latency and distributed trace collectors are not enabled in this environment."
+  ]
+}

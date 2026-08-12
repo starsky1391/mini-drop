@@ -1,0 +1,91 @@
+{
+  "schema_version": "1.0",
+  "suite_id": "online-boutique-hyperv-verified-vm",
+  "workload": {
+    "name": "Online Boutique",
+    "version": "v0.8.0",
+    "runtime": "docker-swarm",
+    "nodes": ["worker1", "worker2"]
+  },
+  "policy": {
+    "minimum_repetitions": 2,
+    "rollback_required": true,
+    "recovery_probe_required": true,
+    "automatic_rollback_for_network_rules": true,
+    "root_disk_fill_forbidden": true
+  },
+  "cases": [
+    {
+      "case_id": "ob-productcatalog-cpu-hotspot",
+      "target": "productcatalogservice@worker1",
+      "symptom": "cpu_saturation",
+      "inject": "send SIGUSR1 to the productcatalogservice container",
+      "rollback": "send SIGUSR2 to the same container",
+      "oracle": {"location_type": "self", "domain_type": "cpu", "classification": "self_code_or_process_pressure"},
+      "required_evidence": ["sys_metrics", "perf_cpu", "flamegraph_svg", "top_json"]
+    },
+    {
+      "case_id": "ob-productcatalog-extra-latency",
+      "target": "productcatalogservice@worker1",
+      "symptom": "latency_increase",
+      "inject": "add EXTRA_LATENCY=1.5s through docker service update",
+      "rollback": "remove EXTRA_LATENCY and wait for a new healthy task",
+      "oracle": {"location_type": "self", "domain_type": "runtime"},
+      "required_evidence": ["service_latency_change", "log_error_pattern"]
+    },
+    {
+      "case_id": "ob-redis-stall",
+      "target": "cartservice@worker2",
+      "symptom": "connection_failure",
+      "inject": "pause the redis-cart container",
+      "rollback": "unpause redis-cart",
+      "oracle": {"location_type": "downstream", "domain_type": "database", "root_entity": "redis-cart"},
+      "required_evidence": ["connection_error", "log_error_pattern"]
+    },
+    {
+      "case_id": "ob-payment-stall",
+      "target": "checkoutservice@worker2",
+      "symptom": "connection_failure",
+      "inject": "pause the paymentservice container",
+      "rollback": "unpause paymentservice",
+      "oracle": {"location_type": "downstream", "domain_type": "network", "root_entity": "paymentservice"},
+      "required_evidence": ["connection_error", "log_error_pattern"]
+    },
+    {
+      "case_id": "ob-worker2-cpu-noisy-neighbor",
+      "target": "checkoutservice@worker2",
+      "symptom": "noisy_neighbor",
+      "inject": "run four bounded yes processes in a transient systemd unit",
+      "rollback": "stop the transient unit; RuntimeMaxSec is the fallback",
+      "oracle": {"location_type": "shared_resource", "domain_type": "cpu"},
+      "required_evidence": ["resource_saturation", "peer_pressure"]
+    },
+    {
+      "case_id": "ob-worker1-host-io-contention",
+      "target": "frontend@worker1",
+      "symptom": "io_degradation",
+      "inject": "run bounded direct fio writes in /var/tmp",
+      "rollback": "stop the transient unit and remove the fio file",
+      "oracle": {"location_type": "shared_resource", "domain_type": "io", "classification": "host_resource_contention"},
+      "required_evidence": ["io_latency_distribution", "resource_saturation", "peer_pressure"]
+    },
+    {
+      "case_id": "ob-worker2-memory-pressure",
+      "target": "checkoutservice@worker2",
+      "symptom": "memory_pressure",
+      "inject": "allocate and touch 2500 MiB in a bounded transient process",
+      "rollback": "stop the transient unit; RuntimeMaxSec is the fallback",
+      "oracle": {"location_type": "shared_resource", "domain_type": "memory"},
+      "required_evidence": ["resource_saturation", "peer_pressure"]
+    },
+    {
+      "case_id": "ob-cross-worker-overlay-partition",
+      "target": "frontend@worker1",
+      "symptom": "connection_failure",
+      "inject": "drop worker1 to worker2 UDP/4789 overlay traffic",
+      "rollback": "delete the exact iptables rule; a 25-second systemd timer is armed first",
+      "oracle": {"location_type": "downstream", "domain_type": "network"},
+      "required_evidence": ["connection_error", "log_error_pattern"]
+    }
+  ]
+}

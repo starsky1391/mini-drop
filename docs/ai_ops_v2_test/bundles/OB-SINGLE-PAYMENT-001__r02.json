@@ -1,0 +1,1984 @@
+{
+  "schema_version": "1.0",
+  "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+  "run": {
+    "status": "INSUFFICIENT_EVIDENCE",
+    "created_at": "2026-08-11T13:14:07.019142",
+    "updated_at": "2026-08-11T13:15:41.045080",
+    "model_version": "deepseek-v4-flash",
+    "planner_version": "diagnosis-orchestrator-v1:constrained_hybrid",
+    "policy_profile": "production_safe",
+    "normalized_intent": {
+      "intent_type": "performance_diagnosis",
+      "symptom": "latency_increase",
+      "target_service": "checkoutservice",
+      "environment": "production",
+      "time_range": {
+        "start": "2026-08-11T12:43:44.588840Z",
+        "end": "2026-08-11T13:13:44.588840Z",
+        "source": "default_window"
+      },
+      "diagnosis_mode": "LIVE",
+      "analysis_strategy": "CONSTRAINED_HYBRID",
+      "evidence_time_policy": {
+        "max_clock_skew_seconds": 5,
+        "require_overlap": true,
+        "allow_reproduction_evidence": false
+      },
+      "scope": {
+        "self": true,
+        "same_host": true,
+        "downstream_hops": 1
+      },
+      "constraints": {
+        "no_high_risk_probe": true,
+        "registered_probes_only": true,
+        "no_automatic_remediation": true
+      },
+      "ambiguities": []
+    },
+    "target_scope": {
+      "target_service": "checkoutservice",
+      "environment": "production",
+      "target_anchor": {
+        "service_id": "checkoutservice",
+        "instance_id": "checkoutservice-worker2-8903-r2-1786453988-0",
+        "host_id": "worker2",
+        "agent_id": "linux-worker-2",
+        "pid": 8903,
+        "container_id": "a4af2d69d2ff44b235a987c9b3dcdcb4f6128f8cf091eceb2f976ec58ca20233",
+        "cgroup_id": null,
+        "process_start_time": null,
+        "boot_id": null,
+        "environment": "production"
+      },
+      "instances": [
+        {
+          "service_id": "checkoutservice",
+          "instance_id": "checkoutservice-worker2-8903-r2-1786453988-0",
+          "host_id": "worker2",
+          "agent_id": "linux-worker-2",
+          "pid": 8903,
+          "container_id": "a4af2d69d2ff44b235a987c9b3dcdcb4f6128f8cf091eceb2f976ec58ca20233",
+          "cgroup_id": null,
+          "process_start_time": null,
+          "boot_id": null,
+          "environment": "production"
+        },
+        {
+          "service_id": "paymentservice",
+          "instance_id": "paymentservice-worker2-20759-r2-1786453988-1",
+          "host_id": "worker2",
+          "agent_id": "linux-worker-2",
+          "pid": 20759,
+          "container_id": "2c08715c61caeae7e4a2bf9d43177c9fe01c629a6d42c1971aec84fe71d8b0d1",
+          "cgroup_id": null,
+          "process_start_time": null,
+          "boot_id": null,
+          "environment": "production"
+        }
+      ],
+      "eligible_targets": [
+        {
+          "service_id": "checkoutservice",
+          "instance_id": "checkoutservice-worker2-8903-r2-1786453988-0",
+          "host_id": "worker2",
+          "agent_id": "linux-worker-2",
+          "pid": 8903,
+          "container_id": "a4af2d69d2ff44b235a987c9b3dcdcb4f6128f8cf091eceb2f976ec58ca20233",
+          "cgroup_id": null,
+          "process_start_time": null,
+          "boot_id": null,
+          "environment": "production"
+        },
+        {
+          "service_id": "paymentservice",
+          "instance_id": "paymentservice-worker2-20759-r2-1786453988-1",
+          "host_id": "worker2",
+          "agent_id": "linux-worker-2",
+          "pid": 20759,
+          "container_id": "2c08715c61caeae7e4a2bf9d43177c9fe01c629a6d42c1971aec84fe71d8b0d1",
+          "cgroup_id": null,
+          "process_start_time": null,
+          "boot_id": null,
+          "environment": "production"
+        }
+      ],
+      "excluded_targets": [],
+      "scope_completeness": "complete",
+      "same_host_instance_ids": [
+        "paymentservice-worker2-20759-r2-1786453988-1"
+      ],
+      "downstream_service_ids": [
+        "paymentservice"
+      ],
+      "max_topology_hops": 1
+    }
+  },
+  "trace": [
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "sequence": 1,
+      "stage": "intent",
+      "component": "intent_parser",
+      "decision": "normalized_intent",
+      "summary": "Normalized the operator symptom as latency_increase.",
+      "input_refs": [
+        "raw_query"
+      ],
+      "output_refs": [
+        "normalized_intent"
+      ],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "symptom": "latency_increase",
+        "target_service": "checkoutservice",
+        "ambiguities": [],
+        "model_enabled": true,
+        "model_version": "deepseek-v4-flash"
+      },
+      "previous_hash": null,
+      "recorded_at": "2026-08-11T13:14:07.034375+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:c1002a04b4d25e652d2156d520d5ac2c036e9cc56b12033eca037c2c451821e8"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "sequence": 2,
+      "stage": "scope",
+      "component": "deterministic_scope_resolver",
+      "decision": "resolved_target_scope",
+      "summary": "Resolved 2 target instance(s); scope is complete.",
+      "input_refs": [
+        "normalized_intent",
+        "topo_20260811_131407_64e26306"
+      ],
+      "output_refs": [
+        "target_scope"
+      ],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "scope_completeness": "complete",
+        "instance_refs": [
+          "checkoutservice-worker2-8903-r2-1786453988-0",
+          "paymentservice-worker2-20759-r2-1786453988-1"
+        ],
+        "dependency_count": 0
+      },
+      "previous_hash": "sha256:c1002a04b4d25e652d2156d520d5ac2c036e9cc56b12033eca037c2c451821e8",
+      "recorded_at": "2026-08-11T13:14:07.047619+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:e115e446c8c4eb430ac606065ce75813bf67492dbd3adb7face5484616755349"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "sequence": 3,
+      "stage": "hypothesis",
+      "component": "deterministic_hypothesis_builder",
+      "decision": "initialized_candidates",
+      "summary": "Initialized 3 causal hypotheses before collection.",
+      "input_refs": [
+        "normalized_intent",
+        "target_scope"
+      ],
+      "output_refs": [
+        "hyp_1_self_code_regression",
+        "hyp_2_downstream_latency",
+        "hyp_3_same_host_noisy_neighbor"
+      ],
+      "evidence_refs": [],
+      "alternatives": [
+        {
+          "id": "hyp_1_self_code_regression",
+          "type": "SELF_CODE_REGRESSION",
+          "status": "UNTESTED",
+          "score": 0,
+          "missing_evidence": []
+        },
+        {
+          "id": "hyp_2_downstream_latency",
+          "type": "DOWNSTREAM_LATENCY",
+          "status": "UNTESTED",
+          "score": 0,
+          "missing_evidence": []
+        },
+        {
+          "id": "hyp_3_same_host_noisy_neighbor",
+          "type": "SAME_HOST_NOISY_NEIGHBOR",
+          "status": "UNTESTED",
+          "score": 0,
+          "missing_evidence": []
+        }
+      ],
+      "details": {},
+      "previous_hash": "sha256:e115e446c8c4eb430ac606065ce75813bf67492dbd3adb7face5484616755349",
+      "recorded_at": "2026-08-11T13:14:07.057524+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:accb028d0d5c6b89cbc8377b330c211ea28fc86f9618429640fdddc4a7c8a31f"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "sequence": 4,
+      "stage": "probe_plan",
+      "component": "evidence_planner_and_risk_gate",
+      "decision": "planned_registered_probes",
+      "summary": "Planned 2 registered probe(s); 0 require approval.",
+      "input_refs": [
+        "target_scope",
+        "hypothesis_graph"
+      ],
+      "output_refs": [
+        "step_bef2010db52db4",
+        "step_cc305f75b87f93"
+      ],
+      "evidence_refs": [],
+      "alternatives": [
+        {
+          "id": "step_bef2010db52db4",
+          "probe_id": "host_process_metrics",
+          "status": "SCHEDULED",
+          "risk_level": "R1",
+          "requires_approval": false,
+          "reason": "用于区分 CPU_SATURATION, HOST_MEMORY_PRESSURE, HOST_DISK_CONTENTION 等候选假设",
+          "target_ref": "checkoutservice-worker2-8903-r2-1786453988-0"
+        },
+        {
+          "id": "step_cc305f75b87f93",
+          "probe_id": "host_process_metrics",
+          "status": "SCHEDULED",
+          "risk_level": "R1",
+          "requires_approval": false,
+          "reason": "用于区分 CPU_SATURATION, HOST_MEMORY_PRESSURE, HOST_DISK_CONTENTION 等候选假设",
+          "target_ref": "paymentservice-worker2-20759-r2-1786453988-1"
+        }
+      ],
+      "details": {
+        "analysis_strategy": "CONSTRAINED_HYBRID"
+      },
+      "previous_hash": "sha256:accb028d0d5c6b89cbc8377b330c211ea28fc86f9618429640fdddc4a7c8a31f",
+      "recorded_at": "2026-08-11T13:14:07.361348+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:80adca06d73198bac14e142ce7a2498bbdc0b19d98cf3555d66dd41b34f36646"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "sequence": 5,
+      "stage": "evidence_curation",
+      "component": "evidence_guard.v1",
+      "decision": "curated_observations",
+      "summary": "Kept 2 observation(s), suppressed 0 duplicate(s), and found 0 conflict(s).",
+      "input_refs": [
+        "task:task_20260811_131407_d4c6dd",
+        "task:task_20260811_131407_adc64c"
+      ],
+      "output_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac"
+      ],
+      "evidence_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac"
+      ],
+      "alternatives": [],
+      "details": {
+        "source_families": [
+          "procfs_metrics"
+        ],
+        "quality_gate_passed": true,
+        "conflicts": []
+      },
+      "previous_hash": "sha256:80adca06d73198bac14e142ce7a2498bbdc0b19d98cf3555d66dd41b34f36646",
+      "recorded_at": "2026-08-11T13:14:55.012951+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:60e16edbd9e97a6c72480bd351243a330c1cf7fa97332c4cd2a28c77125cf3c2"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "sequence": 6,
+      "stage": "candidate_assessment",
+      "component": "domain_analyzers_and_candidate_calibrator",
+      "decision": "ranked_candidates",
+      "summary": "Derived 0 finding(s) and retained 0 candidate(s).",
+      "input_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac"
+      ],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "findings": []
+      },
+      "previous_hash": "sha256:60e16edbd9e97a6c72480bd351243a330c1cf7fa97332c4cd2a28c77125cf3c2",
+      "recorded_at": "2026-08-11T13:14:55.052087+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:6c2f6a9ac39a1134ce0e27ddfc41576f07b56081d02fc7b1ba9e00bee5903041"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "sequence": 7,
+      "stage": "causal_assessment",
+      "component": "deterministic_cluster_assessor",
+      "decision": "selected_root_cause",
+      "summary": "已有证据不足以区分自身代码、同宿主噪声邻居或下游依赖问题。",
+      "input_refs": [
+        "finding.cluster.insufficient_evidence",
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac"
+      ],
+      "output_refs": [
+        "finding.cluster.insufficient_evidence"
+      ],
+      "evidence_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac"
+      ],
+      "alternatives": [],
+      "details": {
+        "classification": "insufficient_evidence",
+        "confidence": 0.3,
+        "confidence_level": "低",
+        "confidence_factors": {
+          "scope_coverage": "low",
+          "source_independence": "low",
+          "discriminating_evidence": "low"
+        },
+        "root_location": {
+          "type": "unknown",
+          "target_ref": null,
+          "evidence_refs": []
+        },
+        "domain_cause": {
+          "type": "unknown",
+          "subtype": "unknown",
+          "evidence_refs": []
+        }
+      },
+      "previous_hash": "sha256:6c2f6a9ac39a1134ce0e27ddfc41576f07b56081d02fc7b1ba9e00bee5903041",
+      "recorded_at": "2026-08-11T13:14:55.092020+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:855cbc7cdb25cb83c1ea635580db6d081aaa142f9fedf340942f2ac5329531b8"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "sequence": 8,
+      "stage": "action_policy",
+      "component": "registered_action_renderer",
+      "decision": "validated_reviewable_actions",
+      "summary": "Rendered 4 registered, non-auto-executing action(s).",
+      "input_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac",
+        "finding.cluster.insufficient_evidence"
+      ],
+      "output_refs": [
+        "act_review_session",
+        "act_low_risk_metrics",
+        "act_cpu_profile",
+        "act_io_latency"
+      ],
+      "evidence_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac"
+      ],
+      "alternatives": [
+        {
+          "id": "act_review_session",
+          "action_type": "inspect",
+          "risk_level": "R0",
+          "approval_policy": "read_only",
+          "requires_approval": false,
+          "auto_execute": false
+        },
+        {
+          "id": "act_low_risk_metrics",
+          "action_type": "collect",
+          "risk_level": "R1",
+          "approval_policy": "auto_low_risk",
+          "requires_approval": false,
+          "auto_execute": false
+        },
+        {
+          "id": "act_cpu_profile",
+          "action_type": "collect",
+          "risk_level": "R2",
+          "approval_policy": "single_execution",
+          "requires_approval": true,
+          "auto_execute": false
+        },
+        {
+          "id": "act_io_latency",
+          "action_type": "collect",
+          "risk_level": "R2",
+          "approval_policy": "single_execution",
+          "requires_approval": true,
+          "auto_execute": false
+        }
+      ],
+      "details": {},
+      "previous_hash": "sha256:855cbc7cdb25cb83c1ea635580db6d081aaa142f9fedf340942f2ac5329531b8",
+      "recorded_at": "2026-08-11T13:14:55.146762+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:145836bed730359dc6b64e46e9714d925ac88973a682396d818084e4d477d2c0"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "sequence": 9,
+      "stage": "report_verification",
+      "component": "report_verifier",
+      "decision": "accepted_report",
+      "summary": "Validated 4 evidence reference(s), 0 knowledge reference(s), and 4 action(s).",
+      "input_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac",
+        "act_review_session",
+        "act_low_risk_metrics",
+        "act_cpu_profile",
+        "act_io_latency"
+      ],
+      "output_refs": [
+        "verified_report"
+      ],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "status": "passed",
+        "checked_evidence_refs": 4,
+        "checked_knowledge_refs": 0,
+        "checked_actions": 4,
+        "issues": []
+      },
+      "previous_hash": "sha256:145836bed730359dc6b64e46e9714d925ac88973a682396d818084e4d477d2c0",
+      "recorded_at": "2026-08-11T13:14:55.187257+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:64dc47446cb854961fddc6d4e2d1aa3047392b1558827ce5b2b9a56d4692ed59"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "sequence": 10,
+      "stage": "evidence_curation",
+      "component": "evidence_guard.v1",
+      "decision": "curated_observations",
+      "summary": "Kept 3 observation(s), suppressed 0 duplicate(s), and found 0 conflict(s).",
+      "input_refs": [
+        "task:task_20260811_131407_d4c6dd",
+        "task:task_20260811_131407_adc64c",
+        "task:task_20260811_131515_d51760"
+      ],
+      "output_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac",
+        "ev_4b4a5f65c93ccb888dc3",
+        "ev_fff207ce7e23bddaab5f"
+      ],
+      "evidence_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac",
+        "ev_4b4a5f65c93ccb888dc3",
+        "ev_fff207ce7e23bddaab5f"
+      ],
+      "alternatives": [],
+      "details": {
+        "source_families": [
+          "procfs_metrics",
+          "sampling_profile"
+        ],
+        "quality_gate_passed": true,
+        "conflicts": []
+      },
+      "previous_hash": "sha256:64dc47446cb854961fddc6d4e2d1aa3047392b1558827ce5b2b9a56d4692ed59",
+      "recorded_at": "2026-08-11T13:15:40.825835+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:49a3585dc28ba32990c546ed514cebc3e92c9fd070919b33d40e0deb75ea3c2f"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "sequence": 11,
+      "stage": "candidate_assessment",
+      "component": "domain_analyzers_and_candidate_calibrator",
+      "decision": "ranked_candidates",
+      "summary": "Derived 0 finding(s) and retained 0 candidate(s).",
+      "input_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac",
+        "ev_4b4a5f65c93ccb888dc3",
+        "ev_fff207ce7e23bddaab5f"
+      ],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "findings": []
+      },
+      "previous_hash": "sha256:49a3585dc28ba32990c546ed514cebc3e92c9fd070919b33d40e0deb75ea3c2f",
+      "recorded_at": "2026-08-11T13:15:40.854922+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:60ad31261b9b1560ad215196750b92ce46cb963a62fccc76dcc226725a2672d2"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "sequence": 12,
+      "stage": "causal_assessment",
+      "component": "deterministic_cluster_assessor",
+      "decision": "selected_root_cause",
+      "summary": "已有证据不足以区分自身代码、同宿主噪声邻居或下游依赖问题。",
+      "input_refs": [
+        "finding.cluster.insufficient_evidence",
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac",
+        "ev_4b4a5f65c93ccb888dc3",
+        "ev_fff207ce7e23bddaab5f"
+      ],
+      "output_refs": [
+        "finding.cluster.insufficient_evidence"
+      ],
+      "evidence_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac",
+        "ev_4b4a5f65c93ccb888dc3",
+        "ev_fff207ce7e23bddaab5f"
+      ],
+      "alternatives": [],
+      "details": {
+        "classification": "insufficient_evidence",
+        "confidence": 0.3,
+        "confidence_level": "低",
+        "confidence_factors": {
+          "scope_coverage": "low",
+          "source_independence": "low",
+          "discriminating_evidence": "low"
+        },
+        "root_location": {
+          "type": "unknown",
+          "target_ref": null,
+          "evidence_refs": []
+        },
+        "domain_cause": {
+          "type": "unknown",
+          "subtype": "unknown",
+          "evidence_refs": []
+        }
+      },
+      "previous_hash": "sha256:60ad31261b9b1560ad215196750b92ce46cb963a62fccc76dcc226725a2672d2",
+      "recorded_at": "2026-08-11T13:15:40.891826+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:2fb1cfcfac83cdfd693857a306995b61148adc6bcab4585ed3eabfaacc580d47"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "sequence": 13,
+      "stage": "action_policy",
+      "component": "registered_action_renderer",
+      "decision": "validated_reviewable_actions",
+      "summary": "Rendered 4 registered, non-auto-executing action(s).",
+      "input_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac",
+        "ev_4b4a5f65c93ccb888dc3",
+        "ev_fff207ce7e23bddaab5f",
+        "finding.cluster.insufficient_evidence"
+      ],
+      "output_refs": [
+        "act_review_session",
+        "act_low_risk_metrics",
+        "act_cpu_profile",
+        "act_io_latency"
+      ],
+      "evidence_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac",
+        "ev_4b4a5f65c93ccb888dc3",
+        "ev_fff207ce7e23bddaab5f"
+      ],
+      "alternatives": [
+        {
+          "id": "act_review_session",
+          "action_type": "inspect",
+          "risk_level": "R0",
+          "approval_policy": "read_only",
+          "requires_approval": false,
+          "auto_execute": false
+        },
+        {
+          "id": "act_low_risk_metrics",
+          "action_type": "collect",
+          "risk_level": "R1",
+          "approval_policy": "auto_low_risk",
+          "requires_approval": false,
+          "auto_execute": false
+        },
+        {
+          "id": "act_cpu_profile",
+          "action_type": "collect",
+          "risk_level": "R2",
+          "approval_policy": "single_execution",
+          "requires_approval": true,
+          "auto_execute": false
+        },
+        {
+          "id": "act_io_latency",
+          "action_type": "collect",
+          "risk_level": "R2",
+          "approval_policy": "single_execution",
+          "requires_approval": true,
+          "auto_execute": false
+        }
+      ],
+      "details": {},
+      "previous_hash": "sha256:2fb1cfcfac83cdfd693857a306995b61148adc6bcab4585ed3eabfaacc580d47",
+      "recorded_at": "2026-08-11T13:15:40.952839+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:1df2836c94fb2a6c0b2392efc3effdcd597e14d134f390e79cfb92f853e41f47"
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "sequence": 14,
+      "stage": "report_verification",
+      "component": "report_verifier",
+      "decision": "accepted_report",
+      "summary": "Validated 6 evidence reference(s), 0 knowledge reference(s), and 4 action(s).",
+      "input_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac",
+        "ev_4b4a5f65c93ccb888dc3",
+        "ev_fff207ce7e23bddaab5f",
+        "act_review_session",
+        "act_low_risk_metrics",
+        "act_cpu_profile",
+        "act_io_latency"
+      ],
+      "output_refs": [
+        "verified_report"
+      ],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "status": "passed",
+        "checked_evidence_refs": 6,
+        "checked_knowledge_refs": 0,
+        "checked_actions": 4,
+        "issues": []
+      },
+      "previous_hash": "sha256:1df2836c94fb2a6c0b2392efc3effdcd597e14d134f390e79cfb92f853e41f47",
+      "recorded_at": "2026-08-11T13:15:40.991032+00:00",
+      "reconstructed": false,
+      "step_hash": "sha256:e7e8afd5f0f0a7441f9936860d667699aca45cbdb8d4e622ee25f4ef4c8e3ab4"
+    }
+  ],
+  "trace_verification": {
+    "status": "passed",
+    "step_count": 14,
+    "runtime_step_count": 14,
+    "reconstructed_step_count": 0,
+    "issues": []
+  },
+  "evidence_manifest": [
+    {
+      "evidence_id": "ev_73081c23ca6c514320d4",
+      "source_type": "task_event",
+      "source_system": "mini_drop",
+      "query_or_probe": "sys_metrics",
+      "evidence_role": "incident",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 8903
+      },
+      "data_quality": {
+        "completeness": "high",
+        "domains": [
+          "task"
+        ]
+      },
+      "integrity_hash": "sha256:38126257aa3e9ab5a11ad2a96723f550db0cd16d5a8ef9504b2f19b4eb7a97a1"
+    },
+    {
+      "evidence_id": "ev_9dc248a531d968439bc8",
+      "source_type": "derived_artifact",
+      "source_system": "mini_drop_analyzer",
+      "query_or_probe": "sys_metrics",
+      "evidence_role": "incident",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 8903
+      },
+      "data_quality": {
+        "completeness": "high",
+        "size_bytes": 68631,
+        "sample_count": 15,
+        "sampling_window_seconds": 15,
+        "quality_reasons": [],
+        "domains": [
+          "host",
+          "process",
+          "container"
+        ]
+      },
+      "integrity_hash": "sha256:b91f75055f446fbd99683713c47cedaf045b562feec7bf19e5459b233319108f"
+    },
+    {
+      "evidence_id": "ev_4ef504dafd849074898f",
+      "source_type": "task_event",
+      "source_system": "mini_drop",
+      "query_or_probe": "sys_metrics",
+      "evidence_role": "incident",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 20759
+      },
+      "data_quality": {
+        "completeness": "high",
+        "domains": [
+          "task"
+        ]
+      },
+      "integrity_hash": "sha256:59da0f7ed476ec27c0f5cec4107dd0b727ba7451ab5fc1b53b2a5ad8d1c8749d"
+    },
+    {
+      "evidence_id": "ev_4353d7c39c14e832e1ac",
+      "source_type": "derived_artifact",
+      "source_system": "mini_drop_analyzer",
+      "query_or_probe": "sys_metrics",
+      "evidence_role": "incident",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 20759
+      },
+      "data_quality": {
+        "completeness": "high",
+        "size_bytes": 86155,
+        "sample_count": 15,
+        "sampling_window_seconds": 15,
+        "quality_reasons": [],
+        "domains": [
+          "host",
+          "process",
+          "container"
+        ]
+      },
+      "integrity_hash": "sha256:8e2f43962c5bef50fe5369538b3c38ab5bd6d2fecb249ea438abdc7128521293"
+    },
+    {
+      "evidence_id": "ev_4b4a5f65c93ccb888dc3",
+      "source_type": "task_event",
+      "source_system": "mini_drop",
+      "query_or_probe": "perf_cpu",
+      "evidence_role": "incident",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 8903
+      },
+      "data_quality": {
+        "completeness": "high",
+        "domains": [
+          "task"
+        ]
+      },
+      "integrity_hash": "sha256:fdfbfd5a03129cfe2128033003835cafef631830d602c59b87a198f04c0e15d7"
+    },
+    {
+      "evidence_id": "ev_fff207ce7e23bddaab5f",
+      "source_type": "derived_artifact",
+      "source_system": "mini_drop_analyzer",
+      "query_or_probe": "perf_cpu",
+      "evidence_role": "incident",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 8903
+      },
+      "data_quality": {
+        "completeness": "low",
+        "size_bytes": 2,
+        "sample_count": null,
+        "sampling_window_seconds": 15,
+        "quality_reasons": [
+          "empty_or_nearly_empty_artifact",
+          "sample_count_unavailable"
+        ],
+        "domains": [
+          "process"
+        ]
+      },
+      "integrity_hash": "sha256:ed50f931dbc519a782972a9473d6653db04633a45c0ad7ff5cb3375dc97b4f5b"
+    }
+  ],
+  "hypothesis_graph": {
+    "hypotheses": [
+      {
+        "hypothesis_id": "hyp_1_self_code_regression",
+        "type": "SELF_CODE_REGRESSION",
+        "description": "Self Code Regression",
+        "affected_targets": [
+          "checkoutservice-worker2-8903-r2-1786453988-0",
+          "paymentservice-worker2-20759-r2-1786453988-1"
+        ],
+        "status": "INCONCLUSIVE",
+        "evidence_score": 20,
+        "supporting_evidence_refs": [],
+        "contradicting_evidence_refs": [],
+        "missing_evidence_requirements": [],
+        "score_components": {},
+        "next_probe_candidates": [
+          "host_process_metrics",
+          "process_cpu_profile"
+        ],
+        "history": [
+          {
+            "stage": "build_hypotheses",
+            "status": "UNTESTED",
+            "evidence_score": 0,
+            "reason": "根据症状、目标范围和已注册探针生成初始候选，尚未采集区分性证据。",
+            "evidence_refs": [],
+            "recorded_at": "2026-08-11T13:14:07.019042+00:00"
+          },
+          {
+            "stage": "assess_cluster",
+            "status": "INCONCLUSIVE",
+            "evidence_score": 20,
+            "reason": "当前证据尚不足以支持或排除该假设。",
+            "evidence_refs": [],
+            "recorded_at": "2026-08-11T13:14:55.221326+00:00"
+          },
+          {
+            "stage": "assess_cluster",
+            "status": "INCONCLUSIVE",
+            "evidence_score": 20,
+            "reason": "当前证据尚不足以支持或排除该假设。",
+            "evidence_refs": [],
+            "recorded_at": "2026-08-11T13:15:41.015042+00:00"
+          }
+        ]
+      },
+      {
+        "hypothesis_id": "hyp_2_downstream_latency",
+        "type": "DOWNSTREAM_LATENCY",
+        "description": "Downstream Latency",
+        "affected_targets": [
+          "checkoutservice-worker2-8903-r2-1786453988-0",
+          "paymentservice-worker2-20759-r2-1786453988-1"
+        ],
+        "status": "INCONCLUSIVE",
+        "evidence_score": 20,
+        "supporting_evidence_refs": [],
+        "contradicting_evidence_refs": [],
+        "missing_evidence_requirements": [],
+        "score_components": {},
+        "next_probe_candidates": [
+          "host_process_metrics",
+          "process_cpu_profile"
+        ],
+        "history": [
+          {
+            "stage": "build_hypotheses",
+            "status": "UNTESTED",
+            "evidence_score": 0,
+            "reason": "根据症状、目标范围和已注册探针生成初始候选，尚未采集区分性证据。",
+            "evidence_refs": [],
+            "recorded_at": "2026-08-11T13:14:07.019042+00:00"
+          },
+          {
+            "stage": "assess_cluster",
+            "status": "INCONCLUSIVE",
+            "evidence_score": 20,
+            "reason": "当前证据尚不足以支持或排除该假设。",
+            "evidence_refs": [],
+            "recorded_at": "2026-08-11T13:14:55.221326+00:00"
+          },
+          {
+            "stage": "assess_cluster",
+            "status": "INCONCLUSIVE",
+            "evidence_score": 20,
+            "reason": "当前证据尚不足以支持或排除该假设。",
+            "evidence_refs": [],
+            "recorded_at": "2026-08-11T13:15:41.015042+00:00"
+          }
+        ]
+      },
+      {
+        "hypothesis_id": "hyp_3_same_host_noisy_neighbor",
+        "type": "SAME_HOST_NOISY_NEIGHBOR",
+        "description": "Same Host Noisy Neighbor",
+        "affected_targets": [
+          "checkoutservice-worker2-8903-r2-1786453988-0",
+          "paymentservice-worker2-20759-r2-1786453988-1"
+        ],
+        "status": "INCONCLUSIVE",
+        "evidence_score": 20,
+        "supporting_evidence_refs": [],
+        "contradicting_evidence_refs": [],
+        "missing_evidence_requirements": [],
+        "score_components": {},
+        "next_probe_candidates": [
+          "host_process_metrics",
+          "process_cpu_profile"
+        ],
+        "history": [
+          {
+            "stage": "build_hypotheses",
+            "status": "UNTESTED",
+            "evidence_score": 0,
+            "reason": "根据症状、目标范围和已注册探针生成初始候选，尚未采集区分性证据。",
+            "evidence_refs": [],
+            "recorded_at": "2026-08-11T13:14:07.019042+00:00"
+          },
+          {
+            "stage": "assess_cluster",
+            "status": "INCONCLUSIVE",
+            "evidence_score": 20,
+            "reason": "当前证据尚不足以支持或排除该假设。",
+            "evidence_refs": [],
+            "recorded_at": "2026-08-11T13:14:55.221326+00:00"
+          },
+          {
+            "stage": "assess_cluster",
+            "status": "INCONCLUSIVE",
+            "evidence_score": 20,
+            "reason": "当前证据尚不足以支持或排除该假设。",
+            "evidence_refs": [],
+            "recorded_at": "2026-08-11T13:15:41.015042+00:00"
+          }
+        ]
+      }
+    ],
+    "edges": [],
+    "updated_at": "2026-08-11T13:15:41.015042+00:00"
+  },
+  "probes": [
+    {
+      "step_id": "step_bef2010db52db4",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "probe_id": "host_process_metrics",
+      "target": {
+        "service_id": "checkoutservice",
+        "instance_id": "checkoutservice-worker2-8903-r2-1786453988-0",
+        "host_id": "worker2",
+        "agent_id": "linux-worker-2",
+        "pid": 8903,
+        "container_id": "a4af2d69d2ff44b235a987c9b3dcdcb4f6128f8cf091eceb2f976ec58ca20233",
+        "cgroup_id": null,
+        "process_start_time": null,
+        "boot_id": null,
+        "environment": "production"
+      },
+      "parameters": {
+        "duration_sec": 15,
+        "sample_rate": 11
+      },
+      "reason": "用于区分 CPU_SATURATION, HOST_MEMORY_PRESSURE, HOST_DISK_CONTENTION 等候选假设",
+      "risk_level": "R1",
+      "status": "COMPLETED",
+      "requires_approval": false,
+      "task_id": "task_20260811_131407_d4c6dd",
+      "approved_by": null,
+      "approved_at": null,
+      "created_at": "2026-08-11T13:14:07.168943",
+      "updated_at": "2026-08-11T13:14:39.702766",
+      "retry_count": 0,
+      "error_code": null,
+      "error_message": null
+    },
+    {
+      "step_id": "step_cc305f75b87f93",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "probe_id": "host_process_metrics",
+      "target": {
+        "service_id": "paymentservice",
+        "instance_id": "paymentservice-worker2-20759-r2-1786453988-1",
+        "host_id": "worker2",
+        "agent_id": "linux-worker-2",
+        "pid": 20759,
+        "container_id": "2c08715c61caeae7e4a2bf9d43177c9fe01c629a6d42c1971aec84fe71d8b0d1",
+        "cgroup_id": null,
+        "process_start_time": null,
+        "boot_id": null,
+        "environment": "production"
+      },
+      "parameters": {
+        "duration_sec": 15,
+        "sample_rate": 11
+      },
+      "reason": "用于区分 CPU_SATURATION, HOST_MEMORY_PRESSURE, HOST_DISK_CONTENTION 等候选假设",
+      "risk_level": "R1",
+      "status": "COMPLETED",
+      "requires_approval": false,
+      "task_id": "task_20260811_131407_adc64c",
+      "approved_by": null,
+      "approved_at": null,
+      "created_at": "2026-08-11T13:14:07.181099",
+      "updated_at": "2026-08-11T13:14:54.812696",
+      "retry_count": 0,
+      "error_code": null,
+      "error_message": null
+    },
+    {
+      "step_id": "step_311fdd68d55521",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "probe_id": "process_cpu_profile",
+      "target": {
+        "service_id": "checkoutservice",
+        "instance_id": "checkoutservice-worker2-8903-r2-1786453988-0",
+        "host_id": "worker2",
+        "agent_id": "linux-worker-2",
+        "pid": 8903,
+        "container_id": "a4af2d69d2ff44b235a987c9b3dcdcb4f6128f8cf091eceb2f976ec58ca20233",
+        "cgroup_id": null,
+        "process_start_time": null,
+        "boot_id": null,
+        "environment": "production"
+      },
+      "parameters": {
+        "duration_sec": 15,
+        "sample_rate": 49
+      },
+      "reason": "R1 全目标指标显示区分性证据缺口，仅在压力最显著节点请求 R2",
+      "risk_level": "R2",
+      "status": "COMPLETED",
+      "requires_approval": true,
+      "task_id": "task_20260811_131515_d51760",
+      "approved_by": "ai_ops_v2_eval_runner",
+      "approved_at": "2026-08-11T13:15:15.813636",
+      "created_at": "2026-08-11T13:14:55.284821",
+      "updated_at": "2026-08-11T13:15:40.622630",
+      "retry_count": 0,
+      "error_code": null,
+      "error_message": null
+    }
+  ],
+  "pipeline_nodes": [
+    {
+      "node_run_id": "diag_session_20260811_131407_e41b5028:understand_intent",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "node_name": "understand_intent",
+      "sequence": 1,
+      "status": "COMPLETED",
+      "attempt": 1,
+      "input_refs": [],
+      "output_refs": [
+        "normalized_intent"
+      ],
+      "metrics": {
+        "ambiguity_count": 0
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T13:14:07.067903",
+      "finished_at": "2026-08-11T13:14:07.077140",
+      "updated_at": "2026-08-11T13:14:07.077140"
+    },
+    {
+      "node_run_id": "diag_session_20260811_131407_e41b5028:resolve_scope",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "node_name": "resolve_scope",
+      "sequence": 2,
+      "status": "COMPLETED",
+      "attempt": 1,
+      "input_refs": [
+        "normalized_intent",
+        "topo_20260811_131407_64e26306"
+      ],
+      "output_refs": [
+        "target_scope",
+        "topo_20260811_131407_64e26306"
+      ],
+      "metrics": {
+        "instance_count": 2
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T13:14:07.087099",
+      "finished_at": "2026-08-11T13:14:07.096926",
+      "updated_at": "2026-08-11T13:14:07.096926"
+    },
+    {
+      "node_run_id": "diag_session_20260811_131407_e41b5028:build_hypotheses",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "node_name": "build_hypotheses",
+      "sequence": 3,
+      "status": "COMPLETED",
+      "attempt": 1,
+      "input_refs": [
+        "target_scope"
+      ],
+      "output_refs": [
+        "hyp_1_self_code_regression",
+        "hyp_2_downstream_latency",
+        "hyp_3_same_host_noisy_neighbor"
+      ],
+      "metrics": {
+        "hypothesis_count": 3
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T13:14:07.105991",
+      "finished_at": "2026-08-11T13:14:07.117023",
+      "updated_at": "2026-08-11T13:14:07.117023"
+    },
+    {
+      "node_run_id": "diag_session_20260811_131407_e41b5028:plan_evidence",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "node_name": "plan_evidence",
+      "sequence": 4,
+      "status": "COMPLETED",
+      "attempt": 1,
+      "input_refs": [
+        "target_scope",
+        "hypothesis_graph"
+      ],
+      "output_refs": [
+        "step_bef2010db52db4",
+        "step_cc305f75b87f93"
+      ],
+      "metrics": {
+        "reusable_task_count": 0,
+        "planned_probe_count": 2
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T13:14:07.312458",
+      "finished_at": "2026-08-11T13:14:07.321939",
+      "updated_at": "2026-08-11T13:14:07.321939"
+    },
+    {
+      "node_run_id": "diag_session_20260811_131407_e41b5028:risk_gate",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "node_name": "risk_gate",
+      "sequence": 5,
+      "status": "COMPLETED",
+      "attempt": 1,
+      "input_refs": [
+        "step_bef2010db52db4",
+        "step_cc305f75b87f93"
+      ],
+      "output_refs": [
+        "step_bef2010db52db4",
+        "step_cc305f75b87f93"
+      ],
+      "metrics": {
+        "planned_probe_count": 2,
+        "approval_required_count": 0
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T13:14:07.331893",
+      "finished_at": "2026-08-11T13:14:07.340916",
+      "updated_at": "2026-08-11T13:14:07.340916"
+    },
+    {
+      "node_run_id": "diag_session_20260811_131407_e41b5028:run_probes",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "node_name": "run_probes",
+      "sequence": 6,
+      "status": "COMPLETED",
+      "attempt": 2,
+      "input_refs": [
+        "step_311fdd68d55521"
+      ],
+      "output_refs": [
+        "task:task_20260811_131407_d4c6dd",
+        "task:task_20260811_131407_adc64c",
+        "task:task_20260811_131515_d51760"
+      ],
+      "metrics": {
+        "terminal_task_count": 3,
+        "failed_task_count": 0
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T13:15:15.908536",
+      "finished_at": "2026-08-11T13:15:40.634610",
+      "updated_at": "2026-08-11T13:15:40.634610"
+    },
+    {
+      "node_run_id": "diag_session_20260811_131407_e41b5028:normalize_evidence",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "node_name": "normalize_evidence",
+      "sequence": 7,
+      "status": "COMPLETED",
+      "attempt": 2,
+      "input_refs": [
+        "task:task_20260811_131407_d4c6dd",
+        "task:task_20260811_131407_adc64c",
+        "task:task_20260811_131515_d51760"
+      ],
+      "output_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac",
+        "ev_4b4a5f65c93ccb888dc3",
+        "ev_fff207ce7e23bddaab5f"
+      ],
+      "metrics": {
+        "evidence_count": 6,
+        "observation_count": 3,
+        "suppressed_observation_count": 0,
+        "source_independence_count": 2,
+        "conflict_count": 0
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T13:15:40.655932",
+      "finished_at": "2026-08-11T13:15:40.814537",
+      "updated_at": "2026-08-11T13:15:40.814537"
+    },
+    {
+      "node_run_id": "diag_session_20260811_131407_e41b5028:analyze_evidence",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "node_name": "analyze_evidence",
+      "sequence": 8,
+      "status": "COMPLETED",
+      "attempt": 2,
+      "input_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac",
+        "ev_4b4a5f65c93ccb888dc3",
+        "ev_fff207ce7e23bddaab5f"
+      ],
+      "output_refs": [],
+      "metrics": {
+        "finding_count": 0,
+        "candidate_count": 0
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T13:15:40.835135",
+      "finished_at": "2026-08-11T13:15:40.845138",
+      "updated_at": "2026-08-11T13:15:40.845138"
+    },
+    {
+      "node_run_id": "diag_session_20260811_131407_e41b5028:assess_cluster",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "node_name": "assess_cluster",
+      "sequence": 9,
+      "status": "COMPLETED",
+      "attempt": 2,
+      "input_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac",
+        "ev_4b4a5f65c93ccb888dc3",
+        "ev_fff207ce7e23bddaab5f"
+      ],
+      "output_refs": [
+        "finding.cluster.insufficient_evidence"
+      ],
+      "metrics": {
+        "classification": "insufficient_evidence"
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T13:15:40.869095",
+      "finished_at": "2026-08-11T13:15:40.879852",
+      "updated_at": "2026-08-11T13:15:40.879852"
+    },
+    {
+      "node_run_id": "diag_session_20260811_131407_e41b5028:retrieve_knowledge",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "node_name": "retrieve_knowledge",
+      "sequence": 10,
+      "status": "COMPLETED",
+      "attempt": 2,
+      "input_refs": [
+        "finding.cluster.insufficient_evidence"
+      ],
+      "output_refs": [],
+      "metrics": {
+        "knowledge_count": 0
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T13:15:40.905217",
+      "finished_at": "2026-08-11T13:15:40.917651",
+      "updated_at": "2026-08-11T13:15:40.917651"
+    },
+    {
+      "node_run_id": "diag_session_20260811_131407_e41b5028:generate_actions",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "node_name": "generate_actions",
+      "sequence": 11,
+      "status": "COMPLETED",
+      "attempt": 2,
+      "input_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac",
+        "ev_4b4a5f65c93ccb888dc3",
+        "ev_fff207ce7e23bddaab5f",
+        "finding.cluster.insufficient_evidence"
+      ],
+      "output_refs": [
+        "act_review_session",
+        "act_low_risk_metrics",
+        "act_cpu_profile",
+        "act_io_latency"
+      ],
+      "metrics": {
+        "action_count": 4
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T13:15:40.929122",
+      "finished_at": "2026-08-11T13:15:40.941217",
+      "updated_at": "2026-08-11T13:15:40.941217"
+    },
+    {
+      "node_run_id": "diag_session_20260811_131407_e41b5028:verify_report",
+      "diagnosis_id": "diag_session_20260811_131407_e41b5028",
+      "node_name": "verify_report",
+      "sequence": 12,
+      "status": "COMPLETED",
+      "attempt": 2,
+      "input_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac",
+        "ev_4b4a5f65c93ccb888dc3",
+        "ev_fff207ce7e23bddaab5f",
+        "act_review_session",
+        "act_low_risk_metrics",
+        "act_cpu_profile",
+        "act_io_latency"
+      ],
+      "output_refs": [
+        "verified_report"
+      ],
+      "metrics": {
+        "status": "passed",
+        "checked_evidence_refs": 6,
+        "checked_knowledge_refs": 0,
+        "checked_actions": 4,
+        "issues": []
+      },
+      "error_code": null,
+      "error_message": null,
+      "implementation_version": "diagnosis-pipeline-v2",
+      "started_at": "2026-08-11T13:15:40.966253",
+      "finished_at": "2026-08-11T13:15:40.980950",
+      "updated_at": "2026-08-11T13:15:40.980950"
+    }
+  ],
+  "conclusion": {
+    "version": 2,
+    "generated_at": "2026-08-11T13:15:40.965504+00:00",
+    "summary": "已有证据不足以区分自身代码、同宿主噪声邻居或下游依赖问题。",
+    "evidence_scope": "incident",
+    "confidence_level": "低",
+    "cluster_assessment": {
+      "classification": "insufficient_evidence",
+      "confidence": 0.3,
+      "confidence_level": "低",
+      "confidence_factors": {
+        "scope_coverage": "low",
+        "source_independence": "low",
+        "discriminating_evidence": "low"
+      },
+      "summary": "已有证据不足以区分自身代码、同宿主噪声邻居或下游依赖问题。",
+      "evidence_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac",
+        "ev_4b4a5f65c93ccb888dc3",
+        "ev_fff207ce7e23bddaab5f"
+      ],
+      "compared_targets": [
+        {
+          "instance_id": "checkoutservice-worker2-8903-r2-1786453988-0",
+          "service_id": "checkoutservice",
+          "host_id": "worker2",
+          "agent_id": "linux-worker-2",
+          "pid": 8903,
+          "pressure": {
+            "cpu": false,
+            "io_wait": false,
+            "host_iowait_high": false,
+            "block_latency_high": false,
+            "process_io_rate_high": false,
+            "memory": false,
+            "fd": false,
+            "thread": false,
+            "load": false,
+            "disk_full": false,
+            "network_loss": false,
+            "oom": false,
+            "runtime_lock": false
+          },
+          "evidence_refs": [
+            "ev_73081c23ca6c514320d4",
+            "ev_9dc248a531d968439bc8",
+            "ev_4b4a5f65c93ccb888dc3",
+            "ev_fff207ce7e23bddaab5f"
+          ],
+          "collector_types": [
+            "sys_metrics",
+            "perf_cpu"
+          ],
+          "collection_statuses": [
+            "DONE"
+          ],
+          "failure_kinds": [],
+          "observation_count": 2
+        },
+        {
+          "instance_id": "paymentservice-worker2-20759-r2-1786453988-1",
+          "service_id": "paymentservice",
+          "host_id": "worker2",
+          "agent_id": "linux-worker-2",
+          "pid": 20759,
+          "pressure": {
+            "cpu": false,
+            "io_wait": false,
+            "host_iowait_high": false,
+            "block_latency_high": false,
+            "process_io_rate_high": false,
+            "memory": false,
+            "fd": false,
+            "thread": false,
+            "load": false,
+            "disk_full": false,
+            "network_loss": false,
+            "oom": false,
+            "runtime_lock": false
+          },
+          "evidence_refs": [
+            "ev_4ef504dafd849074898f",
+            "ev_4353d7c39c14e832e1ac"
+          ],
+          "collector_types": [
+            "sys_metrics"
+          ],
+          "collection_statuses": [
+            "DONE"
+          ],
+          "failure_kinds": [],
+          "observation_count": 1
+        }
+      ],
+      "ruled_out": [],
+      "root_location": {
+        "type": "unknown",
+        "target_ref": null,
+        "evidence_refs": []
+      },
+      "domain_cause": {
+        "type": "unknown",
+        "subtype": "unknown",
+        "evidence_refs": []
+      },
+      "contributing_causes": [],
+      "is_compound": false
+    },
+    "root_location": {
+      "type": "unknown",
+      "target_ref": null,
+      "evidence_refs": []
+    },
+    "domain_cause": {
+      "type": "unknown",
+      "subtype": "unknown",
+      "evidence_refs": []
+    },
+    "findings": [
+      {
+        "finding_id": "finding.cluster.insufficient_evidence",
+        "analyzer_id": "cluster_assessor.v2",
+        "category": "cluster",
+        "finding_type": "insufficient_evidence",
+        "severity": "info",
+        "confidence_level": "低",
+        "summary": "已有证据不足以区分自身代码、同宿主噪声邻居或下游依赖问题。",
+        "evidence_refs": [
+          "ev_73081c23ca6c514320d4",
+          "ev_9dc248a531d968439bc8",
+          "ev_4ef504dafd849074898f",
+          "ev_4353d7c39c14e832e1ac",
+          "ev_4b4a5f65c93ccb888dc3",
+          "ev_fff207ce7e23bddaab5f"
+        ],
+        "contradicting_evidence_refs": [],
+        "missing_evidence": [
+          "目标、同宿主或下游的区分性指标"
+        ],
+        "facts": {
+          "confidence_factors": {
+            "scope_coverage": "low",
+            "source_independence": "low",
+            "discriminating_evidence": "low"
+          }
+        },
+        "knowledge_ids": []
+      }
+    ],
+    "root_cause_candidates": [],
+    "ruled_out": [],
+    "knowledge_refs": [],
+    "knowledge_context": [],
+    "actions": [
+      {
+        "action_id": "act_review_session",
+        "action_type": "inspect",
+        "title": "回看诊断证据链",
+        "collector_type": null,
+        "target": {
+          "service_id": null,
+          "instance_id": null,
+          "host_id": null,
+          "agent_id": null,
+          "pid": null,
+          "diagnosis_id": "diag_session_20260811_131407_e41b5028"
+        },
+        "parameters": {
+          "server_url": "http://localhost:8191",
+          "api_key_env": "MINI_DROP_API_KEY"
+        },
+        "renderer_version": "cli-renderer-v2",
+        "rendered_command": "micro-drop diagnosis-inspect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --diagnosis-id diag_session_20260811_131407_e41b5028",
+        "comment": "只读查询当前诊断会话，核对流水线、Finding、evidence_refs 和探针状态。",
+        "risk_level": "R0",
+        "approval_policy": "read_only",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_73081c23ca6c514320d4",
+          "ev_9dc248a531d968439bc8",
+          "ev_4ef504dafd849074898f",
+          "ev_4353d7c39c14e832e1ac",
+          "ev_4b4a5f65c93ccb888dc3",
+          "ev_fff207ce7e23bddaab5f"
+        ],
+        "confidence_level": "高",
+        "command_id": "cmd_review_session",
+        "command": "micro-drop diagnosis-inspect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --diagnosis-id diag_session_20260811_131407_e41b5028",
+        "confidence": 0.9
+      },
+      {
+        "action_id": "act_low_risk_metrics",
+        "action_type": "collect",
+        "title": "补充低风险系统指标",
+        "collector_type": "sys_metrics",
+        "target": {
+          "service_id": "checkoutservice",
+          "instance_id": "checkoutservice-worker2-8903-r2-1786453988-0",
+          "host_id": "worker2",
+          "agent_id": "linux-worker-2",
+          "pid": 8903,
+          "diagnosis_id": null
+        },
+        "parameters": {
+          "duration_sec": 15,
+          "sample_rate": 11,
+          "watch": true,
+          "server_url": "http://localhost:8191",
+          "api_key_env": "MINI_DROP_API_KEY"
+        },
+        "renderer_version": "cli-renderer-v2",
+        "rendered_command": "micro-drop collect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --agent linux-worker-2 --pid 8903 --collector sys_metrics --duration 15 --sample-rate 11 --watch",
+        "comment": "低开销采集 CPU、内存、线程、FD、网络与 I/O 等待趋势，适合复核当前判断。",
+        "risk_level": "R1",
+        "approval_policy": "auto_low_risk",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_73081c23ca6c514320d4",
+          "ev_9dc248a531d968439bc8"
+        ],
+        "confidence_level": "高",
+        "command_id": "cmd_low_risk_metrics",
+        "command": "micro-drop collect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --agent linux-worker-2 --pid 8903 --collector sys_metrics --duration 15 --sample-rate 11 --watch",
+        "confidence": 0.9
+      },
+      {
+        "action_id": "act_cpu_profile",
+        "action_type": "collect",
+        "title": "申请一次 CPU Profile",
+        "collector_type": "perf_cpu",
+        "target": {
+          "service_id": "checkoutservice",
+          "instance_id": "checkoutservice-worker2-8903-r2-1786453988-0",
+          "host_id": "worker2",
+          "agent_id": "linux-worker-2",
+          "pid": 8903,
+          "diagnosis_id": null
+        },
+        "parameters": {
+          "duration_sec": 15,
+          "sample_rate": 49,
+          "watch": true,
+          "server_url": "http://localhost:8191",
+          "api_key_env": "MINI_DROP_API_KEY"
+        },
+        "renderer_version": "cli-renderer-v2",
+        "rendered_command": "micro-drop collect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --agent linux-worker-2 --pid 8903 --collector perf_cpu --duration 15 --sample-rate 49 --watch",
+        "comment": "中风险深度采样，可能带来额外开销；必须由人确认窗口和目标后再执行。",
+        "risk_level": "R2",
+        "approval_policy": "single_execution",
+        "requires_approval": true,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_73081c23ca6c514320d4",
+          "ev_9dc248a531d968439bc8"
+        ],
+        "confidence_level": "中",
+        "command_id": "cmd_cpu_profile",
+        "command": "micro-drop collect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --agent linux-worker-2 --pid 8903 --collector perf_cpu --duration 15 --sample-rate 49 --watch",
+        "confidence": 0.65
+      },
+      {
+        "action_id": "act_io_latency",
+        "action_type": "collect",
+        "title": "申请一次 I/O 延迟探针",
+        "collector_type": "ebpf_io",
+        "target": {
+          "service_id": "checkoutservice",
+          "instance_id": "checkoutservice-worker2-8903-r2-1786453988-0",
+          "host_id": "worker2",
+          "agent_id": "linux-worker-2",
+          "pid": 8903,
+          "diagnosis_id": null
+        },
+        "parameters": {
+          "duration_sec": 15,
+          "sample_rate": 11,
+          "watch": true,
+          "server_url": "http://localhost:8191",
+          "api_key_env": "MINI_DROP_API_KEY"
+        },
+        "renderer_version": "cli-renderer-v2",
+        "rendered_command": "micro-drop collect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --agent linux-worker-2 --pid 8903 --collector ebpf_io --duration 15 --sample-rate 11 --watch",
+        "comment": "中风险 eBPF 探针，用于确认块设备延迟和宿主机级 I/O 争抢；需要人工审批。",
+        "risk_level": "R2",
+        "approval_policy": "single_execution",
+        "requires_approval": true,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_73081c23ca6c514320d4",
+          "ev_9dc248a531d968439bc8",
+          "ev_4ef504dafd849074898f",
+          "ev_4353d7c39c14e832e1ac",
+          "ev_4b4a5f65c93ccb888dc3",
+          "ev_fff207ce7e23bddaab5f"
+        ],
+        "confidence_level": "中",
+        "command_id": "cmd_io_latency",
+        "command": "micro-drop collect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --agent linux-worker-2 --pid 8903 --collector ebpf_io --duration 15 --sample-rate 11 --watch",
+        "confidence": 0.65
+      }
+    ],
+    "diagnostic_commands": [
+      {
+        "action_id": "act_review_session",
+        "action_type": "inspect",
+        "title": "回看诊断证据链",
+        "collector_type": null,
+        "target": {
+          "service_id": null,
+          "instance_id": null,
+          "host_id": null,
+          "agent_id": null,
+          "pid": null,
+          "diagnosis_id": "diag_session_20260811_131407_e41b5028"
+        },
+        "parameters": {
+          "server_url": "http://localhost:8191",
+          "api_key_env": "MINI_DROP_API_KEY"
+        },
+        "renderer_version": "cli-renderer-v2",
+        "rendered_command": "micro-drop diagnosis-inspect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --diagnosis-id diag_session_20260811_131407_e41b5028",
+        "comment": "只读查询当前诊断会话，核对流水线、Finding、evidence_refs 和探针状态。",
+        "risk_level": "R0",
+        "approval_policy": "read_only",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_73081c23ca6c514320d4",
+          "ev_9dc248a531d968439bc8",
+          "ev_4ef504dafd849074898f",
+          "ev_4353d7c39c14e832e1ac",
+          "ev_4b4a5f65c93ccb888dc3",
+          "ev_fff207ce7e23bddaab5f"
+        ],
+        "confidence_level": "高",
+        "command_id": "cmd_review_session",
+        "command": "micro-drop diagnosis-inspect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --diagnosis-id diag_session_20260811_131407_e41b5028",
+        "confidence": 0.9
+      },
+      {
+        "action_id": "act_low_risk_metrics",
+        "action_type": "collect",
+        "title": "补充低风险系统指标",
+        "collector_type": "sys_metrics",
+        "target": {
+          "service_id": "checkoutservice",
+          "instance_id": "checkoutservice-worker2-8903-r2-1786453988-0",
+          "host_id": "worker2",
+          "agent_id": "linux-worker-2",
+          "pid": 8903,
+          "diagnosis_id": null
+        },
+        "parameters": {
+          "duration_sec": 15,
+          "sample_rate": 11,
+          "watch": true,
+          "server_url": "http://localhost:8191",
+          "api_key_env": "MINI_DROP_API_KEY"
+        },
+        "renderer_version": "cli-renderer-v2",
+        "rendered_command": "micro-drop collect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --agent linux-worker-2 --pid 8903 --collector sys_metrics --duration 15 --sample-rate 11 --watch",
+        "comment": "低开销采集 CPU、内存、线程、FD、网络与 I/O 等待趋势，适合复核当前判断。",
+        "risk_level": "R1",
+        "approval_policy": "auto_low_risk",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_73081c23ca6c514320d4",
+          "ev_9dc248a531d968439bc8"
+        ],
+        "confidence_level": "高",
+        "command_id": "cmd_low_risk_metrics",
+        "command": "micro-drop collect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --agent linux-worker-2 --pid 8903 --collector sys_metrics --duration 15 --sample-rate 11 --watch",
+        "confidence": 0.9
+      },
+      {
+        "action_id": "act_cpu_profile",
+        "action_type": "collect",
+        "title": "申请一次 CPU Profile",
+        "collector_type": "perf_cpu",
+        "target": {
+          "service_id": "checkoutservice",
+          "instance_id": "checkoutservice-worker2-8903-r2-1786453988-0",
+          "host_id": "worker2",
+          "agent_id": "linux-worker-2",
+          "pid": 8903,
+          "diagnosis_id": null
+        },
+        "parameters": {
+          "duration_sec": 15,
+          "sample_rate": 49,
+          "watch": true,
+          "server_url": "http://localhost:8191",
+          "api_key_env": "MINI_DROP_API_KEY"
+        },
+        "renderer_version": "cli-renderer-v2",
+        "rendered_command": "micro-drop collect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --agent linux-worker-2 --pid 8903 --collector perf_cpu --duration 15 --sample-rate 49 --watch",
+        "comment": "中风险深度采样，可能带来额外开销；必须由人确认窗口和目标后再执行。",
+        "risk_level": "R2",
+        "approval_policy": "single_execution",
+        "requires_approval": true,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_73081c23ca6c514320d4",
+          "ev_9dc248a531d968439bc8"
+        ],
+        "confidence_level": "中",
+        "command_id": "cmd_cpu_profile",
+        "command": "micro-drop collect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --agent linux-worker-2 --pid 8903 --collector perf_cpu --duration 15 --sample-rate 49 --watch",
+        "confidence": 0.65
+      },
+      {
+        "action_id": "act_io_latency",
+        "action_type": "collect",
+        "title": "申请一次 I/O 延迟探针",
+        "collector_type": "ebpf_io",
+        "target": {
+          "service_id": "checkoutservice",
+          "instance_id": "checkoutservice-worker2-8903-r2-1786453988-0",
+          "host_id": "worker2",
+          "agent_id": "linux-worker-2",
+          "pid": 8903,
+          "diagnosis_id": null
+        },
+        "parameters": {
+          "duration_sec": 15,
+          "sample_rate": 11,
+          "watch": true,
+          "server_url": "http://localhost:8191",
+          "api_key_env": "MINI_DROP_API_KEY"
+        },
+        "renderer_version": "cli-renderer-v2",
+        "rendered_command": "micro-drop collect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --agent linux-worker-2 --pid 8903 --collector ebpf_io --duration 15 --sample-rate 11 --watch",
+        "comment": "中风险 eBPF 探针，用于确认块设备延迟和宿主机级 I/O 争抢；需要人工审批。",
+        "risk_level": "R2",
+        "approval_policy": "single_execution",
+        "requires_approval": true,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_73081c23ca6c514320d4",
+          "ev_9dc248a531d968439bc8",
+          "ev_4ef504dafd849074898f",
+          "ev_4353d7c39c14e832e1ac",
+          "ev_4b4a5f65c93ccb888dc3",
+          "ev_fff207ce7e23bddaab5f"
+        ],
+        "confidence_level": "中",
+        "command_id": "cmd_io_latency",
+        "command": "micro-drop collect --url http://localhost:8191 --api-key-env MINI_DROP_API_KEY --agent linux-worker-2 --pid 8903 --collector ebpf_io --duration 15 --sample-rate 11 --watch",
+        "confidence": 0.65
+      }
+    ],
+    "recommendations": [
+      {
+        "recommendation_id": "rec_mitigation",
+        "category": "mitigation",
+        "title": "人工确认后的临时缓解",
+        "detail": "在确认业务容量和回滚方案后，可临时隔离或降低 候选实例 的流量；当前归因层级为 unknown，系统不会自动执行摘流、重启或迁移。",
+        "risk_level": "R3",
+        "execution": "manual_confirmation_required",
+        "evidence_refs": [
+          "ev_73081c23ca6c514320d4",
+          "ev_9dc248a531d968439bc8",
+          "ev_4ef504dafd849074898f",
+          "ev_4353d7c39c14e832e1ac",
+          "ev_4b4a5f65c93ccb888dc3",
+          "ev_fff207ce7e23bddaab5f"
+        ]
+      },
+      {
+        "recommendation_id": "rec_optimization",
+        "category": "optimization",
+        "title": "补充区分性证据",
+        "detail": "当前领域尚不可判断；先完成缺失探针并重新校验证据覆盖率，不应直接修改生产配置。",
+        "risk_level": "R2",
+        "execution": "review_before_change",
+        "evidence_refs": [
+          "ev_73081c23ca6c514320d4",
+          "ev_9dc248a531d968439bc8",
+          "ev_4ef504dafd849074898f",
+          "ev_4353d7c39c14e832e1ac",
+          "ev_4b4a5f65c93ccb888dc3",
+          "ev_fff207ce7e23bddaab5f"
+        ]
+      },
+      {
+        "recommendation_id": "rec_validation",
+        "category": "validation",
+        "title": "使用同域证据验证优化效果",
+        "detail": "修复后保持相同目标、负载、采样参数和可比较时间窗重新采集，对比 P99、资源指标、TopN 与火焰图；覆盖不完整时不得宣称优化有效。",
+        "risk_level": "R1",
+        "execution": "recollect_and_compare",
+        "evidence_refs": [
+          "ev_73081c23ca6c514320d4",
+          "ev_9dc248a531d968439bc8",
+          "ev_4ef504dafd849074898f",
+          "ev_4353d7c39c14e832e1ac",
+          "ev_4b4a5f65c93ccb888dc3",
+          "ev_fff207ce7e23bddaab5f"
+        ]
+      }
+    ],
+    "next_best_action": {
+      "type": "probe",
+      "probe_id": "process_log_scan",
+      "title": "扫描进程日志",
+      "description": "查找错误/连接/超时模式，判断是否与报错类原因相关（低风险，自动执行）。",
+      "needs_approval": false,
+      "reason": "当前证据不足以区分候选原因，需要补充区分性证据后再收敛结论。"
+    },
+    "limitations": [],
+    "evidence_review": {
+      "input_observation_count": 3,
+      "effective_observation_count": 3,
+      "suppressed_observation_count": 0,
+      "suppressed": [],
+      "conflicts": [],
+      "source_families": [
+        "procfs_metrics",
+        "sampling_profile"
+      ],
+      "source_independence_count": 2,
+      "effective_evidence_refs": [
+        "ev_73081c23ca6c514320d4",
+        "ev_9dc248a531d968439bc8",
+        "ev_4ef504dafd849074898f",
+        "ev_4353d7c39c14e832e1ac",
+        "ev_4b4a5f65c93ccb888dc3",
+        "ev_fff207ce7e23bddaab5f"
+      ],
+      "quality_gate_passed": true
+    },
+    "coverage": {
+      "task_count": 3,
+      "failed_targets": [],
+      "evidence_count": 6
+    },
+    "verification": {
+      "status": "passed",
+      "checked_evidence_refs": 6,
+      "checked_knowledge_refs": 0,
+      "checked_actions": 4,
+      "issues": []
+    },
+    "integrity_hash": "sha256:85f1c01bc7d08e27cd85a1b36e176b07ed940a639238435673b4e7160349cce0"
+  },
+  "bundle_hash": "sha256:d9bcdfde4b73d7bbe6156ba6b2423b63e30d6c35b1d9e1af855a57aff85536f1"
+}

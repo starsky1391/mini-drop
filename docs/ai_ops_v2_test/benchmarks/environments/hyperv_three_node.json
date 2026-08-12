@@ -1,0 +1,62 @@
+{
+  "schema_version": "1.0",
+  "environment_id": "mini-drop-hyperv-three-node",
+  "description": "One control VM and two Linux worker VMs on a single Hyper-V host.",
+  "last_verified": "2026-07-28",
+  "topology": {
+    "control_nodes": 1,
+    "worker_hosts": 2,
+    "physical_failure_domains": 1,
+    "one_agent_per_worker": true
+  },
+  "resources": {
+    "control": {"vcpu": 4, "memory_gb": 6, "disk_gb": 80},
+    "worker": {"count": 2, "vcpu_each": 4, "memory_gb_each": 4, "disk_gb_each": 80},
+    "worker_swap_gb_each": 3.8
+  },
+  "collectors": {
+    "continuous_perf": true,
+    "ebpf_io": true,
+    "go_pprof": true,
+    "log_scan": true,
+    "memory_smaps": true,
+    "perf_cpu": true,
+    "process_scan": true,
+    "pyspy": true,
+    "sys_metrics": true,
+    "java_async": false,
+    "distributed_traces": false,
+    "http_request_metrics": false,
+    "jvm_gc_metrics": false,
+    "kafka_metrics": false,
+    "language_memory_profile": false
+  },
+  "evidence_capabilities": {
+    "cpu_metric_change": "SUPPORTED",
+    "profile_hot_function": "SUPPORTED",
+    "source_location": "SUPPORTED",
+    "io_latency_distribution": "SUPPORTED",
+    "peer_pressure": "SUPPORTED",
+    "target_cpu_profile": "SUPPORTED",
+    "peer_cpu_pressure": "SUPPORTED",
+    "rss_growth": "SUPPORTED",
+    "resource_saturation": "SUPPORTED",
+    "memory_profile_growth": "UNSUPPORTED",
+    "request_rate_change": "UNSUPPORTED",
+    "latency_change": "UNSUPPORTED",
+    "gc_pause_or_count_change": "UNSUPPORTED",
+    "latency_correlation": "UNSUPPORTED",
+    "trace_edge_latency": "UNSUPPORTED",
+    "service_latency_change": "UNSUPPORTED",
+    "trace_error_edge": "UNSUPPORTED",
+    "connection_error": "SUPPORTED",
+    "log_error_pattern": "SUPPORTED",
+    "queue_lag_growth": "UNSUPPORTED",
+    "producer_consumer_rate_gap": "UNSUPPORTED"
+  },
+  "constraints": [
+    "All VMs share one physical host, so physical-host isolation cannot be evaluated.",
+    "A worker has 4 GB RAM; the complete OpenTelemetry Demo is not a safe default workload.",
+    "Docker Hub access has previously timed out; fixtures should support local or mirrored images."
+  ]
+}

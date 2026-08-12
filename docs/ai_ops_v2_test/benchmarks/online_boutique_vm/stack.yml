@@ -1,0 +1,238 @@
+version: "3.8"
+
+x-defaults: &defaults
+  networks:
+    - boutique
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "3"
+  deploy:
+    replicas: 1
+    restart_policy:
+      condition: any
+      delay: 3s
+      max_attempts: 5
+      window: 30s
+
+services:
+  frontend:
+    <<: *defaults
+    image: online-boutique/frontend:v0.8.0
+    environment:
+      PORT: "8080"
+      PRODUCT_CATALOG_SERVICE_ADDR: productcatalogservice:3550
+      CURRENCY_SERVICE_ADDR: currencyservice:7000
+      CART_SERVICE_ADDR: cartservice:7070
+      RECOMMENDATION_SERVICE_ADDR: recommendationservice:8080
+      SHIPPING_SERVICE_ADDR: shippingservice:50051
+      CHECKOUT_SERVICE_ADDR: checkoutservice:5050
+      AD_SERVICE_ADDR: adservice:9555
+      ENABLE_PROFILER: "0"
+    ports:
+      - target: 8080
+        published: 8080
+        protocol: tcp
+        mode: ingress
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.hostname == worker1]
+      restart_policy:
+        condition: any
+        delay: 3s
+        max_attempts: 5
+        window: 30s
+      resources:
+        limits: {cpus: "0.50", memory: 256M}
+        reservations: {cpus: "0.10", memory: 64M}
+
+  productcatalogservice:
+    <<: *defaults
+    image: online-boutique/productcatalogservice:v0.8.0
+    environment:
+      PORT: "3550"
+      DISABLE_PROFILER: "1"
+    deploy:
+      replicas: 1
+      labels:
+        mini-drop.autonomy: "true"
+        mini-drop.stateless: "true"
+      placement:
+        constraints: [node.hostname == worker1]
+      restart_policy: {condition: any, delay: 3s, max_attempts: 5, window: 30s}
+      resources:
+        limits: {cpus: "0.50", memory: 256M}
+        reservations: {cpus: "0.10", memory: 64M}
+
+  currencyservice:
+    <<: *defaults
+    image: online-boutique/currencyservice:v0.8.0
+    environment:
+      PORT: "7000"
+      DISABLE_PROFILER: "1"
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.hostname == worker1]
+      restart_policy: {condition: any, delay: 3s, max_attempts: 5, window: 30s}
+      resources:
+        limits: {cpus: "0.40", memory: 256M}
+        reservations: {cpus: "0.10", memory: 64M}
+
+  recommendationservice:
+    <<: *defaults
+    image: online-boutique/recommendationservice:v0.8.0
+    environment:
+      PORT: "8080"
+      PRODUCT_CATALOG_SERVICE_ADDR: productcatalogservice:3550
+      DISABLE_PROFILER: "1"
+    deploy:
+      replicas: 1
+      labels:
+        mini-drop.autonomy: "true"
+        mini-drop.stateless: "true"
+      placement:
+        constraints: [node.hostname == worker1]
+      restart_policy: {condition: any, delay: 3s, max_attempts: 5, window: 30s}
+      resources:
+        limits: {cpus: "0.40", memory: 450M}
+        reservations: {cpus: "0.10", memory: 180M}
+
+  loadgenerator:
+    <<: *defaults
+    image: online-boutique/loadgenerator:v0.8.0
+    environment:
+      FRONTEND_ADDR: frontend:8080
+      USERS: "5"
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.hostname == worker1]
+      restart_policy: {condition: any, delay: 5s, max_attempts: 10, window: 60s}
+      resources:
+        limits: {cpus: "0.50", memory: 384M}
+        reservations: {cpus: "0.10", memory: 128M}
+
+  cartservice:
+    <<: *defaults
+    image: online-boutique/cartservice:v0.8.0
+    environment:
+      REDIS_ADDR: redis-cart:6379
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.hostname == worker2]
+      restart_policy: {condition: any, delay: 3s, max_attempts: 5, window: 30s}
+      resources:
+        limits: {cpus: "0.50", memory: 256M}
+        reservations: {cpus: "0.10", memory: 64M}
+
+  redis-cart:
+    <<: *defaults
+    image: redis:alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    volumes:
+      - redis-data:/data
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.hostname == worker2]
+      restart_policy: {condition: any, delay: 3s, max_attempts: 5, window: 30s}
+      resources:
+        limits: {cpus: "0.25", memory: 256M}
+        reservations: {cpus: "0.05", memory: 64M}
+
+  checkoutservice:
+    <<: *defaults
+    image: online-boutique/checkoutservice:v0.8.0
+    environment:
+      PORT: "5050"
+      PRODUCT_CATALOG_SERVICE_ADDR: productcatalogservice:3550
+      SHIPPING_SERVICE_ADDR: shippingservice:50051
+      PAYMENT_SERVICE_ADDR: paymentservice:50051
+      EMAIL_SERVICE_ADDR: emailservice:5000
+      CURRENCY_SERVICE_ADDR: currencyservice:7000
+      CART_SERVICE_ADDR: cartservice:7070
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.hostname == worker2]
+      restart_policy: {condition: any, delay: 3s, max_attempts: 5, window: 30s}
+      resources:
+        limits: {cpus: "0.40", memory: 256M}
+        reservations: {cpus: "0.10", memory: 64M}
+
+  paymentservice:
+    <<: *defaults
+    image: online-boutique/paymentservice:v0.8.0
+    environment:
+      PORT: "50051"
+      DISABLE_PROFILER: "1"
+    deploy:
+      replicas: 1
+      labels:
+        mini-drop.autonomy: "true"
+        mini-drop.stateless: "true"
+      placement:
+        constraints: [node.hostname == worker2]
+      restart_policy: {condition: any, delay: 3s, max_attempts: 5, window: 30s}
+      resources:
+        limits: {cpus: "0.40", memory: 256M}
+        reservations: {cpus: "0.10", memory: 64M}
+
+  shippingservice:
+    <<: *defaults
+    image: online-boutique/shippingservice:v0.8.0
+    environment:
+      PORT: "50051"
+      DISABLE_PROFILER: "1"
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.hostname == worker2]
+      restart_policy: {condition: any, delay: 3s, max_attempts: 5, window: 30s}
+      resources:
+        limits: {cpus: "0.40", memory: 256M}
+        reservations: {cpus: "0.10", memory: 64M}
+
+  emailservice:
+    <<: *defaults
+    image: online-boutique/emailservice:v0.8.0
+    environment:
+      PORT: "8080"
+      DISABLE_PROFILER: "1"
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.hostname == worker2]
+      restart_policy: {condition: any, delay: 3s, max_attempts: 5, window: 30s}
+      resources:
+        limits: {cpus: "0.40", memory: 256M}
+        reservations: {cpus: "0.10", memory: 64M}
+
+  adservice:
+    <<: *defaults
+    image: online-boutique/adservice:v0.8.0
+    environment:
+      PORT: "9555"
+    deploy:
+      replicas: 1
+      labels:
+        mini-drop.autonomy: "true"
+        mini-drop.stateless: "true"
+      placement:
+        constraints: [node.hostname == worker2]
+      restart_policy: {condition: any, delay: 3s, max_attempts: 5, window: 30s}
+      resources:
+        limits: {cpus: "0.50", memory: 384M}
+        reservations: {cpus: "0.15", memory: 128M}
+
+networks:
+  boutique:
+    driver: overlay
+    attachable: true
+
+volumes:
+  redis-data:

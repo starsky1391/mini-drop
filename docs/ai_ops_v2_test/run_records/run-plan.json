@@ -1,0 +1,368 @@
+{
+  "schema_version": "1.0",
+  "created_at": "2026-08-11T11:27:25.888740+00:00",
+  "seed": 20260811,
+  "repetitions": 3,
+  "jobs": [
+    {
+      "case_id": "OB-ROBUST-SCOPE-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-COMPOUND-MEM-LOCK-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-COMPOUND-STALE-REAL-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-SINGLE-DISK-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-NEG-TRANSIENT-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-GO-LOCK-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-REDIS-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-OOM-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-COMPOUND-MEM-LOCK-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-SINGLE-RUNTIME-STALL-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-COMPOUND-DISK-NET-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-ROBUST-CONFLICT-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-ROBUST-STALE-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-PAYMENT-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-SINGLE-NETLOSS-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-SINGLE-PAYMENT-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-NEG-HEALTHY-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-COMPOUND-PAYMENT-REDIS-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-SINGLE-JAVA-LOCK-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-REDIS-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-SINGLE-PARTITION-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-COMPOUND-DISK-NET-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-COMPOUND-OOM-RECOVERY-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-ROBUST-CONFLICT-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-COMPOUND-NOISY-DOWNSTREAM-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-ROBUST-COLLECTOR-FAIL-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-COMPOUND-CROSS-WORKER-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-SINGLE-NETLOSS-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-PYTHON-LOCK-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-SINGLE-OOM-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-COMPOUND-CROSS-WORKER-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-NEG-HEALTHY-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-SINGLE-CPU-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-COMPOUND-PAYMENT-REDIS-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-ROBUST-SCOPE-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-SINGLE-HOST-IO-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-PARTITION-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-COMPOUND-STALE-REAL-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-PYTHON-LOCK-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-NOISY-CPU-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-SINGLE-PYTHON-LOCK-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-COMPOUND-PAYMENT-REDIS-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-HOST-MEM-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-COMPOUND-CROSS-WORKER-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-COMPOUND-STALE-REAL-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-SINGLE-NETLOSS-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-SINGLE-DISK-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-SINGLE-CPU-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-SINGLE-MEMLEAK-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-SINGLE-JAVA-LOCK-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-ROBUST-COLLECTOR-FAIL-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-SINGLE-OOM-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-SINGLE-LATENCY-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-COMPOUND-OOM-RECOVERY-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-COMPOUND-MEM-LOCK-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-ROBUST-CONFLICT-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-SINGLE-HOST-MEM-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-PARTITION-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-ROBUST-DUPLICATE-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-ROBUST-DUPLICATE-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-SINGLE-HOST-IO-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-SINGLE-CPU-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-SINGLE-HOST-IO-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-COMPOUND-DISK-NET-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-COMPOUND-OOM-RECOVERY-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-NEG-TRANSIENT-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-SINGLE-LATENCY-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-GO-LOCK-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-NEG-HEALTHY-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-ROBUST-DUPLICATE-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-ROBUST-STALE-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-COMPOUND-NOISY-DOWNSTREAM-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-SINGLE-NOISY-CPU-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-DISK-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-REDIS-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-SINGLE-JAVA-LOCK-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-NEG-TRANSIENT-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-SINGLE-MEMLEAK-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-ROBUST-STALE-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-ROBUST-SCOPE-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-SINGLE-RUNTIME-STALL-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-COMPOUND-NOISY-DOWNSTREAM-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-SINGLE-PAYMENT-001",
+      "repetition": 2
+    },
+    {
+      "case_id": "OB-SINGLE-GO-LOCK-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-SINGLE-MEMLEAK-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-ROBUST-COLLECTOR-FAIL-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-HOST-MEM-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-SINGLE-RUNTIME-STALL-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-NOISY-CPU-001",
+      "repetition": 3
+    },
+    {
+      "case_id": "OB-SINGLE-LATENCY-001",
+      "repetition": 2
+    }
+  ]
+}
