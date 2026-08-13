@@ -105,7 +105,8 @@ class DiagnosisBudget(StrictModel):
     max_artifact_size_mb: int = Field(default=500, ge=1, le=4096)
     max_model_calls: int = Field(default=6, ge=0, le=30)
     max_medium_risk_probes: int = Field(default=1, ge=0, le=5)
-    max_total_probe_cpu_seconds: int = Field(default=120, ge=0, le=3600)
+    max_total_probe_cpu_seconds: int = Field(default=180, ge=0, le=3600)
+    follow_up_reserve_seconds: int = Field(default=60, ge=0, le=3600)
 
 
 class CreateDiagnosisRequest(StrictModel):
@@ -120,6 +121,12 @@ class ApprovalRequest(StrictModel):
     step_id: str = Field(min_length=1, max_length=128)
     decision: Literal["approve", "reject"]
     scope: Literal["single_execution"] = "single_execution"
+    approver_id: str = Field(default="demo_user", min_length=1, max_length=128)
+
+
+class BulkApprovalRequest(StrictModel):
+    decision: Literal["approve", "reject"] = "approve"
+    scope: Literal["all_waiting"] = "all_waiting"
     approver_id: str = Field(default="demo_user", min_length=1, max_length=128)
 
 
@@ -139,7 +146,8 @@ class NormalizedIntent(StrictModel):
     intent_type: Literal["performance_diagnosis"] = "performance_diagnosis"
     symptom: Literal[
         "latency_increase", "cpu_saturation", "io_degradation",
-        "memory_pressure", "noisy_neighbor", "unknown_performance_issue",
+        "memory_pressure", "noisy_neighbor", "runtime_contention",
+        "unknown_performance_issue",
     ]
     target_service: Optional[str] = None
     environment: str = "unknown"

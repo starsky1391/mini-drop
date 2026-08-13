@@ -200,6 +200,10 @@ export function approveDiagnosisProbe(diagnosisId, payload) {
   return api.post(`/v1/diagnoses/${diagnosisId}/approvals`, payload);
 }
 
+export function approveWaitingDiagnosisProbes(diagnosisId, payload) {
+  return api.post(`/v1/diagnoses/${diagnosisId}/approvals/bulk`, payload);
+}
+
 export function listProbeDefinitions() {
   return api.get("/v1/probes");
 }
@@ -232,6 +236,17 @@ export function disableWatchSubscription(watchId) {
 
 export function listAgentWatchLeases(agentId) {
   return api.get(`/v1/agents/${agentId}/watch-leases`).then(itemsOf);
+}
+
+export function refreshAgentProcessInventory(agentId) {
+  return api.post(`/v1/agents/${agentId}/process-inventory/refresh`);
+}
+
+export function listAgentProcesses(agentId, params = {}) {
+  return api.get(`/v1/agents/${agentId}/processes`, { params }).then((value) => ({
+    ...value,
+    items: itemsOf(value),
+  }));
 }
 
 export function evaluateWatchSubscription(watchId, payload) {

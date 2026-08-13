@@ -178,6 +178,23 @@
     "evidence_refs": ["sys_metrics.summary.net_rx_kbps", "sys_metrics.summary.net_tx_kbps"]
   },
 
+  {
+    "candidate_id": "downstream_dependency_unreachable",
+    "description": "下游依赖可达性检测失败，根因更可能在依赖服务、DNS、TCP 或服务间网络路径",
+    "match_type": "dependency_failure",
+    "params": {},
+    "rule_score": 0.86,
+    "evidence_refs": ["evidence_index.dependency_check.summary", "evidence_index.dependency_check.checks", "tool_results.dependency_check"]
+  },
+  {
+    "candidate_id": "redis_dependency_unhealthy",
+    "description": "Redis 专项检查显示 Redis 不可达、高延迟或存在慢日志，购物车链路根因更可能在 Redis 依赖侧",
+    "match_type": "redis_failure",
+    "params": { "min_latency_ms": 1000 },
+    "rule_score": 0.90,
+    "evidence_refs": ["evidence_index.redis_check.connectivity", "evidence_index.redis_check.latency_summary", "tool_results.redis_check"]
+  },
+
   {"_comment": "══════ 交叉证据（多维度联合诊断）══════"},
 
   {
@@ -230,6 +247,22 @@
     "params": { "collector_type": "pyspy", "suggestion_keyword": "python" },
     "rule_score": 0.72,
     "evidence_refs": ["top_functions", "tool_results.get_flamegraph_top", "suggestions"]
+  },
+  {
+    "candidate_id": "python_runtime_stack_hotspot",
+    "description": "Python 运行时采样产出非空调用栈，当前阻塞或热点位置可沿 TopN 栈继续确认",
+    "match_type": "runtime_top_function_present",
+    "params": { "min_percent": 1 },
+    "rule_score": 0.70,
+    "evidence_refs": ["top_functions", "evidence_index.stack_summary", "evidence_index.artifact_refs"]
+  },
+  {
+    "candidate_id": "off_cpu_wait_hotspot",
+    "description": "Off-CPU 工业采集器捕获到等待栈，根因更可能位于 Top wait stack 指向的锁、阻塞调用或等待路径",
+    "match_type": "off_cpu_wait_hotspot",
+    "params": { "min_samples": 1 },
+    "rule_score": 0.86,
+    "evidence_refs": ["evidence_index.off_cpu_wait.summary", "evidence_index.off_cpu_wait.top_wait_stacks", "top_functions"]
   },
 
   {"_comment": "══════ 失败/异常 ══════"},

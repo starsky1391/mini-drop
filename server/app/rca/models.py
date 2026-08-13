@@ -22,6 +22,7 @@ class EvidenceInput(BaseModel):
     task_metadata: dict = Field(default_factory=dict)
     top_functions: list[dict] = Field(default_factory=list)
     ebpf_metrics: Optional[dict] = None
+    off_cpu_wait_json: Optional[dict] = None
     sys_metrics: Optional[dict] = None
     baseline_diff: Optional[dict] = None
     agent_stats: Optional[dict] = None

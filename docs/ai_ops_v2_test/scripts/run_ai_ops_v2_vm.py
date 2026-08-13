@@ -29,6 +29,7 @@ import paramiko
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_CASES = ROOT / "benchmarks" / "ai_ops_v2" / "public" / "cases.json"
 FAULTCTL = ROOT / "benchmarks" / "ai_ops_v2" / "vm_faultctl.sh"
+FAULT_HELPERS = ROOT / "benchmarks" / "online_boutique_vm" / "fault_helpers"
 TERMINAL = {
     "COMPLETED", "INSUFFICIENT_EVIDENCE", "PARTIAL_COMPLETED",
     "BUDGET_EXHAUSTED", "TOPOLOGY_UNAVAILABLE", "USER_CANCELED", "FAILED",
@@ -51,6 +52,16 @@ CONTROL = Node("control", "172.18.88.237", "control", "")
 WORKER1 = Node("worker1", "172.18.90.144", "worker1", "linux-worker-1")
 WORKER2 = Node("worker2", "172.18.87.120", "worker2", "linux-worker-2")
 WORKERS = {node.name: node for node in (WORKER1, WORKER2)}
+FRONTEND_URL = f"http://{WORKER1.ip}:8080/"
+CONTROL_ENV_FILES = (
+    "/home/control/mini-drop-active/deploy/env/control-native.env",
+    "/home/control/mini-drop-active/deploy/env/control.env",
+    "/home/control/mini-drop/deploy/env/control.env",
+)
+CONTROL_COMPOSE_DIRS = (
+    "/home/control/mini-drop-active",
+    "/home/control/mini-drop",
+)
 
 
 @dataclass(frozen=True)
@@ -196,13 +207,19 @@ class SSH:
         client.connect(node.ip, username=node.user, password=self.password, timeout=15)
         remote_dir = f"/home/{node.user}/mini-drop-active/benchmarks/ai_ops_v2"
         remote = f"{remote_dir}/vm_faultctl.sh"
+        remote_helpers = f"/home/{node.user}/mini-drop-active/benchmarks/online_boutique_vm/fault_helpers"
         try:
-            _, stdout, _ = client.exec_command(f"mkdir -p {remote_dir}")
+            _, stdout, _ = client.exec_command(f"mkdir -p {remote_dir} {remote_helpers}")
             if stdout.channel.recv_exit_status():
-                raise RuntimeError(f"cannot create {remote_dir}")
+                raise RuntimeError(f"cannot create {remote_dir} and {remote_helpers}")
             sftp = client.open_sftp()
             sftp.put(str(FAULTCTL), remote)
             sftp.chmod(remote, 0o755)
+            for helper in sorted(FAULT_HELPERS.iterdir()):
+                if helper.is_file():
+                    helper_remote = f"{remote_helpers}/{helper.name}"
+                    sftp.put(str(helper), helper_remote)
+                    sftp.chmod(helper_remote, 0o644)
             sftp.close()
             _, stdout, stderr = client.exec_command(f"bash -n {remote}")
             if stdout.channel.recv_exit_status():
@@ -215,7 +232,7 @@ class SSH:
 class API:
     def __init__(self, api_key: str):
         self.api_key = api_key
-        self.base = "https://192.168.10.10"
+        self.base = f"https://{CONTROL.ip}"
         self.context = ssl.create_default_context()
         self.context.check_hostname = False
         self.context.verify_mode = ssl.CERT_NONE
@@ -232,10 +249,19 @@ class API:
                 payload = json.loads(response.read().decode())
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:500]
-            raise RuntimeError(f"API {method} {path}: HTTP {exc.code}: {detail}") from exc
+            raise APIError(method, path, exc.code, detail) from exc
         if payload.get("code") != 0:
             raise RuntimeError(f"API {method} {path}: {payload.get('message')}")
         return payload.get("data")
+
+
+class APIError(RuntimeError):
+    def __init__(self, method: str, path: str, status_code: int, detail: str):
+        super().__init__(f"API {method} {path}: HTTP {status_code}: {detail}")
+        self.method = method
+        self.path = path
+        self.status_code = status_code
+        self.detail = detail
 
 
 def utcnow() -> str:
@@ -282,16 +308,41 @@ def resolve_scope(ssh: SSH, spec: Spec, run_key: str) -> dict[str, Any]:
             item["container_id"] = container_id
         instances.append(item)
     dependencies = [
-        {"source_service": source, "target_service": dest, "relation": relation,
-         "confidence": "high", "source": "ai_ops_v2_fixture"}
+        _dependency_edge(source, dest, relation)
         for source, dest, relation in spec.dependencies
     ]
     return {"service_id": spec.service, "instances": instances, "dependencies": dependencies}
 
 
+def _dependency_edge(source: str, dest: str, relation: str) -> dict[str, Any]:
+    edge: dict[str, Any] = {
+        "source_service": source,
+        "target_service": dest,
+        "relation": relation,
+        "confidence": "high",
+        "source": "ai_ops_v2_fixture",
+    }
+    if dest == "redis-cart":
+        edge.update({
+            "protocol": "redis",
+            "host": "redis-cart",
+            "port": 6379,
+            "url": "redis://redis-cart:6379",
+        })
+    elif dest in {"paymentservice", "shippingservice"}:
+        edge.update({"protocol": "grpc", "host": dest, "port": 50051})
+    elif dest == "cartservice":
+        edge.update({"protocol": "grpc", "host": dest, "port": 7070})
+    elif dest == "checkoutservice":
+        edge.update({"protocol": "grpc", "host": dest, "port": 5050})
+    else:
+        edge.update({"protocol": "tcp", "host": dest})
+    return edge
+
+
 def frontend_probe(timeout: float = 5.0) -> dict[str, Any]:
     started = time.monotonic()
-    request = urllib.request.Request("http://192.168.10.11:8080/", method="GET")
+    request = urllib.request.Request(FRONTEND_URL, method="GET")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
         with opener.open(request, timeout=timeout) as response:
@@ -303,6 +354,104 @@ def frontend_probe(timeout: float = 5.0) -> dict[str, Any]:
                 "latency_ms": round((time.monotonic() - started) * 1000, 1)}
 
 
+def inspect_ai_ops_v2_environment(ssh: SSH) -> dict[str, Any]:
+    swarm = {}
+    for node in (CONTROL, WORKER1, WORKER2):
+        try:
+            raw = ssh.sudo(
+                node,
+                "docker info --format '{{.Swarm.LocalNodeState}}|{{.Swarm.ControlAvailable}}|{{.Name}}'",
+                timeout=30,
+            ).strip()
+            parts = raw.split("|")
+            swarm[node.name] = {
+                "state": parts[0] if len(parts) > 0 else raw,
+                "control_available": parts[1] if len(parts) > 1 else "",
+                "docker_name": parts[2] if len(parts) > 2 else "",
+            }
+        except Exception as exc:
+            swarm[node.name] = {"error": f"{type(exc).__name__}: {exc}"}
+    manager = next(
+        (
+            node
+            for node in (CONTROL, WORKER1, WORKER2)
+            if swarm.get(node.name, {}).get("control_available") == "true"
+        ),
+        None,
+    )
+    services_raw = ""
+    if manager is not None:
+        services_raw = ssh.sudo(manager, "docker service ls --format '{{.Name}}|{{.Replicas}}'", timeout=30)
+    return {
+        "swarm": swarm,
+        "manager": manager.name if manager else "",
+        "services": services_raw.splitlines() if services_raw else [],
+    }
+
+
+def validate_ai_ops_v2_environment(ssh: SSH) -> None:
+    env = inspect_ai_ops_v2_environment(ssh)
+    services = env["services"]
+    required = {
+        "boutique_frontend",
+        "boutique_productcatalogservice",
+        "boutique_cartservice",
+        "boutique_redis-cart",
+        "boutique_checkoutservice",
+        "boutique_paymentservice",
+    }
+    service_names = {line.split("|", 1)[0] for line in services}
+    missing = sorted(required - service_names)
+    if not env["manager"] or missing:
+        raise RuntimeError(
+            "AI Ops v2 runner requires the Online Boutique Docker Swarm environment. "
+            f"swarm={env['swarm']}; manager={env['manager'] or 'none'}; missing_services={missing}. "
+            "Current VM appears to be a different compose-based Mini-Drop microservices environment, "
+            "so the official ai_ops_v2 fixture/oracle runner cannot execute safely."
+        )
+
+
+def prepare_worker_collectors(ssh: SSH) -> None:
+    password = shlex.quote(ssh.password)
+    command = _worker_collector_override_command()
+    for node in (WORKER1, WORKER2):
+        ssh.run(node, f"printf '%s\\n' {password} | sudo -S /bin/bash -c {shlex.quote(command)}", timeout=240)
+
+
+def _worker_collector_override_command() -> str:
+    return (
+        "set -e; "
+        "home=$(getent passwd \"$SUDO_USER\" | cut -d: -f6); "
+        "cd \"$home/mini-drop\"; "
+        "cat > docker-compose.ai-ops-v2-collectors.yml <<'YAML'\n"
+        "services:\n"
+        "  agent:\n"
+        "    networks:\n"
+        "      - default\n"
+        "      - boutique\n"
+        "    environment:\n"
+        "      MINI_DROP_BLACKBOX_URL: http://blackbox-exporter:9115\n"
+        "      MINI_DROP_REDIS_EXPORTER_URL: http://redis-exporter:9121\n"
+        "  blackbox-exporter:\n"
+        "    networks:\n"
+        "      - default\n"
+        "      - boutique\n"
+        "  redis-exporter:\n"
+        "    networks:\n"
+        "      - default\n"
+        "      - boutique\n"
+        "    environment:\n"
+        "      REDIS_ADDR: redis://redis-cart:6379\n"
+        "networks:\n"
+        "  boutique:\n"
+        "    external: true\n"
+        "    name: boutique_boutique\n"
+        "YAML\n"
+        "docker compose --profile redis --env-file deploy/env/worker.env "
+        "-f docker-compose.worker.yml -f docker-compose.ai-ops-v2-collectors.yml up -d agent blackbox-exporter redis-exporter"
+    )
+
+
 def clean_environment(ssh: SSH, remote_scripts: dict[str, str]) -> dict[str, Any]:
     errors: list[str] = []
     for node in (WORKER1, WORKER2):
@@ -310,30 +459,33 @@ def clean_environment(ssh: SSH, remote_scripts: dict[str, str]) -> dict[str, Any
             ssh.sudo(node, f"bash {remote_scripts[node.name]} clean", timeout=180)
         except Exception as exc:
             errors.append(f"{node.name}: {exc}")
-    services = ssh.sudo(WORKER1, "docker service ls --format '{{.Name}}|{{.Replicas}}'")
+    env = inspect_ai_ops_v2_environment(ssh)
+    if not env["manager"]:
+        raise RuntimeError(f"AI Ops v2 requires a Docker Swarm manager; swarm={env['swarm']}")
+    services = "\n".join(env["services"])
     unhealthy = [line for line in services.splitlines() if not line.endswith("|1/1")]
     return {"errors": errors, "unhealthy_services": unhealthy, "frontend": frontend_probe()}
 
 
 def create_and_run(api: API, case_id: str, query: str, scope: dict[str, Any],
-                   repetition: int, *, timeout_sec: int = 420) -> tuple[str, dict[str, Any]]:
-    created = api.call("/api/v1/cases", "POST", {
-        "title": f"AI Ops v2 {case_id} / repetition {repetition}",
-        "problem_description": query,
-        "recovery_goal": "定位根因、说明证据限制，并给出可验证且可回滚的处理建议。",
-        "run_mode": "COLLABORATE",
-        "environment": "production",
-        "target_scope": scope,
+                   repetition: int, *, budget_profile: str = "production_safe",
+                   auto_execute_policy: str = "safe_only",
+                   timeout_sec: int = 420) -> tuple[str, dict[str, Any]]:
+    started = api.call("/api/v1/diagnoses", "POST", {
+        "query": (
+            f"[AI Ops v2 {case_id} / repetition {repetition}] {query}\n"
+            "请定位根因、说明证据限制，并给出可验证且可回滚的处理建议。"
+        ),
+        "context": {
+            "service_id": scope.get("service_id"),
+            "environment": "production",
+            "instances": scope.get("instances") or [],
+            "dependencies": scope.get("dependencies") or [],
+        },
+        "budget_profile": budget_profile,
+        "auto_execute_policy": auto_execute_policy,
     })
-    case_ref = created["case_id"]
-    started = api.call(f"/api/v1/cases/{case_ref}/diagnoses", "POST", {
-        "analysis_strategy": "CONSTRAINED_HYBRID",
-        "budget_profile": "production_safe",
-    })
-    diagnosis = started.get("diagnosis") or {}
-    diagnosis_id = (diagnosis.get("diagnosis_id")
-                    or (started.get("case") or {}).get("diagnosis_session_id")
-                    or case_ref)
+    diagnosis_id = started["diagnosis_id"]
     deadline = time.monotonic() + timeout_sec
     approved: set[str] = set()
     started_at = time.monotonic()
@@ -343,13 +495,17 @@ def create_and_run(api: API, case_id: str, query: str, scope: dict[str, Any],
         for probe in last.get("probes") or []:
             step_id = probe.get("step_id")
             if probe.get("status") == "WAITING_APPROVAL" and step_id not in approved:
-                api.call(f"/api/v1/diagnoses/{diagnosis_id}/approvals", "POST", {
-                    "step_id": step_id,
-                    "decision": "approve",
-                    "scope": "single_execution",
-                    "approver_id": "ai_ops_v2_eval_runner",
-                })
-                approved.add(step_id)
+                try:
+                    api.call(f"/api/v1/diagnoses/{diagnosis_id}/approvals", "POST", {
+                        "step_id": step_id,
+                        "decision": "approve",
+                        "scope": "single_execution",
+                        "approver_id": "ai_ops_v2_eval_runner",
+                    })
+                    approved.add(step_id)
+                except APIError as exc:
+                    if exc.status_code != 409 or "并发探针预算已用尽" not in exc.detail:
+                        raise
         if last.get("status") in TERMINAL:
             break
         time.sleep(2)
@@ -365,10 +521,15 @@ def create_and_run(api: API, case_id: str, query: str, scope: dict[str, Any],
 def install_no_reuse_override(ssh: SSH) -> None:
     password = shlex.quote(ssh.password)
     command = (
+        "set -e; "
+        "if systemctl list-unit-files mini-drop-server.service >/dev/null 2>&1; then "
         "install -d /run/systemd/system/mini-drop-server.service.d; "
         "printf '[Service]\\nEnvironment=MINI_DROP_DIAGNOSIS_REUSE_MAX_AGE_SECONDS=0\\n' "
         "> /run/systemd/system/mini-drop-server.service.d/ai-ops-v2-eval.conf; "
         "systemctl daemon-reload; systemctl restart mini-drop-server; "
+        "elif docker ps --format '{{.Names}}' | grep -qx 'mini-drop-control-server-1'; then "
+        + _compose_no_reuse_install_command() + " "
+        "else true; fi; "
         "for i in $(seq 1 30); do curl -kfsS https://127.0.0.1/api/healthz >/dev/null && exit 0; sleep 1; done; exit 1"
     )
     ssh.run(CONTROL, f"printf '%s\\n' {password} | sudo -S /bin/bash -c {shlex.quote(command)}", timeout=90)
@@ -377,15 +538,66 @@ def install_no_reuse_override(ssh: SSH) -> None:
 def remove_no_reuse_override(ssh: SSH) -> None:
     password = shlex.quote(ssh.password)
     command = (
+        "if systemctl list-unit-files mini-drop-server.service >/dev/null 2>&1; then "
         "rm -f /run/systemd/system/mini-drop-server.service.d/ai-ops-v2-eval.conf; "
-        "systemctl daemon-reload; systemctl restart mini-drop-server"
+        "systemctl daemon-reload; systemctl restart mini-drop-server; "
+        "elif docker ps --format '{{.Names}}' | grep -qx 'mini-drop-control-server-1'; then "
+        + _compose_no_reuse_remove_command() + " "
+        "fi"
     )
     ssh.run(CONTROL, f"printf '%s\\n' {password} | sudo -S /bin/bash -c {shlex.quote(command)}", timeout=90)
+
+
+def _compose_no_reuse_install_command() -> str:
+    dirs = " ".join(shlex.quote(path) for path in CONTROL_COMPOSE_DIRS)
+    return (
+        "for dir in " + dirs + "; do "
+        "[ -f \"$dir/docker-compose.control.yml\" ] || continue; "
+        "cat > \"$dir/docker-compose.ai-ops-v2-no-reuse.yml\" <<'YAML'\n"
+        "services:\n"
+        "  server:\n"
+        "    environment:\n"
+        "      MINI_DROP_DIAGNOSIS_REUSE_MAX_AGE_SECONDS: \"0\"\n"
+        "YAML\n"
+        "cd \"$dir\"; "
+        "docker compose --env-file deploy/env/control.env -f docker-compose.control.yml "
+        "-f docker-compose.ai-ops-v2-no-reuse.yml up -d server; "
+        "exit 0; "
+        "done; true;"
+    )
+
+
+def _compose_no_reuse_remove_command() -> str:
+    dirs = " ".join(shlex.quote(path) for path in CONTROL_COMPOSE_DIRS)
+    return (
+        "for dir in " + dirs + "; do "
+        "[ -f \"$dir/docker-compose.control.yml\" ] || continue; "
+        "rm -f \"$dir/docker-compose.ai-ops-v2-no-reuse.yml\"; "
+        "cd \"$dir\"; "
+        "docker compose --env-file deploy/env/control.env -f docker-compose.control.yml up -d server; "
+        "exit 0; "
+        "done; true;"
+    )
 
 
 def load_queries() -> dict[str, str]:
     payload = json.loads(PUBLIC_CASES.read_text(encoding="utf-8"))
     return {item["case_id"]: item["query"] for item in payload["cases"]}
+
+
+def load_control_api_key(ssh: SSH) -> str:
+    local_key = os.getenv("MINI_DROP_API_KEY", "").strip()
+    if local_key:
+        return local_key
+    candidates = " ".join(shlex.quote(path) for path in CONTROL_ENV_FILES)
+    command = (
+        "for file in " + candidates + "; do "
+        "[ -f \"$file\" ] || continue; "
+        "key=$(grep '^MINI_DROP_API_KEY=' \"$file\" | tail -1 | cut -d= -f2-); "
+        "[ -n \"$key\" ] && printf '%s' \"$key\" && exit 0; "
+        "done"
+    )
+    return ssh.run(CONTROL, f"/bin/bash -c {shlex.quote(command)}").strip()
 
 
 def append_jsonl(path: Path, item: dict[str, Any]) -> None:
@@ -421,6 +633,17 @@ def main() -> int:
     parser.add_argument("--keep-reuse-policy", action="store_true")
     parser.add_argument("--resume", action="store_true", help="skip completed case/repetition pairs in output")
     parser.add_argument("--cleanup-only", action="store_true", help="remove benchmark faults and restore control policy")
+    parser.add_argument(
+        "--budget-profile",
+        choices=("production_safe", "staging", "development"),
+        default="production_safe",
+    )
+    parser.add_argument(
+        "--auto-execute-policy",
+        choices=("safe_only", "all_registered", "manual"),
+        default="safe_only",
+        help="all_registered 会自动执行已注册深度探针，但仍受预算和 capability 门禁约束",
+    )
     args = parser.parse_args()
     password = os.getenv("MINI_DROP_VM_PASSWORD", "")
     if not password:
@@ -467,12 +690,16 @@ def main() -> int:
         remove_no_reuse_override(ssh)
         print(json.dumps({"cleanup": "completed", "health": health}, ensure_ascii=False, indent=2))
         return 0 if not health["errors"] and not health["unhealthy_services"] and health["frontend"]["ok"] else 1
+    validate_ai_ops_v2_environment(ssh)
+    prepare_worker_collectors(ssh)
     for node in (WORKER1, WORKER2):
         ssh.sudo(node, f"bash {remote_scripts[node.name]} prepare", timeout=180)
-    key = ssh.run(CONTROL,
-        "grep '^MINI_DROP_API_KEY=' /home/control/mini-drop-active/deploy/env/control-native.env | cut -d= -f2-").strip()
+    key = load_control_api_key(ssh)
     if not key:
-        raise RuntimeError("control API key is empty")
+        raise RuntimeError(
+            "control API key is empty; set local MINI_DROP_API_KEY or add MINI_DROP_API_KEY "
+            f"to one of: {', '.join(CONTROL_ENV_FILES)}"
+        )
     api = API(key)
     if not args.keep_reuse_policy:
         install_no_reuse_override(ssh)
@@ -502,7 +729,13 @@ def main() -> int:
                 record["target_count"] = len(scope.get("instances") or [])
                 record["fault_probe"] = frontend_probe()
                 diagnosis_id, detail = create_and_run(
-                    api, case_id, queries[case_id], scope, repetition,
+                    api,
+                    case_id,
+                    queries[case_id],
+                    scope,
+                    repetition,
+                    budget_profile=args.budget_profile,
+                    auto_execute_policy=args.auto_execute_policy,
                 )
                 bundle = api.call(f"/api/v1/diagnoses/{diagnosis_id}/audit-bundle")
                 bundle_path = bundle_dir / f"{case_id}__r{repetition:02d}.json"
@@ -514,6 +747,8 @@ def main() -> int:
                     "evidence_count": len(detail.get("evidence") or []),
                     "probe_count": len(detail.get("probes") or []),
                     "approved_probe_count": (detail.get("evaluation_runtime") or {}).get("approved_probe_count", 0),
+                    "budget_profile": args.budget_profile,
+                    "auto_execute_policy": args.auto_execute_policy,
                     "diagnosis_elapsed_sec": (detail.get("evaluation_runtime") or {}).get("elapsed_sec"),
                     "bundle": str(bundle_path.relative_to(args.output_dir)),
                 })

@@ -70,6 +70,7 @@ class HealthCheckService(healthcheck_pb2_grpc.HealthCheckServicer):
             "baseline_window_profile": 7,
             "off_cpu_wait_profile": 4,
             "trace_endpoint_profile": 0,
+            "pyspy": 3,
         }
         return mapping.get(collector_type, 0)
 
@@ -82,6 +83,8 @@ class HealthCheckService(healthcheck_pb2_grpc.HealthCheckServicer):
             "log_scan": 10,
             "dependency_check": 11,
             "redis_check": 12,
+            "pyspy": 13,
+            "process_inventory": 14,
         }
         return mapping.get(collector_type, 0)
 

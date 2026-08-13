@@ -47,7 +47,7 @@ from server.app.diagnosis.evidence_structurer import (
     structure_artifact_evidence,
 )
 from server.app.diagnosis.probe_registry import list_probes as list_registered_probes
-from server.app.diagnosis.schemas import ApprovalRequest, CreateDiagnosisRequest
+from server.app.diagnosis.schemas import ApprovalRequest, BulkApprovalRequest, CreateDiagnosisRequest
 from server.app.diagnosis.watch_runtime import (
     CreateWatchSubscriptionRequest,
     PersistentAgentRuntime,
@@ -1015,6 +1015,17 @@ def approve_diagnosis_probe(diagnosis_id: str, payload: ApprovalRequest) -> APIR
     return APIResponse(data=data)
 
 
+@app.post("/api/v1/diagnoses/{diagnosis_id}/approvals/bulk")
+def approve_waiting_diagnosis_probes(diagnosis_id: str, payload: BulkApprovalRequest) -> APIResponse:
+    try:
+        data = diagnosis_orchestrator.approve_waiting(diagnosis_id, payload)
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 404 if "不存在" in message else 409
+        raise HTTPException(status_code=status_code, detail=message) from exc
+    return APIResponse(data=data)
+
+
 @app.get("/api/v1/probes")
 def list_probe_definitions() -> APIResponse:
     return APIResponse(data=[probe.model_dump(mode="json") for probe in list_registered_probes()])
@@ -1107,6 +1118,61 @@ def list_agent_watch_leases(agent_id: str) -> APIResponse:
     return APIResponse(data={"items": [lease.model_dump(mode="json") for lease in leases]})
 
 
+@app.post("/api/v1/agents/{agent_id}/process-inventory/refresh")
+def refresh_agent_process_inventory(agent_id: str) -> APIResponse:
+    agent = repo.agents.get(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+    if status_value(agent.status) != "ONLINE":
+        raise HTTPException(status_code=409, detail="Agent 不在线，无法刷新进程清单")
+    capabilities = set(getattr(agent, "capabilities", []) or [])
+    if "process_inventory" not in capabilities:
+        raise HTTPException(status_code=409, detail="Agent 未注册 process_inventory 能力")
+    task = repo.create_task(CreateTaskRequest(
+        name=f"刷新进程清单:{agent_id}",
+        agent_id=agent_id,
+        target_pid=1,
+        collector_type="process_inventory",
+        sample_rate=1,
+        duration_sec=1,
+        options={"source": "watch_target_picker"},
+    ))
+    return APIResponse(data={"task_id": task.id, "status": status_value(task.status)})
+
+
+@app.get("/api/v1/agents/{agent_id}/processes")
+def list_agent_processes(agent_id: str, query: str = "", limit: int = 100) -> APIResponse:
+    if agent_id not in repo.agents:
+        raise HTTPException(status_code=404, detail="Agent 不存在")
+    inventory = _latest_process_inventory(agent_id)
+    if inventory is None:
+        return APIResponse(data={
+            "items": [],
+            "total": 0,
+            "inventory_status": "missing",
+            "message": "未找到已完成的进程清单，请先刷新",
+        })
+    processes = inventory.get("processes") if isinstance(inventory.get("processes"), list) else []
+    needle = query.strip().lower()
+    if needle:
+        processes = [
+            item for item in processes
+            if needle in _process_search_text(item)
+        ]
+    processes = sorted(
+        processes,
+        key=lambda item: (-(float(item.get("cpu_percent") or 0.0)), -(float(item.get("rss_mb") or 0.0)), int(item.get("pid") or 0)),
+    )
+    limit = min(max(limit, 1), 500)
+    return APIResponse(data={
+        "items": processes[:limit],
+        "total": len(processes),
+        "inventory_status": "ready",
+        "collected_at": inventory.get("collected_at"),
+        "summary": inventory.get("summary") or {},
+    })
+
+
 @app.post("/api/v1/watches/{watch_id}/evaluate")
 def evaluate_watch_subscription(watch_id: str, payload: WatchEvaluationRequest) -> APIResponse:
     try:
@@ -1185,6 +1251,28 @@ def _extract_artifact_text(artifacts: list[dict], artifact_type: str) -> str | N
             )
             return None
     return None
+
+
+def _latest_process_inventory(agent_id: str) -> dict[str, Any] | None:
+    tasks = [
+        task for task in repo.tasks.values()
+        if task.agent_id == agent_id
+        and task.collector_type == "process_inventory"
+        and status_value(task.status) == "DONE"
+    ]
+    tasks.sort(key=lambda item: item.finished_at or item.created_at, reverse=True)
+    for task in tasks:
+        data = _extract_artifact_json(repo.artifacts.get(task.id, []), "process_inventory_json")
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def _process_search_text(item: dict[str, Any]) -> str:
+    return " ".join(
+        str(item.get(key) or "")
+        for key in ("pid", "comm", "cmdline", "user", "service_guess", "instance_guess")
+    ).lower()
 
 
 def _artifact_root() -> _Path:

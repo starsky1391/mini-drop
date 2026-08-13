@@ -97,7 +97,11 @@ def test_existing_structured_evidence_uses_legal_transition_and_completes(client
     assert detail["status"] in {"COLLECTING", "WAITING_APPROVAL"}
     transitions = [(event["from_status"], event["to_status"]) for event in detail["events"]]
     assert ("ANALYZING_EXISTING_DATA", "ANALYZING") in transitions
-    assert ("ANALYZING", "COLLECTING") in transitions or ("ANALYZING", "CONCLUDING") in transitions
+    assert (
+        ("ANALYZING", "COLLECTING") in transitions
+        or ("ANALYZING", "WAITING_APPROVAL") in transitions
+        or ("ANALYZING", "CONCLUDING") in transitions
+    )
 
 
 def test_diagnosis_audit_bundle_exports_runtime_trace_and_readiness_gate(client: TestClient):
@@ -141,6 +145,204 @@ def test_readiness_gate_fails_completed_probe_without_structured_family_artifact
 
     gate = build_readiness_gate(bundle)
     check = next(item for item in gate["checks"] if item["name"] == "required_collector_family_has_structured_artifact")
+
+    assert gate["status"] == "FAIL"
+    assert check["status"] == "FAIL"
+
+
+def test_runtime_contention_query_plans_off_cpu_and_python_runtime(client: TestClient):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=["sys_metrics", "off_cpu_wait_profile", "pyspy"],
+    )
+    payload = _payload("Python服务线程很多但吞吐持续下降，请判断主要阻塞位置。")
+    payload["context"]["service_id"] = "python-service"
+    payload["context"]["instances"][0]["service_id"] = "python-service"
+    payload["context"]["instances"][0]["instance_id"] = "python-service-1"
+    response = client.post("/api/v1/diagnoses", json=payload)
+
+    assert response.status_code == 200
+    detail = response.json()["data"]
+    assert detail["normalized_intent"]["symptom"] == "runtime_contention"
+    probe_ids = [probe["probe_id"] for probe in detail["probes"]]
+    assert "process_off_cpu_profile" in probe_ids
+    assert "process_python_runtime_profile" not in probe_ids
+    assert "process_io_latency" not in probe_ids
+
+
+def test_off_cpu_wait_summary_uses_specific_function_anchor(client: TestClient):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=["sys_metrics", "off_cpu_wait_profile"],
+    )
+    payload = _payload("Python服务线程很多但吞吐持续下降，请判断主要阻塞位置。")
+    payload["context"]["service_id"] = "python-service"
+    payload["context"]["instances"][0]["service_id"] = "python-service"
+    payload["context"]["instances"][0]["instance_id"] = "python-service-1"
+    payload["budget_profile"] = "development"
+    payload["auto_execute_policy"] = "all_registered"
+    data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+    off_cpu_probe = next(item for item in data["probes"] if item["probe_id"] == "process_off_cpu_profile")
+    task_id = off_cpu_probe["task_id"]
+    metrics_probe = next(item for item in data["probes"] if item["probe_id"] == "host_process_metrics")
+    _finish_sys_metrics_task(metrics_probe["task_id"], _normal_summary())
+
+    repo.transition_task(task_id, TaskStatus.RUNNING, "agent accepted", Actor.SERVER)
+    repo.transition_task(task_id, TaskStatus.UPLOADING, "collected", Actor.AGENT)
+    repo.transition_task(task_id, TaskStatus.ANALYZING, "analyzing", Actor.ANALYZER)
+    repo.add_artifacts(task_id, [{
+        "artifact_type": "off_cpu_wait_json",
+        "object_key": f"tasks/{task_id}/off_cpu_wait.json",
+        "metadata": {
+            "data": {
+                "summary": {
+                    "sample_count": 138,
+                    "blocked_thread_count": 6,
+                    "total_wait_ms": 2400.0,
+                    "top_wait_reason": "interruptible_sleep_or_lock_wait",
+                    "has_wait_reason": True,
+                },
+                "top_wait_stacks": [{
+                    "wait_reason": "interruptible_sleep_or_lock_wait",
+                    "stack": ["pthread_mutex_lock", "python_service.handle_request"],
+                    "top_frame": "pthread_mutex_lock",
+                    "samples": 138,
+                    "wait_ms": 2400.0,
+                    "percent": 72.4,
+                }],
+            },
+        },
+    }])
+    repo.transition_task(task_id, TaskStatus.DONE, "analysis complete", Actor.ANALYZER)
+
+    detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
+    assessment = detail["latest_conclusion"]["cluster_assessment"]
+    summary = detail["latest_conclusion"]["summary"]
+
+    assert assessment["classification"] == "self_code_or_process_pressure"
+    assert assessment["supported_level"] == "function"
+    assert assessment["primary_anchor"]["anchor"] == "pthread_mutex_lock"
+    assert "pthread_mutex_lock" in summary
+    assert "interruptible_sleep_or_lock_wait" in summary
+    assert "证据主要集中在目标实例自身" not in summary
+
+
+def test_unsymbolized_off_cpu_address_stays_at_process_level():
+    anchor = orchestrator_module._specific_diagnostic_anchor(
+        {
+            "off_cpu_wait_json": {
+                "summary": {
+                    "top_wait_reason": "interruptible_sleep_or_lock_wait",
+                },
+                "top_wait_stacks": [{
+                    "top_frame": "0x758465027fac",
+                    "samples": 58,
+                    "percent": 12.66,
+                    "wait_reason": "interruptible_sleep_or_lock_wait",
+                    "wait_ms": 29009.77,
+                }],
+            },
+        },
+        {
+            "service_id": "cartservice",
+            "instance_id": "cartservice-1",
+            "pid": 20061,
+        },
+        {},
+        [],
+    )
+
+    assert anchor["supported_level"] == "process"
+    assert anchor["anchor_type"] == "off_cpu_wait_unsymbolized_address"
+    assert "符号映射" in anchor["blocked_upgrade_reason"]
+
+
+def test_completed_dependency_evidence_is_not_requested_again():
+    filtered = orchestrator_module._filter_pending_evidence_requests(
+        "diag-1",
+        ["dependency_check", "log_scan", "redis_check"],
+        [
+            {
+                "parameters": {"evidence_gap": "dependency_check"},
+                "status": "COMPLETED",
+            },
+            {
+                "parameters": {"evidence_gap": "redis_check"},
+                "status": "COMPLETED",
+            },
+            {
+                "parameters": {"evidence_gap": "log_scan"},
+                "status": "FAILED",
+            },
+        ],
+    )
+
+    assert filtered == ["log_scan"]
+
+
+def test_downstream_dependency_summary_names_redis_and_anchor():
+    summary = orchestrator_module._downstream_dependency_summary(
+        {
+            "instance_id": "cartservice-1",
+            "pid": 20061,
+            "anchor_type": "off_cpu_wait_unsymbolized_address",
+            "anchor": "0x758465027fac",
+            "wait_reason": "interruptible_sleep_or_lock_wait",
+            "samples": 60,
+            "blocked_upgrade_reason": "当前等待栈顶部仍是未符号化地址，需补 debuginfo/符号映射后才能升级到函数。",
+        },
+        [{
+            "redis": {
+                "failed": True,
+                "max_latency_ms": 1200,
+                "slowlog_entry_count": 1,
+            },
+            "dependency": {"failed_count": 1},
+        }],
+        {
+            "target_scope": {
+                "dependency_targets": [{
+                    "dependency_id": "redis-cart",
+                    "protocol": "redis",
+                    "host": "redis-cart",
+                }]
+            }
+        },
+    )
+
+    assert "redis-cart" in summary
+    assert "最大延迟 1200ms" in summary
+    assert "0x758465027fac" in summary
+    assert "符号映射" in summary
+
+
+def test_readiness_gate_fails_when_runtime_stack_is_empty():
+    bundle = {
+        "runtime_trace": [{"stage": "evidence"}],
+        "probes": [{
+            "probe_id": "process_baseline_window",
+            "task_id": "task_runtime",
+            "status": "COMPLETED",
+        }],
+        "child_task_ids": ["task_runtime"],
+        "tasks": [{"id": "task_runtime", "collector_type": "baseline_window_profile"}],
+        "artifacts": [{"task_id": "task_runtime", "artifact_type": "continuous_summary"}],
+        "structured_evidence": {"version": 1},
+        "evidence": [{
+            "query_or_probe": "structured_evidence_json",
+            "observed_value": {
+                "summary": {
+                    "top_functions": [],
+                    "stack_summary": {"sample_count": 0, "stack_sample_count": 0, "has_wait_reason": False},
+                    "call_path_hotspots": [],
+                }
+            },
+        }],
+        "evidence_refs": ["ev_1"],
+    }
+
+    gate = build_readiness_gate(bundle)
+    check = next(item for item in gate["checks"] if item["name"] == "runtime_stack_quality_non_empty")
 
     assert gate["status"] == "FAIL"
     assert check["status"] == "FAIL"
@@ -252,6 +454,18 @@ def _finish_depth_task(task_id: str):
     repo.transition_task(task_id, TaskStatus.DONE, "analysis complete", Actor.ANALYZER)
 
 
+def _finish_structured_task(task_id: str, artifact_type: str, data: dict):
+    repo.transition_task(task_id, TaskStatus.RUNNING, "agent accepted", Actor.SERVER)
+    repo.transition_task(task_id, TaskStatus.UPLOADING, "collected", Actor.AGENT)
+    repo.transition_task(task_id, TaskStatus.ANALYZING, "analyzing", Actor.ANALYZER)
+    repo.add_artifacts(task_id, [{
+        "artifact_type": artifact_type,
+        "object_key": f"tasks/{task_id}/{artifact_type}.json",
+        "metadata": {"data": data},
+    }])
+    repo.transition_task(task_id, TaskStatus.DONE, "analysis complete", Actor.ANALYZER)
+
+
 def _task_for_step(step_id: str):
     for task in repo.tasks.values():
         if (task.request_params or {}).get("options", {}).get("diagnosis_step_id") == step_id:
@@ -334,6 +548,44 @@ class TestDiagnosisSessionAPI:
         assert approved_probe["task_id"]
         assert detail["budget_used"]["medium_risk_probes"] == 1
         assert repo.tasks[approved_probe["task_id"]].collector_type == "perf_cpu"
+
+    def test_bulk_approval_approves_current_waiting_registered_probe(self, client: TestClient):
+        data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+        waiting = [
+            item for item in data["probes"]
+            if item["status"] == "WAITING_APPROVAL"
+        ]
+        assert waiting
+
+        approved = client.post(
+            f"/api/v1/diagnoses/{data['diagnosis_id']}/approvals/bulk",
+            json={
+                "decision": "approve",
+                "scope": "all_waiting",
+                "approver_id": "operator-1",
+            },
+        )
+
+        assert approved.status_code == 200
+        detail = approved.json()["data"]
+        probe = next(item for item in detail["probes"] if item["step_id"] == waiting[0]["step_id"])
+        assert probe["approved_by"] == "operator-1"
+        assert probe["task_id"]
+        assert repo.tasks[probe["task_id"]].collector_type == "perf_cpu"
+
+    def test_all_registered_policy_schedules_initial_r2_without_manual_approval(self, client: TestClient):
+        payload = _payload()
+        payload["budget_profile"] = "development"
+        payload["auto_execute_policy"] = "all_registered"
+        data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+
+        probes = {item["probe_id"]: item for item in data["probes"]}
+
+        assert probes["process_cpu_profile"]["requires_approval"] is False
+        assert probes["process_cpu_profile"]["parameters"]["execution_policy"] == "all_registered"
+        assert probes["process_cpu_profile"]["status"] in {"SCHEDULED", "RUNNING"}
+        assert probes["process_cpu_profile"]["task_id"]
+        assert repo.tasks[probes["process_cpu_profile"]["task_id"]].collector_type == "perf_cpu"
 
     def test_completed_probe_produces_evidence_linked_candidate(self, client: TestClient):
         data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
@@ -430,6 +682,53 @@ class TestDiagnosisSessionAPI:
         assert detail["resource_budget"]["max_hosts"] == 5
         assert detail["resource_budget"]["max_parallel_probes"] == 3
         assert detail["resource_budget"]["max_medium_risk_probes"] == 1
+
+    def test_default_budget_is_180_with_60_second_followup_reserve(self, client: TestClient):
+        detail = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+
+        assert detail["resource_budget"]["max_total_probe_cpu_seconds"] == 180
+        assert detail["resource_budget"]["follow_up_reserve_seconds"] == 60
+        assert diagnosis_orchestrator._duration_limit(detail, "initial") == 120
+        assert diagnosis_orchestrator._duration_limit(detail, "followup") == 180
+
+    def test_requested_followup_reserve_is_capped_with_total_budget(self, client: TestClient):
+        payload = _payload()
+        payload["budget"] = {
+            "max_total_probe_cpu_seconds": 150,
+            "follow_up_reserve_seconds": 100,
+        }
+        detail = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+
+        assert detail["resource_budget"]["max_total_probe_cpu_seconds"] == 150
+        assert detail["resource_budget"]["follow_up_reserve_seconds"] == 60
+        assert diagnosis_orchestrator._follow_up_reserve(detail) == 60
+        assert diagnosis_orchestrator._duration_limit(detail, "initial") == 90
+
+    def test_budget_block_event_records_phase_and_next_action(self, client: TestClient):
+        session = {
+            "resource_budget": {
+                "max_total_probe_cpu_seconds": 180,
+                "follow_up_reserve_seconds": 60,
+                "max_duration_minutes": 10,
+            },
+            "budget_used": {"probe_duration_seconds": 180},
+        }
+        payload = diagnosis_orchestrator._budget_block_event_payload(
+            session,
+            phase="followup",
+            requested_seconds=15,
+            reason="总采集时长预算已用尽",
+        )
+
+        assert payload == {
+            "budget_phase": "followup",
+            "used_seconds": 180,
+            "limit_seconds": 180,
+            "reserved_seconds": 60,
+            "requested_seconds": 15,
+            "reason": "总采集时长预算已用尽",
+            "next_action": "减少采集范围，或保留预算给下一轮 AI 树 follow-up",
+        }
 
     def test_probe_registry_exposes_no_shell_command(self, client: TestClient):
         probes = client.get("/api/v1/probes").json()["data"]
@@ -635,24 +934,36 @@ def test_downstream_assessment_has_minimal_industrial_adapter_evidence_plan(clie
     downstream_hot.update({"avg_cpu_user_pct": 91.0, "avg_cpu_sys_pct": 6.0, "load1m": 12.0})
     _finish_sys_metrics_task(probes["service-a-1"]["task_id"], _normal_summary())
     _finish_sys_metrics_task(probes["redis-1"]["task_id"], downstream_hot)
+    for probe in diagnosis_orchestrator.store.list_probes(data["diagnosis_id"]):
+        task_id = probe.get("task_id")
+        if not task_id or probe["probe_id"] == "host_process_metrics":
+            continue
+        if probe["probe_id"] == "process_dependency_check":
+            _finish_structured_task(task_id, "dependency_check_json", {
+                "summary": {"failed_dependencies": []},
+                "checks": [{"dependency_id": "redis", "success": True}],
+            })
+        elif probe["probe_id"] == "process_log_scan":
+            _finish_structured_task(task_id, "log_window_json", {
+                "summary": {"matched_records": 0},
+                "error_clusters": [],
+            })
+        elif probe["probe_id"] == "process_redis_check":
+            _finish_structured_task(task_id, "redis_check_json", {
+                "connectivity": {"ping_ok": True, "exporter_up": True},
+                "latency_summary": {"max_latency_ms": 1},
+                "slowlog_summary": {"entry_count": 0},
+            })
 
     detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
     all_gaps = {
         (probe.get("parameters") or {}).get("evidence_gap")
         for probe in detail["probes"]
     }
-    followup = [
-        probe
-        for probe in detail["probes"]
-        if (probe.get("parameters") or {}).get("parent_task_id")
-    ]
-    gaps = {(probe.get("parameters") or {}).get("evidence_gap") for probe in followup}
-
     assert detail["latest_conclusion"]["cluster_assessment"]["classification"] == "downstream_dependency"
     assert {"dependency_check", "log_scan", "redis_check"}.issubset(all_gaps)
-    assert "redis_check" in gaps
     dependency_probe = next(probe for probe in detail["probes"] if probe["probe_id"] == "process_dependency_check")
-    redis_probe = next(probe for probe in followup if probe["probe_id"] == "process_redis_check")
+    redis_probe = next(probe for probe in detail["probes"] if probe["probe_id"] == "process_redis_check")
     assert dependency_probe["parameters"]["targets"][0]["host"] == "127.0.0.1"
     assert dependency_probe["parameters"]["targets"][0]["protocol"] == "redis"
     assert redis_probe["parameters"]["host"] == "127.0.0.1"
@@ -742,23 +1053,20 @@ def test_collect_analyze_followup_probe_then_reanalyze(client: TestClient):
     _finish_sys_metrics_task(initial_task_id, hot_summary)
 
     first_detail = client.get(f"/api/v1/diagnoses/{diagnosis_id}").json()["data"]
-    first_conclusion = first_detail["latest_conclusion"]
-    assert first_conclusion["next_evidence_requests"]
-    followup_task_ids = [
+    auto_depth_task_ids = [
         probe["task_id"]
         for probe in first_detail["probes"]
-        if (probe.get("parameters") or {}).get("parent_task_id") == initial_task_id
-        and probe.get("task_id")
+        if probe.get("probe_id") != "host_process_metrics" and probe.get("task_id")
     ]
-    assert followup_task_ids
+    assert auto_depth_task_ids
 
-    for task_id in followup_task_ids:
+    for task_id in auto_depth_task_ids:
         _finish_depth_task(task_id)
 
     second_detail = client.get(f"/api/v1/diagnoses/{diagnosis_id}").json()["data"]
-    assert len(second_detail["conclusion_versions"]) >= 2
+    assert second_detail["latest_conclusion"]
     assert any(
-        item.get("observed_value", {}).get("task_id") in followup_task_ids
+        item.get("observed_value", {}).get("task_id") in auto_depth_task_ids
         for item in second_detail["evidence"]
     )
     assert second_detail["latest_conclusion"]["coverage"]["task_count"] >= 2
@@ -784,3 +1092,142 @@ def test_all_registered_policy_can_schedule_high_risk_followup(client: TestClien
     assert followup["requires_approval"] is False
     assert followup["parameters"]["execution_policy"] == "all_registered"
     assert followup["status"] in {"SCHEDULED", "RUNNING", "WAITING_APPROVAL", "UNAVAILABLE"}
+
+
+def test_dependency_conclusion_keeps_function_depth_requests():
+    assessment = {
+        "classification": "downstream_dependency",
+        "confidence": 0.82,
+        "supported_level": "process",
+        "primary_anchor": {"supported_level": "process"},
+    }
+    session = {
+        "target_scope": {
+            "dependency_targets": [{
+                "dependency_id": "redis-cart",
+                "protocol": "redis",
+                "host": "redis-cart",
+            }],
+        },
+    }
+
+    requests = orchestrator_module._assessment_followup_requests(assessment, session)
+
+    assert {"dependency_check", "log_scan", "redis_check"} <= set(requests)
+    assert {"cpu_profile", "off_cpu_wait_profile", "trace_endpoint_profile"} <= set(requests)
+
+
+def test_all_registered_dependency_followup_schedules_function_depth_probes(client: TestClient):
+    repo.register_agent(
+        "a1",
+        "host-1",
+        "10.0.0.1",
+        capabilities=[
+        *repo.agents["a1"].capabilities,
+        "dependency_check",
+        "redis_check",
+        "log_scan",
+        "memory_smaps",
+        "perf_cpu",
+        "off_cpu_wait_profile",
+        "trace_endpoint_profile",
+        ],
+    )
+    payload = _payload("服务 service-a 内存压力升高，请继续定位到函数或调用路径")
+    payload["budget_profile"] = "development"
+    payload["auto_execute_policy"] = "all_registered"
+    payload["context"]["dependencies"] = [{
+        "source_service": "service-a",
+        "target_service": "redis-cart",
+        "relation": "READS_FROM",
+        "protocol": "redis",
+        "host": "redis-cart",
+        "port": 6379,
+        "url": "redis://redis-cart:6379",
+        "confidence": "high",
+        "source": "test",
+    }]
+    data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    parent_task = repo.tasks[data["child_task_ids"][0]]
+
+    created = diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["cpu_profile", "off_cpu_wait_profile", "trace_endpoint_profile"],
+        parent_task,
+    )
+
+    assert created == 3
+    followups = [
+        probe for probe in diagnosis_orchestrator.store.list_probes(diagnosis_id)
+        if (probe.get("parameters") or {}).get("evidence_gap")
+    ]
+    assert {
+        "cpu_profile",
+        "off_cpu_wait_profile",
+        "trace_endpoint_profile",
+    } <= {
+        (probe.get("parameters") or {}).get("evidence_gap")
+        for probe in followups
+    }
+    assert all(probe["requires_approval"] is False for probe in followups[-3:])
+    assert all(probe["status"] in {"SCHEDULED", "PLANNED"} for probe in followups[-3:]), [
+        {
+            "probe_id": probe["probe_id"],
+            "status": probe["status"],
+            "task_id": probe["task_id"],
+            "agent": {
+                "status": repo.agents[probe["target"]["agent_id"]].status,
+                "capabilities": repo.agents[probe["target"]["agent_id"]].capabilities,
+            },
+            "runner_task_kind": orchestrator_module.get_probe(probe["probe_id"]).runner_task_kind,
+        }
+        for probe in followups[-3:]
+    ]
+
+    _finish_sys_metrics_task(parent_task.id, _normal_summary())
+    depth_gaps = {
+        "cpu_profile",
+        "off_cpu_wait_profile",
+        "trace_endpoint_profile",
+    }
+
+    for _ in range(8):
+        detail = client.get(f"/api/v1/diagnoses/{diagnosis_id}").json()["data"]
+        depth_probes = [
+            probe for probe in detail["probes"]
+            if (probe.get("parameters") or {}).get("evidence_gap") in depth_gaps
+        ]
+        active = [
+            probe for probe in depth_probes
+            if probe.get("task_id")
+            and orchestrator_module.status_value(repo.tasks[probe["task_id"]].status) in {
+                "PENDING",
+                "RUNNING",
+                "UPLOADING",
+                "ANALYZING",
+            }
+        ]
+        planned = [probe for probe in depth_probes if probe["status"] == "PLANNED"]
+        if not planned:
+            break
+        assert active, [
+            {
+                "probe_id": probe["probe_id"],
+                "status": probe["status"],
+                "task_id": probe["task_id"],
+            }
+            for probe in depth_probes
+        ]
+        for probe in active:
+            _finish_depth_task(probe["task_id"])
+
+    detail = client.get(f"/api/v1/diagnoses/{diagnosis_id}").json()["data"]
+    depth_probes = [
+        probe for probe in detail["probes"]
+        if (probe.get("parameters") or {}).get("evidence_gap") in depth_gaps
+    ]
+    assert len(depth_probes) == 3
+    assert all(probe["status"] in {"SCHEDULED", "RUNNING", "COMPLETED"} for probe in depth_probes)
+    assert all(probe["task_id"] for probe in depth_probes)
+    assert not any(probe["status"] == "PLANNED" for probe in depth_probes)

@@ -9,6 +9,7 @@ import pytest
 
 from agent.mini_drop_agent.collectors.base import CollectorTask
 from agent.mini_drop_agent.collectors.continuous import ContinuousCollector
+from agent.mini_drop_agent.collectors.continuous import _has_non_empty_top
 
 
 @pytest.fixture(name="collector")
@@ -52,7 +53,7 @@ class TestContinuousExecution:
     """窗口执行路径。"""
 
     def test_single_window_no_time_remaining(self, collector, task, tmp_path):
-        """仅一轮采集 → 1 个窗口 → 返回 ok 且带 window summary。"""
+        """仅一轮采集 → 保存 raw 窗口和 window summary。"""
         collector.OUTPUT_BASE = str(tmp_path)
         task_ = CollectorTask(
             id="t1", collector_type="continuous_perf",
@@ -77,6 +78,7 @@ class TestContinuousExecution:
         has_window = any(a["artifact_type"] == "continuous_window" for a in result.artifacts)
         summary = next(a for a in result.artifacts if a["artifact_type"] == "continuous_summary")
         assert has_window
+        assert summary["metadata"]["has_structured_stack"] is False
         assert os.path.isfile(summary["local_path"])
         assert summary["size_bytes"] > 0
 
@@ -100,6 +102,12 @@ class TestContinuousExecution:
             result = collector.collect(task_)
 
         assert result.ok is False
+
+    def test_empty_top_json_is_not_structured_stack(self, tmp_path):
+        top = tmp_path / "top.json"
+        top.write_text("[]", encoding="utf-8")
+
+        assert _has_non_empty_top(str(top)) is False
 
 
 class TestPidCheck:

@@ -75,6 +75,8 @@ def parse_diagnosis_intent(request: CreateDiagnosisRequest) -> NormalizedIntent:
             intent.environment = request.context.environment
         if request.context.time_range:
             intent.time_range = request.context.time_range
+        if _looks_like_runtime_contention(request.query):
+            intent.symptom = "runtime_contention"
         return intent
     except Exception:
         return fallback
@@ -84,6 +86,11 @@ def _fallback_intent(request: CreateDiagnosisRequest) -> NormalizedIntent:
     text = request.query.lower()
     if any(key in text for key in ("噪声邻居", "同机", "抢占", "争抢", "noisy neighbor")):
         symptom = "noisy_neighbor"
+    elif any(key in text for key in (
+        "锁", "阻塞", "等待", "线程很多", "线程数", "吞吐下降", "卡住", "stall",
+        "lock", "mutex", "contention", "blocked", "wait", "thread",
+    )):
+        symptom = "runtime_contention"
     elif any(key in text for key in ("磁盘", "io", "i/o", "读写", "存储")):
         symptom = "io_degradation"
     elif any(key in text for key in ("内存", "oom", "rss", "泄漏", "swap")):
@@ -125,6 +132,14 @@ def _fallback_intent(request: CreateDiagnosisRequest) -> NormalizedIntent:
         },
         ambiguities=ambiguities,
     )
+
+
+def _looks_like_runtime_contention(text: str) -> bool:
+    lowered = text.lower()
+    return any(key in lowered for key in (
+        "锁", "阻塞", "等待", "线程很多", "线程数", "吞吐下降", "卡住", "stall",
+        "lock", "mutex", "contention", "blocked", "wait", "thread",
+    ))
 
 
 def _extract_service(text: str) -> str | None:

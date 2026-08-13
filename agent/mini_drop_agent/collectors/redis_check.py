@@ -28,16 +28,11 @@ class RedisCheckCollector:
                 ok=False,
                 reason="未提供本次任务的 Redis target_config，拒绝使用全局 Redis 目标",
             )
-        metrics_text = _metrics_text(task.options)
-        if metrics_text is None:
-            return CollectorResult(
-                ok=False,
-                reason="未配置 Redis Exporter 输出: metrics_text/metrics_path/exporter_url",
-            )
-
         output_dir = os.path.join(self.OUTPUT_BASE, task.id)
         os.makedirs(output_dir, exist_ok=True)
-        metrics = _parse_prometheus_metrics(metrics_text)
+        metrics_text = _metrics_text(task.options)
+        metrics = _parse_prometheus_metrics(metrics_text or "")
+        metrics_unavailable = metrics_text is None
         evidence_window = _evidence_window(task)
         output = {
             "schema_version": "1.0",
@@ -49,11 +44,12 @@ class RedisCheckCollector:
             "adapter": {
                 "kind": "redis_exporter_prometheus",
                 "source": _adapter_source(task.options),
+                "available": not metrics_unavailable,
             },
             "target_pid": task.target_pid,
             "evidence_window": evidence_window,
             "target": redis_target,
-            "connectivity": _connectivity(metrics),
+            "connectivity": _connectivity(metrics, metrics_unavailable=metrics_unavailable),
             "info_summary": _info_summary(metrics),
             "slowlog_summary": _slowlog_summary(metrics),
             "latency_summary": _latency_summary(metrics),
@@ -127,8 +123,12 @@ def _redis_target(options: dict[str, Any]) -> dict[str, Any]:
     target_config = options.get("target_config")
     if isinstance(target_config, dict) and isinstance(target_config.get("redis_target"), dict):
         raw = target_config["redis_target"]
+    elif isinstance(target_config, dict) and isinstance(target_config.get("dependency_targets"), list):
+        raw = _first_redis_dependency(target_config["dependency_targets"])
     else:
         raw = options
+    if not isinstance(raw, dict):
+        raw = {}
     url = raw.get("url") or raw.get("redis_url")
     host = raw.get("host") or raw.get("redis_host")
     port = raw.get("port") or raw.get("redis_port")
@@ -144,6 +144,19 @@ def _redis_target(options: dict[str, Any]) -> dict[str, Any]:
         "port": int(port or _port_from_redis_url(str(url)) or 6379),
         "url": url,
     }
+
+
+def _first_redis_dependency(targets: list[Any]) -> dict[str, Any]:
+    for item in targets:
+        if not isinstance(item, dict):
+            continue
+        haystack = " ".join(
+            str(item.get(key) or "")
+            for key in ("dependency_id", "target_service", "protocol", "host", "url")
+        ).lower()
+        if "redis" in haystack:
+            return item
+    return {}
 
 
 def _collector_invocation(task: CollectorTask, redis_target: dict[str, Any]) -> dict[str, Any]:
@@ -201,8 +214,16 @@ def _parse_prometheus_metrics(text: str) -> dict[str, float]:
     return result
 
 
-def _connectivity(metrics: dict[str, float]) -> dict[str, Any]:
+def _connectivity(metrics: dict[str, float], *, metrics_unavailable: bool = False) -> dict[str, Any]:
     exporter_up = metrics.get("redis_up", metrics.get("up", 0.0)) == 1.0
+    if metrics_unavailable:
+        return {
+            "exporter_up": False,
+            "ping_ok": False,
+            "latency_ms": 0.0,
+            "error_type": "redis_exporter_metrics_unavailable",
+            "evidence_ref": "redis_check.connectivity",
+        }
     return {
         "exporter_up": exporter_up,
         "ping_ok": exporter_up,

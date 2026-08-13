@@ -62,9 +62,11 @@ class StructuredEvidence(BaseModel):
     sys_metrics: dict[str, Any] | None = None
     ebpf_metrics: dict[str, Any] | None = None
     memory_json: dict[str, Any] | None = None
+    off_cpu_wait_json: dict[str, Any] | None = None
     log_window_json: dict[str, Any] | None = None
     dependency_check_json: dict[str, Any] | None = None
     redis_check_json: dict[str, Any] | None = None
+    trace_endpoint_profile_json: dict[str, Any] | None = None
 
 
 def structure_artifact_evidence(
@@ -81,14 +83,29 @@ def structure_artifact_evidence(
     artifact_refs = _with_window_metadata(_build_artifact_refs(task_id, artifacts), window_json)
     top_functions = _normalize_top_functions(values.get("top_json"))
     if not top_functions:
+        top_functions = _top_from_off_cpu_wait(values.get("off_cpu_wait_json"))
+    if not top_functions:
         top_functions = _top_from_flamegraph_tree(values.get("flamegraph_json"))
     if not top_functions:
         top_functions = _top_from_flamegraph_svg(values.get("flamegraph_svg"))
     top_functions = _with_window_metadata(top_functions, window_json)
 
     depth = values.get("depth_evidence_json") if isinstance(values.get("depth_evidence_json"), dict) else {}
-    stack_summary = {**_build_stack_summary(depth, top_functions, artifact_refs), "evidence_window": window_json}
+    stack_summary = {
+        **_build_stack_summary(
+            depth,
+            top_functions,
+            artifact_refs,
+            off_cpu_wait=values.get("off_cpu_wait_json"),
+        ),
+        "evidence_window": window_json,
+    }
     call_path_hotspots = _with_window_metadata(_build_call_path_hotspots(depth, top_functions), window_json)
+    trace_profile = values.get("trace_endpoint_profile_json")
+    if isinstance(trace_profile, dict):
+        profile_hotspots = _trace_profile_hotspots(trace_profile)
+        if profile_hotspots:
+            call_path_hotspots = _with_window_metadata(profile_hotspots, window_json)
     confidence_inputs = _build_confidence_inputs(
         top_functions=top_functions,
         stack_summary=stack_summary,
@@ -96,9 +113,11 @@ def structure_artifact_evidence(
         artifact_refs=artifact_refs,
         sys_metrics=values.get("sys_metrics"),
         ebpf_metrics=values.get("ebpf_metrics"),
+        off_cpu_wait=values.get("off_cpu_wait_json"),
         log_window=values.get("log_window_json"),
         dependency_check=values.get("dependency_check_json"),
         redis_check=values.get("redis_check_json"),
+        trace_profile=trace_profile,
     )
     confidence_inputs["evidence_window"] = window_json
     evidence_index = _build_evidence_index(
@@ -107,9 +126,11 @@ def structure_artifact_evidence(
         stack_summary=stack_summary,
         call_path_hotspots=call_path_hotspots,
         confidence_inputs=confidence_inputs,
+        off_cpu_wait=values.get("off_cpu_wait_json"),
         log_window=values.get("log_window_json"),
         dependency_check=values.get("dependency_check_json"),
         redis_check=values.get("redis_check_json"),
+        trace_profile=trace_profile,
     )
     evidence_index["evidence_window"] = window_json
     return StructuredEvidence(
@@ -130,9 +151,11 @@ def structure_artifact_evidence(
         sys_metrics=values.get("sys_metrics") if isinstance(values.get("sys_metrics"), dict) else None,
         ebpf_metrics=values.get("ebpf_metrics") if isinstance(values.get("ebpf_metrics"), dict) else None,
         memory_json=values.get("memory_json") if isinstance(values.get("memory_json"), dict) else None,
+        off_cpu_wait_json=values.get("off_cpu_wait_json") if isinstance(values.get("off_cpu_wait_json"), dict) else None,
         log_window_json=values.get("log_window_json") if isinstance(values.get("log_window_json"), dict) else None,
         dependency_check_json=values.get("dependency_check_json") if isinstance(values.get("dependency_check_json"), dict) else None,
         redis_check_json=values.get("redis_check_json") if isinstance(values.get("redis_check_json"), dict) else None,
+        trace_endpoint_profile_json=trace_profile if isinstance(trace_profile, dict) else None,
     )
 
 
@@ -142,6 +165,7 @@ def rca_inputs_from_structured(structured: StructuredEvidence) -> dict[str, Any]
         "top_functions": structured.top_functions,
         "sys_metrics": structured.sys_metrics,
         "ebpf_metrics": structured.ebpf_metrics,
+        "off_cpu_wait_json": structured.off_cpu_wait_json,
         "evidence_index": structured.evidence_index,
     }
 
@@ -159,6 +183,7 @@ def _artifact_value_window(values: dict[str, Any]) -> dict[str, Any]:
         "log_window_json",
         "dependency_check_json",
         "redis_check_json",
+        "off_cpu_wait_json",
         "depth_evidence_json",
         "continuous_summary",
     ):
@@ -220,6 +245,39 @@ def _normalize_top_functions(value: Any) -> list[dict[str, Any]]:
     for index, item in enumerate(items[:TOP_LIMIT]):
         result.append({**item, "evidence_ref": f"structured_evidence.top_functions[{index}]"})
     return result
+
+
+def _top_from_off_cpu_wait(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, dict):
+        return []
+    stacks = value.get("top_wait_stacks")
+    if not isinstance(stacks, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in stacks:
+        if not isinstance(item, dict):
+            continue
+        stack = item.get("stack")
+        name = str(item.get("top_frame") or "").strip()
+        if not name and isinstance(stack, list) and stack:
+            name = str(stack[0]).strip()
+        if not name:
+            continue
+        items.append({
+            "name": name,
+            "samples": _safe_int(item.get("samples")),
+            "percent": round(_safe_float(item.get("percent")), 2),
+            "wait_reason": str(item.get("wait_reason") or ""),
+            "source": "off_cpu_wait",
+        })
+    items.sort(key=lambda item: (-float(item.get("percent") or 0.0), -int(item.get("samples") or 0), item["name"]))
+    return [
+        {
+            **item,
+            "evidence_ref": f"structured_evidence.top_functions[{index}]",
+        }
+        for index, item in enumerate(items[:TOP_LIMIT])
+    ]
 
 
 def _top_from_flamegraph_tree(value: Any) -> list[dict[str, Any]]:
@@ -313,6 +371,7 @@ def _build_stack_summary(
     depth: dict[str, Any],
     top_functions: list[dict[str, Any]],
     artifact_refs: list[dict[str, Any]],
+    off_cpu_wait: Any = None,
 ) -> dict[str, Any]:
     stack_samples = depth.get("stack_samples", []) if isinstance(depth, dict) else []
     first_sample = stack_samples[0] if isinstance(stack_samples, list) and stack_samples and isinstance(stack_samples[0], dict) else {}
@@ -321,14 +380,23 @@ def _build_stack_summary(
     call_path = str(first_sample.get("call_path") or "")
     sample_count = _safe_int(first_sample.get("sample_count") or first_top.get("samples"))
     percent = _safe_float(first_sample.get("percent") or first_top.get("percent"))
+    off_cpu_summary = off_cpu_wait.get("summary") if isinstance(off_cpu_wait, dict) and isinstance(off_cpu_wait.get("summary"), dict) else {}
+    off_cpu_stacks = off_cpu_wait.get("top_wait_stacks") if isinstance(off_cpu_wait, dict) and isinstance(off_cpu_wait.get("top_wait_stacks"), list) else []
+    if off_cpu_stacks:
+        first_wait = off_cpu_stacks[0] if isinstance(off_cpu_stacks[0], dict) else {}
+        hot_frame = hot_frame or str(first_wait.get("top_frame") or "")
+        sample_count = sample_count or _safe_int(off_cpu_summary.get("sample_count"))
+        percent = percent or _safe_float(first_wait.get("percent"))
     parse_status = "ok" if hot_frame or stack_samples or top_functions else "insufficient_structured_signal"
     return {
         "dominant_hot_frame": hot_frame,
         "dominant_percent": round(percent, 2),
         "sample_count": sample_count,
-        "stack_sample_count": len(stack_samples) if isinstance(stack_samples, list) else 0,
+        "stack_sample_count": (len(stack_samples) if isinstance(stack_samples, list) else 0) or len(off_cpu_stacks),
         "has_call_path": bool(call_path or depth.get("call_path") or (depth.get("context") or {}).get("call_path")),
-        "has_wait_reason": bool(first_sample.get("wait_reason") or depth.get("wait_reason")),
+        "has_wait_reason": bool(first_sample.get("wait_reason") or depth.get("wait_reason") or off_cpu_summary.get("has_wait_reason")),
+        "top_wait_reason": str(off_cpu_summary.get("top_wait_reason") or first_sample.get("wait_reason") or depth.get("wait_reason") or ""),
+        "total_wait_ms": round(_safe_float(off_cpu_summary.get("total_wait_ms")), 2),
         "parse_status": parse_status,
         "raw_payload_policy": "references_only",
         "artifact_ref_count": len(artifact_refs),
@@ -374,9 +442,11 @@ def _build_confidence_inputs(
     artifact_refs: list[dict[str, Any]],
     sys_metrics: Any,
     ebpf_metrics: Any,
+    off_cpu_wait: Any,
     log_window: Any,
     dependency_check: Any,
     redis_check: Any,
+    trace_profile: Any,
 ) -> dict[str, Any]:
     first_top = top_functions[0] if top_functions else {}
     context_completeness = "high" if call_path_hotspots else "medium" if stack_summary.get("has_call_path") else "low"
@@ -386,7 +456,7 @@ def _build_confidence_inputs(
         "dominant_percent": round(_safe_float(stack_summary.get("dominant_percent") or first_top.get("percent")), 2),
         "context_completeness": context_completeness,
         "has_system_pressure": isinstance(sys_metrics, dict) and bool(sys_metrics),
-        "has_wait_or_io_signal": isinstance(ebpf_metrics, dict) and bool(ebpf_metrics),
+        "has_wait_or_io_signal": _has_wait_or_io_signal(ebpf_metrics, off_cpu_wait),
         "has_log_signal": isinstance(log_window, dict) and bool(log_window.get("error_clusters")),
         "has_dependency_signal": isinstance(dependency_check, dict) and bool(dependency_check.get("checks")),
         "has_redis_signal": isinstance(redis_check, dict) and bool(redis_check),
@@ -398,6 +468,10 @@ def _build_confidence_inputs(
         "artifact_types": artifact_types,
         "collector_families": _collector_families(artifact_types),
         "token_safety": "compact_summary_only",
+        "trace_source_status": _trace_profile_status(trace_profile, "trace_source"),
+        "stack_source_status": _trace_profile_status(trace_profile, "stack_source"),
+        "trace_correlation_status": _trace_profile_status(trace_profile, "correlation_status"),
+        "trace_max_supported_level": _trace_profile_status(trace_profile, "correlation_status", "max_supported_level"),
     }
 
 
@@ -408,22 +482,80 @@ def _build_evidence_index(
     stack_summary: dict[str, Any],
     call_path_hotspots: list[dict[str, Any]],
     confidence_inputs: dict[str, Any],
+    off_cpu_wait: Any,
     log_window: Any,
     dependency_check: Any,
     redis_check: Any,
+    trace_profile: Any,
 ) -> dict[str, Any]:
     index = dict(depth) if isinstance(depth, dict) else {}
     index["artifact_refs"] = artifact_refs
     index["stack_summary"] = stack_summary
     index["call_path_hotspots"] = call_path_hotspots
     index["confidence_inputs"] = confidence_inputs
+    if isinstance(off_cpu_wait, dict):
+        index["off_cpu_wait"] = _compact_off_cpu_wait(off_cpu_wait)
     if isinstance(log_window, dict):
         index["log_scan"] = _compact_log_window(log_window)
     if isinstance(dependency_check, dict):
         index["dependency_check"] = _compact_dependency_check(dependency_check)
     if isinstance(redis_check, dict):
         index["redis_check"] = _compact_redis_check(redis_check)
+    if isinstance(trace_profile, dict):
+        index["trace_endpoint_profile"] = _compact_trace_profile(trace_profile)
     return index
+
+
+def _trace_profile_hotspots(value: dict[str, Any]) -> list[dict[str, Any]]:
+    hotspots = value.get("call_path_hotspots")
+    if not isinstance(hotspots, list):
+        return []
+    result = []
+    for index, item in enumerate(hotspots[:HOTSPOT_LIMIT]):
+        if not isinstance(item, dict):
+            continue
+        function = str(item.get("function") or "")
+        call_path = item.get("call_path") if isinstance(item.get("call_path"), list) else []
+        if not function and not call_path:
+            continue
+        result.append({
+            "function": function,
+            "percent": round(_safe_float(item.get("percent")), 2),
+            "samples": _safe_int(item.get("samples") or item.get("sample_count")),
+            "call_path": [str(part) for part in call_path],
+            "endpoint": str(item.get("endpoint") or ""),
+            "service_id": str(item.get("service_id") or ""),
+            "instance_id": str(item.get("instance_id") or ""),
+            "context_id": str(item.get("context_id") or ""),
+            "trace_ids": [str(item.get("trace_id"))] if item.get("trace_id") else list(item.get("trace_ids") or []),
+            "correlation_method": str(item.get("correlation_method") or ""),
+            "confidence": round(_safe_float(item.get("confidence")), 3),
+            "evidence_ref": str(item.get("evidence_ref") or f"trace_endpoint_profile.call_path_hotspots[{index}]"),
+        })
+    return result
+
+
+def _trace_profile_status(value: Any, section: str, field: str = "status") -> str:
+    if not isinstance(value, dict):
+        return ""
+    section_value = value.get(section)
+    if not isinstance(section_value, dict):
+        return ""
+    return str(section_value.get(field) or "")
+
+
+def _compact_trace_profile(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "stack_source": value.get("stack_source", {}),
+        "trace_source": {
+            key: value.get("trace_source", {}).get(key)
+            for key in ("kind", "status", "records_read", "records_in_window", "blocked_reason")
+            if isinstance(value.get("trace_source"), dict) and key in value.get("trace_source", {})
+        },
+        "endpoint_bindings": (value.get("endpoint_bindings") or [])[:10],
+        "call_path_hotspots": (value.get("call_path_hotspots") or [])[:10],
+        "correlation_status": value.get("correlation_status", {}),
+    }
 
 
 def _collector_families(artifact_types: list[str]) -> list[str]:
@@ -436,9 +568,11 @@ def _collector_families(artifact_types: list[str]) -> list[str]:
         "depth_evidence_json": "runtime_snapshot",
         "continuous_top_json": "runtime_snapshot",
         "continuous_flamegraph_json": "runtime_snapshot",
+        "off_cpu_wait_json": "off_cpu_wait_profile",
         "ebpf_metrics": "io_profile",
         "sys_metrics": "sys_metrics",
         "memory_json": "memory_profile",
+        "trace_endpoint_profile_json": "trace_endpoint_profile",
     }
     return list(dict.fromkeys(mapping.get(item, item) for item in artifact_types))
 
@@ -465,6 +599,40 @@ def _compact_redis_check(value: dict[str, Any]) -> dict[str, Any]:
         "slowlog_summary": value.get("slowlog_summary", {}),
         "latency_summary": value.get("latency_summary", {}),
     }
+
+
+def _compact_off_cpu_wait(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": value.get("schema_version"),
+        "collector_family": value.get("collector_family"),
+        "summary": value.get("summary", {}),
+        "event_summary": value.get("event_summary", {}),
+        "cause_summary": value.get("cause_summary", {}),
+        "stack_quality": value.get("stack_quality", {}),
+        "top_wait_stacks": (value.get("top_wait_stacks") or [])[:5],
+        "kernel_stacks": (value.get("kernel_stacks") or [])[:5],
+        "thread_wait_summary": (value.get("thread_wait_summary") or [])[:10],
+        "syscall_wait_summary": value.get("syscall_wait_summary", {}),
+        "collector_status": value.get("collector_status"),
+        "parser_status": value.get("parser_status"),
+        "trace_source": value.get("trace_source", {}),
+        "correlation": value.get("correlation", {}),
+        "endpoint_bindings": (value.get("endpoint_bindings") or [])[:5],
+        "call_path_hotspots": (value.get("call_path_hotspots") or [])[:5],
+        "capability_check": value.get("capability_check", {}),
+    }
+
+
+def _has_wait_or_io_signal(ebpf_metrics: Any, off_cpu_wait: Any) -> bool:
+    if isinstance(ebpf_metrics, dict) and bool(ebpf_metrics):
+        return True
+    if not isinstance(off_cpu_wait, dict):
+        return False
+    summary = off_cpu_wait.get("summary") if isinstance(off_cpu_wait.get("summary"), dict) else {}
+    if _safe_int(summary.get("sample_count")) > 0:
+        return True
+    stacks = off_cpu_wait.get("top_wait_stacks")
+    return isinstance(stacks, list) and bool(stacks)
 
 
 def _failed_dependency_count(value: Any) -> int:

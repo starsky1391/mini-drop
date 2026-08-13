@@ -66,6 +66,99 @@ def test_log_scan_adapter_normalizes_fluent_bit_or_otel_output(tmp_path):
     assert "/checkout" in payload["evidence_index"]["endpoints"]
 
 
+def test_log_scan_accepts_target_config_and_emits_empty_window(tmp_path):
+    source = tmp_path / "logs.ndjson"
+    source.write_text("", encoding="utf-8")
+    collector = LogScanCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+
+    result = collector.collect(CollectorTask(
+        id="task_log_empty",
+        collector_type="log_scan",
+        target_pid=1234,
+        sample_rate=1,
+        duration_sec=5,
+        options={
+            "target_config": {
+                "log_paths": [str(source)],
+            },
+        },
+    ))
+
+    payload = _artifact_json(result.artifacts[0])
+    assert result.ok is True
+    assert payload["adapter"]["source_status"] == "empty_window"
+    assert payload["summary"]["window_records"] == 0
+    assert payload["summary"]["matched_records"] == 0
+    assert payload["summary"]["error_cluster_count"] == 0
+
+
+def test_log_scan_marks_corrupt_input_as_failed_structured_artifact(tmp_path):
+    source = tmp_path / "broken.ndjson"
+    source.write_text("{not-json}\n", encoding="utf-8")
+    collector = LogScanCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+
+    result = collector.collect(CollectorTask(
+        id="task_log_corrupt",
+        collector_type="log_scan",
+        target_pid=1234,
+        sample_rate=1,
+        duration_sec=5,
+        options={"target_config": {"source_paths": [str(source)]}},
+    ))
+
+    payload = _artifact_json(result.artifacts[0])
+    assert result.ok is False
+    assert payload["adapter"]["source_status"] == "corrupt_input"
+    assert payload["adapter"]["corrupt_paths"] == [str(source)]
+
+
+def test_log_scan_marks_readable_window_without_errors_as_no_error(tmp_path):
+    source = tmp_path / "info.ndjson"
+    source.write_text(
+        json.dumps({"timestamp": 1720000001, "severity": "INFO", "message": "request completed"}) + "\n",
+        encoding="utf-8",
+    )
+    collector = LogScanCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    result = collector.collect(CollectorTask(
+        id="task_log_no_error",
+        collector_type="log_scan",
+        target_pid=1234,
+        sample_rate=1,
+        duration_sec=5,
+        options={
+            "target_config": {"source_paths": [str(source)]},
+            "window_start": 1720000000,
+            "window_end": 1720000002,
+        },
+    ))
+
+    payload = _artifact_json(result.artifacts[0])
+    assert result.ok is True
+    assert payload["adapter"]["source_status"] == "no_error"
+    assert payload["summary"]["matched_records"] == 0
+
+
+def test_log_scan_marks_missing_source_as_structured_failure(tmp_path):
+    source = tmp_path / "missing.ndjson"
+    collector = LogScanCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    result = collector.collect(CollectorTask(
+        id="task_log_missing",
+        collector_type="log_scan",
+        target_pid=1234,
+        sample_rate=1,
+        duration_sec=5,
+        options={"target_config": {"source_paths": [str(source)]}},
+    ))
+
+    payload = _artifact_json(result.artifacts[0])
+    assert result.ok is False
+    assert payload["adapter"]["source_status"] == "source_missing"
+
+
 def test_dependency_check_adapter_normalizes_blackbox_exporter_metrics(tmp_path):
     collector = DependencyCheckCollector()
     collector.OUTPUT_BASE = str(tmp_path / "out")

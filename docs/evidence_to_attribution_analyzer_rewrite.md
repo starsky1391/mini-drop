@@ -566,4 +566,170 @@ redis_check adapter -> redis_check_json
 先证明采集真实，再优化 AI 判断。
 先接工业采集器，再考虑是否自研补充。
 先按部件升级，不把不同部件硬串成一条阶段链。
+
+## 13. Trace Endpoint 复合采集升级
+
+`trace_endpoint_profile` 不再视为 `perf_cpu` 的别名，而是一个复合证据族：
+
+```text
+perf/eBPF 栈采样
+  + OTel/SkyWalking Trace/Span 关联
+  + endpoint/call_path 结构化回连
+```
+
+### 13.1 采集边界
+
+栈采样只负责回答“哪个函数或调用栈处于热点”；Trace 适配只负责读取已有的 OTel/SkyWalking 输出；回连层负责在同一目标和时间窗口内生成 endpoint、service、instance、trace 和 call_path 关系。任何一层缺失，都必须保留实际已获得的低层证据，并明确 `max_supported_level`，不能用函数热点推测 endpoint 或完整调用链。
+
+### 13.2 来源优先级
+
+```text
+stack_source=auto:
+  eBPF profile 可用 -> eBPF
+  否则 perf 可用 -> perf
+  都不可用 -> structured unavailable artifact
+
+trace_source:
+  OTel NDJSON
+  或 SkyWalking JSON/NDJSON
+  缺失 -> trace_source_missing，不伪造链路
+```
+
+支持任务级 `target_config`：
+
+```json
+{
+  "stack_source": "auto",
+  "trace_source": "otel_ndjson",
+  "trace_paths": ["/var/lib/mini-drop/traces/otel.ndjson"],
+  "service_id": "cartservice",
+  "instance_id": "cartservice-worker2",
+  "endpoint": "GET /cart"
+}
+```
+
+### 13.3 关联等级
+
+| 关联等级 | 依据 | 允许的定位 |
+|---|---|---|
+| explicit | trace/span 显式带 PID、context 或 trace 绑定 | endpoint / call_path |
+| pid_instance_time_overlap | PID 或实例与 span 时间窗口重叠 | endpoint，满足条件时 call_path |
+| service_time_overlap | service、instance、时间窗口重叠 | 候选 endpoint，不自动升级完整 call_path |
+| unmatched | 栈和 Trace 无法对齐 | function |
+
+每条关系必须输出 `correlation_method`、`confidence` 和稳定 `evidence_ref`。
+
+### 13.4 统一产物
+
+主产物为 `trace_endpoint_profile_json`，至少包含：
+
+- `stack_source`：来源、状态、权限和原始产物引用；
+- `trace_source`：OTel/SkyWalking 类型、读取数量、窗口内数量和阻断原因；
+- `endpoint_bindings`：endpoint、service、instance、trace/span 和关联方法；
+- `call_path_hotspots`：函数热点、调用路径、endpoint 和关联置信度；
+- `correlation_status`：`completed`、`partial`、`unmatched` 或 `blocked`；
+- `max_supported_level`：当前证据允许的最高定位层级。
+
+只有结构化关联成功时，AI 树才允许从 `function` 升级到 `endpoint` 或 `call_path`。
+
+## 14. 采集失败语义补齐
+
+### 14.1 `log_scan`
+
+`log_scan` 的参数来源统一为：
+
+```text
+target_config.log_paths/source_paths
+  -> invocation options
+  -> Agent collector
+  -> managed pipeline default
+  -> container Docker JSON log fallback
+```
+
+日志源存在但窗口内没有记录、没有错误簇，仍然是成功的结构化证据：
+
+```json
+{
+  "source_status": "empty_window",
+  "summary": {
+    "window_records": 0,
+    "matched_records": 0,
+    "error_cluster_count": 0
+  }
+}
+```
+
+只有输入损坏或所有配置源不可读取且没有可用 fallback 时，才标记为不可用或失败。
+
+### 14.2 Trace 权限阻断
+
+当 `perf_event_paranoid`、`perf_event_open`、eBPF capability 或工具缺失阻止采样时，必须输出结构化 `trace_endpoint_profile_json`，包含：
+
+- `blocked_reason`；
+- 当前 `perf_event_paranoid`；
+- 缺失的 capability/tool；
+- 可执行修复动作；
+- `max_supported_level=function`。
+
+这类结果不能伪装成完整 Trace 采集成功，但也不能丢失已经采集到的 Trace 或低层上下文。
+
+### 14.3 Worker 能力
+
+Worker Agent 的部署需要显式验证：
+
+```text
+privileged
+pid: host
+PERFMON
+SYS_PTRACE
+SYS_ADMIN
+BPF
+seccomp: unconfined
+kernel.perf_event_paranoid
+```
+
+能力状态进入 `CollectorProfile`，诊断任务据此区分“未安装”“权限阻断”和“目标没有 Trace”。
+
+## 15. 分段任务
+
+```text
+AT 采集契约与失败语义
+  -> AM 栈/Trace 适配与关联
+  -> AN 服务端证据、AI 树和前端
+  -> AO Worker 部署与真实 case 验证
+```
+
+各段可以独立失败和回归，不把不同部件伪装成一个原子阶段。完成标准不是“任务变成 DONE”，而是对应结构化 artifact、证据引用、定位边界和真实测试结果都闭合。
+
+## 16. 方案 B：工业采集链路加固
+
+本轮真实 `OB-SINGLE-REDIS-001` 暴露了四个需要一起收口的问题：
+
+```text
+log_scan 空窗口语义
+trace/perf/eBPF 权限与能力闭环
+off_cpu 工业化多层采集链路
+诊断采集预算与 follow-up 预留
+```
+
+本轮采用方案 B，而不是只修错误提示：
+
+1. `log_scan` 在可读空窗口和无错误窗口仍生成 `log_window_json`。
+2. Trace/栈采样失败时输出能力状态、阻断原因和可执行修复动作。
+3. `off_cpu_wait_profile` 升级为事件层、原因层、栈层、回连层四层链路，不使用 `perf record` 冒充 Off-CPU。
+4. 默认总采集时长上限调整为 `180s`，并为 AI 树 follow-up 保留独立额度。
+
+详细设计见：
+
+`docs/superpowers/specs/2026-08-13-industrial-collector-hardening-design.md`
+
+本轮完成标准：
+
+```text
+真实空窗口可解释
+权限阻断可修复
+Off-CPU 结果可区分 empty/partial/blocked/target_exit
+事件、等待原因、栈和调用链状态可结构化引用
+180s 预算不会吞掉 follow-up 额度
+```
 ```

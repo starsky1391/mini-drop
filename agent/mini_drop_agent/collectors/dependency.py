@@ -95,7 +95,7 @@ def _metrics_for_target(options: dict[str, Any], target: dict[str, Any], timeout
         except (FileNotFoundError, PermissionError, OSError, UnicodeDecodeError):
             return None
     endpoint = options.get("blackbox_url") or options.get("blackbox_endpoint") or os.getenv("MINI_DROP_BLACKBOX_URL", "http://blackbox-exporter:9115")
-    probe_target = target.get("url") or _address(target)
+    probe_target = _blackbox_probe_target(target)
     if not endpoint or not probe_target:
         return None
     module = target.get("module") or options.get("module") or _default_module(target)
@@ -205,6 +205,13 @@ def _address(target: dict[str, Any]) -> str:
     host = str(target.get("host") or "")
     port = target.get("port")
     return f"{host}:{port}" if host and port else host
+
+
+def _blackbox_probe_target(target: dict[str, Any]) -> str:
+    protocol = _protocol_from_target(target)
+    if protocol in {"http", "https"} and target.get("url"):
+        return str(target["url"])
+    return _address(target) or str(target.get("url") or "")
 
 
 def _protocol_from_target(target: dict[str, Any]) -> str:

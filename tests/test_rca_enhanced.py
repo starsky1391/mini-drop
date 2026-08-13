@@ -15,6 +15,8 @@ from server.app.rca.candidates import (
     _match_thread_trend,
     _match_cross_evidence,
     _match_multi_metric,
+    _match_off_cpu_wait_hotspot,
+    _match_runtime_top_function_present,
     generate_candidates,
     load_rules,
     _resolve_path,
@@ -142,6 +144,30 @@ class TestSysMetricMatchers:
         ev = self._evidence(sys_metrics={"summary": {"fd_trend": "increasing", "thread_trend": "stable"}})
         assert not _match_cross_evidence(ev, {"signals": ["fd_growth", "thread_growth"]})
 
+    def test_runtime_top_function_present(self):
+        ev = self._evidence(
+            task_metadata={"status": "DONE", "collector_type": "pyspy"},
+            top_functions=[{"name": "threading.Lock.acquire", "samples": 42, "percent": 70.0}],
+        )
+        assert _match_runtime_top_function_present(ev, {"min_percent": 1})
+
+    def test_runtime_top_function_requires_python_runtime_collector(self):
+        ev = self._evidence(
+            top_functions=[{"name": "pthread_mutex_lock", "samples": 42, "percent": 70.0}],
+        )
+        assert not _match_runtime_top_function_present(ev, {"min_percent": 1})
+
+    def test_off_cpu_wait_hotspot_present(self):
+        ev = self._evidence(
+            evidence_index={
+                "off_cpu_wait": {
+                    "summary": {"sample_count": 2, "top_wait_reason": "interruptible_sleep_or_lock_wait"},
+                    "top_wait_stacks": [{"top_frame": "pthread_mutex_lock", "samples": 2}],
+                }
+            }
+        )
+        assert _match_off_cpu_wait_hotspot(ev, {"min_samples": 1})
+
 
 class TestGenerateCandidatesEnhanced:
     """Test generate_candidates with comprehensive rules."""
@@ -223,6 +249,31 @@ class TestGenerateCandidatesEnhanced:
         assert "cross_cpu_plus_memory_leak" in ids
         assert "cross_cpu_ctx_contention" in ids
 
+    def test_python_runtime_stack_candidate_fires(self):
+        ev = EvidenceInput(
+            task_metadata={"status": "DONE", "collector_type": "pyspy"},
+            top_functions=[{"name": "threading.Lock.acquire", "samples": 42, "percent": 70.0}],
+            evidence_index={"stack_summary": {"sample_count": 42}},
+        )
+        candidates = generate_candidates(ev)
+        ids = [c.candidate_id for c in candidates]
+        assert "python_runtime_stack_hotspot" in ids
+
+    def test_off_cpu_wait_candidate_fires(self):
+        ev = EvidenceInput(
+            task_metadata={"status": "DONE", "collector_type": "off_cpu_wait_profile"},
+            top_functions=[{"name": "pthread_mutex_lock", "samples": 2, "percent": 100.0}],
+            evidence_index={
+                "off_cpu_wait": {
+                    "summary": {"sample_count": 2, "top_wait_reason": "interruptible_sleep_or_lock_wait"},
+                    "top_wait_stacks": [{"top_frame": "pthread_mutex_lock", "samples": 2}],
+                }
+            },
+        )
+        candidates = generate_candidates(ev)
+        ids = [c.candidate_id for c in candidates]
+        assert "off_cpu_wait_hotspot" in ids
+
     def test_no_sys_metrics_skips_sys_rules(self):
         """Without sys_metrics, only legacy rules should fire."""
         ev = EvidenceInput(
@@ -245,7 +296,9 @@ class TestGenerateCandidatesEnhanced:
         assert len(rules) >= 25  # we have 25+ rules
         valid_types = {"top_function_keyword", "ebpf_latency_present", "collector_or_suggestion",
                        "agent_cpu_overhead", "failure_contains", "sys_metric_threshold",
-                       "multi_metric", "fd_trend", "thread_trend", "cross_evidence"}
+                       "multi_metric", "fd_trend", "thread_trend", "cross_evidence",
+                       "dependency_failure", "redis_failure", "runtime_top_function_present",
+                       "off_cpu_wait_hotspot"}
         for r in rules:
             assert r["match_type"] in valid_types, f"Unknown match_type: {r['match_type']}"
             assert isinstance(r["rule_score"], (int, float))

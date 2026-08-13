@@ -27,6 +27,7 @@ CollectorType = Literal[
     "log_scan",
     "dependency_check",
     "redis_check",
+    "process_inventory",
 ]
 MIN_TASK_DURATION_SEC = 1
 MAX_TASK_DURATION_SEC = 120

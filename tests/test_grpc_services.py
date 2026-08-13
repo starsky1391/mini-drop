@@ -373,7 +373,44 @@ class TestHotmethodNotifyResult:
         assert len(stored) == 32
         assert "unexpected" not in stored[0]
         assert stored[0]["size_bytes"] == 0
-        assert stored[0]["metadata"] == {"window_index": 0}
+        assert stored[0]["metadata"] == {"window_index": 0, "nested": {"drop": True}}
+
+    def test_notify_preserves_nested_trace_profile_metadata(self, grpc_fix: GrpcFixture):
+        task_id = self._create_and_start_task(grpc_fix)
+        profile = {
+            "collector_type": "trace_endpoint_profile",
+            "stack_source": {"status": "blocked"},
+            "correlation_status": {
+                "status": "blocked",
+                "max_supported_level": "function",
+                "blocked_details": {
+                    "perf_event_paranoid": 3,
+                    "repair_action": "enable PERFMON",
+                },
+            },
+            "call_path_hotspots": [],
+        }
+        grpc_fix.hotmethod_stub.NotifyResult(
+            hotmethod_pb2.TaskResult(
+                task_id=task_id,
+                error_message="perf blocked",
+                artifact_metadata_json=json.dumps([{
+                    "artifact_type": "trace_endpoint_profile_json",
+                    "filename": "trace_endpoint_profile.json",
+                    "metadata": {"data": profile},
+                }]),
+            ),
+        )
+
+        stored = grpc_fix.repo.artifacts[task_id][0]["metadata"]["data"]
+        assert stored["correlation_status"]["max_supported_level"] == "function"
+        assert stored["correlation_status"]["blocked_details"]["perf_event_paranoid"] == 3
+        assert grpc_fix.repo.tasks[task_id].status == TaskStatus.FAILED
+        assert any(
+            event.reason == "perf blocked"
+            for event in grpc_fix.repo.events
+            if event.task_id == task_id
+        )
 
     def test_notify_analysis_artifacts_transitions_to_done(self, grpc_fix: GrpcFixture):
         task_id = self._create_and_start_task(grpc_fix)
@@ -409,6 +446,40 @@ class TestHotmethodNotifyResult:
         task = grpc_fix.repo.tasks[task_id]
         assert task.status == TaskStatus.DONE
         assert task.status_reason == "eBPF IO 延迟分布已生成"
+
+    def test_notify_off_cpu_wait_json_transitions_to_done(self, grpc_fix: GrpcFixture):
+        task_id = self._create_and_start_task(grpc_fix)
+        grpc_fix.hotmethod_stub.NotifyResult(
+            hotmethod_pb2.TaskResult(
+                task_id=task_id,
+                error_message="",
+                artifact_metadata_json=json.dumps([{
+                    "artifact_type": "off_cpu_wait_json",
+                    "filename": "off_cpu_wait.json",
+                    "metadata": {"data": {"summary": {"sample_count": 1}}},
+                }]),
+            )
+        )
+        task = grpc_fix.repo.tasks[task_id]
+        assert task.status == TaskStatus.DONE
+        assert task.status_reason == "Off-CPU 等待栈证据已生成"
+
+    def test_notify_process_inventory_transitions_to_done(self, grpc_fix: GrpcFixture):
+        task_id = self._create_and_start_task(grpc_fix)
+        grpc_fix.hotmethod_stub.NotifyResult(
+            hotmethod_pb2.TaskResult(
+                task_id=task_id,
+                error_message="",
+                artifact_metadata_json=json.dumps([{
+                    "artifact_type": "process_inventory_json",
+                    "filename": "process_inventory.json",
+                    "metadata": {"process_count": 1},
+                }]),
+            )
+        )
+        task = grpc_fix.repo.tasks[task_id]
+        assert task.status == TaskStatus.DONE
+        assert task.status_reason == "进程清单结构化证据已生成"
 
     def test_notify_failure_transitions_to_failed(self, grpc_fix: GrpcFixture):
         task_id = self._create_and_start_task(grpc_fix)

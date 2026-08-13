@@ -49,12 +49,16 @@ def main() -> None:
     ok, err = _perf_script(perf_data, script_path)
     if not ok:
         _fail(f"perf script 失败: {err}")
+    if script_path.stat().st_size == 0:
+        _fail("perf script 未产出可解析栈文本")
 
     # 2. stackcollapse → 折叠栈
     collapsed_path = output_dir / "collapsed.txt"
     ok, err = _stackcollapse(script_path, collapsed_path)
     if not ok:
         _fail(f"stackcollapse 失败: {err}")
+    if collapsed_path.stat().st_size == 0:
+        _fail("stackcollapse 未产出可解析折叠栈")
 
     # 3. flamegraph.pl → fallback SVG
     svg_path = output_dir / "flamegraph.svg"
@@ -62,6 +66,8 @@ def main() -> None:
 
     # 4. 解析折叠栈 → TopN JSON + flamegraph JSON 树
     top_n = _parse_top(collapsed_path)
+    if not top_n:
+        _fail("折叠栈未解析出热点函数")
     top_path = output_dir / "top.json"
     top_path.write_text(json.dumps(top_n, indent=2, ensure_ascii=False))
 

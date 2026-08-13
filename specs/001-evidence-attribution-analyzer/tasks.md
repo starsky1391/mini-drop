@@ -479,13 +479,13 @@
 
 **Purpose**: Make AI tree follow-up requests choose the smallest required industrial-backed evidence family based on case type, existing evidence families, and missing evidence families.
 
-- [ ] AH001 Define a deterministic evidence-family inventory from structured evidence: `log_scan`, `dependency_check`, `redis_check`, `runtime_snapshot`, `sys_metrics`, `trace_endpoint_profile`, `baseline_window_profile`, and `network_profile`.
-- [ ] AH002 Implement missing-family detection for downstream, Redis, Payment, DNS, TCP, HTTP, gRPC, log-error, and runtime-snapshot cases without letting these rules emit root-cause conclusions.
-- [ ] AH003 Map `downstream_dependency` candidates to minimal follow-up order: `dependency_check` first, then `log_scan`, then domain-specific collectors such as `redis_check`.
-- [ ] AH004 Map Redis-specific candidates to `redis_check` only when `dependency_check` or `log_scan` has produced Redis-related evidence or the topology explicitly marks a Redis dependency.
-- [ ] AH005 Prevent duplicate follow-up requests when the same `diagnosis_id + evidence_family` already has a same-window or active follow-up artifact.
-- [ ] AH006 Add tests proving identical input evidence produces identical `next_evidence_requests` order across repeated runs.
-- [ ] AH007 Add tests proving delayed follow-up evidence cannot directly refute stronger same-window industrial collector evidence.
+- [x] AH001 Define a deterministic evidence-family inventory from structured evidence: `log_scan`, `dependency_check`, `redis_check`, `runtime_snapshot`, `sys_metrics`, `trace_endpoint_profile`, `baseline_window_profile`, and `network_profile`.
+- [x] AH002 Implement missing-family detection for downstream, Redis, Payment, DNS, TCP, HTTP, gRPC, log-error, and runtime-snapshot cases without letting these rules emit root-cause conclusions.
+- [x] AH003 Map `downstream_dependency` candidates to minimal follow-up order: `dependency_check` first, then `log_scan`, then domain-specific collectors such as `redis_check`.
+- [x] AH004 Map Redis-specific candidates to `redis_check` only when `dependency_check` or `log_scan` has produced Redis-related evidence or the topology explicitly marks a Redis dependency.
+- [x] AH005 Prevent duplicate follow-up requests when the same `diagnosis_id + evidence_family` already has a same-window or active follow-up artifact.
+- [x] AH006 Add tests proving identical input evidence produces identical `next_evidence_requests` order across repeated runs.
+- [x] AH007 Add tests proving delayed follow-up evidence cannot directly refute stronger same-window industrial collector evidence.
 
 **Outcome**: AI tree asks for the least necessary structured evidence instead of repeatedly launching broad or self-written collectors.
 
@@ -497,7 +497,7 @@
 - [x] AI002 Add `confidence_inputs` fields for `has_log_signal`, `has_dependency_signal`, `has_redis_signal`, `failed_dependency_count`, `log_error_cluster_count`, and Redis slowlog/latency signals.
 - [x] AI003 Ensure LLM input receives compact summaries and `evidence_ref` values only; raw log lines, raw Prometheus metric dumps, and large exporter payloads remain referenced artifacts.
 - [x] AI004 Update audit bundle export so each structured artifact is visible under `artifacts`, `structured_evidence`, `evidence_refs`, and collector-family readiness checks.
-- [ ] AI005 Add tests proving required evidence families are scored only when the structured artifact exists, not when a probe was merely scheduled.
+- [x] AI005 Add tests proving required evidence families are scored only when the structured artifact exists, not when a probe was merely scheduled.
 
 **Outcome**: Industrial collector data is usable by AI tree, benchmark gate, and final reports without token-heavy raw payloads.
 
@@ -546,3 +546,111 @@
 - [x] AL006 Add frontend watch creation support for optional target config JSON.
 
 **Outcome**: Both ordinary diagnosis and persistent watch produce task options shaped as `target_config -> collector_invocation -> Agent collector`, avoiding two parallel target-routing protocols.
+
+### Task Group AT - Trace 复合采集与失败语义
+
+**Purpose**: Upgrade `trace_endpoint_profile` from a perf alias into a composite evidence family while closing the industrial log adapter and permission failure gaps found by the real Redis case.
+
+- [x] AT001 Unify `log_scan` target option resolution across `target_config.log_paths`, `target_config.source_paths`, invocation options, managed pipeline defaults, and target `container_id` Docker JSON logs.
+- [x] AT002 Make `log_scan` emit `log_window_json` for readable empty windows and zero-error windows with `source_status`, `window_records`, `matched_records`, and `error_cluster_count`; reserve failure for unusable/corrupt inputs.
+- [x] AT003 Extend `trace_endpoint_profile` target configuration with `stack_source`, `trace_source`, `trace_paths`, `service_id`, `instance_id`, `endpoint`, and evidence window metadata.
+- [x] AT004 Define the `trace_endpoint_profile_json` contract with stack source, Trace source, endpoint bindings, call-path hotspots, correlation status, blocked reason, and maximum supported level.
+- [x] AT005 Add deterministic OTel NDJSON and SkyWalking JSON/NDJSON input normalization without sending raw Trace payloads to the LLM.
+- [x] AT006 Add eBPF profile capability detection while preserving perf as the fallback stack source; distinguish unavailable tool, permission denied, and target exit.
+- [x] AT007 Emit structured permission/unavailable Trace artifacts instead of dropping all evidence when stack sampling is blocked.
+- [x] AT008 Add focused tests for log source precedence, Docker log fallback, empty log windows, Trace source normalization, and permission-blocked Trace results.
+
+**Outcome**: Industrial log collection no longer fails on a valid empty window, and Trace tasks always produce an honest structured result describing the evidence actually available.
+
+### Task Group AM - 栈热点与 Trace/Span 关联
+
+**Purpose**: Correlate stack samples with OTel/SkyWalking spans and produce stable endpoint/call-path evidence.
+
+- [x] AM001 Implement explicit Trace/Span correlation using trace/span context, PID, process identity, and target context.
+- [x] AM002 Implement PID/instance/service plus time-window overlap correlation with deterministic tie-breaking.
+- [x] AM003 Implement low-confidence service/time overlap as a candidate only; do not upgrade it to a confirmed call path.
+- [x] AM004 Generate stable `endpoint_bindings` and `call_path_hotspots` with `correlation_method`, `confidence`, and `evidence_ref`.
+- [x] AM005 Preserve function-level stack evidence when Trace is missing or unmatched and set `max_supported_level` accordingly.
+- [x] AM006 Add repeated-run stability tests and cross-window conflict tests.
+
+**Outcome**: The same stack/Trace evidence repeatedly resolves to the same endpoint and call path, while insufficient correlation remains explicitly bounded.
+
+### Task Group AN - 服务端、AI 树与前端接入
+
+**Purpose**: Make the composite Trace artifact usable by structured evidence, RCA, AI-tree follow-up, audit bundles, and the diagnosis UI.
+
+- [x] AN001 Normalize `trace_endpoint_profile_json` in `evidence_structurer.py` into compact Trace source, endpoint binding, and call-path sections.
+- [x] AN002 Add Trace correlation state and supported localization level to `confidence_inputs`, `evidence_index`, and audit bundle output.
+- [x] AN003 Update RCA localization and `next_evidence_requests` to distinguish missing stack source, missing Trace source, and unmatched Trace context.
+- [x] AN004 Show Trace source, endpoint bindings, call-path hotspots, correlation method, confidence, and missing evidence in the frontend diagnosis report.
+- [x] AN005 Update readiness gate so a Trace task is not considered fully ready from `perf.data` alone; require `trace_endpoint_profile_json`.
+- [x] AN006 Add server/frontend tests for complete, partial, unmatched, and blocked Trace results.
+
+**Outcome**: Reports name concrete functions/endpoints/call paths when evidence supports them and explain the exact missing layer otherwise.
+
+### Task Group AO - Worker 权限、部署与真实验证
+
+**Purpose**: Make the industrial stack collector configuration real in the deployed three-node environment and verify the whole diagnosis chain against the Redis case.
+
+- [x] AO001 Add Worker trace source environment variables and read-only trace export volume configuration.
+- [x] AO002 Add Agent CollectorProfile entries for `trace_endpoint_profile`, eBPF profile, Trace source status, and perf permission status.
+- [x] AO003 Add a deployment/runtime check for `privileged`, `pid: host`, `PERFMON`, `SYS_PTRACE`, `SYS_ADMIN`, `BPF`, seccomp, and `kernel.perf_event_paranoid`.
+- [x] AO004 Keep target-scoped invocation separate from Agent-global capability discovery so multiple targets cannot share the wrong Trace paths or Redis target.
+- [x] AO005 Run local focused and full tests; preserve existing unrelated worktree changes.
+- [ ] AO006 Rebuild only required Worker/Control services and run `OB-SINGLE-REDIS-001`.
+- [ ] AO007 Verify `process_log_scan` and `process_trace_endpoint_profile` artifacts, readiness gate, AI-tree localization level, `next_evidence_requests`, and saved report output.
+
+**Outcome**: The deployed system can distinguish real collection success, valid empty evidence, missing Trace source, permission blocking, and successful endpoint/call-path correlation.
+
+### Task Group AP - 方案 B：日志与 Trace 失败语义收口
+
+**Purpose**: Close the two non-runtime gaps found by the real Redis case without losing structured evidence.
+
+- [x] AP001 Distinguish `readable`, `empty_window`, `no_error`, `source_missing`, and `corrupt_input` in `log_window_json`.
+- [x] AP002 Ensure empty and no-error log windows return a structured artifact and remain usable by Evidence Structurer.
+- [x] AP003 Add Trace/perf/eBPF capability preflight fields for tools, `perf_event_paranoid`, capabilities, PID namespace, and seccomp/privileged state.
+- [x] AP004 Emit structured permission and unavailable details with `repair_action`, `missing_capabilities`, `missing_tools`, and `max_supported_level`.
+- [x] AP005 Add focused tests for empty log windows, no-error windows, permission blocking, target exit, and missing tools.
+
+**Outcome**: Valid empty evidence is not mistaken for collector failure, and blocked stack collection remains actionable and auditable.
+
+### Task Group AQ - Off-CPU Industrial Collector v2
+
+**Purpose**: Upgrade Off-CPU from a single bpftrace script into a layered industrial evidence pipeline.
+
+- [x] AQ001 Define the Off-CPU v2 artifact contract for event, cause, stack, correlation, capability, and evidence-window sections.
+- [x] AQ002 Add event-layer collection for `sched_switch` and `sched_wakeup` with TID/PID, CPU, state, start/end timestamps, and wait duration.
+- [x] AQ003 Add cause-layer adapters for futex/lock, block I/O, TCP/socket, syscall, and scheduler-delay signals.
+- [x] AQ004 Preserve user and kernel stack quality separately, including `events_without_user_stack` and `stack_unwind_status`.
+- [x] AQ005 Classify results as `completed`, `empty_window`, `partial`, `blocked`, or `target_exit`; never equate empty stack with no wait event.
+- [x] AQ006 Add deterministic function/endpoint/Trace/call-path correlation when target context is available.
+- [x] AQ007 Keep raw event output as references-only artifacts and expose compact summaries to the AI tree.
+- [x] AQ008 Add unit tests for event-only, cause-only, stackless, permission-blocked, target-exit, and fully correlated results.
+- [ ] AQ009 Run a real Linux Off-CPU smoke test and record whether the target produced non-empty wait evidence.
+
+**Outcome**: Off-CPU evidence can explain whether a target was waiting, why it was waiting, where it waited, and how complete that evidence is.
+
+### Task Group AR - 180s 诊断预算与 Follow-up 保留
+
+**Purpose**: Increase the default collection budget while protecting AI-tree follow-up probes from front-loaded exhaustion.
+
+- [x] AR001 Change the default `max_total_probe_cpu_seconds` from `120` to `180`.
+- [x] AR002 Define a follow-up reserve and expose initial/follow-up budget phase in session usage.
+- [x] AR003 Prevent initial probes from consuming the reserved follow-up quota.
+- [x] AR004 Allow approved or `all_registered` follow-up probes to consume the reserved quota with normal capability and risk checks.
+- [x] AR005 Record budget block details including used, limit, reserved, requested, phase, and next action.
+- [x] AR006 Add tests proving the initial phase cannot exhaust follow-up reserve and the follow-up phase can use it.
+- [ ] AR007 Re-run `OB-SINGLE-REDIS-001` with the 180s budget and verify follow-up probe execution.
+
+**Outcome**: More evidence can be collected without losing the AI tree's ability to continue depth exploration.
+
+### Task Group AS - 方案 B 集成验证
+
+**Purpose**: Verify the complete chain after AP-AQ-AR changes.
+
+- [x] AS001 Run focused collector, orchestrator, evidence structurer, audit bundle, and readiness gate tests.
+- [ ] AS002 Run the real Redis case and inspect all structured artifacts, not just terminal status.
+- [ ] AS003 Confirm the report distinguishes Redis service attribution from missing Off-CPU/Trace function evidence.
+- [ ] AS004 Save the timestamped report and update the weekly progress record with real limitations.
+
+**Outcome**: The four real-case failures are either fixed or represented with precise, actionable evidence boundaries.

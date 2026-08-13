@@ -178,6 +178,57 @@ class TestAgents:
 
 
 class TestWatchSubscriptions:
+    def test_agent_process_inventory_refresh_and_query(self, client: TestClient, tmp_path, monkeypatch):
+        monkeypatch.setenv("MINI_DROP_ARTIFACT_ROOT", str(tmp_path))
+        repo.register_agent(
+            "a1",
+            "agent-one",
+            "10.0.0.11",
+            capabilities=["process_inventory"],
+        )
+
+        refresh = client.post("/api/v1/agents/a1/process-inventory/refresh")
+
+        assert refresh.status_code == 200
+        task_id = refresh.json()["data"]["task_id"]
+        task = repo.tasks[task_id]
+        assert task.collector_type == "process_inventory"
+        assert task.request_params["options"]["source"] == "watch_target_picker"
+
+        inventory_path = tmp_path / "process_inventory.json"
+        inventory_path.write_text(
+            '{"collected_at":"2026-08-13T00:00:00Z","processes":['
+            '{"pid":4242,"comm":"python","cmdline":"python app.py --service order-service",'
+            '"user":"app","cpu_percent":3.2,"rss_mb":128.0,'
+            '"service_guess":"order-service","instance_guess":"agent-one:4242"},'
+            '{"pid":5252,"comm":"redis-server","cmdline":"redis-server *:6379",'
+            '"user":"redis","cpu_percent":1.0,"rss_mb":64.0,'
+            '"service_guess":"redis","instance_guess":"agent-one:5252"}'
+            '],"summary":{"process_count":2}}',
+            encoding="utf-8",
+        )
+        repo.transition_task(task_id, TaskStatus.RUNNING, "agent accepted", Actor.SERVER)
+        repo.transition_task(task_id, TaskStatus.UPLOADING, "collected", Actor.AGENT)
+        repo.add_artifacts(task_id, [{
+            "artifact_type": "process_inventory_json",
+            "filename": "process_inventory.json",
+            "local_path": str(inventory_path),
+            "content_type": "application/json",
+            "size_bytes": inventory_path.stat().st_size,
+            "metadata": {"process_count": 2},
+        }])
+        repo.transition_task(task_id, TaskStatus.ANALYZING, "analyzing", Actor.ANALYZER)
+        repo.transition_task(task_id, TaskStatus.DONE, "done", Actor.ANALYZER)
+
+        query = client.get("/api/v1/agents/a1/processes", params={"query": "order", "limit": 10})
+
+        assert query.status_code == 200
+        data = query.json()["data"]
+        assert data["inventory_status"] == "ready"
+        assert data["total"] == 1
+        assert data["items"][0]["pid"] == 4242
+        assert data["items"][0]["service_guess"] == "order-service"
+
     def test_create_watch_and_list_agent_lease(self, client: TestClient):
         resp = client.post("/api/v1/watches", json={
             "name": "order service watch",

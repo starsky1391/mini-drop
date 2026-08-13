@@ -12,6 +12,7 @@ import pytest
 
 from analyzer.mini_drop_analyzer.hotmethod_analyzer import (
     _build_flame_tree,
+    _fail,
     _load_output_dir,
     _match_rules,
     _parse_top,
@@ -59,6 +60,13 @@ class TestParseTop:
         top = _parse_top(collapsed)
         # func_a, func_b, func_c 共 3 个独立函数名
         assert len(top) == 3
+
+
+class TestAnalyzerQualityGate:
+    def test_fail_exits_nonzero_for_empty_runtime_stack(self):
+        with pytest.raises(SystemExit) as exc:
+            _fail("perf script 未产出可解析栈文本")
+        assert exc.value.code == 1
 
 
 class TestFlameTree:

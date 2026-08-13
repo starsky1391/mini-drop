@@ -4,6 +4,7 @@ import {
   Button,
   Card,
   Col,
+  Collapse,
   Empty,
   Form,
   Input,
@@ -32,10 +33,12 @@ import {
   createWatchSubscription,
   disableWatchSubscription,
   evaluateWatchSubscription,
+  listAgentProcesses,
   listAgentWatchLeases,
   listAgents,
   listWatchIncidents,
   listWatchSubscriptions,
+  refreshAgentProcessInventory,
 } from "../api/client";
 import ErrorAlert from "../components/ErrorAlert";
 import usePolling from "../hooks/usePolling";
@@ -91,7 +94,10 @@ export default function PersistentWatch() {
   const [submitting, setSubmitting] = useState(false);
   const [testingWatchId, setTestingWatchId] = useState("");
   const [analyzingIncidentId, setAnalyzingIncidentId] = useState("");
+  const [processOptions, setProcessOptions] = useState([]);
+  const [processLoading, setProcessLoading] = useState(false);
   const [error, setError] = useState("");
+  const watchedAgentId = Form.useWatch("agent_id", form);
 
   const refresh = useCallback(async () => {
     setError("");
@@ -127,6 +133,33 @@ export default function PersistentWatch() {
 
   usePolling(refresh, { interval: 10000, enabled: !loading });
 
+  const loadProcesses = useCallback(async (agentId, query = "") => {
+    if (!agentId) {
+      setProcessOptions([]);
+      return null;
+    }
+    setProcessLoading(true);
+    try {
+      const data = await listAgentProcesses(agentId, { query, limit: 200 });
+      setProcessOptions(data.items || []);
+      return data;
+    } catch (err) {
+      setError(err.message);
+      return null;
+    } finally {
+      setProcessLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!watchedAgentId) {
+      setProcessOptions([]);
+      return;
+    }
+    form.setFieldsValue({ target_pid: undefined });
+    loadProcesses(watchedAgentId);
+  }, [form, loadProcesses, watchedAgentId]);
+
   const stats = useMemo(() => ({
     active: watches.filter((watch) => watch.status === "active").length,
     triggered: Object.values(incidentsByWatch).reduce((sum, items) => sum + items.length, 0),
@@ -161,6 +194,43 @@ export default function PersistentWatch() {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function handleRefreshProcesses() {
+    const agentId = form.getFieldValue("agent_id");
+    if (!agentId) {
+      message.warning("请先选择 Agent");
+      return;
+    }
+    setProcessLoading(true);
+    try {
+      await refreshAgentProcessInventory(agentId);
+      message.success("进程清单刷新任务已下发，正在等待 Agent 回传");
+      for (let i = 0; i < 8; i += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+        const data = await listAgentProcesses(agentId, { limit: 200 });
+        if (data.inventory_status === "ready") {
+          setProcessOptions(data.items || []);
+          message.success(`进程清单已更新：${data.total || 0} 个进程`);
+          return;
+        }
+      }
+      message.info("刷新任务已下发，但 Agent 尚未回传；稍后再点刷新列表即可");
+    } catch (err) {
+      message.error(err.message);
+    } finally {
+      setProcessLoading(false);
+    }
+  }
+
+  function handleSelectProcess(pid) {
+    const proc = processOptions.find((item) => Number(item.pid) === Number(pid));
+    if (!proc) return;
+    form.setFieldsValue({
+      target_pid: Number(proc.pid),
+      service_id: proc.service_guess || form.getFieldValue("service_id"),
+      instance_id: proc.instance_guess || form.getFieldValue("instance_id"),
+    });
   }
 
   async function handleDisable(watch) {
@@ -477,23 +547,39 @@ export default function PersistentWatch() {
               </Form.Item>
             </Col>
             <Col xs={24} md={8}>
-              <Form.Item name="target_pid" label="目标 PID" rules={[{ required: true, message: "请输入 PID" }]}>
-                <InputNumber min={1} max={4194304} style={{ width: "100%" }} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8}>
-              <Form.Item name="service_id" label="Service">
-                <Input placeholder="order-service" />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8}>
-              <Form.Item name="instance_id" label="Instance">
-                <Input placeholder="order-1" />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8}>
-              <Form.Item name="endpoint" label="Endpoint">
-                <Input placeholder="/orders" />
+              <Form.Item
+                name="target_pid"
+                label="目标进程"
+                rules={[{ required: true, message: "请选择目标进程" }]}
+                extra="来自 Agent 读取的 /proc 清单，可输入进程名、命令行或 PID 缩小范围。"
+              >
+                <Select
+                  showSearch
+                  allowClear
+                  placeholder="先刷新，再搜索选择进程"
+                  loading={processLoading}
+                  filterOption={false}
+                  onSearch={(value) => loadProcesses(form.getFieldValue("agent_id"), value)}
+                  onChange={handleSelectProcess}
+                  dropdownRender={(menu) => (
+                    <Space direction="vertical" style={{ width: "100%" }}>
+                      <Button
+                        block
+                        type="link"
+                        icon={<ReloadOutlined />}
+                        loading={processLoading}
+                        onClick={handleRefreshProcesses}
+                      >
+                        刷新 Agent 进程列表
+                      </Button>
+                      {menu}
+                    </Space>
+                  )}
+                  options={processOptions.map((proc) => ({
+                    value: Number(proc.pid),
+                    label: `PID ${proc.pid} · ${proc.comm || "unknown"} · ${proc.cmdline || ""}`.slice(0, 180),
+                  }))}
+                />
               </Form.Item>
             </Col>
             <Col xs={24} md={8}>
@@ -515,27 +601,55 @@ export default function PersistentWatch() {
                 </Select>
               </Form.Item>
             </Col>
-            <Col xs={24} md={8}>
-              <Form.Item name="retention_seconds" label="保留窗口">
-                <InputNumber min={30} max={1800} addonAfter="秒" style={{ width: "100%" }} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8}>
-              <Form.Item name="enabled_collectors" label="低成本观察族">
-                <Select mode="tags" tokenSeparators={[","]} />
-              </Form.Item>
-            </Col>
             <Col xs={24}>
-              <Form.Item
-                name="target_config_json"
-                label="目标配置 JSON"
-                extra="可选。用于绑定 dependency_targets / redis_target / log_paths，触发采集时会写入 collector_invocation。"
-              >
-                <Input.TextArea
-                  rows={4}
-                  placeholder='{"redis_target":{"host":"order-redis","port":6379,"url":"redis://order-redis:6379"}}'
-                />
-              </Form.Item>
+              <Collapse
+                ghost
+                items={[{
+                  key: "advanced",
+                  label: "高级配置：服务标识、Endpoint、保留窗口和目标 JSON",
+                  children: (
+                    <Row gutter={SPACING.lg}>
+                      <Col xs={24} md={8}>
+                        <Form.Item name="service_id" label="Service">
+                          <Input placeholder="order-service" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item name="instance_id" label="Instance">
+                          <Input placeholder="order-1" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item name="endpoint" label="Endpoint">
+                          <Input placeholder="/orders" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item name="retention_seconds" label="保留窗口">
+                          <InputNumber min={30} max={1800} addonAfter="秒" style={{ width: "100%" }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={8}>
+                        <Form.Item name="enabled_collectors" label="低成本观察族">
+                          <Select mode="tags" tokenSeparators={[","]} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24}>
+                        <Form.Item
+                          name="target_config_json"
+                          label="目标配置 JSON"
+                          extra="可选。用于绑定 dependency_targets / redis_target / log_paths，触发采集时会写入 collector_invocation。"
+                        >
+                          <Input.TextArea
+                            rows={4}
+                            placeholder='{"redis_target":{"host":"order-redis","port":6379,"url":"redis://order-redis:6379"}}'
+                          />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                  ),
+                }]}
+              />
             </Col>
           </Row>
           <Button type="primary" htmlType="submit" loading={submitting}>

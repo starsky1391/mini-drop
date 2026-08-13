@@ -19,7 +19,7 @@ x-defaults: &defaults
 services:
   frontend:
     <<: *defaults
-    image: online-boutique/frontend:v0.8.0
+    image: gcr.io/google-samples/microservices-demo/frontend:v0.8.0
     environment:
       PORT: "8080"
       PRODUCT_CATALOG_SERVICE_ADDR: productcatalogservice:3550
@@ -50,7 +50,7 @@ services:
 
   productcatalogservice:
     <<: *defaults
-    image: online-boutique/productcatalogservice:v0.8.0
+    image: gcr.io/google-samples/microservices-demo/productcatalogservice:v0.8.0
     environment:
       PORT: "3550"
       DISABLE_PROFILER: "1"
@@ -68,7 +68,7 @@ services:
 
   currencyservice:
     <<: *defaults
-    image: online-boutique/currencyservice:v0.8.0
+    image: gcr.io/google-samples/microservices-demo/currencyservice:v0.8.0
     environment:
       PORT: "7000"
       DISABLE_PROFILER: "1"
@@ -83,7 +83,7 @@ services:
 
   recommendationservice:
     <<: *defaults
-    image: online-boutique/recommendationservice:v0.8.0
+    image: gcr.io/google-samples/microservices-demo/recommendationservice:v0.8.0
     environment:
       PORT: "8080"
       PRODUCT_CATALOG_SERVICE_ADDR: productcatalogservice:3550
@@ -102,7 +102,7 @@ services:
 
   loadgenerator:
     <<: *defaults
-    image: online-boutique/loadgenerator:v0.8.0
+    image: gcr.io/google-samples/microservices-demo/loadgenerator:v0.8.0
     environment:
       FRONTEND_ADDR: frontend:8080
       USERS: "5"
@@ -117,7 +117,7 @@ services:
 
   cartservice:
     <<: *defaults
-    image: online-boutique/cartservice:v0.8.0
+    image: gcr.io/google-samples/microservices-demo/cartservice:v0.8.0
     environment:
       REDIS_ADDR: redis-cart:6379
     deploy:
@@ -146,7 +146,7 @@ services:
 
   checkoutservice:
     <<: *defaults
-    image: online-boutique/checkoutservice:v0.8.0
+    image: gcr.io/google-samples/microservices-demo/checkoutservice:v0.8.0
     environment:
       PORT: "5050"
       PRODUCT_CATALOG_SERVICE_ADDR: productcatalogservice:3550
@@ -166,7 +166,7 @@ services:
 
   paymentservice:
     <<: *defaults
-    image: online-boutique/paymentservice:v0.8.0
+    image: gcr.io/google-samples/microservices-demo/paymentservice:v0.8.0
     environment:
       PORT: "50051"
       DISABLE_PROFILER: "1"
@@ -184,7 +184,7 @@ services:
 
   shippingservice:
     <<: *defaults
-    image: online-boutique/shippingservice:v0.8.0
+    image: gcr.io/google-samples/microservices-demo/shippingservice:v0.8.0
     environment:
       PORT: "50051"
       DISABLE_PROFILER: "1"
@@ -199,7 +199,7 @@ services:
 
   emailservice:
     <<: *defaults
-    image: online-boutique/emailservice:v0.8.0
+    image: gcr.io/google-samples/microservices-demo/emailservice:v0.8.0
     environment:
       PORT: "8080"
       DISABLE_PROFILER: "1"
@@ -214,7 +214,7 @@ services:
 
   adservice:
     <<: *defaults
-    image: online-boutique/adservice:v0.8.0
+    image: gcr.io/google-samples/microservices-demo/adservice:v0.8.0
     environment:
       PORT: "9555"
     deploy:

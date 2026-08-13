@@ -58,8 +58,8 @@ cleanup_network() {
 cleanup_partition() {
   stop_unit md-aiopsv2-partition-rollback.timer
   stop_unit md-aiopsv2-partition-rollback.service
-  while iptables -C OUTPUT -d 192.168.10.12 -p udp --dport 4789 -m comment --comment md-aiopsv2-overlay -j DROP >/dev/null 2>&1; do
-    iptables -D OUTPUT -d 192.168.10.12 -p udp --dport 4789 -m comment --comment md-aiopsv2-overlay -j DROP || true
+  while iptables -C OUTPUT -d 172.18.87.120 -p udp --dport 4789 -m comment --comment md-aiopsv2-overlay -j DROP >/dev/null 2>&1; do
+    iptables -D OUTPUT -d 172.18.87.120 -p udp --dport 4789 -m comment --comment md-aiopsv2-overlay -j DROP || true
   done
 }
 
@@ -194,7 +194,7 @@ start_network_loss() {
   ip netns exec "$NETWORK_NS" tc qdisc add dev mdv2-ns root netem loss 35% delay 180ms 80ms
   systemd-run --unit=md-aiopsv2-net --property=RuntimeMaxSec=240 \
     /usr/sbin/ip netns exec "$NETWORK_NS" /usr/bin/python3 "$HELPERS/network_client_fault.py" \
-    --url http://192.168.10.11:8080 --duration 230 --timeout 1 --interval 0.08 >/dev/null
+    --url http://172.18.90.144:8080 --duration 230 --timeout 1 --interval 0.08 >/dev/null
 }
 
 start_overlay_partition() {
@@ -204,7 +204,7 @@ start_overlay_partition() {
 Description=Rollback bounded Mini-Drop overlay partition
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c '/usr/sbin/iptables -D OUTPUT -d 192.168.10.12 -p udp --dport 4789 -m comment --comment md-aiopsv2-overlay -j DROP || true'
+ExecStart=/bin/sh -c '/usr/sbin/iptables -D OUTPUT -d 172.18.87.120 -p udp --dport 4789 -m comment --comment md-aiopsv2-overlay -j DROP || true'
 EOF
   cat > /run/systemd/system/md-aiopsv2-partition-rollback.timer <<'EOF'
 [Unit]
@@ -217,7 +217,7 @@ WantedBy=timers.target
 EOF
   systemctl daemon-reload
   systemctl start md-aiopsv2-partition-rollback.timer
-  iptables -I OUTPUT 1 -d 192.168.10.12 -p udp --dport 4789 -m comment --comment md-aiopsv2-overlay -j DROP
+  iptables -I OUTPUT 1 -d 172.18.87.120 -p udp --dport 4789 -m comment --comment md-aiopsv2-overlay -j DROP
 }
 
 inject_fixture() {

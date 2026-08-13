@@ -6,7 +6,10 @@ py-spy 通过读取目标进程内存直接获取 Python 调用栈，
 
 from __future__ import annotations
 
+import html
+import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -35,6 +38,7 @@ class PySpyCollector:
         output_dir = os.path.join(self.OUTPUT_BASE, task.id)
         os.makedirs(output_dir, exist_ok=True)
         svg_path = os.path.join(output_dir, "pyspy.svg")
+        top_path = os.path.join(output_dir, "top.json")
 
         base_cmd = [
             pyspy, "record",
@@ -95,6 +99,10 @@ class PySpyCollector:
                 reason="py-spy 未产出 SVG 文件",
             )
 
+        top_functions = self._extract_top_functions(svg_path)
+        with open(top_path, "w", encoding="utf-8") as fh:
+            json.dump(top_functions, fh, ensure_ascii=False, indent=2)
+
         size = os.path.getsize(svg_path)
         return CollectorResult(
             ok=True,
@@ -106,6 +114,13 @@ class PySpyCollector:
                     "local_path": svg_path,
                     "content_type": "image/svg+xml",
                     "size_bytes": size,
+                },
+                {
+                    "artifact_type": "top_json",
+                    "filename": "top.json",
+                    "local_path": top_path,
+                    "content_type": "application/json",
+                    "size_bytes": os.path.getsize(top_path),
                 }
             ],
         )
@@ -117,4 +132,45 @@ class PySpyCollector:
     @staticmethod
     def _should_retry_without_native(stderr: bytes) -> bool:
         text = stderr.decode("utf-8", errors="replace")
-        return "UNW_EBADREG" in text or "bad register number" in text
+        return (
+            "UNW_EBADREG" in text
+            or "UNW_EINVAL" in text
+            or "bad register number" in text
+            or "unsupported operation or bad value" in text
+        )
+
+    @staticmethod
+    def _extract_top_functions(svg_path: str, limit: int = 20) -> list[dict]:
+        try:
+            with open(svg_path, "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            return []
+        counter: dict[str, dict[str, float | int | str]] = {}
+        for raw_title in re.findall(r"<title[^>]*>(.*?)</title>", text, flags=re.IGNORECASE | re.DOTALL):
+            title = html.unescape(re.sub(r"<[^>]+>", "", raw_title)).strip()
+            if not title:
+                continue
+            name = title.split(" (", 1)[0].strip()
+            if not name or name.lower() in {"all", "root"}:
+                continue
+            samples = PySpyCollector._extract_number(title, (r"(\d+)\s+samples?", r"samples:\s*(\d+)"))
+            percent = PySpyCollector._extract_number(title, (r"\(([\d.]+)%\)", r"([\d.]+)%"))
+            item = counter.setdefault(name, {"name": name, "samples": 0, "percent": 0.0})
+            item["samples"] = max(int(item["samples"]), int(samples))
+            item["percent"] = max(float(item["percent"]), float(percent))
+        items = list(counter.values())
+        items.sort(key=lambda item: (-float(item.get("percent") or 0.0), -int(item.get("samples") or 0), str(item["name"])))
+        return items[:limit]
+
+    @staticmethod
+    def _extract_number(text: str, patterns: tuple[str, ...]) -> float:
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+            try:
+                return float(match.group(1))
+            except ValueError:
+                continue
+        return 0.0

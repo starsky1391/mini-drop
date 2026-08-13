@@ -36,6 +36,7 @@ from agent.mini_drop_agent.collectors.java_async import JavaAsyncProfilerCollect
 from agent.mini_drop_agent.collectors.log_scan import LogScanCollector
 from agent.mini_drop_agent.collectors.memory import MemoryCollector
 from agent.mini_drop_agent.collectors.perf import PerfCollector
+from agent.mini_drop_agent.collectors.process_inventory import ProcessInventoryCollector
 from agent.mini_drop_agent.collectors.pprof import PprofCollector
 from agent.mini_drop_agent.collectors.pyspy import PySpyCollector
 from agent.mini_drop_agent.collectors.redis_check import RedisCheckCollector
@@ -72,6 +73,7 @@ COLLECTORS = {
     "log_scan": LogScanCollector(),
     "dependency_check": DependencyCheckCollector(),
     "redis_check": RedisCheckCollector(),
+    "process_inventory": ProcessInventoryCollector(),
 }
 
 CAPABILITIES = sorted(COLLECTORS.keys())
@@ -230,11 +232,11 @@ def _notify_result(
     artifacts: list[dict],
 ) -> None:
     """通过 gRPC Hotmethod.NotifyResult 上报采集结果。"""
-    if ok:
+    if ok or artifacts:
         stub.NotifyResult(
             hotmethod_pb2.TaskResult(
                 task_id=task_id,
-                error_message="",
+                error_message="" if ok else reason,
                 artifact_type="raw",
                 artifact_metadata_json=json.dumps(artifacts),
             ),
@@ -424,6 +426,8 @@ _TASK_TYPE_COLLECTOR: dict[int, str] = {
     10: "log_scan",
     11: "dependency_check",
     12: "redis_check",
+    13: "pyspy",
+    14: "process_inventory",
 }
 
 

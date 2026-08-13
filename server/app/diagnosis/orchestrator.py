@@ -19,6 +19,7 @@ from server.app.diagnosis.collector_invocation import build_collector_invocation
 from server.app.diagnosis.probe_registry import choose_probe_ids, get_probe
 from server.app.diagnosis.schemas import (
     ApprovalRequest,
+    BulkApprovalRequest,
     CreateDiagnosisRequest,
     DiagnosisBudget,
     DiagnosisStatus,
@@ -49,10 +50,13 @@ STRUCTURED_ARTIFACT_TYPES = {
     "continuous_top_json",
     "continuous_flamegraph_json",
     "continuous_summary",
+    "off_cpu_wait_json",
     "log_window_json",
     "dependency_check_json",
     "redis_check_json",
+    "trace_endpoint_profile_json",
 }
+DEPENDENCY_EVIDENCE_GAPS = {"dependency_check", "log_scan", "redis_check"}
 ALLOWED_DIAGNOSIS_TRANSITIONS = {
     "CREATED": {"UNDERSTANDING", "USER_CANCELED", "FAILED"},
     "UNDERSTANDING": {"PLANNING", "NEEDS_SCOPE_CONFIRMATION", "TOPOLOGY_UNAVAILABLE", "FAILED"},
@@ -111,7 +115,7 @@ class DiagnosisOrchestrator:
         })
         self._transition(diagnosis_id, DiagnosisStatus.UNDERSTANDING, "intent_parsed")
 
-        if intent.ambiguities or not target_scope["instances"]:
+        if not target_scope["instances"]:
             self._transition(
                 diagnosis_id,
                 DiagnosisStatus.NEEDS_SCOPE_CONFIRMATION,
@@ -236,16 +240,21 @@ class DiagnosisOrchestrator:
 
         duration = int(step["parameters"].get("duration_sec", 0))
         used_duration = int(session["budget_used"].get("probe_duration_seconds", 0))
-        duration_limit = min(
-            int(session["resource_budget"].get("max_duration_minutes", 10)) * 60,
-            int(session["resource_budget"].get("max_total_probe_cpu_seconds", 120)),
-        )
+        phase = _probe_budget_phase(step)
+        duration_limit = self._duration_limit(session, phase)
         if used_duration + duration > duration_limit:
             self._transition(
                 diagnosis_id,
                 DiagnosisStatus.BUDGET_EXHAUSTED,
                 "resource_budget_exhausted",
-                {"probe_duration_limit_seconds": duration_limit},
+                {
+                    "budget_phase": phase,
+                    "probe_duration_limit_seconds": duration_limit,
+                    "used_seconds": used_duration,
+                    "requested_seconds": duration,
+                    "reserved_seconds": self._follow_up_reserve(session),
+                    "next_action": "减少初始采集范围或进入 AI 树 follow-up 阶段",
+                },
             )
             return self.store.get_detail(diagnosis_id) or {}
 
@@ -268,6 +277,41 @@ class DiagnosisOrchestrator:
             {"step_id": request.step_id},
         )
         return self.store.get_detail(diagnosis_id) or {}
+
+    def approve_waiting(self, diagnosis_id: str, request: BulkApprovalRequest) -> dict[str, Any]:
+        session = self.store.get_session(diagnosis_id)
+        if session is None:
+            raise ValueError("诊断不存在")
+        if session["status"] in TERMINAL_DIAGNOSIS_STATUSES:
+            raise ValueError(f"终态诊断不能审批: {session['status']}")
+        waiting = [
+            probe for probe in self.store.list_probes(diagnosis_id)
+            if probe["status"] == "WAITING_APPROVAL" and probe["requires_approval"]
+        ]
+        if not waiting:
+            raise ValueError("当前没有待审批探针")
+
+        detail: dict[str, Any] = self.store.get_detail(diagnosis_id) or {}
+        for probe in waiting:
+            detail = self.approve(diagnosis_id, ApprovalRequest(
+                step_id=probe["step_id"],
+                decision=request.decision,
+                scope="single_execution",
+                approver_id=request.approver_id,
+            ))
+            if detail.get("status") in TERMINAL_DIAGNOSIS_STATUSES:
+                break
+        self.store.record_event(
+            diagnosis_id,
+            "bulk_approval_applied",
+            {
+                "decision": request.decision,
+                "requested_scope": request.scope,
+                "approver_id": request.approver_id,
+                "step_ids": [probe["step_id"] for probe in waiting],
+            },
+        )
+        return self.store.get_detail(diagnosis_id) or detail
 
     def _advance_locked(self, diagnosis_id: str) -> None:
         session = self.store.get_session(diagnosis_id)
@@ -296,9 +340,12 @@ class DiagnosisOrchestrator:
 
         if child_ids != session.get("child_task_ids", []):
             session = self.store.update_session(diagnosis_id, child_task_ids=child_ids)
+        self._schedule_deferred_followups(diagnosis_id)
+        session = self.store.get_session(diagnosis_id) or session
 
         terminal_tasks = []
         active_tasks = []
+        pending_tasks = []
         for task_id in child_ids:
             task = self.repo.tasks.get(task_id)
             if task is None:
@@ -308,8 +355,16 @@ class DiagnosisOrchestrator:
                 terminal_tasks.append(task)
             elif task_status in ACTIVE_TASK_STATUSES:
                 active_tasks.append(task)
+            else:
+                pending_tasks.append(task)
+
+        waiting = [probe for probe in self.store.list_probes(diagnosis_id) if probe["status"] == "WAITING_APPROVAL"]
 
         if terminal_tasks:
+            if active_tasks or pending_tasks:
+                if session["status"] != DiagnosisStatus.COLLECTING.value:
+                    self._transition(diagnosis_id, DiagnosisStatus.COLLECTING, "probe_started")
+                return
             self._transition(diagnosis_id, DiagnosisStatus.ANALYZING, "evidence_analysis_started")
             informative = self._analyze_tasks(diagnosis_id, terminal_tasks)
             if self._last_followup_scheduled:
@@ -332,7 +387,6 @@ class DiagnosisOrchestrator:
                 self._transition(diagnosis_id, DiagnosisStatus.COLLECTING, "probe_started")
             return
 
-        waiting = [probe for probe in self.store.list_probes(diagnosis_id) if probe["status"] == "WAITING_APPROVAL"]
         if waiting:
             self._transition(
                 diagnosis_id,
@@ -371,12 +425,22 @@ class DiagnosisOrchestrator:
         budget: DiagnosisBudget,
     ) -> None:
         instances = target_scope["instances"][:budget.max_service_instances]
-        probe_ids = choose_probe_ids(symptom)
+        probe_ids = _scope_probe_ids(symptom, target_scope)
         planned: list[ProbePlan] = []
         r2_count = 0
         auto_count = 0
         planned_duration = 0
-        duration_limit = min(budget.max_duration_minutes * 60, budget.max_total_probe_cpu_seconds)
+        total_limit = min(
+            budget.max_duration_minutes * 60,
+            budget.max_total_probe_cpu_seconds,
+        )
+        reserve = max(
+            0,
+            min(budget.follow_up_reserve_seconds, total_limit),
+        )
+        duration_limit = max(0, total_limit - reserve)
+        session = self.store.get_session(diagnosis_id) or {}
+        auto_policy = str((session.get("risk_budget") or {}).get("auto_execute_policy") or "safe_only")
         for index, instance in enumerate(instances):
             for probe_id in probe_ids:
                 definition = get_probe(probe_id)
@@ -403,6 +467,8 @@ class DiagnosisOrchestrator:
                         "duration_sec": duration,
                         "sample_rate": definition.default_sample_rate,
                         "evidence_gap": self._probe_evidence_gap(probe_id),
+                        "budget_phase": "initial",
+                        "execution_policy": auto_policy,
                         **collector_parameters,
                         "collector_invocation": _collector_invocation(
                             step={"diagnosis_id": diagnosis_id, "step_id": step_id},
@@ -413,7 +479,7 @@ class DiagnosisOrchestrator:
                     },
                     reason=f"用于区分 {', '.join(definition.applicable_hypotheses[:3])} 等候选假设",
                     risk_level=definition.risk_level,
-                    requires_approval=definition.requires_approval,
+                    requires_approval=definition.requires_approval and auto_policy != "all_registered",
                 ))
 
         for plan in planned:
@@ -495,6 +561,25 @@ class DiagnosisOrchestrator:
         self.store.update_probe(step_id, status="SCHEDULED", task_id=task.id)
         self._append_child_task(step["diagnosis_id"], task.id, definition)
 
+    def _schedule_deferred_followups(self, diagnosis_id: str) -> None:
+        """并发槽位释放后，继续调度已获准但暂时排队的 follow-up。"""
+        session = self.store.get_session(diagnosis_id)
+        if session is None:
+            return
+        policy = str((session.get("risk_budget") or {}).get("auto_execute_policy") or "safe_only")
+        if policy != "all_registered":
+            return
+        for probe in self.store.list_probes(diagnosis_id):
+            if probe.get("status") != "PLANNED":
+                continue
+            if (probe.get("parameters") or {}).get("execution_policy") != "all_registered":
+                continue
+            definition = get_probe(probe["probe_id"])
+            duration = int((probe.get("parameters") or {}).get("duration_sec") or 0)
+            if self._followup_budget_block(diagnosis_id, definition, duration):
+                continue
+            self._schedule_probe(probe["step_id"])
+
     def _task_options_for_probe(
         self,
         step: dict[str, Any],
@@ -543,18 +628,59 @@ class DiagnosisOrchestrator:
             }
         if probe_id == "process_redis_check":
             target_info = _redis_target(target_scope)
+            dependency_targets = _dependency_targets(target_scope)
             return {
-                "target_config": {"redis_target": target_info},
+                "target_config": {"redis_target": target_info, "dependency_targets": dependency_targets},
+                "dependency_targets": dependency_targets,
                 **target_info,
             } if target_info else {
-                "target_config": {"redis_target": {}},
+                "target_config": {"redis_target": {}, "dependency_targets": dependency_targets},
+                "dependency_targets": dependency_targets,
                 "missing_redis_target": True,
             }
         if probe_id == "process_log_scan":
             log_paths = target.get("log_paths") or target_scope.get("log_paths")
+            source_paths = target.get("source_paths") or target_scope.get("source_paths")
+            target_config = {
+                "log_paths": log_paths or [],
+                "source_paths": source_paths or [],
+                "container_id": target.get("container_id"),
+                "service_id": target.get("service_id"),
+                "instance_id": target.get("instance_id"),
+            }
             return {
-                "target_config": {"log_paths": log_paths or []},
+                "target_config": target_config,
                 **({"log_paths": log_paths} if log_paths else {}),
+                **({"source_paths": source_paths} if source_paths else {}),
+            }
+        if probe_id == "process_trace_endpoint_profile":
+            return {
+                "target_config": {
+                    "stack_source": "auto",
+                    "trace_source": "auto",
+                    "trace_paths": target.get("trace_paths") or target_scope.get("trace_paths") or [],
+                    "pid": target.get("pid"),
+                    "service_id": target.get("service_id"),
+                    "instance_id": target.get("instance_id"),
+                    "host_id": target.get("host_id"),
+                    "endpoint": target.get("endpoint") or target_scope.get("endpoint"),
+                    "container_id": target.get("container_id"),
+                },
+                "trace_paths": target.get("trace_paths") or target_scope.get("trace_paths") or [],
+            }
+        if probe_id == "process_off_cpu_profile":
+            return {
+                "target_config": {
+                    "pid": target.get("pid"),
+                    "service_id": target.get("service_id"),
+                    "instance_id": target.get("instance_id"),
+                    "host_id": target.get("host_id"),
+                    "endpoint": target.get("endpoint") or target_scope.get("endpoint"),
+                    "trace_paths": target.get("trace_paths") or target_scope.get("trace_paths") or [],
+                },
+                "min_wait_ms": 1,
+                "stack_depth": 32,
+                "trace_paths": target.get("trace_paths") or target_scope.get("trace_paths") or [],
             }
         return {}
 
@@ -566,6 +692,14 @@ class DiagnosisOrchestrator:
         if task_id not in task_ids:
             task_ids.append(task_id)
         usage = dict(session.get("budget_used", {}))
+        probe = next(
+            (
+                item for item in self.store.list_probes(diagnosis_id)
+                if item.get("task_id") == task_id
+            ),
+            {},
+        )
+        phase = _probe_budget_phase(probe)
         usage["hosts"] = len({
             probe["target"].get("host_id")
             for probe in self.store.list_probes(diagnosis_id)
@@ -581,7 +715,13 @@ class DiagnosisOrchestrator:
             1 for probe in self.store.list_probes(diagnosis_id)
             if probe.get("task_id") and probe["risk_level"] == "R2"
         )
-        usage["probe_duration_seconds"] = usage.get("probe_duration_seconds", 0) + definition.default_duration_seconds
+        duration = int(
+            (probe.get("parameters") or {}).get("duration_sec")
+            or definition.default_duration_seconds
+        )
+        usage["probe_duration_seconds"] = usage.get("probe_duration_seconds", 0) + duration
+        phase_key = f"{phase}_probe_duration_seconds"
+        usage[phase_key] = usage.get(phase_key, 0) + duration
         self.store.update_session(
             diagnosis_id,
             child_task_ids=task_ids,
@@ -649,6 +789,7 @@ class DiagnosisOrchestrator:
                 failure_events=[event.get("reason", "") for event in task_events if event.get("reason")],
                 agent_stats=self.repo.agent_metrics.get(task.agent_id, {}),
                 evidence_index=values.get("evidence_index") if isinstance(values.get("evidence_index"), dict) else {},
+                tool_results=_tool_results_from_structured_values(values),
             )
             candidates = generate_candidates(evidence, self.repo.get_feedback_priors())
             analysis_result = analyze_evidence(evidence, candidates)
@@ -691,18 +832,36 @@ class DiagnosisOrchestrator:
                 "evidence_refs": candidate["evidence_refs"],
                 "strength": "medium" if len(candidate["evidence_refs"]) > 1 else "weak",
             }]
+            candidate.update(_candidate_location_fields(candidate, self.store.get_session(diagnosis_id) or {}))
             deduped.append(candidate)
             if len(deduped) >= 3:
                 break
 
         cluster_assessment = self._build_cluster_assessment(diagnosis_id, task_observations)
-        for request_id in _assessment_followup_requests(cluster_assessment, self.store.get_session(diagnosis_id) or {}):
+        cluster_assessment.update(_assessment_location_fields(cluster_assessment, deduped, self.store.get_session(diagnosis_id) or {}))
+        sufficient_dependency = _has_sufficient_dependency_conclusion(
+            cluster_assessment,
+            deduped,
+            task_observations,
+        )
+        for request_id in _assessment_followup_requests(
+            cluster_assessment,
+            self.store.get_session(diagnosis_id) or {},
+        ):
+            if sufficient_dependency and request_id in DEPENDENCY_EVIDENCE_GAPS:
+                continue
             if request_id not in followup_requests:
                 followup_requests.append(request_id)
         diagnostic_commands = self._build_reviewable_commands(
             diagnosis_id,
             task_observations,
             cluster_assessment,
+        )
+        followup_requests = _filter_pending_evidence_requests(
+            diagnosis_id,
+            followup_requests,
+            self.store.list_probes(diagnosis_id),
+            task_observations,
         )
         conclusion = {
             "version": len((self.store.get_session(diagnosis_id) or {}).get("conclusion_versions", [])) + 1,
@@ -735,9 +894,11 @@ class DiagnosisOrchestrator:
     @staticmethod
     def _probe_evidence_gap(probe_id: str) -> str:
         return {
+            "process_cpu_profile": "cpu_profile",
             "process_off_cpu_profile": "off_cpu_wait_profile",
             "process_trace_endpoint_profile": "trace_endpoint_profile",
             "process_baseline_window": "baseline_window_profile",
+            "process_python_runtime_profile": "python_runtime_profile",
             "process_log_scan": "log_scan",
             "process_dependency_check": "dependency_check",
             "process_redis_check": "redis_check",
@@ -757,9 +918,11 @@ class DiagnosisOrchestrator:
         created = 0
         self._last_followup_scheduled = False
         request_map = {
+            "cpu_profile": "process_cpu_profile",
             "off_cpu_wait_profile": "process_off_cpu_profile",
             "trace_endpoint_profile": "process_trace_endpoint_profile",
             "baseline_window_profile": "process_baseline_window",
+            "python_runtime_profile": "process_python_runtime_profile",
             "log_scan": "process_log_scan",
             "dependency_check": "process_dependency_check",
             "redis_check": "process_redis_check",
@@ -779,6 +942,34 @@ class DiagnosisOrchestrator:
                 requires_approval = False
             key = f"{diagnosis_id}:followup:{evidence_gap}"
             step_id = f"step_{hashlib.sha256(key.encode()).hexdigest()[:14]}"
+            duration = min(definition.default_duration_seconds, definition.max_duration_seconds)
+            deferred = False
+            if not requires_approval:
+                budget_block = self._followup_budget_block(
+                    diagnosis_id,
+                    definition,
+                    duration,
+                )
+                if budget_block:
+                    if budget_block.startswith("并发探针预算已用尽"):
+                        deferred = True
+                    else:
+                        self.store.record_event(
+                            diagnosis_id,
+                            "followup_probe_blocked",
+                            {
+                                "evidence_gap": evidence_gap,
+                                "probe_id": probe_id,
+                                "execution_policy": policy,
+                                **self._budget_block_event_payload(
+                                    session,
+                                    phase="followup",
+                                    requested_seconds=duration,
+                                    reason=budget_block,
+                                ),
+                            },
+                        )
+                        continue
             collector_parameters = self._collector_probe_parameters(
                 probe_id,
                 session.get("target_scope", {}),
@@ -789,9 +980,10 @@ class DiagnosisOrchestrator:
                 probe_id=probe_id,
                 target=target,
                 parameters={
-                    "duration_sec": min(definition.default_duration_seconds, definition.max_duration_seconds),
+                    "duration_sec": duration,
                     "sample_rate": definition.default_sample_rate,
                     "evidence_gap": evidence_gap,
+                    "budget_phase": "followup",
                     "parent_task_id": parent_task.id,
                     "execution_policy": policy,
                     **collector_parameters,
@@ -813,7 +1005,7 @@ class DiagnosisOrchestrator:
             })
             existing_gaps.add(evidence_gap)
             created += 1
-            if not requires_approval:
+            if not requires_approval and not deferred:
                 self._schedule_probe(plan.step_id)
         if created:
             self._last_followup_scheduled = True
@@ -827,6 +1019,88 @@ class DiagnosisOrchestrator:
                 {"evidence_gaps": [item for item in request_ids if item in existing_gaps]},
             )
         return created
+
+    def _followup_budget_block(self, diagnosis_id: str, definition, duration: int) -> str | None:
+        """自动 follow-up 只能跳过人工审批，不能绕过资源预算。"""
+        session = self.store.get_session(diagnosis_id)
+        if session is None:
+            return "诊断会话不存在"
+
+        probes = self.store.list_probes(diagnosis_id)
+        if definition.risk_level == "R2":
+            used_r2 = sum(
+                1
+                for probe in probes
+                if probe["risk_level"] == "R2"
+                and probe["status"] in {"APPROVED", "SCHEDULED", "RUNNING", "COMPLETED"}
+            )
+            limit = int(session["risk_budget"].get("max_medium_risk_probes", 0))
+            if used_r2 >= limit:
+                return f"R2 探针预算已用尽 ({used_r2}/{limit})"
+
+        active_count = sum(
+            1
+            for probe in probes
+            if (task := self.repo.tasks.get(probe.get("task_id")))
+            and status_value(task.status) in ACTIVE_TASK_STATUSES
+        )
+        parallel_limit = int(session["resource_budget"].get("max_parallel_probes", 1))
+        if active_count >= parallel_limit:
+            return f"并发探针预算已用尽 ({active_count}/{parallel_limit})"
+
+        used_duration = int(session["budget_used"].get("probe_duration_seconds", 0))
+        duration_limit = self._duration_limit(session, "followup")
+        if used_duration + duration > duration_limit:
+            reserve = self._follow_up_reserve(session)
+            return (
+                "总采集时长预算已用尽 "
+                f"(phase=followup, used={used_duration}s, requested={duration}s, "
+                f"limit={duration_limit}s, reserved={reserve}s)"
+            )
+        return None
+
+    @classmethod
+    def _budget_block_event_payload(
+        cls,
+        session: dict[str, Any],
+        *,
+        phase: str,
+        requested_seconds: int,
+        reason: str,
+    ) -> dict[str, Any]:
+        used_seconds = int((session.get("budget_used") or {}).get("probe_duration_seconds", 0))
+        limit_seconds = cls._duration_limit(session, phase)
+        reserved_seconds = cls._follow_up_reserve(session)
+        return {
+            "budget_phase": phase,
+            "used_seconds": used_seconds,
+            "limit_seconds": limit_seconds,
+            "reserved_seconds": reserved_seconds,
+            "requested_seconds": requested_seconds,
+            "reason": reason,
+            "next_action": (
+                "等待并发槽位释放后重试"
+                if reason.startswith("并发探针预算已用尽")
+                else "减少采集范围，或保留预算给下一轮 AI 树 follow-up"
+            ),
+        }
+
+    @staticmethod
+    def _follow_up_reserve(session: dict[str, Any]) -> int:
+        budget = session.get("resource_budget") or {}
+        total = int(budget.get("max_total_probe_cpu_seconds", 180))
+        configured = int(budget.get("follow_up_reserve_seconds", 60))
+        return max(0, min(configured, total))
+
+    @classmethod
+    def _duration_limit(cls, session: dict[str, Any], phase: str) -> int:
+        budget = session.get("resource_budget") or {}
+        total = int(budget.get("max_total_probe_cpu_seconds", 180))
+        wall_limit = int(budget.get("max_duration_minutes", 10)) * 60
+        total_limit = min(wall_limit, total)
+        if phase == "initial":
+            return max(0, total_limit - cls._follow_up_reserve(session))
+        return total_limit
 
     def _build_task_observation(
         self,
@@ -847,7 +1121,12 @@ class DiagnosisOrchestrator:
             "target": target,
             "summary": summary,
             "top_function": {"name": top_name, "percent": top_percent},
+            "specific_anchor": _specific_diagnostic_anchor(values, target, summary, top_items),
             "pressure": pressure,
+            "dependency": _dependency_signal(values.get("dependency_check_json")),
+            "redis": _redis_signal(values.get("redis_check_json")),
+            "logs": _log_signal(values.get("log_window_json")),
+            "confidence_inputs": values.get("confidence_inputs") if isinstance(values.get("confidence_inputs"), dict) else {},
             "evidence_refs": evidence_refs,
         }
 
@@ -929,12 +1208,27 @@ class DiagnosisOrchestrator:
         target_pressure = any(_has_pressure(obs) for obs in target_obs)
         neighbor_pressure = any(_has_pressure(obs) for obs in same_host_obs)
         downstream_pressure = any(_has_pressure(obs) for obs in downstream_obs)
+        downstream_dependency_failure = any(_has_dependency_failure(obs) or _has_redis_failure(obs) for obs in observations)
+        target_anchor = _best_specific_anchor(target_obs)
         shared_iowait = (
             any(obs["pressure"].get("io_wait") for obs in target_obs)
             and any(obs["pressure"].get("io_wait") for obs in same_host_obs)
         )
 
-        if shared_iowait:
+        if downstream_dependency_failure:
+            classification = "downstream_dependency"
+            confidence = 0.82
+            summary = _downstream_dependency_summary(
+                target_anchor,
+                observations,
+                session,
+            )
+            ruled_out.append({
+                "hypothesis": "self_code_regression",
+                "reason": "当前强证据来自依赖可达性/Redis 专项检查，而不是目标进程代码热点。",
+                "evidence_refs": all_refs,
+            })
+        elif shared_iowait:
             classification = "host_resource_contention"
             confidence = 0.7
             summary = "目标实例和同宿主实例同时表现出 I/O 等待，倾向于宿主机或共享块设备争抢。"
@@ -959,7 +1253,7 @@ class DiagnosisOrchestrator:
         elif target_hot or target_pressure:
             classification = "self_code_or_process_pressure"
             confidence = 0.68 if target_hot else 0.58
-            summary = "证据主要集中在目标实例自身，优先检查代码热点、线程竞争或进程资源压力。"
+            summary = _self_pressure_summary(target_anchor)
             if same_host_obs:
                 ruled_out.append({
                     "hypothesis": "same_host_noisy_neighbor",
@@ -974,6 +1268,8 @@ class DiagnosisOrchestrator:
             "summary": summary,
             "evidence_refs": all_refs,
             "compared_targets": compared,
+            "supported_level": target_anchor.get("supported_level") if target_anchor else None,
+            "primary_anchor": target_anchor,
             "ruled_out": ruled_out,
         }
 
@@ -1379,6 +1675,7 @@ class DiagnosisOrchestrator:
             "io_degradation": ["HOST_DISK_CONTENTION", "SAME_HOST_NOISY_NEIGHBOR", "DOWNSTREAM_LATENCY"],
             "memory_pressure": ["HOST_MEMORY_PRESSURE", "MEMORY_LEAK", "SAME_HOST_NOISY_NEIGHBOR"],
             "noisy_neighbor": ["SAME_HOST_NOISY_NEIGHBOR", "HOST_DISK_CONTENTION", "TRAFFIC_SURGE"],
+            "runtime_contention": ["LOCK_CONTENTION", "SELF_CODE_REGRESSION", "CPU_SATURATION"],
         }.get(symptom, ["CPU_SATURATION", "DOWNSTREAM_LATENCY", "INSUFFICIENT_EVIDENCE"])
         targets = [item["instance_id"] for item in target_scope.get("instances", [])]
         return [{
@@ -1411,7 +1708,11 @@ class DiagnosisOrchestrator:
         self.store.update_session(diagnosis_id, hypothesis_graph=graph)
 
     def _find_reusable_tasks(self, target_scope: dict[str, Any], start: datetime, end: datetime) -> list[str]:
+        reuse_max_age = _reuse_max_age_seconds()
+        if reuse_max_age == 0:
+            return []
         targets = {(item["agent_id"], item["pid"]) for item in target_scope.get("instances", [])}
+        now = utcnow()
         result = []
         for task in self.repo.tasks.values():
             if (task.agent_id, task.target_pid) not in targets:
@@ -1422,6 +1723,8 @@ class DiagnosisOrchestrator:
                 task_start = task_start.replace(tzinfo=timezone.utc)
             if task_end.tzinfo is None:
                 task_end = task_end.replace(tzinfo=timezone.utc)
+            if reuse_max_age is not None and (now - task_end).total_seconds() > reuse_max_age:
+                continue
             if task_end >= start and task_start <= end and status_value(task.status) in TERMINAL_TASK_STATUSES:
                 result.append(task.id)
         return sorted(result)
@@ -1445,7 +1748,7 @@ class DiagnosisOrchestrator:
     @staticmethod
     def _budget_for_profile(profile: str) -> DiagnosisBudget:
         if profile == "development":
-            return DiagnosisBudget(max_hosts=10, max_service_instances=20, max_parallel_probes=5, max_medium_risk_probes=2)
+            return DiagnosisBudget(max_hosts=10, max_service_instances=20, max_parallel_probes=5, max_medium_risk_probes=5)
         if profile == "staging":
             return DiagnosisBudget(max_hosts=8, max_service_instances=15, max_parallel_probes=4, max_medium_risk_probes=2)
         return DiagnosisBudget()
@@ -1470,6 +1773,8 @@ class DiagnosisOrchestrator:
             "probes": 0,
             "medium_risk_probes": 0,
             "probe_duration_seconds": 0,
+            "initial_probe_duration_seconds": 0,
+            "followup_probe_duration_seconds": 0,
             "model_calls": 0,
             "artifact_size_mb": 0,
         }
@@ -1502,6 +1807,54 @@ def _quality(value: float) -> str:
     if value >= 0.4:
         return "medium"
     return "low"
+
+
+def _reuse_max_age_seconds() -> int | None:
+    raw = os.getenv("MINI_DROP_DIAGNOSIS_REUSE_MAX_AGE_SECONDS")
+    if raw is None or raw == "":
+        return None
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return None
+
+
+def _scope_probe_ids(symptom: str, target_scope: dict[str, Any]) -> list[str]:
+    probe_ids = list(choose_probe_ids(symptom))
+    if symptom == "runtime_contention" and any(_is_python_target(item) for item in target_scope.get("instances", [])):
+        probe_ids = [
+            "host_process_metrics",
+            "process_off_cpu_profile",
+            "process_python_runtime_profile",
+            "process_trace_endpoint_profile",
+        ]
+    dependency_targets = [
+        item for item in target_scope.get("dependency_targets", [])
+        if isinstance(item, dict)
+    ]
+    if dependency_targets:
+        _append_once(probe_ids, "process_dependency_check", after="host_process_metrics")
+        _append_once(probe_ids, "process_log_scan", after="process_dependency_check")
+        if any(_is_redis_dependency(item) for item in dependency_targets):
+            _append_once(probe_ids, "process_redis_check", after="process_dependency_check")
+    return probe_ids
+
+
+def _append_once(items: list[str], value: str, *, after: str | None = None) -> None:
+    if value in items:
+        return
+    if after and after in items:
+        items.insert(items.index(after) + 1, value)
+        return
+    items.append(value)
+
+
+def _is_python_target(instance: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(instance.get(key) or "")
+        for key in ("service_id", "instance_id", "container_id")
+    ).lower()
+    return "python" in text or "py-" in text
 
 
 def _confidence_label(value: float) -> str:
@@ -1567,6 +1920,285 @@ def _pressure_flags(summary: dict[str, Any], values: dict[str, Any]) -> dict[str
     }
 
 
+def _dependency_signal(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"has_signal": False, "failed_count": 0}
+    summary = value.get("summary") if isinstance(value.get("summary"), dict) else {}
+    failed = summary.get("failed_dependencies")
+    if isinstance(failed, list):
+        failed_count = len(failed)
+    else:
+        checks = value.get("checks")
+        failed_count = sum(1 for item in checks or [] if isinstance(item, dict) and item.get("success") is False)
+    return {
+        "has_signal": bool(value.get("checks")),
+        "failed_count": failed_count,
+        "failed_dependencies": failed if isinstance(failed, list) else [],
+    }
+
+
+def _redis_signal(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"has_signal": False, "failed": False}
+    connectivity = value.get("connectivity") if isinstance(value.get("connectivity"), dict) else {}
+    latency = value.get("latency_summary") if isinstance(value.get("latency_summary"), dict) else {}
+    slowlog = value.get("slowlog_summary") if isinstance(value.get("slowlog_summary"), dict) else {}
+    failed = connectivity.get("ping_ok") is False or connectivity.get("exporter_up") is False
+    return {
+        "has_signal": bool(connectivity or latency or slowlog),
+        "failed": failed,
+        "max_latency_ms": _num(latency.get("max_latency_ms")),
+        "slowlog_entry_count": int(_num(slowlog.get("entry_count"))),
+        "error_type": connectivity.get("error_type") or "",
+    }
+
+
+def _log_signal(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"has_signal": False, "error_cluster_count": 0}
+    summary = value.get("summary") if isinstance(value.get("summary"), dict) else {}
+    clusters = value.get("error_clusters")
+    return {
+        "has_signal": bool(clusters),
+        "error_cluster_count": int(_num(summary.get("error_cluster_count") or len(clusters or []))),
+    }
+
+
+def _specific_diagnostic_anchor(
+    values: dict[str, Any],
+    target: dict[str, Any],
+    summary: dict[str, Any],
+    top_items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    base = {
+        "service_id": target.get("service_id"),
+        "instance_id": target.get("instance_id"),
+        "pid": target.get("pid"),
+    }
+    off_cpu = values.get("off_cpu_wait_json")
+    if isinstance(off_cpu, dict):
+        stacks = off_cpu.get("top_wait_stacks")
+        if isinstance(stacks, list) and stacks:
+            top = next((item for item in stacks if isinstance(item, dict)), {})
+            if top:
+                top_frame = str(
+                    top.get("top_frame")
+                    or (top.get("stack") or [""])[0]
+                    or ""
+                ).strip()
+                symbolized = _is_symbolized_frame(top_frame)
+                return {
+                    **base,
+                    "supported_level": "function" if symbolized else "process",
+                    "anchor_type": (
+                        "off_cpu_wait_top_frame"
+                        if symbolized
+                        else "off_cpu_wait_unsymbolized_address"
+                    ),
+                    "anchor": top_frame,
+                    "wait_reason": top.get("wait_reason") or (off_cpu.get("summary") or {}).get("top_wait_reason"),
+                    "samples": int(_num(top.get("samples"))),
+                    "percent": _num(top.get("percent")),
+                    "wait_ms": _num(top.get("wait_ms")),
+                    "evidence_ref": top.get("evidence_ref") or "off_cpu_wait.top_wait_stacks[0]",
+                    "blocked_upgrade_reason": (
+                        "缺少锁持有者线程、业务调用栈或源码符号映射，不能直接升级到代码行。"
+                        if symbolized
+                        else "当前等待栈顶部仍是未符号化地址，需补 debuginfo/符号映射后才能升级到函数。"
+                    ),
+                }
+
+    call_paths = values.get("call_path_hotspots")
+    if isinstance(call_paths, list) and call_paths:
+        top = next((item for item in call_paths if isinstance(item, dict)), {})
+        call_path = top.get("call_path") if isinstance(top.get("call_path"), list) else []
+        if top and call_path:
+            return {
+                **base,
+                "supported_level": "call_path",
+                "anchor_type": "call_path_hotspot",
+                "anchor": " -> ".join(str(item) for item in call_path),
+                "function": top.get("function"),
+                "samples": int(_num(top.get("samples"))),
+                "percent": _num(top.get("percent")),
+                "evidence_ref": top.get("evidence_ref") or "structured_evidence.call_path_hotspots[0]",
+                "blocked_upgrade_reason": "缺少 line profiler 或源码映射，不能直接升级到具体代码行。",
+            }
+
+    if top_items:
+        top = top_items[0] or {}
+        name = str(top.get("name") or top.get("function") or top.get("symbol") or "").strip()
+        if name:
+            return {
+                **base,
+                "supported_level": "function",
+                "anchor_type": "top_function",
+                "anchor": name,
+                "samples": int(_num(top.get("samples"))),
+                "percent": _num(top.get("percent")),
+                "evidence_ref": top.get("evidence_ref") or "top_functions[0]",
+                "blocked_upgrade_reason": "缺少源码符号映射或行级采样证据，不能直接升级到代码行。",
+            }
+
+    pressure_names = [
+        name for name, value in _pressure_flags(summary, values).items()
+        if value
+    ]
+    return {
+        **base,
+        "supported_level": "process",
+        "anchor_type": "process_pressure",
+        "anchor": ",".join(pressure_names) or "process_metrics",
+        "thread_count": int(_num(summary.get("thread_count"))),
+        "ctx_nonvoluntary_rate": _num(summary.get("ctx_nonvoluntary_rate")),
+        "avg_cpu_user_pct": _num(summary.get("avg_cpu_user_pct")),
+        "avg_cpu_sys_pct": _num(summary.get("avg_cpu_sys_pct")),
+        "evidence_ref": "sys_metrics.summary",
+        "blocked_upgrade_reason": "缺少 off-CPU 等待栈、CPU profile 或 trace 回连，当前不能判断具体函数。",
+    }
+
+
+def _best_specific_anchor(observations: list[dict[str, Any]]) -> dict[str, Any]:
+    order = {"line": 0, "call_path": 1, "function": 2, "syscall": 3, "thread": 4, "process": 5, "resource": 6}
+    anchors = [
+        obs.get("specific_anchor")
+        for obs in observations
+        if isinstance(obs.get("specific_anchor"), dict)
+    ]
+    if not anchors:
+        return {}
+    return sorted(
+        anchors,
+        key=lambda item: (
+            order.get(str(item.get("supported_level") or "resource"), 99),
+            -_num(item.get("percent")),
+            -_num(item.get("samples")),
+        ),
+    )[0]
+
+
+def _self_pressure_summary(anchor: dict[str, Any]) -> str:
+    if not anchor:
+        return "当前不能给出可操作结论：缺少函数、等待点、调用路径或进程指标锚点，需要先补结构化采集证据。"
+    instance = anchor.get("instance_id") or anchor.get("service_id") or "目标实例"
+    pid = f"(pid={anchor.get('pid')})" if anchor.get("pid") else ""
+    level = anchor.get("supported_level") or "process"
+    anchor_name = anchor.get("anchor") or anchor.get("anchor_type") or "unknown"
+    reason = anchor.get("blocked_upgrade_reason") or "证据不足，不能继续下钻。"
+    if anchor.get("anchor_type") == "off_cpu_wait_top_frame":
+        samples = int(_num(anchor.get("samples")))
+        wait_reason = anchor.get("wait_reason") or "unknown"
+        percent = _num(anchor.get("percent"))
+        percent_text = f"，占比 {percent:.1f}%" if percent > 0 else ""
+        return (
+            f"这次不要停在泛化的进程压力判断：same-window off-CPU 证据已把问题收敛到 "
+            f"{instance}{pid} 的等待点 {anchor_name}，wait_reason={wait_reason}，"
+            f"samples={samples}{percent_text}。当前更像线程同步/锁等待方向；结论先停在 {level} 层，"
+            f"{reason}"
+        )
+    if anchor.get("anchor_type") == "off_cpu_wait_unsymbolized_address":
+        samples = int(_num(anchor.get("samples")))
+        wait_reason = anchor.get("wait_reason") or "unknown"
+        percent = _num(anchor.get("percent"))
+        percent_text = f"，占比 {percent:.1f}%" if percent > 0 else ""
+        return (
+            f"same-window off-CPU 证据已把问题收敛到 {instance}{pid} 的未符号化等待地址 "
+            f"{anchor_name}，wait_reason={wait_reason}，samples={samples}{percent_text}。"
+            f"这证明存在具体等待点，但当前不能把地址冒充函数；{reason}"
+        )
+    if anchor.get("anchor_type") == "call_path_hotspot":
+        function = anchor.get("function")
+        function_text = f"，top_function={function}" if function else ""
+        percent = _num(anchor.get("percent"))
+        percent_text = f"，占比 {percent:.1f}%" if percent > 0 else ""
+        return (
+            f"热点不是均匀分布在整个服务上，而是集中在 {instance}{pid} 的调用路径 {anchor_name}"
+            f"{function_text}{percent_text}。当前更像特定请求路径内的问题；结论先停在 {level} 层，{reason}"
+        )
+    if anchor.get("anchor_type") == "top_function":
+        percent = _num(anchor.get("percent"))
+        samples = int(_num(anchor.get("samples")))
+        metrics = []
+        if percent > 0:
+            metrics.append(f"percent={percent:.1f}%")
+        if samples > 0:
+            metrics.append(f"samples={samples}")
+        metric_text = f"，{', '.join(metrics)}" if metrics else ""
+        return (
+            f"当前证据已定位到 {instance}{pid} 的函数热点 {anchor_name}{metric_text}。"
+            f"这更像自身代码/运行时热点，而不是泛查资源压力；结论先停在 {level} 层，{reason}"
+        )
+    pressure_bits = []
+    if _num(anchor.get("avg_cpu_user_pct")) or _num(anchor.get("avg_cpu_sys_pct")):
+        pressure_bits.append(
+            f"cpu={_num(anchor.get('avg_cpu_user_pct')) + _num(anchor.get('avg_cpu_sys_pct')):.1f}%"
+        )
+    if _num(anchor.get("thread_count")):
+        pressure_bits.append(f"thread_count={int(_num(anchor.get('thread_count')))}")
+    if _num(anchor.get("ctx_nonvoluntary_rate")):
+        pressure_bits.append(f"ctx_switch_rate={_num(anchor.get('ctx_nonvoluntary_rate')):.1f}/s")
+    metric_text = f"，{', '.join(pressure_bits)}" if pressure_bits else ""
+    return (
+        f"当前只能保守停在 {level} 层，但不是空泛排查：{instance}{pid} 的 {anchor_name} 出现异常{metric_text}。"
+        f"{reason}"
+    )
+
+
+def _downstream_dependency_summary(
+    anchor: dict[str, Any],
+    observations: list[dict[str, Any]],
+    session: dict[str, Any],
+) -> str:
+    root = _dependency_root_entity(session, prefer_redis=True) or _dependency_root_entity(session) or "下游依赖"
+    redis_obs = next((obs for obs in observations if _has_redis_failure(obs)), None)
+    dependency_obs = next((obs for obs in observations if _has_dependency_failure(obs)), None)
+    facts: list[str] = []
+    if redis_obs:
+        redis = redis_obs.get("redis") if isinstance(redis_obs.get("redis"), dict) else {}
+        if redis.get("failed"):
+            facts.append("Redis ping/exporter 可达性失败")
+        if _num(redis.get("max_latency_ms")) >= 1000:
+            facts.append(f"Redis 最大延迟 {_num(redis.get('max_latency_ms')):.0f}ms")
+        if int(redis.get("slowlog_entry_count") or 0) > 0:
+            facts.append(f"Redis slowlog {int(redis.get('slowlog_entry_count') or 0)} 条")
+    if dependency_obs:
+        dependency = dependency_obs.get("dependency") if isinstance(dependency_obs.get("dependency"), dict) else {}
+        failed_count = int(dependency.get("failed_count") or 0)
+        if failed_count:
+            facts.append(f"依赖可达性失败 {failed_count} 项")
+    facts_text = "；".join(facts) if facts else "依赖检查或 Redis 专项证据异常"
+
+    anchor_text = ""
+    if anchor:
+        instance = anchor.get("instance_id") or anchor.get("service_id") or "目标实例"
+        pid = f"(pid={anchor.get('pid')})" if anchor.get("pid") else ""
+        reason = anchor.get("blocked_upgrade_reason") or ""
+        if anchor.get("anchor_type") == "off_cpu_wait_unsymbolized_address":
+            anchor_text = (
+                f"同窗 off-CPU 还捕获到 {instance}{pid} 的等待地址 {anchor.get('anchor')}，"
+                f"wait_reason={anchor.get('wait_reason') or 'unknown'}，samples={int(_num(anchor.get('samples')))}；"
+                f"{reason}"
+            )
+        elif anchor.get("anchor_type") == "off_cpu_wait_top_frame":
+            anchor_text = (
+                f"同窗 off-CPU 等待点为 {instance}{pid} 的 {anchor.get('anchor')}，"
+                f"wait_reason={anchor.get('wait_reason') or 'unknown'}，samples={int(_num(anchor.get('samples')))}。"
+            )
+    if anchor_text:
+        return f"根因优先指向 Redis 下游依赖 {root}：{facts_text}。{anchor_text}"
+    return f"根因优先指向下游依赖 {root}：{facts_text}。"
+
+
+def _has_dependency_failure(observation: dict[str, Any]) -> bool:
+    signal = observation.get("dependency") if isinstance(observation.get("dependency"), dict) else {}
+    return int(signal.get("failed_count") or 0) > 0
+
+
+def _has_redis_failure(observation: dict[str, Any]) -> bool:
+    signal = observation.get("redis") if isinstance(observation.get("redis"), dict) else {}
+    return bool(signal.get("failed")) or _num(signal.get("max_latency_ms")) >= 1000 or int(signal.get("slowlog_entry_count") or 0) > 0
+
+
 def _has_ebpf_latency(value: Any) -> bool:
     if not isinstance(value, dict):
         return False
@@ -1610,6 +2242,13 @@ def _num(value: Any) -> float:
         return 0.0
 
 
+def _is_symbolized_frame(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    if not text or text.startswith("0x"):
+        return False
+    return not any(token in text for token in ("unknown", "[unknown]", "??"))
+
+
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
@@ -1646,8 +2285,29 @@ def _minimize(value: Any, depth: int = 0) -> Any:
 
 def _normalize_structured_artifact_values(values: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(values)
+    trace_profile = normalized.get("trace_endpoint_profile_json")
+    if isinstance(trace_profile, dict):
+        normalized.setdefault("top_json", trace_profile.get("top_functions") or [])
+        normalized.setdefault("depth_evidence_json", {
+            "stack_samples": trace_profile.get("call_path_hotspots") or [],
+            "context": trace_profile.get("target") or {},
+            "call_path_hotspots": trace_profile.get("call_path_hotspots") or [],
+        })
     if "top_json" not in normalized and "continuous_top_json" in normalized:
         normalized["top_json"] = normalized["continuous_top_json"]
+    if "top_json" not in normalized and isinstance(normalized.get("off_cpu_wait_json"), dict):
+        stacks = normalized["off_cpu_wait_json"].get("top_wait_stacks")
+        if isinstance(stacks, list):
+            normalized["top_json"] = [
+                {
+                    "name": item.get("top_frame") or (item.get("stack") or [""])[0],
+                    "samples": item.get("samples"),
+                    "percent": item.get("percent"),
+                    "wait_reason": item.get("wait_reason"),
+                }
+                for item in stacks
+                if isinstance(item, dict) and (item.get("top_frame") or item.get("stack"))
+            ]
     if "flamegraph_json" not in normalized and "continuous_flamegraph_json" in normalized:
         normalized["flamegraph_json"] = normalized["continuous_flamegraph_json"]
     summary = normalized.get("continuous_summary")
@@ -1658,6 +2318,49 @@ def _normalize_structured_artifact_values(values: dict[str, Any]) -> dict[str, A
         depth.setdefault("baseline_summary", summary)
         normalized["depth_evidence_json"] = depth
     return normalized
+
+
+def _tool_results_from_structured_values(values: dict[str, Any]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    dependency = values.get("dependency_check_json")
+    if isinstance(dependency, dict):
+        summary = dependency.get("summary") if isinstance(dependency.get("summary"), dict) else {}
+        results.append({
+            "tool_name": "dependency_check",
+            "failed_dependency_count": len(summary.get("failed_dependencies") or []),
+            "summary": summary,
+        })
+    redis = values.get("redis_check_json")
+    if isinstance(redis, dict):
+        connectivity = redis.get("connectivity") if isinstance(redis.get("connectivity"), dict) else {}
+        latency = redis.get("latency_summary") if isinstance(redis.get("latency_summary"), dict) else {}
+        slowlog = redis.get("slowlog_summary") if isinstance(redis.get("slowlog_summary"), dict) else {}
+        results.append({
+            "tool_name": "redis_check",
+            "ping_ok": connectivity.get("ping_ok"),
+            "exporter_up": connectivity.get("exporter_up"),
+            "max_latency_ms": latency.get("max_latency_ms"),
+            "slowlog_entry_count": slowlog.get("entry_count"),
+        })
+    log_window = values.get("log_window_json")
+    if isinstance(log_window, dict):
+        summary = log_window.get("summary") if isinstance(log_window.get("summary"), dict) else {}
+        results.append({
+            "tool_name": "log_scan",
+            "error_cluster_count": summary.get("error_cluster_count"),
+        })
+    off_cpu = values.get("off_cpu_wait_json")
+    if isinstance(off_cpu, dict):
+        summary = off_cpu.get("summary") if isinstance(off_cpu.get("summary"), dict) else {}
+        results.append({
+            "tool_name": "off_cpu_wait_profile",
+            "sample_count": summary.get("sample_count"),
+            "blocked_thread_count": summary.get("blocked_thread_count"),
+            "top_wait_reason": summary.get("top_wait_reason"),
+            "collector_status": off_cpu.get("collector_status"),
+            "parser_status": off_cpu.get("parser_status"),
+        })
+    return results
 
 
 def _dependency_targets(target_scope: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1679,11 +2382,18 @@ def _dependency_targets(target_scope: dict[str, Any]) -> list[dict[str, Any]]:
     return targets
 
 
+def _is_redis_dependency(item: dict[str, Any]) -> bool:
+    haystack = " ".join(
+        str(item.get(key) or "")
+        for key in ("dependency_id", "target_service", "protocol", "host", "url")
+    ).lower()
+    return "redis" in haystack
+
+
 def _redis_target(target_scope: dict[str, Any]) -> dict[str, Any]:
     for item in _dependency_targets(target_scope):
         protocol = str(item.get("protocol") or "").lower()
-        text = " ".join(str(item.get(key) or "") for key in ("dependency_id", "host", "url")).lower()
-        if protocol == "redis" or "redis" in text:
+        if protocol == "redis" or _is_redis_dependency(item):
             host = item.get("host") or _host_from_url(str(item.get("url") or ""))
             port = int(item.get("port") or 6379)
             return {
@@ -1726,16 +2436,200 @@ def _collector_invocation(
 def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str, Any]) -> list[str]:
     classification = assessment.get("classification")
     target_scope = session.get("target_scope", {}) if isinstance(session.get("target_scope"), dict) else {}
-    if classification != "downstream_dependency":
-        return []
-    requests = ["dependency_check", "log_scan"]
-    if any(
-        "redis" in " ".join(str(item.get(key) or "") for key in ("dependency_id", "protocol", "host", "url")).lower()
-        for item in target_scope.get("dependency_targets", [])
-        if isinstance(item, dict)
-    ):
-        requests.append("redis_check")
+    requests: list[str] = []
+    if classification == "downstream_dependency":
+        requests.extend(["dependency_check", "log_scan"])
+        if any(
+            "redis" in " ".join(str(item.get(key) or "") for key in ("dependency_id", "protocol", "host", "url")).lower()
+            for item in target_scope.get("dependency_targets", [])
+            if isinstance(item, dict)
+        ):
+            requests.append("redis_check")
+    if _needs_function_depth(assessment):
+        requests.extend(["cpu_profile", "off_cpu_wait_profile", "trace_endpoint_profile"])
     return requests
+
+
+def _filter_pending_evidence_requests(
+    diagnosis_id: str,
+    requests: list[str],
+    probes: list[dict[str, Any]],
+    task_observations: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    """按证据质量去重，避免依赖检查完成后误删函数级深探请求。"""
+    terminal_success = {"COMPLETED"}
+    terminal_skip = {
+        "UNAVAILABLE",
+        "REJECTED",
+        "REJECTED_POLICY",
+        "INVALID",
+        "SKIPPED",
+    }
+    status_by_gap: dict[str, list[str]] = {}
+    for probe in probes:
+        gap = str((probe.get("parameters") or {}).get("evidence_gap") or "")
+        if gap:
+            status_by_gap.setdefault(gap, []).append(str(probe.get("status") or ""))
+
+    result: list[str] = []
+    depth_completed = _completed_depth_evidence_gaps(task_observations or [])
+    for request in requests:
+        statuses = status_by_gap.get(request, [])
+        if request in DEPENDENCY_EVIDENCE_GAPS and statuses and any(status in terminal_success for status in statuses):
+            continue
+        if request not in DEPENDENCY_EVIDENCE_GAPS and request in depth_completed:
+            continue
+        if statuses and all(status in terminal_skip for status in statuses):
+            continue
+        if request not in result:
+            result.append(request)
+    return result
+
+
+def _completed_depth_evidence_gaps(observations: list[dict[str, Any]]) -> set[str]:
+    """只有拿到对应的非空深度证据，才认为深度请求已经完成。"""
+    completed: set[str] = set()
+    for observation in observations:
+        collector_type = str(observation.get("collector_type") or "")
+        top_function = observation.get("top_function") if isinstance(observation.get("top_function"), dict) else {}
+        confidence = observation.get("confidence_inputs") if isinstance(observation.get("confidence_inputs"), dict) else {}
+        has_top = bool(str(top_function.get("name") or "").strip())
+        has_wait = bool(confidence.get("has_wait_or_io_signal"))
+        trace_level = str(confidence.get("trace_max_supported_level") or "")
+        trace_status = str(confidence.get("trace_correlation_status") or "")
+
+        if collector_type in {"perf_cpu", "pyspy", "baseline_window_profile", "trace_endpoint_profile"} and has_top:
+            completed.add("cpu_profile")
+        if collector_type == "off_cpu_wait_profile" and has_wait:
+            completed.add("off_cpu_wait_profile")
+        if collector_type == "trace_endpoint_profile" and trace_status in {"completed", "partial"} and trace_level in {
+            "endpoint",
+            "call_path",
+        }:
+            completed.add("trace_endpoint_profile")
+        if collector_type == "baseline_window_profile" and has_top:
+            completed.add("baseline_window_profile")
+        if collector_type == "pyspy" and has_top:
+            completed.add("python_runtime_profile")
+    return completed
+
+
+def _needs_function_depth(assessment: dict[str, Any]) -> bool:
+    """服务或进程层结论成立时，仍允许继续请求函数/调用链证据。"""
+    anchor = assessment.get("primary_anchor")
+    anchor_level = anchor.get("supported_level") if isinstance(anchor, dict) else None
+    supported_level = str(anchor_level or assessment.get("supported_level") or "")
+    return supported_level not in {"line", "call_path", "function"}
+
+
+def _has_sufficient_dependency_conclusion(
+    assessment: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    observations: list[dict[str, Any]],
+) -> bool:
+    if assessment.get("classification") != "downstream_dependency":
+        return False
+    if float(assessment.get("confidence") or 0.0) < 0.75:
+        return False
+    has_dependency = any(_has_dependency_failure(obs) for obs in observations)
+    has_redis = any(_has_redis_failure(obs) for obs in observations)
+    return bool(candidates) and (has_dependency or has_redis)
+
+
+def _assessment_location_fields(
+    assessment: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    session: dict[str, Any],
+) -> dict[str, Any]:
+    classification = str(assessment.get("classification") or "")
+    if classification == "downstream_dependency":
+        root_entity = _dependency_root_entity(session)
+        if not root_entity and candidates:
+            root_entity = str(candidates[0].get("root_entity") or "")
+        return {
+            "location_type": "downstream",
+            "domain_type": "database" if _dependency_root_entity(session, prefer_redis=True) else "network",
+            "root_entity": root_entity or "downstream_dependency",
+            "max_supported_level": "service",
+        }
+    if classification == "same_host_noisy_neighbor":
+        return {
+            "location_type": "host",
+            "domain_type": "resource_contention",
+            "root_entity": _target_host(session) or "same_host",
+            "max_supported_level": "host",
+        }
+    if classification == "host_resource_contention":
+        return {
+            "location_type": "host",
+            "domain_type": "resource_contention",
+            "root_entity": _target_host(session) or "host",
+            "max_supported_level": "host",
+        }
+    if classification == "self_code_or_process_pressure":
+        return {
+            "location_type": "process",
+            "domain_type": "process_pressure",
+            "root_entity": _target_service(session) or "target_process",
+            "max_supported_level": "process",
+        }
+    return {}
+
+
+def _probe_budget_phase(probe: dict[str, Any]) -> str:
+    parameters = probe.get("parameters") if isinstance(probe, dict) else {}
+    if not isinstance(parameters, dict):
+        return "initial"
+    phase = str(parameters.get("budget_phase") or "").strip().lower()
+    if phase in {"initial", "followup"}:
+        return phase
+    return "followup" if parameters.get("parent_task_id") else "initial"
+
+
+def _candidate_location_fields(candidate: dict[str, Any], session: dict[str, Any]) -> dict[str, Any]:
+    candidate_id = str(candidate.get("candidate_id") or "")
+    if "redis" in candidate_id:
+        return {
+            "location_type": "downstream",
+            "domain_type": "database",
+            "classification": "downstream_dependency",
+            "root_entity": _dependency_root_entity(session, prefer_redis=True) or "redis",
+            "max_supported_level": "service",
+        }
+    if "downstream_dependency" in candidate_id or "dependency" in candidate_id:
+        return {
+            "location_type": "downstream",
+            "domain_type": "network",
+            "classification": "downstream_dependency",
+            "root_entity": _dependency_root_entity(session) or "downstream_dependency",
+            "max_supported_level": "service",
+        }
+    return {}
+
+
+def _dependency_root_entity(session: dict[str, Any], *, prefer_redis: bool = False) -> str:
+    scope = session.get("target_scope", {}) if isinstance(session.get("target_scope"), dict) else {}
+    targets = [item for item in scope.get("dependency_targets", []) if isinstance(item, dict)]
+    if prefer_redis:
+        for item in targets:
+            if _is_redis_dependency(item):
+                return str(item.get("dependency_id") or item.get("target_service") or item.get("host") or "redis")
+    if targets:
+        item = targets[0]
+        return str(item.get("dependency_id") or item.get("target_service") or item.get("host") or "")
+    return ""
+
+
+def _target_service(session: dict[str, Any]) -> str:
+    scope = session.get("target_scope", {}) if isinstance(session.get("target_scope"), dict) else {}
+    return str(scope.get("target_service") or scope.get("service_id") or "")
+
+
+def _target_host(session: dict[str, Any]) -> str:
+    scope = session.get("target_scope", {}) if isinstance(session.get("target_scope"), dict) else {}
+    instances = scope.get("instances") if isinstance(scope.get("instances"), list) else []
+    first = instances[0] if instances and isinstance(instances[0], dict) else {}
+    return str(first.get("host_id") or "")
 
 
 def _host_from_url(url: str) -> str:

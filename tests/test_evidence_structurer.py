@@ -269,6 +269,81 @@ def test_industrial_adapters_become_structured_evidence_families():
     assert structured.evidence_index["redis_check"]["connectivity"]["ping_ok"] is False
 
 
+def test_off_cpu_wait_json_becomes_structured_wait_evidence():
+    structured = structure_artifact_evidence(
+        task_id="off_cpu_task",
+        artifacts=[{"artifact_type": "off_cpu_wait_json", "filename": "off_cpu_wait.json"}],
+        artifact_values={
+            "off_cpu_wait_json": {
+                "summary": {
+                    "sample_count": 2,
+                    "blocked_thread_count": 1,
+                    "total_wait_ms": 20.0,
+                    "top_wait_reason": "interruptible_sleep_or_lock_wait",
+                    "has_wait_reason": True,
+                },
+                "top_wait_stacks": [{
+                    "wait_reason": "interruptible_sleep_or_lock_wait",
+                    "stack": ["pthread_mutex_lock", "service.handle"],
+                    "top_frame": "pthread_mutex_lock",
+                    "samples": 2,
+                    "wait_ms": 20.0,
+                    "percent": 100.0,
+                }],
+                "thread_wait_summary": [{"tid": 1234, "wait_ms": 20.0}],
+                "syscall_wait_summary": {"futex_or_lock": 2},
+            }
+        },
+    )
+
+    assert structured.top_functions[0]["name"] == "pthread_mutex_lock"
+    assert structured.top_functions[0]["source"] == "off_cpu_wait"
+    assert structured.stack_summary["has_wait_reason"] is True
+    assert structured.stack_summary["top_wait_reason"] == "interruptible_sleep_or_lock_wait"
+    assert structured.confidence_inputs["has_wait_or_io_signal"] is True
+    assert "off_cpu_wait_profile" in structured.confidence_inputs["collector_families"]
+    assert structured.evidence_index["off_cpu_wait"]["top_wait_stacks"][0]["top_frame"] == "pthread_mutex_lock"
+
+
+def test_off_cpu_compact_evidence_keeps_cause_and_trace_correlation():
+    structured = structure_artifact_evidence(
+        task_id="off_cpu_correlated",
+        artifacts=[{"artifact_type": "off_cpu_wait_json", "filename": "off_cpu_wait.json"}],
+        artifact_values={
+            "off_cpu_wait_json": {
+                "collector_status": "completed",
+                "parser_status": "ok",
+                "event_summary": {"observed_wait_events": 3},
+                "cause_summary": {"top_cause": "futex_or_lock"},
+                "stack_quality": {"stack_unwind_status": "complete"},
+                "summary": {"sample_count": 3, "top_wait_reason": "interruptible_sleep_or_lock_wait"},
+                "top_wait_stacks": [{
+                    "top_frame": "pthread_mutex_lock",
+                    "samples": 3,
+                    "wait_ms": 24.0,
+                    "wait_reason": "interruptible_sleep_or_lock_wait",
+                }],
+                "trace_source": {"status": "completed", "records_in_window": 2},
+                "correlation": {
+                    "status": "confirmed",
+                    "endpoint": "CartService/GetCart",
+                    "call_path": ["gateway", "cartservice"],
+                    "confidence": 0.86,
+                },
+                "endpoint_bindings": [{"endpoint": "CartService/GetCart"}],
+                "call_path_hotspots": [{"function": "pthread_mutex_lock"}],
+                "capability_check": {"missing_tools": []},
+            },
+        },
+    )
+
+    compact = structured.evidence_index["off_cpu_wait"]
+    assert compact["cause_summary"]["top_cause"] == "futex_or_lock"
+    assert compact["correlation"]["endpoint"] == "CartService/GetCart"
+    assert compact["correlation"]["call_path"] == ["gateway", "cartservice"]
+    assert compact["event_summary"]["observed_wait_events"] == 3
+
+
 def test_structured_evidence_is_attached_to_final_report(monkeypatch):
     monkeypatch.setenv("MINI_DROP_AI_ENABLED", "none")
     structured = structure_artifact_evidence(

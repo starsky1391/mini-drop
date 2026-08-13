@@ -38,18 +38,26 @@ class LogScanCollector:
     )
 
     def collect(self, task: CollectorTask) -> CollectorResult:
+        target_config = task.options.get("target_config")
+        if not isinstance(target_config, dict):
+            target_config = {}
         source_paths = _normalize_paths(
             task.options.get("source_paths")
             or task.options.get("source_path")
             or task.options.get("adapter_output_paths")
             or task.options.get("log_pipeline_output")
+            or target_config.get("source_paths")
+            or target_config.get("log_paths")
             or os.getenv("MINI_DROP_LOG_PIPELINE_OUTPUT", "/var/lib/mini-drop/logs/logs.ndjson")
         )
-        if not source_paths:
-            return CollectorResult(
-                ok=False,
-                reason="未配置工业日志采集器输出路径: source_path/source_paths/log_pipeline_output",
-            )
+        container_id = str(
+            task.options.get("container_id")
+            or target_config.get("container_id")
+            or ""
+        ).strip()
+        if container_id:
+            source_paths.extend(_docker_log_paths(container_id))
+        source_paths = list(dict.fromkeys(source_paths))
 
         output_dir = os.path.join(self.OUTPUT_BASE, task.id)
         os.makedirs(output_dir, exist_ok=True)
@@ -59,12 +67,22 @@ class LogScanCollector:
         max_records = max(1, min(_safe_int(task.options.get("max_records"), self.MAX_RECORDS), self.MAX_RECORDS))
 
         records = []
+        corrupt_paths = []
+        readable_paths = []
+        source_states = []
         for path in _expand_paths(source_paths):
-            records.extend(_read_json_records(path, max_records=max_records - len(records)))
+            parsed, parse_status = _read_json_records_with_status(
+                path,
+                max_records=max_records - len(records),
+            )
+            records.extend(parsed)
+            if parse_status in {"readable", "empty"}:
+                readable_paths.append(str(path))
+            if parse_status == "corrupt":
+                corrupt_paths.append(str(path))
+            source_states.append(parse_status)
             if len(records) >= max_records:
                 break
-        if not records:
-            return CollectorResult(ok=False, reason="工业日志采集器输出为空或不是 JSON/NDJSON")
 
         selected = [
             _normalize_log_record(record)
@@ -74,6 +92,16 @@ class LogScanCollector:
         matched = [record for record in selected if _is_error_like(record)]
         clusters = _cluster_records(matched)
         observed_times = [item["timestamp"] for item in matched if item.get("timestamp") is not None]
+        if corrupt_paths and not readable_paths and not records:
+            source_status = "corrupt_input"
+        elif records and selected and not matched:
+            source_status = "no_error"
+        elif records:
+            source_status = "readable"
+        elif readable_paths:
+            source_status = "empty_window"
+        else:
+            source_status = "source_missing"
         output = {
             "schema_version": "1.0",
             "task_id": task.id,
@@ -84,6 +112,17 @@ class LogScanCollector:
                 "kind": task.options.get("adapter_kind") or "fluent_bit_or_otel_filelog",
                 "source": "industrial_log_pipeline_output",
                 "source_paths": source_paths,
+                "readable_paths": readable_paths,
+                "corrupt_paths": corrupt_paths,
+                "source_states": source_states,
+                "source_status": source_status,
+                "fallback_source": (
+                    "docker_json_log"
+                    if any(path.startswith("/var/lib/docker/containers/") or
+                           path.startswith("/host/var/lib/docker/containers/")
+                           for path in source_paths)
+                    else None
+                ),
             },
             "target_pid": task.target_pid,
             "evidence_window": evidence_window,
@@ -98,6 +137,7 @@ class LogScanCollector:
                 "warn_count": sum(1 for item in matched if item["error_type"] == "warn"),
                 "timeout_count": sum(1 for item in matched if item["error_type"] == "timeout"),
                 "dependency_error_count": sum(1 for item in matched if item.get("dependencies")),
+                "source_status": source_status,
             },
             "error_clusters": clusters,
             "evidence_index": {
@@ -112,8 +152,8 @@ class LogScanCollector:
         with open(output_path, "w", encoding="utf-8") as fh:
             json.dump(output, fh, ensure_ascii=False, indent=2)
         return CollectorResult(
-            ok=True,
-            reason=f"日志适配完成: 读取 {len(records)} 条, 窗口内 {len(selected)} 条, 错误簇 {len(clusters)} 个",
+            ok=source_status not in {"corrupt_input", "source_missing"},
+            reason=f"日志适配完成: 来源 {source_status}, 读取 {len(records)} 条, 窗口内 {len(selected)} 条, 错误簇 {len(clusters)} 个",
             artifacts=[{
                 "artifact_type": "log_window_json",
                 "filename": "log_window.json",
@@ -149,29 +189,48 @@ def _expand_paths(paths: list[str]) -> list[Path]:
     return result
 
 
-def _read_json_records(path: Path, *, max_records: int) -> list[dict[str, Any]]:
-    if max_records <= 0:
+def _docker_log_paths(container_id: str) -> list[str]:
+    """Use Docker's json-file output as a fallback, never as a second parser."""
+    safe_id = re.sub(r"[^a-fA-F0-9_.-]", "", container_id)
+    if not safe_id:
         return []
+    return [
+        f"/var/lib/docker/containers/{safe_id}/{safe_id}-json.log",
+        f"/host/var/lib/docker/containers/{safe_id}/{safe_id}-json.log",
+    ]
+
+
+def _read_json_records(path: Path, *, max_records: int) -> list[dict[str, Any]]:
+    records, _ = _read_json_records_with_status(path, max_records=max_records)
+    return records
+
+
+def _read_json_records_with_status(path: Path, *, max_records: int) -> tuple[list[dict[str, Any]], str]:
+    if max_records <= 0:
+        return [], "empty"
     try:
         text = path.read_text(encoding="utf-8")
     except (FileNotFoundError, PermissionError, OSError, UnicodeDecodeError):
-        return []
+        return [], "unreadable"
     if not text.strip():
-        return []
+        return [], "empty"
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
         parsed = None
     if isinstance(parsed, list):
-        return [item for item in parsed[:max_records] if isinstance(item, dict)]
+        records = [item for item in parsed[:max_records] if isinstance(item, dict)]
+        return records, "readable" if records else "empty"
     if isinstance(parsed, dict):
         for key in ("records", "logs", "resourceLogs"):
             items = parsed.get(key)
             if isinstance(items, list):
-                return [item for item in items[:max_records] if isinstance(item, dict)]
-        return [parsed]
+                records = [item for item in items[:max_records] if isinstance(item, dict)]
+                return records, "readable" if records else "empty"
+        return [parsed], "readable"
 
     records: list[dict[str, Any]] = []
+    invalid_lines = 0
     for line in text.splitlines():
         if len(records) >= max_records:
             break
@@ -181,10 +240,13 @@ def _read_json_records(path: Path, *, max_records: int) -> list[dict[str, Any]]:
         try:
             item = json.loads(line)
         except json.JSONDecodeError:
+            invalid_lines += 1
             continue
         if isinstance(item, dict):
             records.append(item)
-    return records
+    if records:
+        return records, "readable"
+    return [], "corrupt" if invalid_lines else "empty"
 
 
 def _normalize_log_record(record: dict[str, Any]) -> dict[str, Any]:

@@ -33,6 +33,7 @@ import {
 } from "@ant-design/icons";
 import {
   approveDiagnosisProbe,
+  approveWaitingDiagnosisProbes,
   createDiagnosisSession,
   getDiagnosisSession,
   listAgents,
@@ -141,10 +142,13 @@ export default function AIDiagnosis() {
           dependencies: values.dependencies || [],
         },
         budget_profile: values.budget_profile,
+        auto_execute_policy: values.auto_execute_policy,
       });
       setSelected(detail);
       await refreshSessions();
-      message.success("诊断会话已创建；系统将先复用已有证据并运行低风险探针");
+      message.success(values.auto_execute_policy === "all_registered"
+        ? "诊断会话已创建；开发模式会自动批准 AI 树补证探针"
+        : "诊断会话已创建；系统将先复用已有证据并运行低风险探针");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -176,6 +180,24 @@ export default function AIDiagnosis() {
       });
       setSelected(detail);
       message.success(decision === "approve" ? "已批准本次探针" : "已拒绝本次探针");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function approveWaitingProbes() {
+    if (!selected) return;
+    setLoading(true);
+    try {
+      const detail = await approveWaitingDiagnosisProbes(selected.diagnosis_id, {
+        decision: "approve",
+        scope: "all_waiting",
+        approver_id: "demo_user",
+      });
+      setSelected(detail);
+      message.success("已批准当前所有待采集探针");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -287,6 +309,7 @@ export default function AIDiagnosis() {
               initialValues={{
                 environment: "production",
                 budget_profile: "production_safe",
+                auto_execute_policy: "safe_only",
                 target_service: "service-a",
                 instances: [{
                   service_id: "service-a",
@@ -317,6 +340,15 @@ export default function AIDiagnosis() {
                       { value: "production_safe", label: "生产安全" },
                       { value: "staging", label: "预发布" },
                       { value: "development", label: "开发" },
+                    ]} />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={12}>
+                  <Form.Item name="auto_execute_policy" label="执行策略">
+                    <Select options={[
+                      { value: "safe_only", label: "仅自动执行低风险" },
+                      { value: "all_registered", label: "自动批准 AI 树补证（开发）" },
+                      { value: "manual", label: "全部人工审批" },
                     ]} />
                   </Form.Item>
                 </Col>
@@ -456,13 +488,13 @@ export default function AIDiagnosis() {
       </Row>
 
       <Spin spinning={loading}>
-        {selected ? <DiagnosisDetail detail={selected} onDecision={decideProbe} /> : <Card><Empty description="创建或打开一个诊断会话以查看假设、探针和证据" /></Card>}
+        {selected ? <DiagnosisDetail detail={selected} onDecision={decideProbe} onApproveWaiting={approveWaitingProbes} /> : <Card><Empty description="创建或打开一个诊断会话以查看假设、探针和证据" /></Card>}
       </Spin>
     </Space>
   );
 }
 
-function DiagnosisDetail({ detail, onDecision }) {
+function DiagnosisDetail({ detail, onDecision, onApproveWaiting }) {
   const conclusion = detail.latest_conclusion;
   const candidates = conclusion?.root_cause_candidates || [];
   const assessment = conclusion?.cluster_assessment;
@@ -471,17 +503,45 @@ function DiagnosisDetail({ detail, onDecision }) {
   const probes = detail.probes || [];
   const evidence = detail.evidence || [];
   const evidenceMap = useMemo(() => new Map(evidence.map((item) => [item.evidence_id, item])), [evidence]);
+  const traceProfiles = useMemo(
+    () => evidence
+      .map((item) => item.observed_value || {})
+      .filter((value) => value.collector_type === "trace_endpoint_profile" || value.trace_source || value.stack_source),
+    [evidence],
+  );
+  const offCpuProfiles = useMemo(
+    () => evidence
+      .map((item) => item.observed_value || {})
+      .filter((value) => value.collector_type === "off_cpu_wait_profile" || value.collector_family === "off_cpu_wait_profile"),
+    [evidence],
+  );
+  const resourceBudget = detail.resource_budget || {};
+  const budgetUsed = detail.budget_used || {};
+  const totalBudget = Number(resourceBudget.max_total_probe_cpu_seconds || 180);
+  const followUpReserve = Math.min(
+    Number(resourceBudget.follow_up_reserve_seconds || 60),
+    totalBudget,
+  );
+  const initialBudget = Math.max(0, totalBudget - followUpReserve);
+  const usedBudget = Number(budgetUsed.probe_duration_seconds || 0);
+  const isTerminal = TERMINAL.has(detail.status);
+  const waitingProbeCount = probes.filter((item) => item.status === "WAITING_APPROVAL").length;
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       <Card title={<Space>诊断详情 <Status value={detail.status} /></Space>}>
-        <Descriptions size="small" column={{ xs: 1, md: 3 }}>
+          <Descriptions size="small" column={{ xs: 1, md: 3 }}>
           <Descriptions.Item label="诊断 ID"><Typography.Text copyable>{detail.diagnosis_id}</Typography.Text></Descriptions.Item>
           <Descriptions.Item label="目标服务">{detail.target_scope?.target_service || "未解析"}</Descriptions.Item>
           <Descriptions.Item label="拓扑快照">{detail.topology_snapshot_id}</Descriptions.Item>
           <Descriptions.Item label="症状">{detail.normalized_intent?.symptom}</Descriptions.Item>
           <Descriptions.Item label="模型">{detail.model_version}</Descriptions.Item>
           <Descriptions.Item label="规划器">{detail.planner_version}</Descriptions.Item>
+          <Descriptions.Item label="采集预算">
+            {usedBudget}s / {totalBudget}s
+          </Descriptions.Item>
+          <Descriptions.Item label="初始采集上限">{initialBudget}s</Descriptions.Item>
+          <Descriptions.Item label="Follow-up 保留">{followUpReserve}s</Descriptions.Item>
         </Descriptions>
       </Card>
 
@@ -504,6 +564,19 @@ function DiagnosisDetail({ detail, onDecision }) {
               <Descriptions.Item label="跨节点判断">{assessment.classification}</Descriptions.Item>
               <Descriptions.Item label="判断置信度">{assessment.confidence}</Descriptions.Item>
               <Descriptions.Item label="对比目标">{assessment.compared_targets?.length || 0}</Descriptions.Item>
+              {assessment.supported_level && (
+                <Descriptions.Item label="定位层级">{assessment.supported_level}</Descriptions.Item>
+              )}
+              {assessment.primary_anchor?.anchor && (
+                <Descriptions.Item label="具体锚点">
+                  <Typography.Text code>{assessment.primary_anchor.anchor}</Typography.Text>
+                </Descriptions.Item>
+              )}
+              {assessment.primary_anchor?.wait_reason && (
+                <Descriptions.Item label="等待原因">
+                  <Typography.Text code>{assessment.primary_anchor.wait_reason}</Typography.Text>
+                </Descriptions.Item>
+              )}
               <Descriptions.Item label="证据引用" span={3}>
                 <Space wrap>
                   {(assessment.evidence_refs || []).map((ref) => (
@@ -533,6 +606,115 @@ function DiagnosisDetail({ detail, onDecision }) {
           {conclusion.limitations?.length > 0 && (
             <Alert type="warning" message="限制与缺失证据" description={conclusion.limitations.join("；")} style={{ marginTop: 12 }} />
           )}
+        </Card>
+      )}
+
+      {traceProfiles.length > 0 && (
+        <Card title="Trace / 栈结构化证据">
+          {traceProfiles.map((profile, index) => {
+            const stack = profile.stack_source || {};
+            const trace = profile.trace_source || {};
+            const correlation = profile.correlation_status || {};
+            const hotspots = profile.call_path_hotspots || [];
+            const topFunctions = profile.top_functions || [];
+            return (
+              <Card key={`${profile.task_id || "trace"}-${index}`} size="small" type="inner" style={{ marginBottom: 12 }}>
+                <Descriptions size="small" bordered column={{ xs: 1, md: 3 }}>
+                  <Descriptions.Item label="栈来源">{stack.kind || "unknown"} / {stack.status || "unknown"}</Descriptions.Item>
+                  <Descriptions.Item label="Trace 来源">{trace.kind || "unknown"} / {trace.status || "unknown"}</Descriptions.Item>
+                  <Descriptions.Item label="关联状态">
+                    <Tag color={correlation.status === "completed" ? "green" : correlation.status === "blocked" ? "red" : "orange"}>
+                      {correlation.status || "unknown"}
+                    </Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="最高定位层级">{correlation.max_supported_level || "function"}</Descriptions.Item>
+                  <Descriptions.Item label="阻断原因" span={2}>
+                    {correlation.blocked_reason || "无"}
+                  </Descriptions.Item>
+                  {correlation.blocked_details?.repair_action && (
+                    <Descriptions.Item label="修复动作" span={3}>
+                      {correlation.blocked_details.repair_action}
+                    </Descriptions.Item>
+                  )}
+                </Descriptions>
+                {(hotspots.length > 0 || topFunctions.length > 0) && (
+                  <Table
+                    rowKey={(item, rowIndex) => item.evidence_ref || `${index}-${rowIndex}`}
+                    size="small"
+                    pagination={false}
+                    style={{ marginTop: 12 }}
+                    dataSource={hotspots.length > 0 ? hotspots : topFunctions}
+                    columns={[
+                      { title: "函数", dataIndex: "function", render: (value, item) => <Typography.Text code>{value || item.name || "unknown"}</Typography.Text> },
+                      { title: "热点比例", dataIndex: "percent", render: (value) => `${value || 0}%` },
+                      { title: "样本", dataIndex: "samples" },
+                      { title: "Endpoint", dataIndex: "endpoint", render: (value) => value || "未回连" },
+                      { title: "Call Path", dataIndex: "call_path", render: (value) => Array.isArray(value) && value.length > 0 ? value.join(" -> ") : "未回连" },
+                      { title: "关联方式", dataIndex: "correlation_method", render: (value) => value || "function-only" },
+                      { title: "证据引用", dataIndex: "evidence_ref", render: (value) => <Typography.Text copyable>{value || "-"}</Typography.Text> },
+                    ]}
+                  />
+                )}
+              </Card>
+            );
+          })}
+        </Card>
+      )}
+
+      {offCpuProfiles.length > 0 && (
+        <Card title="Off-CPU 工业化证据">
+          {offCpuProfiles.map((profile, index) => {
+            const summary = profile.summary || {};
+            const eventSummary = profile.event_summary || {};
+            const cause = profile.cause_summary || {};
+            const quality = profile.stack_quality || {};
+            const correlation = profile.correlation || {};
+            const stacks = profile.top_wait_stacks || [];
+            return (
+              <Card key={`${profile.task_id || "offcpu"}-${index}`} size="small" type="inner" style={{ marginBottom: 12 }}>
+                <Descriptions size="small" bordered column={{ xs: 1, md: 3 }}>
+                  <Descriptions.Item label="采集状态">
+                    <Tag color={profile.collector_status === "completed" ? "green" : profile.collector_status === "blocked" ? "red" : "orange"}>
+                      {profile.collector_status || "unknown"}
+                    </Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="等待事件">{eventSummary.observed_wait_events || 0}</Descriptions.Item>
+                  <Descriptions.Item label="总等待">{summary.total_wait_ms || 0} ms</Descriptions.Item>
+                  <Descriptions.Item label="等待原因">{summary.top_wait_reason || "未识别"}</Descriptions.Item>
+                  <Descriptions.Item label="原因层">{cause.top_cause || "未识别"}</Descriptions.Item>
+                  <Descriptions.Item label="栈质量">{quality.stack_unwind_status || "unknown"}</Descriptions.Item>
+                  <Descriptions.Item label="关联状态">
+                    <Tag color={correlation.status === "confirmed" ? "green" : correlation.status === "unmatched" ? "orange" : "red"}>
+                      {correlation.status || "unknown"}
+                    </Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="Endpoint">{correlation.endpoint || "未回连"}</Descriptions.Item>
+                  <Descriptions.Item label="关联置信度">{correlation.confidence || 0}</Descriptions.Item>
+                  <Descriptions.Item label="Call Path" span={3}>
+                    {Array.isArray(correlation.call_path) && correlation.call_path.length > 0
+                      ? correlation.call_path.join(" -> ")
+                      : "未回连"}
+                  </Descriptions.Item>
+                </Descriptions>
+                {stacks.length > 0 && (
+                  <Table
+                    rowKey={(item, rowIndex) => item.evidence_ref || `${index}-offcpu-${rowIndex}`}
+                    size="small"
+                    pagination={false}
+                    style={{ marginTop: 12 }}
+                    dataSource={stacks}
+                    columns={[
+                      { title: "Top Frame", dataIndex: "top_frame", render: (value) => <Typography.Text code>{value || "unknown"}</Typography.Text> },
+                      { title: "等待原因", dataIndex: "wait_reason" },
+                      { title: "样本", dataIndex: "samples" },
+                      { title: "等待时长", dataIndex: "wait_ms", render: (value) => `${value || 0} ms` },
+                      { title: "证据引用", dataIndex: "evidence_ref", render: (value) => <Typography.Text copyable>{value || "-"}</Typography.Text> },
+                    ]}
+                  />
+                )}
+              </Card>
+            );
+          })}
         </Card>
       )}
 
@@ -590,13 +772,36 @@ function DiagnosisDetail({ detail, onDecision }) {
           </Card>
         </Col>
         <Col xs={24} xl={12}>
-          <Card title="受控探针与审批">
+          <Card
+            title="受控探针与审批"
+            extra={!isTerminal && waitingProbeCount > 0 ? (
+              <Button size="small" type="primary" icon={<CheckOutlined />} onClick={onApproveWaiting}>
+                一键批准当前待采集
+              </Button>
+            ) : null}
+          >
+            {!isTerminal && waitingProbeCount > 0 && (
+              <Alert
+                type="info"
+                showIcon
+                message="只批准当前 WAITING_APPROVAL 的注册探针；仍受 R2 预算和并发预算限制，不执行任意命令。"
+                style={{ marginBottom: 12 }}
+              />
+            )}
+            {isTerminal && probes.some((item) => item.status === "WAITING_APPROVAL") && (
+              <Alert
+                type="warning"
+                showIcon
+                message={`当前诊断已进入终态 ${detail.status}，不能继续审批旧探针；需要补采时请新建一次开发模式诊断。`}
+                style={{ marginBottom: 12 }}
+              />
+            )}
             <List
               dataSource={probes}
               locale={{ emptyText: "尚未规划探针" }}
               renderItem={(item) => (
                 <List.Item
-                  actions={item.status === "WAITING_APPROVAL" ? [
+                  actions={!isTerminal && item.status === "WAITING_APPROVAL" ? [
                     <Button key="approve" size="small" type="primary" icon={<CheckOutlined />} onClick={() => onDecision(item.step_id, "approve")}>单次批准</Button>,
                     <Button key="reject" size="small" danger icon={<CloseOutlined />} onClick={() => onDecision(item.step_id, "reject")}>拒绝</Button>,
                   ] : []}

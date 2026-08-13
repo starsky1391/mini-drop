@@ -22,9 +22,10 @@ class HotmethodService(hotmethod_pb2_grpc.HotmethodServicer):
 
     def NotifyResult(self, request, context) -> Empty:
         task_id = request.task_id
+        reported_error = _safe_text(request.error_message, max_length=MAX_ERROR_MESSAGE_LENGTH)
 
-        if request.error_message:
-            reason = _safe_text(request.error_message, max_length=MAX_ERROR_MESSAGE_LENGTH) or "Agent reported collection failure"
+        if reported_error and not request.artifact_metadata_json:
+            reason = reported_error or "Agent reported collection failure"
             # Agent 报告采集失败
             self._repo.transition_task(
                 task_id, TaskStatus.FAILED,
@@ -32,10 +33,10 @@ class HotmethodService(hotmethod_pb2_grpc.HotmethodServicer):
             )
             return Empty()
 
-        # 采集成功：先迁移到 UPLOADING，写入产物元数据
+        # 即使采集被权限阻断，只要带有结构化 artifact，也要先保存现场。
         self._repo.transition_task(
             task_id, TaskStatus.UPLOADING,
-            "采集完成，准备上传产物", Actor.AGENT,
+            "采集结果已返回，准备保存结构化产物", Actor.AGENT,
         )
 
         # 解析 artifact 元数据
@@ -62,7 +63,14 @@ class HotmethodService(hotmethod_pb2_grpc.HotmethodServicer):
             if generated_artifacts:
                 self._repo.add_artifacts(task_id, generated_artifacts)
                 artifacts.extend(generated_artifacts)
-        if _has_analysis_result(artifacts):
+        if reported_error:
+            self._repo.transition_task(
+                task_id,
+                TaskStatus.FAILED,
+                reported_error,
+                Actor.AGENT,
+            )
+        elif _has_analysis_result(artifacts):
             self._repo.transition_task(
                 task_id, TaskStatus.DONE,
                 _analysis_done_reason(artifacts), Actor.ANALYZER,
@@ -85,6 +93,12 @@ def _has_analysis_result(artifacts: list[dict]) -> bool:
         "memory_json",
         "pprof_raw",
         "sys_metrics",
+        "dependency_check_json",
+        "redis_check_json",
+        "log_window_json",
+        "trace_endpoint_profile_json",
+        "off_cpu_wait_json",
+        "process_inventory_json",
     } & artifact_types)
 
 
@@ -96,6 +110,14 @@ def _analysis_done_reason(artifacts: list[dict]) -> str:
         return "内存时间序列分析已生成"
     if "sys_metrics" in artifact_types:
         return "系统多维指标分析已生成"
+    if {"dependency_check_json", "redis_check_json", "log_window_json"} & artifact_types:
+        return "结构化采集证据已生成"
+    if "process_inventory_json" in artifact_types:
+        return "进程清单结构化证据已生成"
+    if "off_cpu_wait_json" in artifact_types:
+        return "Off-CPU 等待栈证据已生成"
+    if "trace_endpoint_profile_json" in artifact_types:
+        return "Trace endpoint 结构化证据已生成"
     if "continuous_summary" in artifact_types:
         return "连续采样窗口分析已生成"
     if "java_flamegraph_html" in artifact_types:
@@ -146,9 +168,28 @@ def _sanitize_metadata(metadata: dict) -> dict:
         safe_key = _safe_text(key, max_length=64)
         if not safe_key:
             continue
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            result[safe_key] = value if not isinstance(value, str) else _safe_text(value)
+        result[safe_key] = _sanitize_metadata_value(value)
     return result
+
+
+def _sanitize_metadata_value(value, depth: int = 0):
+    """保留结构化证据摘要，但限制深度、数量和字符串长度。"""
+    if depth >= 4:
+        return "[TRUNCATED]"
+    if isinstance(value, str):
+        return _safe_text(value, max_length=512)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        return [_sanitize_metadata_value(item, depth + 1) for item in value[:32]]
+    if isinstance(value, dict):
+        result = {}
+        for key, item in list(value.items())[:32]:
+            safe_key = _safe_text(key, max_length=64)
+            if safe_key:
+                result[safe_key] = _sanitize_metadata_value(item, depth + 1)
+        return result
+    return _safe_text(value, max_length=512)
 
 
 def _safe_text(value, max_length: int = MAX_ARTIFACT_FIELD_LENGTH) -> str:

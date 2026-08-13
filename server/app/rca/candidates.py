@@ -259,6 +259,80 @@ def _match_cross_evidence(evidence: EvidenceInput, params: dict[str, Any]) -> bo
     return True
 
 
+def _match_dependency_failure(evidence: EvidenceInput, _params: dict[str, Any]) -> bool:
+    for item in evidence.tool_results:
+        if item.get("tool_name") != "dependency_check":
+            continue
+        if int(item.get("failed_dependency_count") or 0) > 0:
+            return True
+        summary = item.get("summary")
+        if isinstance(summary, dict) and summary.get("failed_dependencies"):
+            return True
+    index = evidence.evidence_index or {}
+    dependency = index.get("dependency_check")
+    if not isinstance(dependency, dict):
+        return False
+    summary = dependency.get("summary")
+    if isinstance(summary, dict) and summary.get("failed_dependencies"):
+        return True
+    return any(
+        isinstance(item, dict) and item.get("success") is False
+        for item in dependency.get("checks") or []
+    )
+
+
+def _match_redis_failure(evidence: EvidenceInput, params: dict[str, Any]) -> bool:
+    min_latency_ms = float(params.get("min_latency_ms", 1000))
+    for item in evidence.tool_results:
+        if item.get("tool_name") != "redis_check":
+            continue
+        if item.get("ping_ok") is False or item.get("exporter_up") is False:
+            return True
+        if float(item.get("max_latency_ms") or 0) >= min_latency_ms:
+            return True
+        if int(item.get("slowlog_entry_count") or 0) > 0:
+            return True
+    index = evidence.evidence_index or {}
+    redis = index.get("redis_check")
+    if not isinstance(redis, dict):
+        return False
+    connectivity = redis.get("connectivity") if isinstance(redis.get("connectivity"), dict) else {}
+    latency = redis.get("latency_summary") if isinstance(redis.get("latency_summary"), dict) else {}
+    slowlog = redis.get("slowlog_summary") if isinstance(redis.get("slowlog_summary"), dict) else {}
+    return (
+        connectivity.get("ping_ok") is False
+        or connectivity.get("exporter_up") is False
+        or float(latency.get("max_latency_ms") or 0) >= min_latency_ms
+        or int(slowlog.get("entry_count") or 0) > 0
+    )
+
+
+def _match_runtime_top_function_present(evidence: EvidenceInput, params: dict[str, Any]) -> bool:
+    if not evidence.top_functions:
+        return False
+    collector_type = str(evidence.task_metadata.get("collector_type") or "")
+    if collector_type not in {"pyspy", "process_python_runtime_profile"}:
+        return False
+    min_percent = float(params.get("min_percent", 1))
+    top = evidence.top_functions[0]
+    return float(top.get("percent") or 0) >= min_percent or int(top.get("samples") or 0) > 0
+
+
+def _match_off_cpu_wait_hotspot(evidence: EvidenceInput, params: dict[str, Any]) -> bool:
+    index = evidence.evidence_index or {}
+    off_cpu = index.get("off_cpu_wait")
+    if not isinstance(off_cpu, dict):
+        off_cpu = getattr(evidence, "off_cpu_wait_json", None)
+    if not isinstance(off_cpu, dict):
+        return False
+    summary = off_cpu.get("summary") if isinstance(off_cpu.get("summary"), dict) else {}
+    min_samples = int(params.get("min_samples", 1))
+    if int(summary.get("sample_count") or 0) >= min_samples:
+        return True
+    stacks = off_cpu.get("top_wait_stacks")
+    return isinstance(stacks, list) and len(stacks) >= min_samples
+
+
 _SIGNAL_CHECKERS: dict[str, Any] = {}
 
 
@@ -313,6 +387,10 @@ _MATCHERS = {
     "fd_trend": _match_fd_trend,
     "thread_trend": _match_thread_trend,
     "cross_evidence": _match_cross_evidence,
+    "dependency_failure": _match_dependency_failure,
+    "redis_failure": _match_redis_failure,
+    "runtime_top_function_present": _match_runtime_top_function_present,
+    "off_cpu_wait_hotspot": _match_off_cpu_wait_hotspot,
 }
 
 
@@ -342,6 +420,9 @@ def _ref_available(ref: str, evidence: EvidenceInput) -> bool:
     if top == "tool_results":
         tool_name = ref.split(".", 1)[1] if "." in ref else ""
         return any(item.get("tool_name") == tool_name for item in evidence.tool_results)
+    if top == "evidence_index":
+        sub = ref.split(".", 1)[1] if "." in ref else ""
+        return bool(_resolve_path(evidence.evidence_index or {}, sub)) if sub else bool(evidence.evidence_index)
     return False
 
 

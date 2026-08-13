@@ -67,6 +67,7 @@ class DiagnosisStore:
                 updated_at=now,
             )
             session.add(model)
+            session.flush()
             session.add(DiagnosisEventModel(
                 diagnosis_id=model.id,
                 event_type="diagnosis_created",

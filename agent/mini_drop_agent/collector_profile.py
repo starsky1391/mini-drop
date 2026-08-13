@@ -16,6 +16,7 @@ def build_collector_profile(capabilities: list[str]) -> dict[str, Any]:
         _tool_profile("ebpf_io", "bpftrace", "bpftrace eBPF IO latency"),
         _always_available("sys_metrics", "procfs system and process metrics"),
         _tool_profile("pyspy", "py-spy", "Python stack sampling"),
+        _trace_endpoint_profile(),
         _log_scan_profile(),
         _blackbox_profile(),
         _redis_exporter_profile(),
@@ -83,6 +84,39 @@ def _log_scan_profile() -> dict[str, Any]:
     }
 
 
+def _trace_endpoint_profile() -> dict[str, Any]:
+    perf_path = shutil.which("perf")
+    bpftrace_path = shutil.which("bpftrace")
+    trace_path = os.getenv("MINI_DROP_TRACE_PATHS", "/var/lib/mini-drop/traces")
+    paranoid = _read_perf_paranoid()
+    if not perf_path and not bpftrace_path:
+        status = "unavailable"
+        reason = "perf and bpftrace are not installed"
+    elif paranoid is not None and paranoid > 1 and not bpftrace_path:
+        status = "degraded"
+        reason = f"perf_event_paranoid={paranoid}; perf stack sampling may be blocked"
+    elif not Path(trace_path).exists():
+        status = "degraded"
+        reason = "stack source available but Trace export path is missing"
+    else:
+        status = "available"
+        reason = "stack source and Trace export path found"
+    return {
+        "collector_type": "trace_endpoint_profile",
+        "status": status,
+        "source": "perf/eBPF plus OTel/SkyWalking Trace",
+        "reason": reason,
+        "default_options": {
+            "stack_source": "auto",
+            "trace_source": "auto",
+            "trace_paths": [trace_path],
+            "perf_event_paranoid": paranoid,
+            "perf_installed": bool(perf_path),
+            "ebpf_profile_installed": bool(bpftrace_path),
+        },
+    }
+
+
 def _blackbox_profile() -> dict[str, Any]:
     url = os.getenv("MINI_DROP_BLACKBOX_URL", "http://blackbox-exporter:9115")
     status, reason = _http_ready(f"{url.rstrip('/')}/-/healthy")
@@ -131,3 +165,10 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _read_perf_paranoid() -> int | None:
+    try:
+        return int(Path("/proc/sys/kernel/perf_event_paranoid").read_text().strip())
+    except (OSError, ValueError):
+        return None
