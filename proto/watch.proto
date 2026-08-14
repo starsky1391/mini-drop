@@ -1,0 +1,62 @@
+// watch.proto - Persistent watch lease synchronization and metric windows.
+//
+// Watch sync is deliberately separate from the task heartbeat. A worker may
+// hold multiple leases while it is also executing a normal collector task.
+
+syntax = "proto3";
+
+package mini_drop;
+
+option go_package = "github.com/jiangyulin1/mini-drop/proto;mini_drop";
+
+service WatchRuntime {
+  rpc Sync(WatchSyncRequest) returns (WatchSyncResponse);
+}
+
+message WatchSyncRequest {
+  string agent_id = 1;
+  string hostname = 2;
+  string ip_addr = 3;
+  repeated WatchObservation observations = 4;
+}
+
+message WatchObservation {
+  string watch_id = 1;
+  repeated WatchMetricSample baseline_samples = 2;
+  repeated WatchMetricSample trigger_samples = 3;
+  bool target_exists = 4;
+  string observation_status = 5;
+}
+
+message WatchMetricSample {
+  string observed_at = 1;
+  double cpu_percent = 2;
+  double latency_ms_p99 = 3;
+  double thread_count = 4;
+  double iowait_percent = 5;
+  double rss_mb = 6;
+  double error_count = 7;
+  bool has_cpu_percent = 8;
+  bool has_latency_ms_p99 = 9;
+  bool has_thread_count = 10;
+  bool has_iowait_percent = 11;
+  bool has_rss_mb = 12;
+  bool has_error_count = 13;
+}
+
+message WatchSyncResponse {
+  repeated WatchLease lease = 1;
+}
+
+message WatchLease {
+  string watch_id = 1;
+  string agent_id = 2;
+  int64 target_pid = 3;
+  string service_id = 4;
+  string instance_id = 5;
+  string endpoint = 6;
+  string target_config_json = 7;
+  string watch_profile = 8;
+  int32 retention_seconds = 9;
+  int32 poll_interval_seconds = 10;
+}

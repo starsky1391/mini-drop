@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from server.app.database import init_db, reset_engine
-from server.app.diagnosis.audit_bundle import build_readiness_gate
+from server.app.diagnosis.audit_bundle import _structured_evidence, build_readiness_gate
 from server.app.diagnosis.benchmark_score import aggregate_results, score_audit_bundle
 from server.app.diagnosis import orchestrator as orchestrator_module
 from server.app.main import app, repo
@@ -148,6 +148,80 @@ def test_readiness_gate_fails_completed_probe_without_structured_family_artifact
 
     assert gate["status"] == "FAIL"
     assert check["status"] == "FAIL"
+
+
+def test_audit_structured_evidence_merges_task_families_without_last_empty_task_erasing_signals():
+    evidence = [
+        {
+            "query_or_probe": "structured_evidence_json",
+            "observed_value": {
+                "summary": {
+                    "task_id": "log-task",
+                    "artifact_refs": [{"artifact_type": "log_window_json", "evidence_ref": "task:log"}],
+                    "top_functions": [],
+                    "stack_summary": {"sample_count": 0},
+                    "confidence_inputs": {
+                        "has_log_signal": True,
+                        "log_error_cluster_count": 5,
+                        "artifact_types": ["log_window_json"],
+                        "collector_families": ["log_scan"],
+                    },
+                    "log_window_json": {
+                        "summary": {"matched_records": 35, "error_cluster_count": 5},
+                    },
+                },
+            },
+        },
+        {
+            "query_or_probe": "structured_evidence_json",
+            "observed_value": {
+                "summary": {
+                    "task_id": "offcpu-task",
+                    "artifact_refs": [{"artifact_type": "off_cpu_wait_json", "evidence_ref": "task:offcpu"}],
+                    "top_functions": [{"name": "0xdeadbeef", "samples": 58, "percent": 13.5}],
+                    "stack_summary": {
+                        "sample_count": 58,
+                        "stack_sample_count": 58,
+                        "has_wait_reason": True,
+                        "total_wait_ms": 29007.78,
+                    },
+                    "confidence_inputs": {
+                        "has_wait_or_io_signal": True,
+                        "sample_count": 58,
+                        "artifact_types": ["off_cpu_wait_json"],
+                        "collector_families": ["off_cpu_wait_profile"],
+                    },
+                    "off_cpu_wait_json": {"summary": {"sample_count": 58}},
+                },
+            },
+        },
+        {
+            "query_or_probe": "structured_evidence_json",
+            "observed_value": {
+                "summary": {
+                    "task_id": "failed-perf-task",
+                    "artifact_refs": [],
+                    "top_functions": [],
+                    "stack_summary": {"sample_count": 0},
+                    "confidence_inputs": {
+                        "artifact_types": [],
+                        "collector_families": [],
+                    },
+                },
+            },
+        },
+    ]
+
+    merged = _structured_evidence(evidence)
+
+    assert merged["scope"] == "diagnosis"
+    assert merged["task_count"] == 3
+    assert merged["confidence_inputs"]["has_log_signal"] is True
+    assert merged["confidence_inputs"]["has_wait_or_io_signal"] is True
+    assert merged["confidence_inputs"]["log_error_cluster_count"] == 5
+    assert merged["top_functions"][0]["name"] == "0xdeadbeef"
+    assert merged["stack_summary"]["stack_sample_count"] == 58
+    assert merged["evidence_index"]["log_scan"]["summary"]["matched_records"] == 35
 
 
 def test_runtime_contention_query_plans_off_cpu_and_python_runtime(client: TestClient):

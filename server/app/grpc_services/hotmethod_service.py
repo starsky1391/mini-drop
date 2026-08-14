@@ -17,8 +17,9 @@ MAX_ERROR_MESSAGE_LENGTH = 1024
 class HotmethodService(hotmethod_pb2_grpc.HotmethodServicer):
     """采集结果上报服务。"""
 
-    def __init__(self, repo: Any) -> None:
+    def __init__(self, repo: Any, on_task_terminal: Any | None = None) -> None:
         self._repo = repo
+        self._on_task_terminal = on_task_terminal
 
     def NotifyResult(self, request, context) -> Empty:
         task_id = request.task_id
@@ -31,6 +32,7 @@ class HotmethodService(hotmethod_pb2_grpc.HotmethodServicer):
                 task_id, TaskStatus.FAILED,
                 reason, Actor.AGENT,
             )
+            self._notify_task_terminal(task_id, TaskStatus.FAILED.value, reason, [])
             return Empty()
 
         # 即使采集被权限阻断，只要带有结构化 artifact，也要先保存现场。
@@ -76,7 +78,32 @@ class HotmethodService(hotmethod_pb2_grpc.HotmethodServicer):
                 _analysis_done_reason(artifacts), Actor.ANALYZER,
             )
 
+        task = self._repo.tasks.get(task_id)
+        if task is not None:
+            self._notify_task_terminal(
+                task_id,
+                task.status.value if hasattr(task.status, "value") else str(task.status),
+                reported_error,
+                artifacts,
+            )
         return Empty()
+
+    def _notify_task_terminal(
+        self,
+        task_id: str,
+        status: str,
+        reason: str,
+        artifacts: list[dict],
+    ) -> None:
+        if status not in {TaskStatus.DONE.value, TaskStatus.FAILED.value}:
+            return
+        if self._on_task_terminal is None:
+            return
+        try:
+            self._on_task_terminal(task_id, status, reason, artifacts)
+        except Exception:
+            # 任务结果已经持久化，回灌失败不应让 Agent 重试造成重复状态迁移。
+            return
 
 
 def _has_analysis_result(artifacts: list[dict]) -> bool:

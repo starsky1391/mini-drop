@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 
@@ -132,7 +133,7 @@ def _call_deepseek(messages: list[dict], model: str) -> str:
             "max_tokens": 2048,
             "response_format": {"type": "json_object"},
         },
-        timeout=60,
+        timeout=max(10, int(os.getenv("MINI_DROP_RCA_LLM_TIMEOUT_SEC", "45"))),
     )
 
     if resp.status_code != 200:

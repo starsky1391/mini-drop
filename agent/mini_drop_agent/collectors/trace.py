@@ -137,11 +137,16 @@ def _load_trace_source(task: CollectorTask, config: dict[str, Any]) -> dict[str,
     )
     records: list[dict[str, Any]] = []
     readable_paths: list[str] = []
+    existing_sources: list[str] = []
     for path in _expand_paths(paths):
         readable_paths.append(str(path))
         records.extend(_read_trace_records(path, max_records=TraceEndpointCollector.MAX_RECORDS - len(records)))
         if len(records) >= TraceEndpointCollector.MAX_RECORDS:
             break
+    for raw_path in paths:
+        candidate = Path(raw_path)
+        if candidate.exists():
+            existing_sources.append(str(candidate))
     normalized = [_normalize_trace_record(item) for item in records]
     normalized = [
         item for item in normalized
@@ -150,7 +155,7 @@ def _load_trace_source(task: CollectorTask, config: dict[str, Any]) -> dict[str,
     ]
     if normalized:
         status = "completed"
-    elif readable_paths:
+    elif readable_paths or existing_sources:
         status = "empty_window"
     else:
         status = "unavailable"
@@ -159,6 +164,7 @@ def _load_trace_source(task: CollectorTask, config: dict[str, Any]) -> dict[str,
         "status": status,
         "paths": paths,
         "readable_paths": readable_paths,
+        "existing_sources": existing_sources,
         "records_read": len(records),
         "records_in_window": len(normalized),
         "records": normalized,
@@ -557,26 +563,65 @@ def _read_trace_records(path: Path, *, max_records: int) -> list[dict[str, Any]]
 
 
 def _flatten_trace_payload(value: Any) -> list[dict[str, Any]]:
+    return _flatten_trace_payload_with_context(value, resource_attrs={})
+
+
+def _flatten_trace_payload_with_context(value: Any, *, resource_attrs: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(value, list):
         result = []
         for item in value:
-            result.extend(_flatten_trace_payload(item))
+            result.extend(_flatten_trace_payload_with_context(item, resource_attrs=resource_attrs))
         return result
     if not isinstance(value, dict):
         return []
     for key in ("spans", "records", "traceSpans"):
         if isinstance(value.get(key), list):
-            return _flatten_trace_payload(value[key])
+            return _flatten_trace_payload_with_context(value[key], resource_attrs=resource_attrs)
     resource_spans = value.get("resourceSpans")
     if isinstance(resource_spans, list):
         result = []
         for resource in resource_spans:
             if not isinstance(resource, dict):
                 continue
+            attrs = _resource_attributes(resource.get("resource"))
             for scope in resource.get("scopeSpans", []) if isinstance(resource.get("scopeSpans"), list) else []:
-                result.extend(_flatten_trace_payload(scope.get("spans", [])))
+                result.extend(_flatten_trace_payload_with_context(
+                    scope.get("spans", []),
+                    resource_attrs=attrs,
+                ))
         return result
+    if resource_attrs and "resource" not in value:
+        return [{**value, "resource": {"attributes": resource_attrs}}]
     return [value]
+
+
+def _resource_attributes(resource: Any) -> dict[str, Any]:
+    if not isinstance(resource, dict):
+        return {}
+    attrs = resource.get("attributes")
+    if isinstance(attrs, dict):
+        return attrs
+    if not isinstance(attrs, list):
+        return {}
+    result: dict[str, Any] = {}
+    for item in attrs:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "")
+        if key:
+            result[key] = _otel_any_value(item.get("value"))
+    return result
+
+
+def _otel_any_value(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    for key in ("stringValue", "intValue", "doubleValue", "boolValue"):
+        if key in value:
+            return value[key]
+    if "arrayValue" in value and isinstance(value["arrayValue"], dict):
+        return [_otel_any_value(item) for item in value["arrayValue"].get("values") or []]
+    return value
 
 
 def _expand_paths(paths: list[str]) -> list[Path]:

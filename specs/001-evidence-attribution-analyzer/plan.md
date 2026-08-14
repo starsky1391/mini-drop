@@ -30,6 +30,30 @@ Add an evidence-first analysis stage between candidate calibration and LLM repor
 
 **Scale/Scope**: One shared Analyzer module, two existing RCA strategy integration points, one existing LLM validation path, and focused unit/integration tests
 
+## Scheme B Runtime Boundary and Kubernetes Migration
+
+方案 B 当前以三节点 Docker VM 作为真实验收环境，负责验证工业采集器、结构化证据、AI 树补证和 Persistent Watch 的完整闭环。Kubernetes 不属于方案 B 的当前完成条件，而是后续的环境后端迁移方案。
+
+当前 Docker VM 验收已覆盖真实 Redis case、手工窗口 Persistent Watch case 和 Agent 自动观察 Persistent Watch case。Watch 最新自动观察结果为 `needs_evidence` 有界终态，已验证 Agent 自采 baseline/trigger window、自动触发 `cpu_shift` incident、collector task 回灌、delayed follow-up 保留和测试 watch 自动停用；深度 CPU perf 和 endpoint/call_path 升级仍受 Worker 宿主机 `kernel.perf_event_paranoid=4` 与 Trace 源为空限制，不能计入已完成能力。
+
+迁移必须保持现有证据契约不变，先抽象环境控制接口，再替换运行环境：
+
+```text
+Docker VM Environment Backend
+  -> Environment Backend Contract
+  -> Kubernetes Environment Backend
+```
+
+Kubernetes 后续实现重点包括：
+
+- 使用 OTel Collector DaemonSet 接收日志、Trace 和指标，并继续输出现有结构化证据族。
+- 使用工业 Profile Producer 或 SkyWalking Rover DaemonSet 采集 eBPF 网络边、连接状态、RTT、重传和协议摘要。
+- 通过 CRI/containerd 元数据和 PID resolver 将 Pod、容器、进程、service、instance 统一回连。
+- 通过 CNI-aware dependency probing 识别 Service、Pod、Namespace 和跨节点网络路径。
+- 将 Kubernetes Fault Injection 接入现有 Case runner，但复用同一 Case/Oracle 评测协议。
+
+迁移完成前不得把 DaemonSet、Rover、CRI/PID resolver 或 CNI 探测能力标记为当前已完成能力。只有 Docker VM 与 Kubernetes 能执行同一测试集、产出同一证据族并通过同一 Oracle 门禁时，才允许宣称 Kubernetes 后端迁移完成。
+
 ## Constitution Check
 
 The current project constitution remains the unfilled Spec Kit template and defines no enforceable project-specific gates. The implementation follows the repository instructions: preserve existing worktree changes, keep the change scoped, write tests for new processing behavior, and avoid collector or task-scheduling changes.

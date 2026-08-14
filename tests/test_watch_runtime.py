@@ -105,7 +105,12 @@ def test_watch_evaluation_reuses_persistent_trigger_and_updates_last_trigger():
     assert result.incident.structured_evidence["timing_relation"] == "same_window"
     assert result.incident.collector_tasks == result.trigger.collector_tasks
     assert [task.probe_id for task in result.trigger.collector_tasks] == ["host_process_metrics"]
-    assert result.trigger.skipped_probe_ids == ["process_cpu_profile"]
+    assert result.trigger.skipped_probe_ids == [
+        "process_baseline_window",
+        "process_off_cpu_profile",
+        "process_trace_endpoint_profile",
+        "process_cpu_profile",
+    ]
     assert len(repo.tasks) == 1
 
 
@@ -249,6 +254,279 @@ def test_auto_all_registered_watch_can_create_deeper_collector_tasks():
         "process_cpu_profile",
     ]
     assert len(repo.tasks) == 2
+
+
+def test_auto_all_registered_cpu_watch_uses_industrial_depth_group():
+    repo = InMemoryRepository()
+    repo.register_agent(
+        "agent_1",
+        "host-1",
+        "10.0.0.1",
+        capabilities=[
+            "sys_metrics",
+            "perf_cpu",
+            "off_cpu_wait_profile",
+            "trace_endpoint_profile",
+            "baseline_window_profile",
+        ],
+    )
+    registry = WatchRegistry()
+    runtime = PersistentAgentRuntime(registry, repo)
+    watch = registry.create(_watch_payload_with_action("auto_all_registered"))
+    now = datetime(2026, 8, 11, 10, 0, tzinfo=timezone.utc)
+
+    result = runtime.evaluate(
+        watch.watch_id,
+        WatchEvaluationRequest(
+            baseline_window=_window(now, cpu_percent=20.0),
+            trigger_window=_window(now + timedelta(minutes=5), cpu_percent=55.0),
+        ),
+    )
+
+    assert [task.probe_id for task in result.trigger.collector_tasks] == [
+        "host_process_metrics",
+        "process_baseline_window",
+        "process_off_cpu_profile",
+        "process_trace_endpoint_profile",
+        "process_cpu_profile",
+    ]
+    assert result.trigger.skipped_probe_ids == []
+    assert len(repo.tasks) == 5
+
+
+def test_watch_analysis_followup_is_target_scoped_and_delayed():
+    repo = InMemoryRepository()
+    repo.register_agent(
+        "agent_1",
+        "host-1",
+        "10.0.0.1",
+        capabilities=["sys_metrics", "baseline_window_profile"],
+    )
+    registry = WatchRegistry()
+    runtime = PersistentAgentRuntime(registry, repo)
+    watch = registry.create(_watch_payload_with_action("auto_all_registered"))
+    now = datetime(2026, 8, 11, 10, 0, tzinfo=timezone.utc)
+    result = runtime.evaluate(
+        watch.watch_id,
+        WatchEvaluationRequest(
+            baseline_window=_window(now, cpu_percent=20.0),
+            trigger_window=_window(now + timedelta(minutes=5), cpu_percent=55.0),
+        ),
+    )
+
+    incident = result.incident
+    assert incident is not None
+    followups = runtime.schedule_followup_tasks(
+        incident.incident_id,
+        ["baseline_window_profile", "baseline_window_profile"],
+    )
+
+    assert len(followups) == 1
+    followup = followups[0]
+    assert followup.collector_invocation["collection_mode"] == "delayed_followup"
+    assert followup.collector_invocation["timing_relation"] == "delayed_followup"
+    assert repo.tasks[followup.task_id].target_pid == watch.target.target_pid
+    assert repo.tasks[followup.task_id].request_params["options"]["watch_id"] == watch.watch_id
+
+    updated = runtime.ingest_collector_task_result(
+        followup.task_id,
+        status="DONE",
+        status_reason="baseline 已生成",
+        artifacts=[{
+            "artifact_type": "continuous_top_json",
+            "metadata": {"data": {"top_functions": [{"name": "pkg.hot", "samples": 8, "percent": 42.0}]}},
+        }],
+        task_options=repo.tasks[followup.task_id].request_params["options"],
+    )
+
+    assert updated is not None
+    assert updated.structured_evidence["timing_relation"] == "same_window"
+    delayed = updated.structured_evidence["evidence_index"]["delayed_followups"]
+    assert delayed[0]["timing_relation"] == "delayed_followup"
+    assert delayed[0]["task_id"] == followup.task_id
+
+
+def test_multiple_delayed_followups_are_retained_independently():
+    repo = InMemoryRepository()
+    repo.register_agent(
+        "agent_1",
+        "host-1",
+        "10.0.0.1",
+        capabilities=["sys_metrics", "baseline_window_profile", "off_cpu_wait_profile"],
+    )
+    registry = WatchRegistry()
+    runtime = PersistentAgentRuntime(registry, repo)
+    watch = registry.create(_watch_payload_with_action("auto_all_registered"))
+    now = datetime(2026, 8, 11, 10, 0, tzinfo=timezone.utc)
+    result = runtime.evaluate(
+        watch.watch_id,
+        WatchEvaluationRequest(
+            baseline_window=_window(now, cpu_percent=20.0),
+            trigger_window=_window(now + timedelta(minutes=5), cpu_percent=55.0),
+        ),
+    )
+    incident = result.incident
+    assert incident is not None
+
+    followups = runtime.schedule_followup_tasks(
+        incident.incident_id,
+        ["baseline_window_profile", "off_cpu_wait_profile"],
+    )
+
+    assert [item.probe_id for item in followups] == [
+        "process_baseline_window",
+        "process_off_cpu_profile",
+    ]
+    first = runtime.ingest_collector_task_result(
+        followups[0].task_id,
+        status="DONE",
+        status_reason="baseline 已生成",
+        artifacts=[{
+            "artifact_type": "continuous_top_json",
+            "metadata": {"data": {"top_functions": [{"name": "pkg.hot", "samples": 8, "percent": 42.0}]}},
+        }],
+        task_options=repo.tasks[followups[0].task_id].request_params["options"],
+    )
+    assert first is not None
+    second = runtime.ingest_collector_task_result(
+        followups[1].task_id,
+        status="DONE",
+        status_reason="off cpu 已生成",
+        artifacts=[{
+            "artifact_type": "off_cpu_wait_json",
+            "metadata": {
+                "data": {
+                    "event_summary": {"sample_count": 4, "total_wait_ms": 120.5},
+                    "top_wait_stacks": [{
+                        "top_frame": "runtime.futex",
+                        "wait_reason": "futex_wait",
+                        "samples": 4,
+                        "wait_ms": 120.5,
+                    }],
+                },
+            },
+        }],
+        task_options=repo.tasks[followups[1].task_id].request_params["options"],
+    )
+
+    assert second is not None
+    delayed = second.structured_evidence["evidence_index"]["delayed_followups"]
+    assert [item["task_id"] for item in delayed] == [
+        followups[0].task_id,
+        followups[1].task_id,
+    ]
+    assert delayed[0]["top_functions"][0]["name"] == "pkg.hot"
+    assert delayed[1]["evidence_index"]["off_cpu_wait"]["event_summary"]["sample_count"] == 4
+    assert delayed[1]["top_functions"][0]["name"] == "runtime.futex"
+    assert all(item["name"] != "pkg.hot" for item in delayed[1]["top_functions"])
+
+
+def test_triggered_collector_results_are_reconciled_into_incident():
+    repo = InMemoryRepository()
+    repo.register_agent(
+        "agent_1",
+        "host-1",
+        "10.0.0.1",
+        capabilities=["sys_metrics", "perf_cpu"],
+    )
+    registry = WatchRegistry()
+    runtime = PersistentAgentRuntime(registry, repo)
+    watch = registry.create(_watch_payload_with_action("auto_all_registered"))
+    now = datetime(2026, 8, 11, 10, 0, tzinfo=timezone.utc)
+
+    result = runtime.evaluate(
+        watch.watch_id,
+        WatchEvaluationRequest(
+            baseline_window=_window(now, cpu_percent=20.0),
+            trigger_window=_window(now + timedelta(minutes=5), cpu_percent=55.0),
+        ),
+    )
+    incident = result.incident
+    assert incident is not None
+    sys_task, perf_task = result.trigger.collector_tasks
+
+    updated = runtime.ingest_collector_task_result(
+        sys_task.task_id,
+        status="DONE",
+        status_reason="系统指标已生成",
+        artifacts=[{
+            "artifact_type": "sys_metrics",
+            "metadata": {"data": {"cpu_percent": 55.0, "rss_mb": 128.0}},
+        }],
+        task_options=repo.tasks[sys_task.task_id].request_params["options"],
+    )
+    assert updated is not None
+    assert updated.status == "collecting"
+    assert updated.collector_tasks[0].status == "DONE"
+
+    updated = runtime.ingest_collector_task_result(
+        perf_task.task_id,
+        status="FAILED",
+        status_reason="perf_event_paranoid 权限不足",
+        artifacts=[],
+        task_options=repo.tasks[perf_task.task_id].request_params["options"],
+    )
+    assert updated is not None
+    assert updated.status == "ready_for_analysis"
+    assert updated.collector_tasks[1].status == "FAILED"
+    assert updated.collector_tasks[1].status_reason == "perf_event_paranoid 权限不足"
+    states = updated.structured_evidence["evidence_index"]["watch_collector_tasks"]
+    assert {item["status"] for item in states} == {"DONE", "FAILED"}
+    assert any(
+        item["status_reason"] == "perf_event_paranoid 权限不足"
+        for item in states
+    )
+
+
+def test_repeated_terminal_result_is_idempotent():
+    repo = InMemoryRepository()
+    repo.register_agent(
+        "agent_1",
+        "host-1",
+        "10.0.0.1",
+        capabilities=["sys_metrics", "perf_cpu"],
+    )
+    registry = WatchRegistry()
+    runtime = PersistentAgentRuntime(registry, repo)
+    watch = registry.create(_watch_payload_with_action("auto_all_registered"))
+    now = datetime(2026, 8, 11, 10, 0, tzinfo=timezone.utc)
+    result = runtime.evaluate(
+        watch.watch_id,
+        WatchEvaluationRequest(
+            baseline_window=_window(now, cpu_percent=20.0),
+            trigger_window=_window(now + timedelta(minutes=5), cpu_percent=55.0),
+        ),
+    )
+    incident = result.incident
+    assert incident is not None
+    task = result.trigger.collector_tasks[0]
+    options = repo.tasks[task.task_id].request_params["options"]
+    artifact = {
+        "artifact_type": "sys_metrics",
+        "metadata": {"data": {"cpu_percent": 55.0}},
+    }
+
+    first = runtime.ingest_collector_task_result(
+        task.task_id,
+        status="DONE",
+        status_reason="系统指标已生成",
+        artifacts=[artifact],
+        task_options=options,
+    )
+    second = runtime.ingest_collector_task_result(
+        task.task_id,
+        status="DONE",
+        status_reason="系统指标已生成",
+        artifacts=[],
+        task_options=options,
+    )
+
+    assert first is not None
+    assert second is not None
+    assert second.collector_tasks[0].status == "DONE"
+    assert len(second.structured_evidence["artifact_refs"]) == len(
+        first.structured_evidence["artifact_refs"]
+    )
 
 
 def test_disabled_watch_cannot_be_evaluated():

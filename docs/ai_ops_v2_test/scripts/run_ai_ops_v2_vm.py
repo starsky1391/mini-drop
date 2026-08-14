@@ -201,13 +201,38 @@ class SSH:
         password = shlex.quote(self.password)
         return self.run(node, f"printf '%s\\n' {password} | sudo -S {command}", timeout=timeout)
 
+    def repo_root(self, node: Node) -> str:
+        candidates = (
+            f"/home/{node.user}/mini-drop-active",
+            f"/home/{node.user}/mini-drop",
+        )
+        required = (
+            ("docker-compose.control.yml", "deploy/env/control.env")
+            if node.name == "control"
+            else ("docker-compose.worker.yml", "deploy/env/worker.env")
+        )
+        for candidate in candidates:
+            try:
+                checks = " && ".join(
+                    f"test -f {shlex.quote(f'{candidate}/{relative}')}"
+                    for relative in required
+                )
+                self.run(node, checks, timeout=15)
+                return candidate
+            except RuntimeError:
+                continue
+        raise RuntimeError(
+            f"{node.name}: no complete checkout found in {candidates}; required={required}"
+        )
+
     def deploy_faultctl(self, node: Node) -> str:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         client.connect(node.ip, username=node.user, password=self.password, timeout=15)
-        remote_dir = f"/home/{node.user}/mini-drop-active/benchmarks/ai_ops_v2"
+        repo_root = self.repo_root(node)
+        remote_dir = f"{repo_root}/benchmarks/ai_ops_v2"
         remote = f"{remote_dir}/vm_faultctl.sh"
-        remote_helpers = f"/home/{node.user}/mini-drop-active/benchmarks/online_boutique_vm/fault_helpers"
+        remote_helpers = f"{repo_root}/benchmarks/online_boutique_vm/fault_helpers"
         try:
             _, stdout, _ = client.exec_command(f"mkdir -p {remote_dir} {remote_helpers}")
             if stdout.channel.recv_exit_status():
@@ -413,16 +438,15 @@ def validate_ai_ops_v2_environment(ssh: SSH) -> None:
 
 def prepare_worker_collectors(ssh: SSH) -> None:
     password = shlex.quote(ssh.password)
-    command = _worker_collector_override_command()
     for node in (WORKER1, WORKER2):
+        command = _worker_collector_override_command(ssh.repo_root(node))
         ssh.run(node, f"printf '%s\\n' {password} | sudo -S /bin/bash -c {shlex.quote(command)}", timeout=240)
 
 
-def _worker_collector_override_command() -> str:
+def _worker_collector_override_command(repo_root: str) -> str:
     return (
         "set -e; "
-        "home=$(getent passwd \"$SUDO_USER\" | cut -d: -f6); "
-        "cd \"$home/mini-drop\"; "
+        f"cd {shlex.quote(repo_root)}; "
         "cat > docker-compose.ai-ops-v2-collectors.yml <<'YAML'\n"
         "services:\n"
         "  agent:\n"
@@ -433,6 +457,10 @@ def _worker_collector_override_command() -> str:
         "      MINI_DROP_BLACKBOX_URL: http://blackbox-exporter:9115\n"
         "      MINI_DROP_REDIS_EXPORTER_URL: http://redis-exporter:9121\n"
         "  blackbox-exporter:\n"
+        "    networks:\n"
+        "      - default\n"
+        "      - boutique\n"
+        "  otel-collector:\n"
         "    networks:\n"
         "      - default\n"
         "      - boutique\n"
@@ -448,7 +476,7 @@ def _worker_collector_override_command() -> str:
         "    name: boutique_boutique\n"
         "YAML\n"
         "docker compose --profile redis --env-file deploy/env/worker.env "
-        "-f docker-compose.worker.yml -f docker-compose.ai-ops-v2-collectors.yml up -d agent blackbox-exporter redis-exporter"
+        "-f docker-compose.worker.yml -f docker-compose.ai-ops-v2-collectors.yml up -d agent blackbox-exporter otel-collector redis-exporter"
     )
 
 

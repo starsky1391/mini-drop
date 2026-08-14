@@ -529,3 +529,121 @@ class DiagnosisEvidenceModel(Base):
             "integrity_hash": self.integrity_hash,
             "claim_links": self.claim_links_json or [],
         }
+
+
+# ── Persistent Watch ─────────────────────────────────────────────
+
+
+class WatchSubscriptionModel(Base):
+    __tablename__ = "watch_subscriptions"
+
+    id = Column(String(128), primary_key=True)
+    name = Column(String(128), nullable=False)
+    target_json = Column(JSON, default=dict)
+    target_config_json = Column(JSON, default=dict)
+    watch_profile = Column(String(32), nullable=False)
+    enabled_collectors_json = Column(JSON, default=list)
+    retention_seconds = Column(Integer, nullable=False)
+    trigger_policy = Column(String(32), nullable=False)
+    trigger_action = Column(String(32), nullable=False)
+    status = Column(String(16), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
+    incidents_count = Column(Integer, default=0)
+    last_evaluated_at = Column(DateTime(timezone=True), nullable=True)
+    last_trigger_event_id = Column(String(128), nullable=True)
+    last_evidence_cohort_id = Column(String(128), nullable=True)
+    last_trigger_type = Column(String(64), nullable=True)
+
+    def to_dict(self) -> dict:
+        return {
+            "watch_id": self.id,
+            "name": self.name,
+            "target": self.target_json or {},
+            "target_config": self.target_config_json or {},
+            "watch_profile": self.watch_profile,
+            "enabled_collectors": self.enabled_collectors_json or [],
+            "retention_seconds": self.retention_seconds,
+            "trigger_policy": self.trigger_policy,
+            "trigger_action": self.trigger_action,
+            "status": self.status,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "incidents_count": self.incidents_count or 0,
+            "last_evaluated_at": self.last_evaluated_at,
+            "last_trigger_event_id": self.last_trigger_event_id,
+            "last_evidence_cohort_id": self.last_evidence_cohort_id,
+            "last_trigger_type": self.last_trigger_type,
+        }
+
+
+class WatchIncidentModel(Base):
+    __tablename__ = "watch_incidents"
+
+    id = Column(String(128), primary_key=True)
+    watch_id = Column(
+        String(128), ForeignKey("watch_subscriptions.id"), nullable=False, index=True,
+    )
+    trigger_event_id = Column(String(128), nullable=False)
+    evidence_cohort_id = Column(String(128), nullable=False)
+    trigger_type = Column(String(64), nullable=False)
+    window_start = Column(DateTime(timezone=True), nullable=False)
+    window_end = Column(DateTime(timezone=True), nullable=False)
+    trigger_observed_at = Column(DateTime(timezone=True), nullable=False)
+    status = Column(String(32), nullable=False)
+    analysis_status = Column(String(32), nullable=False)
+    snapshot_id = Column(String(128), nullable=True)
+    snapshot_refs_json = Column(JSON, default=list)
+    structured_evidence_json = Column(JSON, default=dict)
+    collector_tasks_json = Column(JSON, default=list)
+    analysis_session_id = Column(String(128), nullable=True)
+    analysis_result_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+
+    def to_dict(self) -> dict:
+        return {
+            "incident_id": self.id,
+            "watch_id": self.watch_id,
+            "trigger_event_id": self.trigger_event_id,
+            "evidence_cohort_id": self.evidence_cohort_id,
+            "trigger_type": self.trigger_type,
+            "window_start": self.window_start,
+            "window_end": self.window_end,
+            "trigger_observed_at": self.trigger_observed_at,
+            "status": self.status,
+            "analysis_status": self.analysis_status,
+            "snapshot_id": self.snapshot_id,
+            "snapshot_refs": self.snapshot_refs_json or [],
+            "structured_evidence": self.structured_evidence_json or {},
+            "collector_tasks": self.collector_tasks_json or [],
+            "analysis_session_id": self.analysis_session_id,
+            "analysis_result": self.analysis_result_json,
+            "created_at": self.created_at,
+        }
+
+
+class WatchSnapshotModel(Base):
+    __tablename__ = "watch_snapshots"
+
+    id = Column(String(128), primary_key=True)
+    watch_id = Column(
+        String(128), ForeignKey("watch_subscriptions.id"), nullable=False, index=True,
+    )
+    incident_id = Column(
+        String(128), ForeignKey("watch_incidents.id"), nullable=True, index=True,
+    )
+    metadata_json = Column(JSON, default=dict)
+    samples_json = Column(JSON, default=list)
+    structured_evidence_json = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+
+    def to_dict(self) -> dict:
+        return {
+            "snapshot_id": self.id,
+            "watch_id": self.watch_id,
+            "incident_id": self.incident_id,
+            "metadata": self.metadata_json or {},
+            "samples": self.samples_json or [],
+            "structured_evidence": self.structured_evidence_json or {},
+            "created_at": self.created_at,
+        }

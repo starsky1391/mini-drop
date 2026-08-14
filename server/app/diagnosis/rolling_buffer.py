@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta
+import hashlib
+import json
+import os
 from typing import Any
 from uuid import uuid4
 
@@ -122,20 +125,51 @@ def structure_snapshot_evidence(task_id: str, snapshot: FrozenSnapshot) -> Struc
 
 
 def _artifact_refs(snapshot_id: str, samples: list[RollingSample]) -> list[dict[str, Any]]:
-    families = sorted({sample.family for sample in samples})
-    return [
-        {
-            "artifact_type": f"rolling_{family}_summary",
-            "filename": f"{snapshot_id}_{family}.json",
-            "content_type": "application/json",
-            "size_bytes": 0,
-            "object_key": "",
-            "local_path": "",
-            "evidence_ref": f"rolling_snapshot:{snapshot_id}:{family}",
-            "raw_payload_policy": "references_only",
-        }
-        for family in families
-    ]
+    return [reference for reference, _ in snapshot_artifact_payloads(snapshot_id, samples)]
+
+
+def snapshot_artifact_payloads(
+    snapshot_id: str,
+    samples: list[RollingSample],
+) -> list[tuple[dict[str, Any], bytes]]:
+    """Build durable per-family snapshot artifacts before object-store upload."""
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for sample in samples:
+        grouped[sample.family].append(sample.model_dump(mode="json"))
+
+    artifacts: list[tuple[dict[str, Any], bytes]] = []
+    for family in sorted(grouped):
+        payload = json.dumps(
+            {
+                "snapshot_id": snapshot_id,
+                "family": family,
+                "samples": grouped[family],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        digest = hashlib.sha256(payload).hexdigest()
+        filename = f"{snapshot_id}_{family}.json"
+        artifacts.append(
+            (
+                {
+                    "artifact_type": f"rolling_{family}_summary",
+                    "filename": filename,
+                    "content_type": "application/json",
+                    "size_bytes": len(payload),
+                    "bucket": os.getenv("MINIO_BUCKET", "mini-drop"),
+                    "object_key": f"watch_snapshots/{snapshot_id}/{filename}",
+                    "local_path": "",
+                    "sha256": f"sha256:{digest}",
+                    "storage_status": "pending",
+                    "evidence_ref": f"rolling_snapshot:{snapshot_id}:{family}",
+                    "raw_payload_policy": "references_only",
+                },
+                payload,
+            )
+        )
+    return artifacts
 
 
 def _artifact_values(snapshot: FrozenSnapshot) -> dict[str, Any]:

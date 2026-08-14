@@ -24,11 +24,13 @@ from server.app.generated import (
     healthcheck_pb2_grpc,
     hotmethod_pb2_grpc,
     init_pb2_grpc,
+    watch_pb2_grpc,
 )
 from server.app.grpc_services.control_service import ControlService
 from server.app.grpc_services.healthcheck_service import HealthCheckService
 from server.app.grpc_services.hotmethod_service import HotmethodService
 from server.app.grpc_services.init_service import InitAgentService
+from server.app.grpc_services.watch_runtime_service import WatchRuntimeService
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -64,7 +66,12 @@ def _build_server() -> grpc.Server:
     )
 
 
-def serve(repo: Any, port: int = 50051) -> grpc.Server:
+def serve(
+    repo: Any,
+    port: int = 50051,
+    watch_runtime: Any | None = None,
+    on_task_terminal: Any | None = None,
+) -> grpc.Server:
     """创建并启动 gRPC server。
 
     Returns:
@@ -74,23 +81,44 @@ def serve(repo: Any, port: int = 50051) -> grpc.Server:
 
     init_pb2_grpc.add_InitAgentServicer_to_server(InitAgentService(repo), server)
     healthcheck_pb2_grpc.add_HealthCheckServicer_to_server(HealthCheckService(repo), server)
-    hotmethod_pb2_grpc.add_HotmethodServicer_to_server(HotmethodService(repo), server)
+    hotmethod_pb2_grpc.add_HotmethodServicer_to_server(
+        HotmethodService(repo, on_task_terminal=on_task_terminal),
+        server,
+    )
     control_pb2_grpc.add_ControlServicer_to_server(ControlService(repo), server)
+    if watch_runtime is not None:
+        watch_pb2_grpc.add_WatchRuntimeServicer_to_server(
+            WatchRuntimeService(watch_runtime),
+            server,
+        )
 
     _add_port(server, f"0.0.0.0:{port}")
     server.start()
     return server
 
 
-def serve_in_background(repo: Any, port: int = 50051) -> grpc.Server:
+def serve_in_background(
+    repo: Any,
+    port: int = 50051,
+    watch_runtime: Any | None = None,
+    on_task_terminal: Any | None = None,
+) -> grpc.Server:
     """在后台守护线程启动 gRPC server，主线程继续执行 HTTP server。"""
 
     grpc_server = _build_server()
 
     init_pb2_grpc.add_InitAgentServicer_to_server(InitAgentService(repo), grpc_server)
     healthcheck_pb2_grpc.add_HealthCheckServicer_to_server(HealthCheckService(repo), grpc_server)
-    hotmethod_pb2_grpc.add_HotmethodServicer_to_server(HotmethodService(repo), grpc_server)
+    hotmethod_pb2_grpc.add_HotmethodServicer_to_server(
+        HotmethodService(repo, on_task_terminal=on_task_terminal),
+        grpc_server,
+    )
     control_pb2_grpc.add_ControlServicer_to_server(ControlService(repo), grpc_server)
+    if watch_runtime is not None:
+        watch_pb2_grpc.add_WatchRuntimeServicer_to_server(
+            WatchRuntimeService(watch_runtime),
+            grpc_server,
+        )
 
     _add_port(grpc_server, f"0.0.0.0:{port}")
     grpc_server.start()

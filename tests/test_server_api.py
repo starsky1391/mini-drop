@@ -302,7 +302,12 @@ class TestWatchSubscriptions:
         assert data["watch"]["last_trigger_event_id"] == data["trigger"]["trigger_event"]["trigger_event_id"]
         assert data["trigger"]["evidence_cohort_id"] is not None
         assert [task["probe_id"] for task in data["trigger"]["collector_tasks"]] == ["host_process_metrics"]
-        assert data["trigger"]["skipped_probe_ids"] == ["process_cpu_profile"]
+        assert data["trigger"]["skipped_probe_ids"] == [
+            "process_baseline_window",
+            "process_off_cpu_profile",
+            "process_trace_endpoint_profile",
+            "process_cpu_profile",
+        ]
 
         incidents = client.get(f"/api/v1/watches/{watch['watch_id']}/incidents").json()["data"]["items"]
         assert len(incidents) == 1
@@ -382,6 +387,54 @@ class TestWatchSubscriptions:
         assert incident["analysis_result"]["incident_id"] == incident_id
         assert incident["analysis_result"]["evidence_cohort_id"] == triggered["trigger"]["evidence_cohort_id"]
         assert incident["analysis_result"]["timing_relation"] == "same_window"
+
+    def test_watch_incident_analysis_failure_is_terminal_and_retryable(
+        self,
+        client: TestClient,
+        monkeypatch,
+    ):
+        repo.register_agent(
+            "a1",
+            "agent-one",
+            "10.0.0.11",
+            capabilities=["sys_metrics", "perf_cpu"],
+        )
+        watch = client.post("/api/v1/watches", json={
+            "name": "analysis failure watch",
+            "target": {
+                "agent_id": "a1",
+                "target_pid": 4242,
+                "service_id": "order-service",
+            },
+            "trigger_action": "freeze_only",
+        }).json()["data"]
+        triggered = client.post(f"/api/v1/watches/{watch['watch_id']}/evaluate", json={
+            "baseline_window": {
+                "start": "2026-08-11T10:00:00Z",
+                "end": "2026-08-11T10:00:30Z",
+                "samples": [{"cpu_percent": 20.0}, {"cpu_percent": 20.0}],
+            },
+            "trigger_window": {
+                "start": "2026-08-11T10:05:00Z",
+                "end": "2026-08-11T10:05:30Z",
+                "samples": [{"cpu_percent": 55.0}, {"cpu_percent": 55.0}],
+            },
+        }).json()["data"]
+        incident_id = triggered["incident"]["incident_id"]
+
+        monkeypatch.setattr(
+            "server.app.main._run_watch_incident_analysis",
+            lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("provider unavailable")),
+        )
+        response = client.post(f"/api/v1/watch-incidents/{incident_id}/analyze")
+
+        assert response.status_code == 200
+        incident = response.json()["data"]
+        assert incident["analysis_status"] == "analysis_failed"
+        assert incident["status"] == "analysis_failed"
+        assert incident["analysis_result"]["auto_analysis_error"] == "RuntimeError"
+        assert incident["analysis_result"]["retryable"] is True
+        assert incident["analysis_result"]["preserved_evidence_refs"]
 
 
 class TestCreateTask:

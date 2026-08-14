@@ -29,6 +29,7 @@ services:
       MINI_DROP_LOG_AUTO_DISCOVER: ${MINI_DROP_LOG_AUTO_DISCOVER:-1}
       MINI_DROP_LOG_PIPELINE_OUTPUT: ${MINI_DROP_LOG_PIPELINE_OUTPUT:-/var/lib/mini-drop/logs/logs.ndjson}
       MINI_DROP_TRACE_PATHS: ${MINI_DROP_TRACE_PATHS:-/var/lib/mini-drop/traces}
+      MINI_DROP_OFFCPU_PROFILE_PATHS: ${MINI_DROP_OFFCPU_PROFILE_PATHS:-/var/lib/mini-drop/profiles/offcpu}
       MINI_DROP_EBPF_PROFILE_ENABLED: ${MINI_DROP_EBPF_PROFILE_ENABLED:-1}
       MINI_DROP_BLACKBOX_URL: ${MINI_DROP_BLACKBOX_URL:-http://blackbox-exporter:9115}
       MINI_DROP_REDIS_EXPORTER_URL: ${MINI_DROP_REDIS_EXPORTER_URL:-}
@@ -36,6 +37,7 @@ services:
       - ./deploy/certs:/certs:ro
       - collector_logs:/var/lib/mini-drop/logs:ro
       - trace_exports:/var/lib/mini-drop/traces:ro
+      - profile_exports:/var/lib/mini-drop/profiles:ro
       - /var/lib/docker/containers:/host/var/lib/docker/containers:ro
       - /sys/kernel/debug:/sys/kernel/debug
       - /lib/modules:/lib/modules:ro
@@ -73,6 +75,18 @@ services:
       - ./deploy/collectors/blackbox/blackbox.yml:/etc/blackbox_exporter/blackbox.yml:ro
     restart: unless-stopped
 
+  otel-collector:
+    image: otel/opentelemetry-collector:0.130.1
+    command: ["--config=/etc/otelcol/config.yaml"]
+    expose:
+      - "4317"
+      - "4318"
+    volumes:
+      - ./deploy/collectors/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+      - trace_exports:/var/lib/mini-drop/traces
+      - profile_exports:/var/lib/mini-drop/profiles
+    restart: unless-stopped
+
   redis-exporter:
     image: oliver006/redis_exporter:v1.62.0
     profiles: ["redis"]
@@ -86,3 +100,4 @@ services:
 volumes:
   collector_logs:
   trace_exports:
+  profile_exports:

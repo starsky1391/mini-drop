@@ -1,0 +1,36 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+
+exporters:
+  file/traces:
+    path: /var/lib/mini-drop/traces/otel-traces.jsonl
+    rotation:
+      max_megabytes: 50
+      max_days: 3
+      max_backups: 5
+  file/logs:
+    path: /var/lib/mini-drop/traces/otel-logs.jsonl
+    rotation:
+      max_megabytes: 50
+      max_days: 3
+      max_backups: 5
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [file/traces]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [file/logs]

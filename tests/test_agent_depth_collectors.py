@@ -10,7 +10,12 @@ from agent.mini_drop_agent.collectors.off_cpu import (
     _correlate_wait_evidence,
     _parse_bpftrace_output,
 )
-from agent.mini_drop_agent.collectors.trace import TraceEndpointCollector, _build_profile
+from agent.mini_drop_agent.collectors.trace import (
+    TraceEndpointCollector,
+    _build_profile,
+    _flatten_trace_payload,
+    _normalize_trace_record,
+)
 
 
 def _task(collector_type: str) -> CollectorTask:
@@ -35,6 +40,33 @@ def test_off_cpu_collector_requires_industrial_bpftrace(tmp_path):
     assert result.artifacts[0]["artifact_type"] == "off_cpu_wait_json"
     assert result.artifacts[0]["metadata"]["data"]["collector_status"] == "blocked"
     assert result.artifacts[0]["metadata"]["data"]["capability_check"]["missing_tools"] == ["bpftrace"]
+
+
+def test_off_cpu_prefers_industrial_profile_spool(tmp_path):
+    spool = tmp_path / "offcpu.jsonl"
+    spool.write_text(
+        '{"pid":1234,"tid":1234,"wait_ms":12,"state":1,"user_stack":["pthread_mutex_lock","cartservice.GetCart"],"cause_kind":"futex_or_lock"}\n',
+        encoding="utf-8",
+    )
+    collector = OffCPUCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    task = CollectorTask(
+        id="off_cpu_spool",
+        collector_type="off_cpu_wait_profile",
+        target_pid=1234,
+        sample_rate=11,
+        duration_sec=15,
+        options={"offcpu_profile_paths": [str(spool)]},
+    )
+
+    result = collector.collect(task)
+
+    payload = result.artifacts[0]["metadata"]["data"]
+    assert result.ok is True
+    assert payload["strategy"]["adapter_kind"] == "industrial_profile_spool"
+    assert payload["strategy"]["fallback_used"] is False
+    assert payload["collector_status"] == "completed"
+    assert payload["top_wait_stacks"][0]["top_frame"] == "pthread_mutex_lock"
 
 
 def test_off_cpu_bpftrace_json_events_parse_to_wait_stacks():
@@ -260,6 +292,63 @@ def test_trace_profile_correlates_stack_to_endpoint_and_call_path(tmp_path):
     assert profile["endpoint_bindings"][0]["endpoint"] == "CartService/GetCart"
     assert profile["call_path_hotspots"][0]["call_path"] == ["gateway", "cartservice"]
     assert profile["call_path_hotspots"][0]["correlation_method"] == "pid_instance_time_overlap"
+
+
+def test_trace_profile_marks_existing_empty_directory_as_empty_window(tmp_path):
+    trace_path = tmp_path / "traces"
+    trace_path.mkdir()
+    base_task = _task("trace_empty_window")
+    task = CollectorTask(
+        id=base_task.id,
+        collector_type=base_task.collector_type,
+        target_pid=base_task.target_pid,
+        sample_rate=base_task.sample_rate,
+        duration_sec=base_task.duration_sec,
+        options={
+            "target_config": {"trace_paths": [str(trace_path)]},
+            "window_start": 1720000000,
+            "window_end": 1720000010,
+        },
+    )
+
+    from agent.mini_drop_agent.collectors.trace import _load_trace_source
+
+    source = _load_trace_source(task, task.options["target_config"])
+
+    assert source["status"] == "empty_window"
+    assert source["existing_sources"] == [str(trace_path)]
+    assert source["records_in_window"] == 0
+
+
+def test_otel_resource_spans_keep_service_and_instance_context():
+    payload = {
+        "resourceSpans": [{
+            "resource": {
+                "attributes": [
+                    {"key": "service.name", "value": {"stringValue": "cartservice"}},
+                    {"key": "service.instance.id", "value": {"stringValue": "cartservice-worker2"}},
+                    {"key": "process.pid", "value": {"intValue": "1234"}},
+                ],
+            },
+            "scopeSpans": [{
+                "spans": [{
+                    "traceId": "trace-1",
+                    "spanId": "span-1",
+                    "name": "CartService/GetCart",
+                    "startTime": 1720000000,
+                    "endTime": 1720000005,
+                }],
+            }],
+        }],
+    }
+
+    flattened = _flatten_trace_payload(payload)
+    normalized = _normalize_trace_record(flattened[0])
+
+    assert normalized["service_id"] == "cartservice"
+    assert normalized["instance_id"] == "cartservice-worker2"
+    assert normalized["pid"] == "1234"
+    assert normalized["endpoint"] == "CartService/GetCart"
 
 
 def test_trace_profile_service_overlap_does_not_confirm_call_path():

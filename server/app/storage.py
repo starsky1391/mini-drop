@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 from datetime import timedelta
 from collections.abc import Iterator
@@ -76,6 +77,28 @@ def upload_file(
         content_type=content_type,
     )
     return size
+
+
+def upload_bytes(
+    payload: bytes,
+    bucket: str,
+    object_key: str,
+    content_type: str = "application/octet-stream",
+) -> int:
+    """Upload an in-memory evidence payload and return its byte size."""
+    if not bucket:
+        raise ValueError("bucket must not be empty")
+    if not object_key:
+        raise ValueError("object_key must not be empty")
+    client = _client()
+    client.put_object(
+        bucket_name=bucket,
+        object_name=object_key,
+        data=io.BytesIO(payload),
+        length=len(payload),
+        content_type=content_type,
+    )
+    return len(payload)
 
 
 def read_object_bytes(bucket: str, object_key: str) -> bytes:

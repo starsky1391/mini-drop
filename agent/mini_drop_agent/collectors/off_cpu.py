@@ -19,7 +19,7 @@ from agent.mini_drop_agent.collectors.trace import (
 
 
 class OffCPUCollector:
-    """Collect wait stacks with bpftrace instead of disguising perf as off-CPU."""
+    """Collect wait stacks from industrial profile spool, with explicit fallback."""
 
     OUTPUT_BASE = "/tmp/mini-drop"
     DEFAULT_MIN_WAIT_MS = 1.0
@@ -33,6 +33,41 @@ class OffCPUCollector:
         raw_path = os.path.join(output_dir, "bpftrace_offcpu.txt")
         script_path = os.path.join(output_dir, "offcpu.bt")
         evidence_window = _evidence_window(task)
+
+        industrial = _load_industrial_offcpu_spool(task)
+        if industrial["records"]:
+            parsed = _parse_industrial_offcpu_records(industrial["records"])
+            trace_source = _load_trace_source(task, _target_config(task))
+            correlation = _correlate_wait_evidence(task, parsed, trace_source)
+            payload = self._payload_from_parsed(
+                task,
+                evidence_window,
+                thread_ids=_thread_ids(task.target_pid),
+                parsed=parsed,
+                returncode=0,
+                stderr="",
+                capability_check=_capability_check(task),
+                trace_source=trace_source,
+                correlation=correlation,
+                adapter_kind="industrial_profile_spool",
+                source_status="industrial_spool",
+                source_metadata={
+                    "profile_paths": industrial["readable_paths"],
+                    "records_read": industrial["records_read"],
+                    "records_in_window": industrial["records_in_window"],
+                    "supported_producers": ["bcc_offcputime", "skywalking_rover", "otel_profile", "mini_drop_profile_bridge"],
+                },
+            )
+            _write_json(output_path, payload)
+            return CollectorResult(
+                ok=True,
+                reason=(
+                    "工业 Off-CPU profile spool 已结构化: "
+                    f"{payload['summary']['sample_count']} 个等待样本, "
+                    f"Top wait={payload['summary']['top_wait_reason']}"
+                ),
+                artifacts=[self._artifact(task, output_path, evidence_window, payload)],
+            )
 
         preflight_status = self._preflight(task)
         if preflight_status:
@@ -192,6 +227,8 @@ class OffCPUCollector:
             "capability_check": capability_check or _capability_check(task),
             "strategy": {
                 "kind": "industrial_offcpu_v2",
+                "adapter_kind": "unavailable",
+                "source_status": "blocked",
                 "fallback_used": False,
                 "layers": ["event", "cause", "stack", "correlation"],
                 "stack_sources": ["user", "kernel"],
@@ -237,6 +274,9 @@ class OffCPUCollector:
         *,
         trace_source: dict[str, Any] | None = None,
         correlation: dict[str, Any] | None = None,
+        adapter_kind: str = "bpftrace_fallback",
+        source_status: str = "fallback_bpftrace",
+        source_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         top_wait_stacks = parsed["top_wait_stacks"][:10]
         thread_wait_summary = parsed["thread_wait_summary"][:20]
@@ -277,7 +317,10 @@ class OffCPUCollector:
             "capability_check": capability_check,
             "strategy": {
                 "kind": "industrial_offcpu_v2",
-                "fallback_used": False,
+                "adapter_kind": adapter_kind,
+                "source_status": source_status,
+                "source_metadata": source_metadata or {},
+                "fallback_used": adapter_kind.endswith("_fallback"),
                 "stack_depth": self.STACK_DEPTH,
                 "min_wait_ms": _safe_float(task.options.get("min_wait_ms"), self.DEFAULT_MIN_WAIT_MS),
                 "layers": ["event", "cause", "stack", "correlation"],
@@ -765,6 +808,158 @@ def _parse_bpftrace_output(text: str) -> dict[str, Any]:
         "cause_source": "eBPF event and stack inference" if cause_counts else "none",
         "cause_probes": sorted(cause_counts),
     }
+
+
+def _load_industrial_offcpu_spool(task: CollectorTask) -> dict[str, Any]:
+    paths = _offcpu_spool_paths(task)
+    records: list[dict[str, Any]] = []
+    readable_paths: list[str] = []
+    for path in paths:
+        if not os.path.isfile(path):
+            continue
+        readable_paths.append(path)
+        for record in _read_profile_records(path):
+            normalized = _normalize_industrial_offcpu_record(record)
+            if normalized and _offcpu_record_in_window(normalized, task):
+                records.append(normalized)
+    return {
+        "paths": paths,
+        "readable_paths": readable_paths,
+        "records_read": len(records),
+        "records_in_window": len(records),
+        "records": records,
+    }
+
+
+def _offcpu_spool_paths(task: CollectorTask) -> list[str]:
+    target_config = _target_config(task)
+    value = (
+        target_config.get("offcpu_profile_paths")
+        or task.options.get("offcpu_profile_paths")
+        or os.getenv("MINI_DROP_OFFCPU_PROFILE_PATHS", "")
+    )
+    raw_items = value if isinstance(value, list) else str(value).split(",")
+    result = []
+    for raw in raw_items:
+        path = str(raw).strip()
+        if not path:
+            continue
+        if os.path.isdir(path):
+            for name in sorted(os.listdir(path)):
+                if name.endswith((".json", ".jsonl", ".ndjson")):
+                    result.append(os.path.join(path, name))
+        else:
+            result.append(path)
+    return result[:32]
+
+
+def _read_profile_records(path: str) -> list[dict[str, Any]]:
+    try:
+        text = open(path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return []
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = None
+    if payload is not None:
+        return _flatten_profile_payload(payload)
+    records = []
+    for line in text.splitlines():
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        records.extend(_flatten_profile_payload(item))
+    return records
+
+
+def _flatten_profile_payload(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        result = []
+        for item in value:
+            result.extend(_flatten_profile_payload(item))
+        return result
+    if not isinstance(value, dict):
+        return []
+    for key in ("events", "samples", "records", "profiles"):
+        if isinstance(value.get(key), list):
+            return _flatten_profile_payload(value[key])
+    return [value]
+
+
+def _normalize_industrial_offcpu_record(record: dict[str, Any]) -> dict[str, Any] | None:
+    pid = _safe_int(record.get("pid") or record.get("process_id"))
+    tid = _safe_int(record.get("tid") or record.get("thread_id") or pid)
+    wait_ns = _duration_to_ns(
+        record.get("wait_ns"),
+        record.get("wait_us"),
+        record.get("wait_ms"),
+        record.get("duration_ns"),
+        record.get("duration_us"),
+        record.get("duration_ms"),
+    )
+    stack = _stack_list(record.get("user_stack") or record.get("stack") or record.get("ustack"))
+    kernel_stack = _stack_list(record.get("kernel_stack") or record.get("kstack"))
+    if wait_ns <= 0 and not stack and not kernel_stack:
+        return None
+    return {
+        "event": "industrial_offcpu",
+        "pid": pid,
+        "tid": tid,
+        "cpu": _safe_int(record.get("cpu")),
+        "wait_ns": wait_ns,
+        "start_ns": _safe_int(record.get("start_ns") or record.get("start_time_unix_nano")),
+        "end_ns": _safe_int(record.get("end_ns") or record.get("end_time_unix_nano")),
+        "state": record.get("state", 1),
+        "stack": stack,
+        "kernel_stack": kernel_stack,
+        "cause": record.get("cause_kind") or record.get("wait_reason") or record.get("category"),
+    }
+
+
+def _parse_industrial_offcpu_records(records: list[dict[str, Any]]) -> dict[str, Any]:
+    lines = [
+        json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+        for record in records
+    ]
+    return _parse_bpftrace_output("\n".join(lines))
+
+
+def _duration_to_ns(*values: Any) -> float:
+    names = ("ns", "us", "ms", "ns", "us", "ms")
+    for name, value in zip(names, values):
+        if value is None:
+            continue
+        number = _safe_float(value)
+        if name == "ms":
+            return number * 1_000_000
+        if name == "us":
+            return number * 1_000
+        return number
+    return 0.0
+
+
+def _stack_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        separators = ";" if ";" in value else "\n"
+        return [part.strip()[:256] for part in value.split(separators) if part.strip()]
+    if isinstance(value, list):
+        return [str(item).strip()[:256] for item in value if str(item).strip()]
+    return []
+
+
+def _offcpu_record_in_window(record: dict[str, Any], task: CollectorTask) -> bool:
+    start = _safe_int(task.options.get("window_start"), 0)
+    end = _safe_int(task.options.get("window_end"), 0)
+    if start <= 0 or end <= 0:
+        return True
+    record_start = _safe_int(record.get("start_ns"), 0)
+    record_end = _safe_int(record.get("end_ns"), record_start)
+    if record_start > 10_000_000_000_000:
+        start *= 1_000_000_000
+        end *= 1_000_000_000
+    return (record_end or record_start) >= start and record_start <= end
 
 
 def _parse_json_events(text: str) -> list[dict[str, Any]]:

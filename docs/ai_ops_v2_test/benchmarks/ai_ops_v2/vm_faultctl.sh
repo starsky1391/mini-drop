@@ -77,7 +77,8 @@ cleanup_all() {
   if [ -n "$stall_pid" ] && [ "$stall_pid" -gt 0 ] 2>/dev/null; then kill -CONT "$stall_pid" >/dev/null 2>&1 || true; fi
   for unit in md-aiopsv2-cpu.service md-aiopsv2-io.service md-aiopsv2-memory.service \
               md-aiopsv2-oom.service md-aiopsv2-java.service md-aiopsv2-go.service \
-              md-aiopsv2-python.service md-aiopsv2-stall.service md-aiopsv2-transient.service; do
+              md-aiopsv2-python.service md-aiopsv2-stall.service md-aiopsv2-transient.service \
+              md-aiopsv2-watch-cpu.service; do
     stop_unit "$unit"
   done
   cleanup_network
@@ -101,6 +102,14 @@ cleanup_all() {
 start_cpu_noise() {
   systemd-run --unit=md-aiopsv2-cpu --property=RuntimeMaxSec=240 \
     /bin/bash -c 'yes >/dev/null & yes >/dev/null & yes >/dev/null & yes >/dev/null & wait' >/dev/null
+}
+
+start_watch_cpu_shift() {
+  systemd-run --unit=md-aiopsv2-watch-cpu --property=RuntimeMaxSec=600 \
+    /usr/bin/python3 -c 'import time; time.sleep(90); end=time.time()+480; x=0
+while time.time() < end:
+    x = (x + 1) % 1000003' md-aiopsv2-watch-cpu >/dev/null
+  sleep 2
 }
 
 start_io() {
@@ -227,6 +236,7 @@ inject_fixture() {
       cid="$(container_id productcatalogservice)"; test -n "$cid"; docker kill --signal USR1 "$cid" >/dev/null ;;
     productcatalog_latency_v1)
       docker service update --env-add EXTRA_LATENCY=1.5s boutique_productcatalogservice >/dev/null; wait_service boutique_productcatalogservice ;;
+    watch_cpu_shift_v1) start_watch_cpu_shift ;;
     redis_pause_v1)
       cid="$(container_id redis-cart)"; test -n "$cid"; docker pause "$cid" >/dev/null ;;
     payment_pause_v1)

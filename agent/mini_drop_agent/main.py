@@ -25,6 +25,13 @@ from typing import Any
 
 import grpc
 
+from agent.mini_drop_agent.watch_observer import (
+    WatchObservationState,
+    ProcessDeltaSampler,
+    dict_to_sample,
+    observe_watch_lease,
+    sample_to_dict,
+)
 from agent.mini_drop_agent.collectors.base import CollectorTask
 from agent.mini_drop_agent.collectors.baseline import BaselineWindowCollector
 from agent.mini_drop_agent.collectors.continuous import ContinuousCollector
@@ -54,6 +61,8 @@ from server.app.generated import (
     hotmethod_pb2_grpc,
     init_pb2,
     init_pb2_grpc,
+    watch_pb2,
+    watch_pb2_grpc,
 )
 
 # ── 采集器注册 ────────────────────────────────────────────────────
@@ -224,6 +233,69 @@ def _collector_worker(work_queue, result_queue, config: AgentConfig) -> None:
             work_queue.task_done()
 
 
+def _watch_sync_loop(conn: GrpcConnection, config: AgentConfig) -> None:
+    """Keep all assigned watch leases alive without blocking task collection."""
+    states: dict[str, WatchObservationState] = {}
+    samplers: dict[str, ProcessDeltaSampler] = {}
+    lease_pids: dict[str, int] = {}
+    next_poll: dict[str, float] = {}
+    leases: dict[str, watch_pb2.WatchLease] = {}
+
+    while not _should_exit:
+        now = time.monotonic()
+        observations: list[watch_pb2.WatchObservation] = []
+        for watch_id, lease in list(leases.items()):
+            interval = max(1, int(lease.poll_interval_seconds or config.watch_sync_interval_sec))
+            if now < next_poll.get(watch_id, 0.0):
+                continue
+            next_poll[watch_id] = now + interval
+            if lease_pids.get(watch_id) != lease.target_pid:
+                states[watch_id] = WatchObservationState()
+                samplers[watch_id] = ProcessDeltaSampler()
+                lease_pids[watch_id] = lease.target_pid
+
+            state = states.setdefault(watch_id, WatchObservationState())
+            sampler = samplers.setdefault(watch_id, ProcessDeltaSampler())
+            sample, target_exists, status = observe_watch_lease(lease, sampler)
+            if target_exists:
+                state.append(sample_to_dict(sample))
+            baseline, trigger = state.split()
+            observation = watch_pb2.WatchObservation(
+                watch_id=watch_id,
+                target_exists=target_exists,
+                observation_status=status,
+            )
+            observation.baseline_samples.extend(dict_to_sample(item) for item in baseline)
+            observation.trigger_samples.extend(dict_to_sample(item) for item in trigger)
+            if baseline and trigger:
+                observations.append(observation)
+
+        try:
+            response = conn.call_with_retry(
+                lambda: watch_pb2_grpc.WatchRuntimeStub(conn.channel).Sync(
+                    watch_pb2.WatchSyncRequest(
+                        agent_id=config.agent_id,
+                        hostname=socket.gethostname(),
+                        ip_addr=config.agent_ip_addr,
+                        observations=observations,
+                    ),
+                    timeout=5,
+                )
+            )
+            returned = {lease.watch_id: lease for lease in response.lease}
+            leases = returned
+            active_ids = set(returned)
+            for watch_id in set(states) - active_ids:
+                states.pop(watch_id, None)
+                samplers.pop(watch_id, None)
+                lease_pids.pop(watch_id, None)
+                next_poll.pop(watch_id, None)
+        except grpc.RpcError as exc:
+            log_event("warning", "watch_sync_failed", code=exc.code(), details=exc.details())
+
+        time.sleep(max(1, config.watch_sync_interval_sec))
+
+
 def _notify_result(
     stub: hotmethod_pb2_grpc.HotmethodStub,
     task_id: str,
@@ -322,6 +394,13 @@ def main() -> None:
         daemon=True,
     )
     worker.start()
+    watch_thread = threading.Thread(
+        target=_watch_sync_loop,
+        args=(conn, config),
+        name="watch-sync",
+        daemon=True,
+    )
+    watch_thread.start()
     active_task: dict[str, Any] | None = None
 
     while not _should_exit:
@@ -399,6 +478,7 @@ def main() -> None:
 
     work_queue.put(None)
     worker.join(timeout=5)
+    watch_thread.join(timeout=5)
     conn.close()
 
 

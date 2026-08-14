@@ -36,6 +36,7 @@ class AgentConfig:
     minio_access_key: str = ""
     minio_secret_key: str = ""
     minio_bucket: str = "mini-drop"
+    watch_sync_interval_sec: int = 5
 
 
 def load_config() -> AgentConfig:
@@ -51,6 +52,7 @@ def load_config() -> AgentConfig:
         minio_access_key=os.getenv("MINIO_ACCESS_KEY", ""),
         minio_secret_key=os.getenv("MINIO_SECRET_KEY", ""),
         minio_bucket=os.getenv("MINIO_BUCKET", "mini-drop"),
+        watch_sync_interval_sec=_env_int("AGENT_WATCH_SYNC_INTERVAL_SEC", 5, min_val=1, max_val=60),
     )
 
 

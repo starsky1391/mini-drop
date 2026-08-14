@@ -25,8 +25,10 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 import asyncio
 import json as _json
 import queue as _queue
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import Any, Optional
+from uuid import uuid4
 
 from server.app.common_utils import status_value
 from server.app.ai_provider import get_ai_settings
@@ -70,17 +72,212 @@ from server.app import storage as store
 
 repo = SqlRepository()
 diagnosis_orchestrator = DiagnosisOrchestrator(repo)
-watch_registry = WatchRegistry()
+watch_registry = WatchRegistry(repo)
 watch_runtime = PersistentAgentRuntime(watch_registry, repo)
+watch_reconcile_executor = ThreadPoolExecutor(
+    max_workers=max(1, int(os.getenv("MINI_DROP_WATCH_RECONCILE_WORKERS", "2"))),
+    thread_name_prefix="watch-reconcile",
+)
+watch_analysis_executor = ThreadPoolExecutor(
+    max_workers=max(1, int(os.getenv("MINI_DROP_WATCH_ANALYSIS_WORKERS", "2"))),
+    thread_name_prefix="watch-analysis",
+)
+
+
+def _on_task_terminal(
+    task_id: str,
+    status: str,
+    reason: str,
+    artifacts: list[dict[str, Any]],
+) -> None:
+    """异步回灌 Watch 深度任务，避免阻塞 gRPC 结果上报。"""
+    watch_reconcile_executor.submit(
+        _reconcile_watch_task_terminal,
+        task_id,
+        status,
+        reason,
+        artifacts,
+    )
+
+
+def _reconcile_watch_task_terminal(
+    task_id: str,
+    status: str,
+    reason: str,
+    artifacts: list[dict[str, Any]],
+) -> None:
+    """回灌 Watch 深度任务，并在同窗任务全部结束后自动分析。"""
+    task = repo.tasks.get(task_id)
+    if task is None:
+        return
+    request_params = getattr(task, "request_params", {}) or {}
+    options = request_params.get("options", {}) if isinstance(request_params, dict) else {}
+    if not isinstance(options, dict) or options.get("collection_mode") not in {
+        "triggered_group",
+        "delayed_followup",
+    }:
+        return
+
+    incident = watch_runtime.ingest_collector_task_result(
+        task_id,
+        status=status,
+        status_reason=reason or getattr(task, "status_reason", "") or "",
+        artifacts=artifacts,
+        task_options=options,
+    )
+    if incident is None or incident.status != "ready_for_analysis":
+        return
+    if incident.analysis_status in {"analyzing", "analyzed", "analysis_failed"}:
+        return
+    if (
+        incident.analysis_status == "needs_evidence"
+        and options.get("collection_mode") != "delayed_followup"
+    ):
+        return
+
+    _execute_watch_incident_analysis(incident.incident_id)
+
+
+def _execute_watch_incident_analysis(
+    incident_id: str,
+    *,
+    analysis_strategy: Optional[str] = None,
+    analysis_pipeline: Optional[str] = None,
+) -> Any:
+    """Run one analysis with a bounded wait and an attempt guard."""
+    attempt_id = f"attempt_{uuid4().hex[:12]}"
+    started_at = time.time()
+    watch_registry.update_incident_analysis(
+        incident_id,
+        analysis_status="analyzing",
+        analysis_result={
+            "analysis_attempt_id": attempt_id,
+            "analysis_started_at": started_at,
+        },
+    )
+    timeout_sec = max(
+        30,
+        int(os.getenv("MINI_DROP_WATCH_ANALYSIS_TIMEOUT_SEC", "150")),
+    )
+    future = watch_analysis_executor.submit(
+        _run_watch_incident_analysis,
+        incident_id=incident_id,
+        analysis_strategy=analysis_strategy,
+        analysis_pipeline=analysis_pipeline,
+    )
+    try:
+        result = future.result(timeout=timeout_sec)
+    except TimeoutError:
+        future.cancel()
+        return _persist_watch_analysis_failure(
+            incident_id,
+            attempt_id=attempt_id,
+            error_type="analysis_timeout",
+            message="AI 树分析超过有界等待时间，已保留冻结证据，可从异常窗口重试",
+            timeout_sec=timeout_sec,
+            started_at=started_at,
+        )
+    except Exception as exc:
+        return _persist_watch_analysis_failure(
+            incident_id,
+            attempt_id=attempt_id,
+            error_type=type(exc).__name__,
+            message="AI 树分析执行失败，已保留冻结证据，可从异常窗口重试",
+            timeout_sec=timeout_sec,
+            started_at=started_at,
+            detail=str(exc)[:300],
+        )
+    result["analysis_attempt_id"] = attempt_id
+    return _finish_watch_incident_analysis(
+        incident_id,
+        result,
+        attempt_id=attempt_id,
+    )
+
+
+def _persist_watch_analysis_failure(
+    incident_id: str,
+    *,
+    attempt_id: str,
+    error_type: str,
+    message: str,
+    timeout_sec: int,
+    started_at: float,
+    detail: str = "",
+) -> Any:
+    incident = watch_registry.get_incident(incident_id)
+    if incident is None:
+        return None
+    result = {
+        "analysis_session_id": f"analysis_{incident_id}",
+        "incident_id": incident_id,
+        "analysis_attempt_id": attempt_id,
+        "analysis_status": "analysis_failed",
+        "auto_analysis_error": error_type,
+        "message": message,
+        "detail": detail,
+        "retryable": True,
+        "timeout_sec": timeout_sec,
+        "elapsed_sec": round(time.time() - started_at, 3),
+        "preserved_evidence_refs": [
+            item.get("evidence_ref")
+            for item in incident.snapshot_refs
+            if item.get("evidence_ref")
+        ],
+        "structured_evidence": incident.structured_evidence,
+    }
+    return watch_registry.update_incident_analysis(
+        incident_id,
+        analysis_status="analysis_failed",
+        analysis_session_id=result["analysis_session_id"],
+        analysis_result=result,
+    )
+
+
+def _finish_watch_incident_analysis(
+    incident_id: str,
+    result: dict[str, Any],
+    *,
+    attempt_id: str | None = None,
+) -> Any:
+    """Persist the result and schedule one bounded automatic follow-up round."""
+    current = watch_registry.get_incident(incident_id)
+    if current is None:
+        return None
+    current_attempt = (current.analysis_result or {}).get("analysis_attempt_id")
+    if attempt_id is not None and current_attempt != attempt_id:
+        return current
+    if current.analysis_status == "analysis_failed":
+        return current
+    needs_evidence = bool(result.get("not_enough_evidence"))
+    updated = watch_registry.update_incident_analysis(
+        incident_id,
+        analysis_status="needs_evidence" if needs_evidence else "analyzed",
+        analysis_session_id=result["analysis_session_id"],
+        analysis_result=result,
+    )
+    if needs_evidence:
+        watch = watch_registry.get(updated.watch_id)
+        if watch is not None and watch.trigger_action == "auto_all_registered":
+            watch_runtime.schedule_followup_tasks(
+                incident_id,
+                result.get("next_evidence_requests") or [],
+            )
+    return watch_registry.get_incident(incident_id) or updated
 
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     """应用生命周期：启动时拉起 gRPC，关闭时停止。"""
     init_db()
+    watch_registry.load_persisted()
     if os.getenv("MINIO_AUTO_CREATE_BUCKET", "0") == "1":
         _ensure_minio_bucket_with_retry(os.getenv("MINIO_BUCKET", "mini-drop"))
-    _grpc = serve_in_background(repo)
+    _grpc = serve_in_background(
+        repo,
+        watch_runtime=watch_runtime,
+        on_task_terminal=_on_task_terminal,
+    )
     _offline_task = asyncio.create_task(_offline_sweeper())
     try:
         yield
@@ -91,6 +288,8 @@ async def _lifespan(_app: FastAPI):
         except asyncio.CancelledError:
             pass
         _grpc.stop(grace=None).wait(timeout=5)
+        watch_reconcile_executor.shutdown(wait=False, cancel_futures=True)
+        watch_analysis_executor.shutdown(wait=False, cancel_futures=True)
 
 
 async def _offline_sweeper() -> None:
@@ -866,6 +1065,19 @@ def _run_watch_incident_analysis(
     )
     report = outcome.report
     ranked_causes = [cause.model_dump() for cause in report.report.ranked_causes]
+    ai_tree = [item.model_dump(mode="json") for item in report.report.ai_tree]
+    next_evidence_requests = list(dict.fromkeys(
+        request
+        for item in ai_tree
+        for request in item.get("next_evidence_requests", [])
+        if request
+    ))
+    analysis_result = report.report.analysis_result
+    conclusion_boundary = (
+        report.report.conclusion_boundary.model_dump(mode="json")
+        if report.report.conclusion_boundary is not None
+        else None
+    )
     analysis_session_id = f"analysis_{incident.incident_id}"
     return {
         "analysis_session_id": analysis_session_id,
@@ -884,6 +1096,17 @@ def _run_watch_incident_analysis(
         "ranked_causes": ranked_causes,
         "facts": report.report.facts,
         "not_enough_evidence": report.report.not_enough_evidence,
+        "ai_tree": ai_tree,
+        "next_evidence_requests": next_evidence_requests,
+        "missing_evidence": list(report.report.missing_evidence),
+        "collection_gaps": list(report.report.collection_gaps),
+        "blocked_upgrades": list(report.report.blocked_upgrades),
+        "conclusion_boundary": conclusion_boundary,
+        "analysis_result": (
+            analysis_result.model_dump(mode="json")
+            if analysis_result is not None
+            else None
+        ),
         "tool_results": [item.model_dump() for item in outcome.tool_results],
         "structured_evidence": report.report.structured_evidence,
         "repair_plan": outcome.repair_plan.model_dump() if outcome.repair_plan is not None else None,
@@ -1092,20 +1315,10 @@ def analyze_watch_incident(
     if not incident.structured_evidence:
         raise HTTPException(status_code=409, detail="异常窗口缺少结构化证据，无法分析")
     watch_registry.update_incident_analysis(incident_id, analysis_status="analyzing")
-    try:
-        result = _run_watch_incident_analysis(
-            incident_id=incident_id,
-            analysis_strategy=analysis_strategy,
-            analysis_pipeline=analysis_pipeline,
-        )
-    except Exception:
-        watch_registry.update_incident_analysis(incident_id, analysis_status="not_started")
-        raise
-    analyzed = watch_registry.update_incident_analysis(
+    analyzed = _execute_watch_incident_analysis(
         incident_id,
-        analysis_status="needs_evidence" if result.get("not_enough_evidence") else "analyzed",
-        analysis_session_id=result["analysis_session_id"],
-        analysis_result=result,
+        analysis_strategy=analysis_strategy,
+        analysis_pipeline=analysis_pipeline,
     )
     return APIResponse(data=analyzed.model_dump(mode="json"))
 

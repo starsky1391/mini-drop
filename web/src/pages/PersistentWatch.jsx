@@ -83,6 +83,183 @@ function parseTargetConfig(value) {
   }
 }
 
+function statusColor(status) {
+  if (status === "DONE" || status === "analyzed") return "green";
+  if (status === "FAILED" || status === "analysis_failed") return "red";
+  if (["RUNNING", "UPLOADING", "ANALYZING", "analyzing", "collecting"].includes(status)) return "processing";
+  if (status === "needs_evidence") return "orange";
+  return "default";
+}
+
+function evidenceIndexOf(record) {
+  return record?.structured_evidence?.evidence_index || {};
+}
+
+function confidenceOf(record) {
+  return record?.structured_evidence?.confidence_inputs || {};
+}
+
+function compactList(items, limit = 6) {
+  const values = (items || []).filter(Boolean);
+  if (values.length <= limit) return values;
+  return [...values.slice(0, limit), `+${values.length - limit}`];
+}
+
+function renderEvidenceFamilies(record) {
+  const index = evidenceIndexOf(record);
+  const families = [
+    ["log_scan", index.log_scan],
+    ["dependency_check", index.dependency_check],
+    ["redis_check", index.redis_check],
+    ["off_cpu_wait", index.off_cpu_wait],
+    ["trace_endpoint_profile", index.trace_endpoint_profile],
+    ["delayed_followups", index.delayed_followups?.length],
+  ];
+  return (
+    <Space size={[4, 4]} wrap>
+      {families.map(([name, value]) => (
+        <Tag key={name} color={value ? "green" : "default"}>
+          {name}{Array.isArray(value) ? ` ${value.length}` : ""}
+        </Tag>
+      ))}
+    </Space>
+  );
+}
+
+function renderCollectorTaskDetail(record) {
+  const states = evidenceIndexOf(record).watch_collector_tasks || record.collector_tasks || [];
+  if (!states.length) {
+    return <Typography.Text type="secondary">没有深度采集任务，仅保留 frozen snapshot。</Typography.Text>;
+  }
+  return (
+    <Space direction="vertical" size={6} style={{ width: "100%" }}>
+      {states.map((task) => (
+        <Card key={task.task_id} size="small" bodyStyle={{ padding: 10 }}>
+          <Space direction="vertical" size={4} style={{ width: "100%" }}>
+            <Space size={[4, 4]} wrap>
+              <Tag color={statusColor(task.status)}>{task.status || "PENDING"}</Tag>
+              <Tag color={task.collection_mode === "delayed_followup" ? "purple" : "blue"}>
+                {task.collection_mode || "triggered_group"}
+              </Tag>
+              <Typography.Text code>{task.probe_id}</Typography.Text>
+              <Typography.Text type="secondary">{task.collector_type}</Typography.Text>
+            </Space>
+            {task.status_reason && (
+              <Typography.Text type={task.status === "FAILED" ? "danger" : "secondary"}>
+                {task.status_reason}
+              </Typography.Text>
+            )}
+            <Space size={[4, 4]} wrap>
+              {(task.artifact_types || []).length ? (
+                task.artifact_types.map((type) => <Tag key={type}>{type}</Tag>)
+              ) : (
+                <Typography.Text type="secondary">暂无 artifact</Typography.Text>
+              )}
+            </Space>
+            <Typography.Text type="secondary" style={{ fontSize: FONT_SIZES.sm }}>
+              {task.task_id}
+            </Typography.Text>
+          </Space>
+        </Card>
+      ))}
+    </Space>
+  );
+}
+
+function renderAnalysisDetail(record) {
+  const result = record.analysis_result || {};
+  const boundary = result.conclusion_boundary || {};
+  const confidence = confidenceOf(record);
+  const requests = result.next_evidence_requests || [];
+  const blocked = result.blocked_upgrades || [];
+  const missing = result.missing_evidence || [];
+  return (
+    <Space direction="vertical" size={8} style={{ width: "100%" }}>
+      <Space size={[4, 4]} wrap>
+        <Tag color={statusColor(record.analysis_status)}>{record.analysis_status}</Tag>
+        {boundary.max_supported_level && <Tag color="geekblue">定位层级：{boundary.max_supported_level}</Tag>}
+        {confidence.trace_correlation_status && <Tag>Trace：{confidence.trace_correlation_status}</Tag>}
+        {confidence.trace_max_supported_level && <Tag>Trace max：{confidence.trace_max_supported_level}</Tag>}
+      </Space>
+      {result.summary && <Typography.Paragraph style={{ marginBottom: 0 }}>{result.summary}</Typography.Paragraph>}
+      {boundary.reason && (
+        <Typography.Text type="secondary">
+          边界原因：{boundary.reason}
+        </Typography.Text>
+      )}
+      <Space size={[4, 4]} wrap>
+        {compactList(requests).map((item) => <Tag color="orange" key={`req-${item}`}>next: {item}</Tag>)}
+        {compactList(missing).map((item) => <Tag color="gold" key={`missing-${item}`}>missing: {item}</Tag>)}
+        {compactList(blocked).map((item) => <Tag color="red" key={`blocked-${item}`}>blocked: {item}</Tag>)}
+      </Space>
+      {record.analysis_result?.auto_analysis_error && (
+        <Alert
+          type="warning"
+          showIcon
+          message={record.analysis_result.auto_analysis_error}
+          description={record.analysis_result.detail || record.analysis_result.message}
+        />
+      )}
+    </Space>
+  );
+}
+
+function renderIncidentExpanded(record) {
+  const delayed = evidenceIndexOf(record).delayed_followups || [];
+  return (
+    <Space direction="vertical" size={SPACING.md} style={{ width: "100%" }}>
+      <Row gutter={[SPACING.md, SPACING.md]}>
+        <Col xs={24} md={8}>
+          <Card size="small" title="证据族">
+            {renderEvidenceFamilies(record)}
+          </Card>
+        </Col>
+        <Col xs={24} md={8}>
+          <Card size="small" title="AI 树边界">
+            {renderAnalysisDetail(record)}
+          </Card>
+        </Col>
+        <Col xs={24} md={8}>
+          <Card size="small" title="同窗关系">
+            <Space direction="vertical" size={2}>
+              <Typography.Text>window: {record.window_start} → {record.window_end}</Typography.Text>
+              <Typography.Text type="secondary">trigger: {record.trigger_observed_at}</Typography.Text>
+              <Typography.Text type="secondary">delayed follow-up: {delayed.length} 个</Typography.Text>
+            </Space>
+          </Card>
+        </Col>
+      </Row>
+      <Card size="small" title="采集任务终态">
+        {renderCollectorTaskDetail(record)}
+      </Card>
+      {delayed.length > 0 && (
+        <Card size="small" title="Delayed Follow-up 证据回灌">
+          <Space direction="vertical" size={6} style={{ width: "100%" }}>
+            {delayed.map((item) => (
+              <Card key={item.task_id} size="small" bodyStyle={{ padding: 10 }}>
+                <Space direction="vertical" size={4}>
+                  <Space size={[4, 4]} wrap>
+                    <Tag color="purple">{item.timing_relation}</Tag>
+                    <Typography.Text code>{item.task_id}</Typography.Text>
+                  </Space>
+                  <Space size={[4, 4]} wrap>
+                    {(item.artifact_refs || []).map((ref) => (
+                      <Tag key={ref.evidence_ref || ref.artifact_type}>{ref.artifact_type}</Tag>
+                    ))}
+                    {(item.top_functions || []).slice(0, 3).map((fn) => (
+                      <Tag color="blue" key={fn.evidence_ref || fn.name}>{fn.name}</Tag>
+                    ))}
+                  </Space>
+                </Space>
+              </Card>
+            ))}
+          </Space>
+        </Card>
+      )}
+    </Space>
+  );
+}
+
 export default function PersistentWatch() {
   const [form] = Form.useForm();
   const [agents, setAgents] = useState([]);
@@ -407,7 +584,9 @@ export default function PersistentWatch() {
       render: (_, record) => record.collector_tasks?.length ? (
         <Space size={[4, 4]} wrap>
           {record.collector_tasks.map((task) => (
-            <Tag color="blue" key={task.task_id}>{task.probe_id}</Tag>
+            <Tag color={statusColor(task.status)} key={task.task_id}>
+              {task.probe_id}
+            </Tag>
           ))}
         </Space>
       ) : (
@@ -421,13 +600,18 @@ export default function PersistentWatch() {
         <Space direction="vertical" size={2}>
           <Space size={4}>
             <Tag color={record.status === "collecting" ? "processing" : "gold"}>{record.status}</Tag>
-            <Tag color={record.analysis_status === "analyzed" ? "green" : record.analysis_status === "needs_evidence" ? "orange" : "default"}>
+            <Tag color={record.analysis_status === "analyzed" ? "green" : record.analysis_status === "needs_evidence" ? "orange" : record.analysis_status === "analysis_failed" ? "red" : "default"}>
               {record.analysis_status}
             </Tag>
           </Space>
           {record.analysis_result?.summary && (
             <Typography.Text type="secondary" style={{ fontSize: FONT_SIZES.sm }}>
               {record.analysis_result.summary}
+            </Typography.Text>
+          )}
+          {record.analysis_result?.message && (
+            <Typography.Text type="danger" style={{ fontSize: FONT_SIZES.sm }}>
+              {record.analysis_result.message}
             </Typography.Text>
           )}
         </Space>
@@ -675,6 +859,10 @@ export default function PersistentWatch() {
                 pagination={false}
                 size="small"
                 scroll={{ x: 980 }}
+                expandable={{
+                  expandedRowRender: renderIncidentExpanded,
+                  rowExpandable: () => true,
+                }}
                 locale={{ emptyText: <Empty description="这个监视对象还没有冻结异常窗口" /> }}
               />
             ),

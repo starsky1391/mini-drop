@@ -144,7 +144,11 @@ def test_unsupported_probe_capabilities_are_skipped_without_fake_tasks():
     assert result.trigger_event is not None
     assert result.trigger_event.trigger_type == "io_wait_shift"
     assert [task.probe_id for task in result.collector_tasks] == ["host_process_metrics"]
-    assert result.skipped_probe_ids == ["process_io_latency", "process_off_cpu_profile"]
+    assert result.skipped_probe_ids == [
+        "process_io_latency",
+        "process_off_cpu_profile",
+        "process_trace_endpoint_profile",
+    ]
     assert len(repo.tasks) == 1
 
 

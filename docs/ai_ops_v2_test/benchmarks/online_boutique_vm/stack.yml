@@ -16,11 +16,18 @@ x-defaults: &defaults
       max_attempts: 5
       window: 30s
 
+x-otel-env: &otel-env
+  ENABLE_TRACING: "1"
+  COLLECTOR_SERVICE_ADDR: otel-collector:4317
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+
 services:
   frontend:
     <<: *defaults
     image: gcr.io/google-samples/microservices-demo/frontend:v0.8.0
     environment:
+      <<: *otel-env
       PORT: "8080"
       PRODUCT_CATALOG_SERVICE_ADDR: productcatalogservice:3550
       CURRENCY_SERVICE_ADDR: currencyservice:7000
@@ -52,6 +59,7 @@ services:
     <<: *defaults
     image: gcr.io/google-samples/microservices-demo/productcatalogservice:v0.8.0
     environment:
+      <<: *otel-env
       PORT: "3550"
       DISABLE_PROFILER: "1"
     deploy:
@@ -70,6 +78,7 @@ services:
     <<: *defaults
     image: gcr.io/google-samples/microservices-demo/currencyservice:v0.8.0
     environment:
+      <<: *otel-env
       PORT: "7000"
       DISABLE_PROFILER: "1"
     deploy:
@@ -85,6 +94,7 @@ services:
     <<: *defaults
     image: gcr.io/google-samples/microservices-demo/recommendationservice:v0.8.0
     environment:
+      <<: *otel-env
       PORT: "8080"
       PRODUCT_CATALOG_SERVICE_ADDR: productcatalogservice:3550
       DISABLE_PROFILER: "1"
@@ -104,6 +114,7 @@ services:
     <<: *defaults
     image: gcr.io/google-samples/microservices-demo/loadgenerator:v0.8.0
     environment:
+      <<: *otel-env
       FRONTEND_ADDR: frontend:8080
       USERS: "5"
     deploy:
@@ -119,6 +130,7 @@ services:
     <<: *defaults
     image: gcr.io/google-samples/microservices-demo/cartservice:v0.8.0
     environment:
+      <<: *otel-env
       REDIS_ADDR: redis-cart:6379
     deploy:
       replicas: 1
@@ -148,6 +160,7 @@ services:
     <<: *defaults
     image: gcr.io/google-samples/microservices-demo/checkoutservice:v0.8.0
     environment:
+      <<: *otel-env
       PORT: "5050"
       PRODUCT_CATALOG_SERVICE_ADDR: productcatalogservice:3550
       SHIPPING_SERVICE_ADDR: shippingservice:50051
@@ -168,6 +181,7 @@ services:
     <<: *defaults
     image: gcr.io/google-samples/microservices-demo/paymentservice:v0.8.0
     environment:
+      <<: *otel-env
       PORT: "50051"
       DISABLE_PROFILER: "1"
     deploy:
@@ -186,6 +200,7 @@ services:
     <<: *defaults
     image: gcr.io/google-samples/microservices-demo/shippingservice:v0.8.0
     environment:
+      <<: *otel-env
       PORT: "50051"
       DISABLE_PROFILER: "1"
     deploy:
@@ -201,6 +216,7 @@ services:
     <<: *defaults
     image: gcr.io/google-samples/microservices-demo/emailservice:v0.8.0
     environment:
+      <<: *otel-env
       PORT: "8080"
       DISABLE_PROFILER: "1"
     deploy:
@@ -216,6 +232,7 @@ services:
     <<: *defaults
     image: gcr.io/google-samples/microservices-demo/adservice:v0.8.0
     environment:
+      <<: *otel-env
       PORT: "9555"
     deploy:
       replicas: 1

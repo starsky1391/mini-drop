@@ -34,6 +34,9 @@ from server.app.models import (
     RepairPlanModel,
     StatusEventModel,
     TaskModel,
+    WatchIncidentModel,
+    WatchSnapshotModel,
+    WatchSubscriptionModel,
 )
 from server.app.prometheus_metrics import record_task_transition
 from server.app.rca.models import FeedbackPrior
@@ -644,6 +647,138 @@ class SqlRepository:
             weight.updated_at = ts
 
     # ------------------------------------------------------------------
+    # Persistent Watch
+    # ------------------------------------------------------------------
+
+    def persist_watch_subscription(self, watch: dict[str, Any]) -> None:
+        with self._write_session() as session:
+            row = session.get(WatchSubscriptionModel, watch["watch_id"])
+            values = {
+                "name": watch["name"],
+                "target_json": _json_safe(watch.get("target", {})),
+                "target_config_json": _json_safe(watch.get("target_config", {})),
+                "watch_profile": watch["watch_profile"],
+                "enabled_collectors_json": _json_safe(watch.get("enabled_collectors", [])),
+                "retention_seconds": int(watch["retention_seconds"]),
+                "trigger_policy": watch["trigger_policy"],
+                "trigger_action": watch["trigger_action"],
+                "status": watch["status"],
+                "created_at": _parse_datetime(watch["created_at"]),
+                "updated_at": _parse_datetime(watch["updated_at"]),
+                "incidents_count": int(watch.get("incidents_count", 0)),
+                "last_evaluated_at": _parse_datetime(watch["last_evaluated_at"])
+                if watch.get("last_evaluated_at") else None,
+                "last_trigger_event_id": watch.get("last_trigger_event_id"),
+                "last_evidence_cohort_id": watch.get("last_evidence_cohort_id"),
+                "last_trigger_type": watch.get("last_trigger_type"),
+            }
+            if row is None:
+                row = WatchSubscriptionModel(id=watch["watch_id"], **values)
+                session.add(row)
+            else:
+                for key, value in values.items():
+                    setattr(row, key, value)
+
+    def list_watch_subscriptions(
+        self,
+        *,
+        agent_id: str | None = None,
+        include_disabled: bool = False,
+    ) -> list[dict[str, Any]]:
+        with self._read_session() as session:
+            query = session.query(WatchSubscriptionModel)
+            if agent_id:
+                rows = [
+                    row for row in query.all()
+                    if (row.target_json or {}).get("agent_id") == agent_id
+                ]
+            else:
+                rows = query.all()
+            if not include_disabled:
+                rows = [row for row in rows if row.status == "active"]
+            rows.sort(key=lambda row: row.created_at, reverse=True)
+            return [row.to_dict() for row in rows]
+
+    def get_watch_subscription(self, watch_id: str) -> dict[str, Any] | None:
+        with self._read_session() as session:
+            row = session.get(WatchSubscriptionModel, watch_id)
+            return row.to_dict() if row else None
+
+    def persist_watch_incident(self, incident: dict[str, Any]) -> None:
+        with self._write_session() as session:
+            row = session.get(WatchIncidentModel, incident["incident_id"])
+            values = {
+                "watch_id": incident["watch_id"],
+                "trigger_event_id": incident["trigger_event_id"],
+                "evidence_cohort_id": incident["evidence_cohort_id"],
+                "trigger_type": incident["trigger_type"],
+                "window_start": _parse_datetime(incident["window_start"]),
+                "window_end": _parse_datetime(incident["window_end"]),
+                "trigger_observed_at": _parse_datetime(incident["trigger_observed_at"]),
+                "status": incident["status"],
+                "analysis_status": incident["analysis_status"],
+                "snapshot_id": incident.get("snapshot_id"),
+                "snapshot_refs_json": _json_safe(incident.get("snapshot_refs", [])),
+                "structured_evidence_json": _json_safe(incident.get("structured_evidence", {})),
+                "collector_tasks_json": _json_safe(incident.get("collector_tasks", [])),
+                "analysis_session_id": incident.get("analysis_session_id"),
+                "analysis_result_json": _json_safe(incident["analysis_result"])
+                if incident.get("analysis_result") is not None else None,
+                "created_at": _parse_datetime(incident["created_at"]),
+            }
+            if row is None:
+                row = WatchIncidentModel(id=incident["incident_id"], **values)
+                session.add(row)
+            else:
+                for key, value in values.items():
+                    setattr(row, key, value)
+
+    def list_watch_incidents(self, watch_id: str) -> list[dict[str, Any]]:
+        with self._read_session() as session:
+            rows = (
+                session.query(WatchIncidentModel)
+                .filter(WatchIncidentModel.watch_id == watch_id)
+                .order_by(WatchIncidentModel.created_at.desc())
+                .all()
+            )
+            return [row.to_dict() for row in rows]
+
+    def get_watch_incident(self, incident_id: str) -> dict[str, Any] | None:
+        with self._read_session() as session:
+            row = session.get(WatchIncidentModel, incident_id)
+            return row.to_dict() if row else None
+
+    def persist_watch_snapshot(
+        self,
+        *,
+        watch_id: str,
+        incident_id: str,
+        snapshot: dict[str, Any],
+        structured_evidence: dict[str, Any],
+    ) -> None:
+        with self._write_session() as session:
+            row = session.get(WatchSnapshotModel, snapshot["metadata"]["snapshot_id"])
+            values = {
+                "watch_id": watch_id,
+                "incident_id": incident_id,
+                "metadata_json": _json_safe(snapshot["metadata"]),
+                "samples_json": _json_safe(snapshot.get("samples", [])),
+                "structured_evidence_json": _json_safe(structured_evidence),
+                "created_at": now_utc(),
+            }
+            if row is None:
+                row = WatchSnapshotModel(id=snapshot["metadata"]["snapshot_id"], **values)
+                session.add(row)
+            else:
+                for key, value in values.items():
+                    setattr(row, key, value)
+
+    def get_watch_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
+        with self._read_session() as session:
+            row = session.get(WatchSnapshotModel, snapshot_id)
+            return row.to_dict() if row else None
+
+    # ------------------------------------------------------------------
     # 内部辅助
     # ------------------------------------------------------------------
 
@@ -701,7 +836,8 @@ class SqlRepository:
         if isinstance(value, (
             AgentModel, TaskModel, StatusEventModel, AuditLogModel, ArtifactModel,
             DiagnosisRunModel, DiagnosisToolResultModel, DiagnosisReportModel,
-            RepairPlanModel,
+            RepairPlanModel, WatchSubscriptionModel, WatchIncidentModel,
+            WatchSnapshotModel,
         )):
             return value.to_dict()
         return json.loads(json.dumps(value, default=str))
@@ -714,3 +850,9 @@ def _feedback_delta(positive: int, partial: int, negative: int) -> int:
 
 def _json_safe(value: Any):
     return json.loads(json.dumps(value, default=str))
+
+
+def _parse_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))

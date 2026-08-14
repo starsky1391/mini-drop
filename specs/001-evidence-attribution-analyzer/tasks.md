@@ -597,8 +597,8 @@
 - [x] AO003 Add a deployment/runtime check for `privileged`, `pid: host`, `PERFMON`, `SYS_PTRACE`, `SYS_ADMIN`, `BPF`, seccomp, and `kernel.perf_event_paranoid`.
 - [x] AO004 Keep target-scoped invocation separate from Agent-global capability discovery so multiple targets cannot share the wrong Trace paths or Redis target.
 - [x] AO005 Run local focused and full tests; preserve existing unrelated worktree changes.
-- [ ] AO006 Rebuild only required Worker/Control services and run `OB-SINGLE-REDIS-001`.
-- [ ] AO007 Verify `process_log_scan` and `process_trace_endpoint_profile` artifacts, readiness gate, AI-tree localization level, `next_evidence_requests`, and saved report output.
+- [x] AO006 Rebuild only required Worker/Control services and run `OB-SINGLE-REDIS-001`.
+- [x] AO007 Verify `process_log_scan` and `process_trace_endpoint_profile` artifacts, readiness gate, AI-tree localization level, `next_evidence_requests`, and saved report output; retain the permission-blocked stack boundary.
 
 **Outcome**: The deployed system can distinguish real collection success, valid empty evidence, missing Trace source, permission blocking, and successful endpoint/call-path correlation.
 
@@ -626,7 +626,7 @@
 - [x] AQ006 Add deterministic function/endpoint/Trace/call-path correlation when target context is available.
 - [x] AQ007 Keep raw event output as references-only artifacts and expose compact summaries to the AI tree.
 - [x] AQ008 Add unit tests for event-only, cause-only, stackless, permission-blocked, target-exit, and fully correlated results.
-- [ ] AQ009 Run a real Linux Off-CPU smoke test and record whether the target produced non-empty wait evidence.
+- [x] AQ009 Run a real Linux Off-CPU smoke test and record whether the target produced non-empty wait evidence; the deployed Redis case captured wait events but remained stackless because of host permissions.
 
 **Outcome**: Off-CPU evidence can explain whether a target was waiting, why it was waiting, where it waited, and how complete that evidence is.
 
@@ -640,7 +640,7 @@
 - [x] AR004 Allow approved or `all_registered` follow-up probes to consume the reserved quota with normal capability and risk checks.
 - [x] AR005 Record budget block details including used, limit, reserved, requested, phase, and next action.
 - [x] AR006 Add tests proving the initial phase cannot exhaust follow-up reserve and the follow-up phase can use it.
-- [ ] AR007 Re-run `OB-SINGLE-REDIS-001` with the 180s budget and verify follow-up probe execution.
+- [x] AR007 Re-run `OB-SINGLE-REDIS-001` with the 180s budget and verify follow-up probe execution.
 
 **Outcome**: More evidence can be collected without losing the AI tree's ability to continue depth exploration.
 
@@ -649,8 +649,63 @@
 **Purpose**: Verify the complete chain after AP-AQ-AR changes.
 
 - [x] AS001 Run focused collector, orchestrator, evidence structurer, audit bundle, and readiness gate tests.
-- [ ] AS002 Run the real Redis case and inspect all structured artifacts, not just terminal status.
-- [ ] AS003 Confirm the report distinguishes Redis service attribution from missing Off-CPU/Trace function evidence.
-- [ ] AS004 Save the timestamped report and update the weekly progress record with real limitations.
+- [x] AS002 Run the real Redis case and inspect all structured artifacts, not just terminal status.
+- [x] AS003 Confirm the report distinguishes Redis service attribution from missing Off-CPU/Trace function evidence.
+- [x] AS004 Save the timestamped report and update the progress record with real limitations.
 
 **Outcome**: The four real-case failures are either fixed or represented with precise, actionable evidence boundaries.
+
+### Task Group AU - WatchRuntime 持续监视闭环
+
+**Purpose**: Make Persistent Watch operational in the deployed scheme B environment. Agent registration only answers "what this worker can collect"; WatchRuntime leases answer "which concrete target this worker should observe now".
+
+- [x] AU001 Add `watch.proto` with `WatchRuntime.Sync`, `WatchLease`, `WatchObservation`, and structured metric samples.
+- [x] AU002 Register WatchRuntime gRPC service on the server and keep it protected by the existing gRPC auth interceptor.
+- [x] AU003 Convert Agent observations into existing `MetricWindow` objects and reuse `PersistentAgentRuntime.evaluate()`.
+- [x] AU004 Add Agent-side independent Watch sync loop so ordinary collector tasks do not block watch observation.
+- [x] AU005 Support multiple simultaneous watch leases with per-watch PID/window isolation.
+- [x] AU006 Suppress duplicate incidents for one continuously active trigger while preserving manual multi-incident history.
+- [x] AU007 Add focused tests for WatchRuntime service evaluation, target-exit ignore behavior, and repeated-trigger suppression.
+- [x] AU008 Deploy the WatchRuntime-capable Control/Worker containers to all three VMs.
+- [x] AU009 Test frontend watch creation, lease pickup, triggered incident creation, frozen snapshot, and watch-scoped collector tasks.
+
+**Outcome**: Persistent Watch can capture suspicious windows before manual diagnosis, while still relying on the AI tree and structured evidence layer for attribution.
+
+### Task Group AW - 方案 B 真实验收工具
+
+**Purpose**: Keep remote deployment, Redis diagnosis, and Persistent Watch validation reproducible without mixing their failure signals.
+
+- [x] AW001 Make the scheme B deployment script resolve `/home/<user>/mini-drop-active` before `/home/<user>/mini-drop`.
+- [x] AW002 Normalize `proto/compile.sh` line endings and executable permissions after SFTP upload.
+- [x] AW003 Make the AI Ops v2 runner use the same resolved remote repository root for fault injection and collector overrides.
+- [x] AW004 Add a standalone Persistent Watch VM smoke script covering process selection, watch lease, trigger evaluation, frozen incident, and optional AI-tree analysis.
+- [x] AW005 Execute the deployment script against all three VMs and rebuild the required services.
+- [x] AW006 Execute `OB-SINGLE-REDIS-001` with the 180s budget and save the timestamped full report.
+- [x] AW007 Execute the Persistent Watch smoke test and verify frontend-visible incident/snapshot/collector-task data.
+
+**Outcome**: Scheme B has separate, repeatable commands for deployment, ordinary diagnosis, and persistent monitoring; Kubernetes remains outside this acceptance group.
+
+### Task Group AV - Kubernetes 后续迁移路线
+
+**Purpose**: Keep Kubernetes migration explicit without mixing it into the current Docker VM scheme B completion claim.
+
+- [x] AV001 Document the current Docker VM scheme B boundary and declare Kubernetes out of current completion scope.
+- [x] AV002 Document the future `Environment Backend -> Kubernetes Backend` migration path.
+- [x] AV003 Document OTel Collector DaemonSet, industrial profile producer / SkyWalking Rover DaemonSet, CRI/containerd PID resolver, and CNI-aware dependency probing as follow-up upgrades.
+- [x] AV004 Require same Case/Oracle dual-environment evaluation before Kubernetes migration is considered complete.
+
+**Outcome**: Scheme B can be completed and tested now, while Kubernetes remains a clear future backend rather than an implied partial implementation.
+
+### Task Group AX - 方案 B 分析终态与前端发布闭环
+
+**Purpose**: Close the real-case gap where Watch collection completed but automatic AI analysis exceeded the test window or the result was not visible in the deployed frontend.
+
+- [x] AX001 Add `analysis_failed` as a persisted terminal status for Watch incidents, preserving error type, retryability, elapsed budget, and frozen evidence refs.
+- [x] AX002 Add per-analysis attempt identity and prevent late or duplicate background results from overwriting a newer terminal state.
+- [x] AX003 Bound Watch automatic analysis to `150s` by default and bound each LLM request to `45s` by default, both configurable through Control environment variables.
+- [x] AX004 Update the VM smoke runner to accept `analysis_failed` as a completed terminal observation instead of reporting a false timeout.
+- [x] AX005 Show analysis failure status and retry message in the Persistent Watch frontend without hiding the frozen snapshot or structured evidence.
+- [x] AX006 Include `web/src/pages/PersistentWatch.jsx` and the Control analysis timeout configuration in scheme B deployment synchronization.
+- [x] AX007 Add API, collector, RCA, Python compile, and frontend build validation for the terminal-state contract.
+
+**Outcome**: Watch incidents cannot remain indefinitely in `analyzing`; successful, evidence-insufficient, and failed analysis all have explicit persisted states, and the deployed frontend displays the same state as the API.

@@ -27,6 +27,7 @@ def build_audit_bundle(diagnosis_id: str, orchestrator, repo) -> dict[str, Any] 
     trace = _runtime_trace(detail)
     conclusion = _normalize_conclusion(latest)
     evidence_refs = _evidence_refs(evidence, latest)
+    structured_evidence = _structured_evidence(evidence)
     readiness = build_readiness_gate(
         {
             "diagnosis_id": diagnosis_id,
@@ -37,7 +38,7 @@ def build_audit_bundle(diagnosis_id: str, orchestrator, repo) -> dict[str, Any] 
             "tasks": tasks,
             "artifacts": artifacts,
             "evidence": evidence,
-            "structured_evidence": _structured_evidence(evidence),
+            "structured_evidence": structured_evidence,
             "evidence_refs": evidence_refs,
             "conclusion": conclusion,
         }
@@ -55,7 +56,7 @@ def build_audit_bundle(diagnosis_id: str, orchestrator, repo) -> dict[str, Any] 
         "tasks": tasks,
         "artifacts": artifacts,
         "evidence": evidence,
-        "structured_evidence": _structured_evidence(evidence),
+        "structured_evidence": structured_evidence,
         "evidence_refs": evidence_refs,
         "conclusion": conclusion,
         "latest_conclusion": latest,
@@ -188,7 +189,231 @@ def _structured_evidence(evidence: list[dict[str, Any]]) -> dict[str, Any]:
     items = _structured_evidence_items(evidence)
     if not items:
         return {}
-    return items[-1].get("observed_value", {})
+    summaries = [
+        item.get("observed_value", {}).get("summary", {})
+        for item in items
+        if isinstance(item.get("observed_value"), dict)
+        and isinstance(item["observed_value"].get("summary"), dict)
+    ]
+    if not summaries:
+        return {}
+
+    artifact_refs = _unique_items(
+        item
+        for summary in summaries
+        for item in _as_list(summary.get("artifact_refs"))
+        if isinstance(item, dict)
+    )
+    top_functions = _unique_items(
+        item
+        for summary in summaries
+        for item in _as_list(summary.get("top_functions"))
+        if isinstance(item, dict)
+    )
+    call_path_hotspots = _unique_items(
+        item
+        for summary in summaries
+        for item in _as_list(summary.get("call_path_hotspots"))
+        if isinstance(item, dict)
+    )
+    stack_summaries = [
+        summary.get("stack_summary")
+        for summary in summaries
+        if isinstance(summary.get("stack_summary"), dict)
+    ]
+    stack_summary = max(stack_summaries, key=_stack_signal_score, default={})
+
+    confidence_inputs = _merge_confidence_inputs(summaries)
+    evidence_index = {
+        "artifact_refs": artifact_refs,
+        "stack_summary": stack_summary,
+        "call_path_hotspots": call_path_hotspots,
+        "confidence_inputs": confidence_inputs,
+        "task_evidence": [
+            {
+                "task_id": str(summary.get("task_id") or ""),
+                "collector_families": list(
+                    (summary.get("confidence_inputs") or {}).get("collector_families") or []
+                ),
+                "evidence_refs": [
+                    str(item.get("evidence_ref") or "")
+                    for item in _as_list(summary.get("artifact_refs"))
+                    if isinstance(item, dict) and item.get("evidence_ref")
+                ],
+            }
+            for summary in summaries
+        ],
+    }
+    for field, index_key in (
+        ("off_cpu_wait_json", "off_cpu_wait"),
+        ("log_window_json", "log_scan"),
+        ("dependency_check_json", "dependency_check"),
+        ("redis_check_json", "redis_check"),
+        ("trace_endpoint_profile_json", "trace_endpoint_profile"),
+    ):
+        selected = _strongest_signal_value(summaries, field)
+        if selected:
+            evidence_index[index_key] = selected
+
+    return {
+        "version": 1,
+        "scope": "diagnosis",
+        "task_count": len(summaries),
+        "artifact_refs": artifact_refs,
+        "top_functions": top_functions,
+        "stack_summary": stack_summary,
+        "call_path_hotspots": call_path_hotspots,
+        "confidence_inputs": confidence_inputs,
+        "evidence_index": evidence_index,
+        "sys_metrics": _strongest_signal_value(summaries, "sys_metrics"),
+        "ebpf_metrics": _strongest_signal_value(summaries, "ebpf_metrics"),
+        "memory_json": _strongest_signal_value(summaries, "memory_json"),
+        "off_cpu_wait_json": _strongest_signal_value(summaries, "off_cpu_wait_json"),
+        "log_window_json": _strongest_signal_value(summaries, "log_window_json"),
+        "dependency_check_json": _strongest_signal_value(summaries, "dependency_check_json"),
+        "redis_check_json": _strongest_signal_value(summaries, "redis_check_json"),
+        "trace_endpoint_profile_json": _strongest_signal_value(
+            summaries, "trace_endpoint_profile_json"
+        ),
+    }
+
+
+def _as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _unique_items(items) -> list[dict[str, Any]]:
+    result = []
+    seen = set()
+    for item in items:
+        key = (
+            str(item.get("evidence_ref") or ""),
+            str(item.get("name") or item.get("function") or item.get("artifact_type") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def _stack_signal_score(value: dict[str, Any]) -> tuple[int, int, float]:
+    return (
+        int(bool(value.get("has_wait_reason"))),
+        int(value.get("stack_sample_count") or value.get("sample_count") or 0),
+        float(value.get("total_wait_ms") or 0.0),
+    )
+
+
+def _merge_confidence_inputs(summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    values = [
+        summary.get("confidence_inputs")
+        for summary in summaries
+        if isinstance(summary.get("confidence_inputs"), dict)
+    ]
+    bool_fields = (
+        "has_system_pressure",
+        "has_wait_or_io_signal",
+        "has_log_signal",
+        "has_dependency_signal",
+        "has_redis_signal",
+    )
+    total_fields = (
+        "failed_dependency_count",
+        "log_error_cluster_count",
+        "redis_slowlog_entry_count",
+    )
+    result = {
+        field: any(bool(item.get(field)) for item in values)
+        for field in bool_fields
+    }
+    result.update({
+        field: sum(_number(item.get(field)) for item in values)
+        for field in total_fields
+    })
+    result.update({
+        "sample_count": sum(_number(item.get("sample_count")) for item in values),
+        "dominant_percent": max((_number(item.get("dominant_percent")) for item in values), default=0.0),
+        "redis_max_latency_ms": max(
+            (_number(item.get("redis_max_latency_ms")) for item in values),
+            default=0.0,
+        ),
+        "artifact_types": _unique_strings(
+            item
+            for value in values
+            for item in _as_list(value.get("artifact_types"))
+        ),
+        "collector_families": _unique_strings(
+            item
+            for value in values
+            for item in _as_list(value.get("collector_families"))
+        ),
+        "token_safety": "compact_summary_only",
+        "context_completeness": _best_context_completeness(values),
+        "parse_status": _best_parse_status(values),
+        "trace_source_status": _best_status(values, "trace_source_status"),
+        "stack_source_status": _best_status(values, "stack_source_status"),
+        "trace_correlation_status": _best_status(values, "trace_correlation_status"),
+        "trace_max_supported_level": _best_localization_level(values),
+    })
+    return result
+
+
+def _number(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _unique_strings(values) -> list[str]:
+    return list(dict.fromkeys(str(value) for value in values if value))
+
+
+def _best_context_completeness(values: list[dict[str, Any]]) -> str:
+    order = {"low": 0, "medium": 1, "high": 2}
+    return max(
+        (str(value.get("context_completeness") or "low") for value in values),
+        key=lambda item: order.get(item, 0),
+        default="low",
+    )
+
+
+def _best_parse_status(values: list[dict[str, Any]]) -> str:
+    statuses = [str(value.get("parse_status") or "") for value in values]
+    return next(
+        (status for status in statuses if status and status != "insufficient_structured_signal"),
+        "insufficient_structured_signal",
+    )
+
+
+def _best_status(values: list[dict[str, Any]], field: str) -> str:
+    order = {"completed": 4, "partial": 3, "empty_window": 2, "unavailable": 1, "blocked": 1}
+    return max(
+        (str(value.get(field) or "") for value in values),
+        key=lambda item: order.get(item, 0),
+        default="",
+    )
+
+
+def _best_localization_level(values: list[dict[str, Any]]) -> str:
+    order = {"": 0, "host": 1, "service": 2, "process": 3, "function": 4, "call_path": 5, "line": 6}
+    return max(
+        (str(value.get("trace_max_supported_level") or "") for value in values),
+        key=lambda item: order.get(item, 0),
+        default="",
+    )
+
+
+def _strongest_signal_value(summaries: list[dict[str, Any]], field: str) -> dict[str, Any] | None:
+    values = [
+        summary.get(field)
+        for summary in summaries
+        if isinstance(summary.get(field), dict) and summary.get(field)
+    ]
+    if not values:
+        return None
+    return max(values, key=lambda value: len(str(value)))
 
 
 def _structured_evidence_items(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -87,6 +87,9 @@ class TriggeredCollectorTask(StrictModel):
     evidence_cohort_id: str
     trigger_event_id: str
     collector_invocation: dict[str, Any] = Field(default_factory=dict)
+    status: Literal["PENDING", "RUNNING", "UPLOADING", "ANALYZING", "DONE", "FAILED"] = "PENDING"
+    status_reason: str = ""
+    artifact_types: list[str] = Field(default_factory=list)
 
 
 class TriggerEvaluationResult(StrictModel):
@@ -115,12 +118,49 @@ _TRIGGER_PRIORITY: tuple[TriggerType, ...] = (
 )
 
 _COLLECTOR_GROUPS: dict[TriggerType, tuple[str, ...]] = {
-    "cpu_shift": ("host_process_metrics", "process_cpu_profile"),
-    "latency_shift": ("host_process_metrics", "process_trace_endpoint_profile"),
-    "thread_growth_shift": ("host_process_metrics", "process_off_cpu_profile"),
-    "io_wait_shift": ("host_process_metrics", "process_io_latency", "process_off_cpu_profile"),
-    "memory_growth_shift": ("host_process_metrics", "process_memory_map", "process_baseline_window"),
-    "error_burst": ("host_process_metrics", "process_trace_endpoint_profile"),
+    # A trigger keeps multiple industrial depth paths in the same cohort.
+    # One stack source may be blocked by host policy while another still
+    # produces useful evidence.
+    "cpu_shift": (
+        "host_process_metrics",
+        "process_baseline_window",
+        "process_off_cpu_profile",
+        "process_trace_endpoint_profile",
+        "process_cpu_profile",
+    ),
+    "latency_shift": (
+        "host_process_metrics",
+        "process_dependency_check",
+        "process_log_scan",
+        "process_trace_endpoint_profile",
+        "process_off_cpu_profile",
+        "process_baseline_window",
+    ),
+    "thread_growth_shift": (
+        "host_process_metrics",
+        "process_off_cpu_profile",
+        "process_trace_endpoint_profile",
+        "process_baseline_window",
+    ),
+    "io_wait_shift": (
+        "host_process_metrics",
+        "process_io_latency",
+        "process_off_cpu_profile",
+        "process_trace_endpoint_profile",
+    ),
+    "memory_growth_shift": (
+        "host_process_metrics",
+        "process_memory_map",
+        "process_baseline_window",
+        "process_log_scan",
+    ),
+    "error_burst": (
+        "host_process_metrics",
+        "process_log_scan",
+        "process_dependency_check",
+        "process_trace_endpoint_profile",
+        "process_off_cpu_profile",
+    ),
 }
 
 
@@ -130,6 +170,7 @@ def evaluate_persistent_trigger(
     *,
     create_collector_tasks: bool = True,
     max_probe_risk_level: Literal["R1", "R2"] | None = None,
+    suppressed_trigger_types: set[str] | None = None,
 ) -> TriggerEvaluationResult:
     """评估相对偏移并创建同窗采集任务。
 
@@ -138,6 +179,8 @@ def evaluate_persistent_trigger(
 
     signal = _select_trigger_signal(request)
     if signal is None:
+        return TriggerEvaluationResult()
+    if suppressed_trigger_types and signal.trigger_type in suppressed_trigger_types:
         return TriggerEvaluationResult()
 
     trigger_event = _build_trigger_event(request, signal)
@@ -187,6 +230,7 @@ def evaluate_persistent_trigger(
                 sample_rate=min(probe.default_sample_rate, MAX_SAMPLE_RATE),
                 duration_sec=min(probe.default_duration_seconds, MAX_TASK_DURATION_SEC),
                 options={
+                    "watch_id": request.watch_id,
                     "trigger_event_id": trigger_event.trigger_event_id,
                     "evidence_cohort_id": evidence_cohort_id,
                     "collection_mode": "triggered_group",

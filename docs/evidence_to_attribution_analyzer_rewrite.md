@@ -732,4 +732,101 @@ Off-CPU 结果可区分 empty/partial/blocked/target_exit
 事件、等待原因、栈和调用链状态可结构化引用
 180s 预算不会吞掉 follow-up 额度
 ```
+
+## 17. Kubernetes 后续迁移分支
+
+Kubernetes 不是当前方案 B 的验收项，而是方案 B 完成后的环境升级分支。
+
+```mermaid
+flowchart TB
+    B["方案 B：Docker VM 工业诊断闭环"]
+    B --> E["Environment Backend 抽象"]
+    E --> K["Kubernetes Backend"]
+    K --> O["OTel Collector DaemonSet"]
+    K --> P["工业 Profile Producer / SkyWalking Rover DaemonSet"]
+    K --> R["CRI/containerd PID Resolver"]
+    K --> N["CNI-aware 依赖探测"]
+    K --> F["Kubernetes Fault Injection"]
+    F --> V["同一 Case/Oracle 双环境评测"]
 ```
+
+迁移原则：
+
+- 先抽象环境控制面，再替换运行环境；
+- 保留现有 evidence family 和 artifact 契约；
+- OTel/Rover/CRI/CNI 是 Kubernetes backend 的实现细节，不改变 AI 树输入；
+- Docker VM 与 Kubernetes 必须能跑同一 case/oracle；
+- Kubernetes 迁移完成前，不能把 Rover 或 DaemonSet 能力写成当前已完成项。
+
+## 18. 当前方案 B 待验收项
+
+- [x] WatchRuntime gRPC 协议与服务端同步入口。
+- [x] Agent 独立 Watch sync loop，可领取多个 watch lease。
+- [x] Watch sync 与普通任务心跳分离。
+- [x] 同一持续异常窗口重复触发去重。
+- [x] 三台 VM 复制粘贴同步最新修改。
+- [x] Control/Worker 服务重建并确认 CollectorProfile。
+- [x] `OB-SINGLE-REDIS-001` 真实 case 重新运行，使用 `180s` 总预算和 follow-up 保留额度。
+- [x] 真实报告检查 `log_window_json`、`dependency_check_json`、`redis_check_json`、`trace_endpoint_profile_json`、`off_cpu_wait_json`。
+- [x] Persistent Watch 页面创建 watch、Agent 领取 lease、异常触发 incident、冻结 snapshot、生成 collector tasks，并自动触发 AI 树分析。
+- [x] Watch 自动分析具有有界终态：`analyzed`、`needs_evidence` 或 `analysis_failed`，不会永久停留在 `analyzing`。
+- [x] Watch 分析失败保留 `auto_analysis_error`、`retryable`、耗时和冻结证据引用，前端可见并允许人工重试。
+- [x] 方案 B 部署同步包含 Persistent Watch 前端页面和 Control 分析超时配置。
+- [x] Watch delayed follow-up 多任务回灌不会互相覆盖，真实 case 已保留 3 条 delayed follow-up 证据。
+- [x] Persistent Watch 已完成 Agent 自动观察真实验证：Agent 自己采样 baseline/trigger window，触发 `cpu_shift` incident，不依赖手工 `/evaluate` 注入窗口。
+- [x] 同一持续异常窗口的重复触发已加固：同类 trigger 持续存在时不再反复创建 incident，指标恢复后才允许下一次同类 trigger。
+- [x] Watch 测试脚本支持 `agent_observe`、受控延迟异常 fixture、分析后清理 fixture，以及测试 watch 自动 disabled，避免测试遗留 watch 造成任务风暴。
+
+当前真实验收结论：
+
+```text
+方案 B 主链路已闭合：
+工业采集器 -> 结构化 artifact -> readiness gate -> AI 树补证 -> 报告/Watch 回灌
+```
+
+仍需单独标记的深度能力限制：
+
+- `dependency_check`、`redis_check`、`log_scan`、`off_cpu_wait_json`、`trace_endpoint_profile_json` 均已生成结构化产物。
+- Off-CPU 已在真实 Linux Worker 捕获等待事件，但 `kernel.perf_event_paranoid=4` 导致用户态和内核态栈均未符号化。
+- `perf_cpu` 在当前 Worker 宿主机上仍会被 `perf_event_paranoid` 阻断，因此不能把当前报告宣称为函数级 CPU hotspot 已验证。
+- Trace 当前因 Worker 没有可读取的 OTel/SkyWalking Trace 输出而停在 `max_supported_level=function`；这是真实证据边界，不是 AI 猜测。
+- OTel Trace 目录存在但窗口内没有 Trace 文件/记录时，结构化结果标记为 `empty_window`；只有路径不可用时才标记为 `trace_source_missing`。
+- 需要在两台 Worker 宿主机明确允许 `kernel.perf_event_paranoid=1` 后，才能进行最后一次非阻断的深度栈验收。
+- 最新 Watch 真实 case 已进入 `needs_evidence` 有界终态，原因是 CPU perf 被宿主机权限阻断且 Trace 源为空；这表示 AI 树没有强行编造 endpoint/call_path 或代码行级结论。
+- 最新 Agent 自动观察 case 证明持续监测链路能由 Agent 自己触发 incident；该 case 的 AI 树仍停在 `needs_evidence`，原因是 Trace 源为空且 `perf_cpu` 被 `perf_event_paranoid=4` 阻断，但 same-window `sys_metrics`、`baseline_window_profile`、`off_cpu_wait_profile`、`trace_endpoint_profile` 和 delayed follow-up 已回灌。
+- Watch 自动 AI 分析默认最多等待 `150s`，单次 LLM 请求默认 `45s`；超时会进入 `analysis_failed`，不会伪装成 `not_started` 或继续占用前端等待。
+
+本轮报告：
+
+- Redis：`reports/eval/ai-ops-v2/scheme-b-redis-20260814-112808/`
+- Watch：`reports/eval/ai-ops-v2/watch-scheme-b-20260814-113744.json`
+- Watch Agent 自动观察：`reports/eval/ai-ops-v2/watch-agent-observe-20260814-121400.json`
+
+Kubernetes 迁移仍属于第 17 节的后续升级分支，不计入本轮方案 B 完成条件。
+
+## 19. 方案 B 与 Kubernetes 的边界
+
+本轮“完成方案 B”指 Docker VM 环境中的现有证据链闭环，不要求当前测试环境迁移到 Kubernetes：
+
+```text
+Docker VM
+  -> 工业采集器
+  -> 结构化 artifact
+  -> Evidence-to-Attribution / AI 树
+  -> Watch 冻结与 delayed follow-up
+  -> 报告、前端和审计包
+```
+
+Kubernetes 只作为后续环境升级，迁移时复用上述输入输出契约：
+
+```text
+Environment Backend Contract
+  -> Kubernetes Backend
+  -> OTel Collector DaemonSet
+  -> SkyWalking Rover / industrial profile producer
+  -> CRI/containerd PID resolver
+  -> CNI-aware dependency probing
+  -> 同一 Case/Oracle 双环境评测
+```
+
+因此，当前不能把 Kubernetes 的 DaemonSet、Rover、CRI/containerd 或 CNI 能力计入方案 B 已完成能力；只有 Docker VM 与 Kubernetes 能跑同一 case、产生同一 evidence family、通过同一 readiness/oracle 门禁时，才允许宣布迁移完成。

@@ -16,6 +16,7 @@ def build_collector_profile(capabilities: list[str]) -> dict[str, Any]:
         _tool_profile("ebpf_io", "bpftrace", "bpftrace eBPF IO latency"),
         _always_available("sys_metrics", "procfs system and process metrics"),
         _tool_profile("pyspy", "py-spy", "Python stack sampling"),
+        _offcpu_profile(),
         _trace_endpoint_profile(),
         _log_scan_profile(),
         _blackbox_profile(),
@@ -113,6 +114,32 @@ def _trace_endpoint_profile() -> dict[str, Any]:
             "perf_event_paranoid": paranoid,
             "perf_installed": bool(perf_path),
             "ebpf_profile_installed": bool(bpftrace_path),
+        },
+    }
+
+
+def _offcpu_profile() -> dict[str, Any]:
+    spool = os.getenv("MINI_DROP_OFFCPU_PROFILE_PATHS", "/var/lib/mini-drop/profiles/offcpu")
+    paths = [item.strip() for item in spool.split(",") if item.strip()]
+    existing = [path for path in paths if Path(path).exists()]
+    bpftrace_path = shutil.which("bpftrace")
+    if existing:
+        status = "available"
+        reason = "industrial off-CPU profile spool found"
+    elif bpftrace_path:
+        status = "degraded"
+        reason = "industrial off-CPU profile spool missing; bpftrace fallback available"
+    else:
+        status = "unavailable"
+        reason = "industrial off-CPU profile spool missing and bpftrace command not found"
+    return {
+        "collector_type": "off_cpu_wait_profile",
+        "status": status,
+        "source": "industrial profile spool with bpftrace fallback",
+        "reason": reason,
+        "default_options": {
+            "offcpu_profile_paths": paths,
+            "fallback": "bpftrace" if bpftrace_path else "",
         },
     }
 
