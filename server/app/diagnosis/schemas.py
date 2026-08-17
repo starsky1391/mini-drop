@@ -60,6 +60,15 @@ class TimeRange(StrictModel):
         return self
 
 
+class SourceContext(StrictModel):
+    source_paths: list[str] = Field(default_factory=list, max_length=20)
+    repo_revision: Optional[str] = Field(default=None, max_length=128)
+    language: Optional[str] = Field(default=None, max_length=64)
+    symbol_map_paths: list[str] = Field(default_factory=list, max_length=20)
+    build_id: Optional[str] = Field(default=None, max_length=256)
+    container_workdir: Optional[str] = Field(default=None, max_length=512)
+
+
 class ServiceInstance(StrictModel):
     service_id: str = Field(min_length=1, max_length=128)
     instance_id: str = Field(min_length=1, max_length=128)
@@ -68,6 +77,7 @@ class ServiceInstance(StrictModel):
     pid: int = Field(gt=0, le=4194304)
     container_id: Optional[str] = Field(default=None, max_length=128)
     environment: str = Field(default="unknown", min_length=1, max_length=64)
+    source_context: Optional[SourceContext] = None
 
 
 class DependencyEdge(StrictModel):
@@ -94,6 +104,7 @@ class DiagnosisContext(StrictModel):
     time_range: Optional[TimeRange] = None
     instances: list[ServiceInstance] = Field(default_factory=list, max_length=100)
     dependencies: list[DependencyEdge] = Field(default_factory=list, max_length=200)
+    source_context: Optional[SourceContext] = None
 
 
 class DiagnosisBudget(StrictModel):

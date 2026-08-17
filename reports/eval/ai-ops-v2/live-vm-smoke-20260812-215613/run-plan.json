@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "created_at": "2026-08-12T13:56:19.228202+00:00",
+  "seed": 20260811,
+  "repetitions": 1,
+  "jobs": [
+    {
+      "case_id": "OB-COMPOUND-NOISY-DOWNSTREAM-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-PAYMENT-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-GO-LOCK-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-COMPOUND-PAYMENT-REDIS-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-RUNTIME-STALL-001",
+      "repetition": 1
+    },
+    {
+      "case_id": "OB-SINGLE-REDIS-001",
+      "repetition": 1
+    }
+  ]
+}

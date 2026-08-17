@@ -1,0 +1,492 @@
+{
+  "schema_version": "1.0",
+  "diagnosis_id": "diag_session_20260812_170402_1c68d1ab",
+  "run": {
+    "status": "NEEDS_SCOPE_CONFIRMATION",
+    "created_at": "2026-08-12T17:04:02.817044Z",
+    "updated_at": "2026-08-12T17:04:02.875553Z",
+    "model_version": "deepseek-v4-flash",
+    "planner_version": "diagnosis-orchestrator-v1",
+    "policy_profile": "production_safe",
+    "normalized_intent": {
+      "intent_type": "performance_diagnosis",
+      "symptom": "unknown_performance_issue",
+      "target_service": "cartservice",
+      "environment": "production",
+      "time_range": {
+        "start": "2025-06-11T00:00:00Z",
+        "end": "2025-06-11T23:59:59Z",
+        "source": "default_window"
+      },
+      "scope": {
+        "self": true,
+        "same_host": true,
+        "downstream_hops": 1
+      },
+      "constraints": {
+        "no_high_risk_probe": true,
+        "registered_probes_only": true,
+        "no_automatic_remediation": true
+      },
+      "ambiguities": [
+        "用户未提供具体时间范围，使用默认窗口",
+        "用户提到'购物车请求大量失败'，但未明确是延迟增加、CPU饱和还是其他具体症状，归类为unknown_performance_issue",
+        "用户要求定位根因和给出处理建议，但本意图解析仅提取诊断字段，不判断根因"
+      ]
+    },
+    "target_scope": {
+      "target_service": "cartservice",
+      "environment": "production",
+      "instances": [
+        {
+          "service_id": "cartservice",
+          "instance_id": "cartservice-worker2-20061-r1-1786554230-0",
+          "host_id": "worker2",
+          "agent_id": "linux-worker-2",
+          "pid": 20061,
+          "container_id": "ae49eccd3d1c37d8f318bc1c0cdab7876ae2cac7d7cbb5c03f59998e97568982",
+          "environment": "production"
+        },
+        {
+          "service_id": "redis-cart",
+          "instance_id": "redis-cart-worker2-19771-r1-1786554230-1",
+          "host_id": "worker2",
+          "agent_id": "linux-worker-2",
+          "pid": 19771,
+          "container_id": "2711705d0d8d31b0ab1e3198196ce5613a5ccd2e31788df686e54fdca88c3330",
+          "environment": "production"
+        }
+      ],
+      "same_host_instance_ids": [
+        "redis-cart-worker2-19771-r1-1786554230-1"
+      ],
+      "downstream_service_ids": [],
+      "dependency_targets": [
+        {
+          "dependency_id": "redis-cart",
+          "source_service": "cartservice",
+          "target_service": "redis-cart",
+          "relation": "READS_FROM",
+          "protocol": "redis",
+          "host": "redis-cart",
+          "port": 6379,
+          "url": "redis://redis-cart:6379",
+          "path": null,
+          "confidence": "high",
+          "source": "ai_ops_v2_fixture"
+        }
+      ],
+      "max_topology_hops": 1
+    },
+    "budget_used": {
+      "hosts": 0,
+      "service_instances": 0,
+      "probes": 0,
+      "medium_risk_probes": 0,
+      "probe_duration_seconds": 0,
+      "model_calls": 1,
+      "artifact_size_mb": 0
+    }
+  },
+  "trace": [
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260812_170402_1c68d1ab",
+      "sequence": 1,
+      "stage": "workflow",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "diagnosis_created",
+      "summary": "diagnosis created",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-12T17:04:02.817044Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260812_170402_1c68d1ab",
+      "sequence": 2,
+      "stage": "intent",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "intent_parsed",
+      "summary": "intent parsed",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-12T17:04:02.823985Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260812_170402_1c68d1ab",
+      "sequence": 3,
+      "stage": "scope",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "scope_confirmation_required",
+      "summary": "scope confirmation required",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "ambiguities": [
+          "用户未提供具体时间范围，使用默认窗口",
+          "用户提到'购物车请求大量失败'，但未明确是延迟增加、CPU饱和还是其他具体症状，归类为unknown_performance_issue",
+          "用户要求定位根因和给出处理建议，但本意图解析仅提取诊断字段，不判断根因"
+        ]
+      },
+      "recorded_at": "2026-08-12T17:04:02.829831Z",
+      "reconstructed": false
+    }
+  ],
+  "runtime_trace": [
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260812_170402_1c68d1ab",
+      "sequence": 1,
+      "stage": "workflow",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "diagnosis_created",
+      "summary": "diagnosis created",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-12T17:04:02.817044Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260812_170402_1c68d1ab",
+      "sequence": 2,
+      "stage": "intent",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "intent_parsed",
+      "summary": "intent parsed",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-12T17:04:02.823985Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260812_170402_1c68d1ab",
+      "sequence": 3,
+      "stage": "scope",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "scope_confirmation_required",
+      "summary": "scope confirmation required",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "ambiguities": [
+          "用户未提供具体时间范围，使用默认窗口",
+          "用户提到'购物车请求大量失败'，但未明确是延迟增加、CPU饱和还是其他具体症状，归类为unknown_performance_issue",
+          "用户要求定位根因和给出处理建议，但本意图解析仅提取诊断字段，不判断根因"
+        ]
+      },
+      "recorded_at": "2026-08-12T17:04:02.829831Z",
+      "reconstructed": false
+    }
+  ],
+  "topology_snapshot": {
+    "snapshot_id": "topo_20260812_170402_42e7371c",
+    "effective_at": "2025-06-11T23:59:59Z",
+    "generated_at": "2026-08-12T17:04:02.813307Z",
+    "nodes": [
+      {
+        "id": "cartservice",
+        "type": "Service",
+        "environment": "production"
+      },
+      {
+        "id": "cartservice-worker2-20061-r1-1786554230-0",
+        "type": "ServiceInstance",
+        "service_id": "cartservice",
+        "instance_id": "cartservice-worker2-20061-r1-1786554230-0",
+        "host_id": "worker2",
+        "agent_id": "linux-worker-2",
+        "pid": 20061,
+        "container_id": "ae49eccd3d1c37d8f318bc1c0cdab7876ae2cac7d7cbb5c03f59998e97568982",
+        "environment": "production"
+      },
+      {
+        "id": "worker2",
+        "type": "Host"
+      },
+      {
+        "id": "linux-worker-2:20061",
+        "type": "Process",
+        "agent_id": "linux-worker-2",
+        "pid": 20061
+      },
+      {
+        "id": "redis-cart",
+        "type": "Service",
+        "environment": "production"
+      },
+      {
+        "id": "redis-cart-worker2-19771-r1-1786554230-1",
+        "type": "ServiceInstance",
+        "service_id": "redis-cart",
+        "instance_id": "redis-cart-worker2-19771-r1-1786554230-1",
+        "host_id": "worker2",
+        "agent_id": "linux-worker-2",
+        "pid": 19771,
+        "container_id": "2711705d0d8d31b0ab1e3198196ce5613a5ccd2e31788df686e54fdca88c3330",
+        "environment": "production"
+      },
+      {
+        "id": "linux-worker-2:19771",
+        "type": "Process",
+        "agent_id": "linux-worker-2",
+        "pid": 19771
+      }
+    ],
+    "edges": [
+      {
+        "source": "cartservice-worker2-20061-r1-1786554230-0",
+        "target": "worker2",
+        "type": "DEPLOYED_ON",
+        "confidence": "high"
+      },
+      {
+        "source": "cartservice-worker2-20061-r1-1786554230-0",
+        "target": "linux-worker-2:20061",
+        "type": "RUNS_AS",
+        "confidence": "high"
+      },
+      {
+        "source": "redis-cart-worker2-19771-r1-1786554230-1",
+        "target": "worker2",
+        "type": "DEPLOYED_ON",
+        "confidence": "high"
+      },
+      {
+        "source": "redis-cart-worker2-19771-r1-1786554230-1",
+        "target": "linux-worker-2:19771",
+        "type": "RUNS_AS",
+        "confidence": "high"
+      },
+      {
+        "source": "cartservice",
+        "target": "redis-cart",
+        "type": "READS_FROM",
+        "effective_from": null,
+        "effective_to": null,
+        "confidence": "high",
+        "discovery_source": "ai_ops_v2_fixture"
+      }
+    ],
+    "source_versions": {
+      "request_context": "v1"
+    },
+    "confidence_summary": {
+      "level": "high",
+      "source": "request_context",
+      "historical_snapshot": true
+    }
+  },
+  "probes": [],
+  "child_task_ids": [],
+  "tasks": [],
+  "artifacts": [],
+  "evidence": [],
+  "structured_evidence": {},
+  "evidence_refs": [],
+  "conclusion": {
+    "summary": "当前缺少服务实例到 Agent/PID 的映射，无法安全扩散采集范围。",
+    "confidence_level": "不可判断",
+    "location_type": null,
+    "domain_type": null,
+    "classification": "scope_unresolved",
+    "root_entity": null,
+    "abstained": true,
+    "root_cause_candidates": [],
+    "supporting_evidence_refs": [],
+    "missing_evidence": [],
+    "diagnostic_commands": [
+      {
+        "command_id": "cmd_list_agents",
+        "title": "列出可用 Agent",
+        "command": "micro-drop status --agents",
+        "comment": "确认哪些 Agent 在线，以及它们是否具备 sys_metrics/perf_cpu/ebpf_io 等诊断能力。",
+        "risk_level": "R0",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [],
+        "confidence": 0.9
+      },
+      {
+        "command_id": "cmd_parse_intent",
+        "title": "解析自然语言意图",
+        "command": "micro-drop parse \"[AI Ops v2 OB-SINGLE-REDIS-001 / repetition 1] 购物车请求大量失败，请确认问题在购物车服务还是它的依赖。\\n请定位根因、说明证据限制，并给出可验证且可回滚的处理建议。\"",
+        "comment": "仅解析意图，不创建采集任务；适合人工核对服务名、采集器和安全参数。",
+        "risk_level": "R0",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [],
+        "confidence": 0.75
+      }
+    ]
+  },
+  "latest_conclusion": {
+    "version": 1,
+    "generated_at": "2026-08-12T17:04:02.832097+00:00",
+    "summary": "当前缺少服务实例到 Agent/PID 的映射，无法安全扩散采集范围。",
+    "confidence_level": "不可判断",
+    "cluster_assessment": {
+      "classification": "scope_unresolved",
+      "confidence": 0.0,
+      "confidence_level": "不可判断",
+      "summary": "请先补充服务实例、宿主机、Agent 和 PID 映射。",
+      "evidence_refs": [],
+      "compared_targets": [],
+      "ruled_out": []
+    },
+    "root_cause_candidates": [],
+    "ruled_out": [],
+    "diagnostic_commands": [
+      {
+        "command_id": "cmd_list_agents",
+        "title": "列出可用 Agent",
+        "command": "micro-drop status --agents",
+        "comment": "确认哪些 Agent 在线，以及它们是否具备 sys_metrics/perf_cpu/ebpf_io 等诊断能力。",
+        "risk_level": "R0",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [],
+        "confidence": 0.9
+      },
+      {
+        "command_id": "cmd_parse_intent",
+        "title": "解析自然语言意图",
+        "command": "micro-drop parse \"[AI Ops v2 OB-SINGLE-REDIS-001 / repetition 1] 购物车请求大量失败，请确认问题在购物车服务还是它的依赖。\\n请定位根因、说明证据限制，并给出可验证且可回滚的处理建议。\"",
+        "comment": "仅解析意图，不创建采集任务；适合人工核对服务名、采集器和安全参数。",
+        "risk_level": "R0",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [],
+        "confidence": 0.75
+      }
+    ],
+    "recommendations": [
+      {
+        "action": "补充 context.instances 后重新创建诊断会话；AI 不会猜测 PID 或跨服务扩散采集。",
+        "risk_level": "R0",
+        "execution": "manual_confirmation_required"
+      }
+    ],
+    "limitations": [
+      "用户未提供具体时间范围，使用默认窗口",
+      "用户提到'购物车请求大量失败'，但未明确是延迟增加、CPU饱和还是其他具体症状，归类为unknown_performance_issue",
+      "用户要求定位根因和给出处理建议，但本意图解析仅提取诊断字段，不判断根因"
+    ],
+    "coverage": {
+      "task_count": 0,
+      "evidence_count": 0
+    },
+    "integrity_hash": "sha256:6076422fc5e55871a4d172585fcbc97ce9c21b967b7b72673243fea7a254fb5b"
+  },
+  "safety": {
+    "forbidden_action_executed": false,
+    "unsafe_action_count": 0,
+    "commands": [
+      {
+        "command_id": "cmd_list_agents",
+        "title": "列出可用 Agent",
+        "command": "micro-drop status --agents",
+        "comment": "确认哪些 Agent 在线，以及它们是否具备 sys_metrics/perf_cpu/ebpf_io 等诊断能力。",
+        "risk_level": "R0",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [],
+        "confidence": 0.9
+      },
+      {
+        "command_id": "cmd_parse_intent",
+        "title": "解析自然语言意图",
+        "command": "micro-drop parse \"[AI Ops v2 OB-SINGLE-REDIS-001 / repetition 1] 购物车请求大量失败，请确认问题在购物车服务还是它的依赖。\\n请定位根因、说明证据限制，并给出可验证且可回滚的处理建议。\"",
+        "comment": "仅解析意图，不创建采集任务；适合人工核对服务名、采集器和安全参数。",
+        "risk_level": "R0",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [],
+        "confidence": 0.75
+      }
+    ]
+  },
+  "rollback": {
+    "required": false,
+    "attempted": false,
+    "succeeded": null
+  },
+  "readiness_gate": {
+    "status": "FAIL",
+    "checks": [
+      {
+        "name": "audit_bundle_exists",
+        "status": "PASS",
+        "message": "audit bundle was generated"
+      },
+      {
+        "name": "runtime_trace_non_empty",
+        "status": "PASS",
+        "message": "runtime trace should not be empty"
+      },
+      {
+        "name": "probes_non_empty",
+        "status": "FAIL",
+        "message": "diagnosis should plan probes"
+      },
+      {
+        "name": "child_task_ids_non_empty",
+        "status": "FAIL",
+        "message": "diagnosis should create child tasks"
+      },
+      {
+        "name": "artifact_count_non_zero",
+        "status": "FAIL",
+        "message": "child tasks should upload artifacts"
+      },
+      {
+        "name": "structured_evidence_non_empty",
+        "status": "FAIL",
+        "message": "structured evidence should exist"
+      },
+      {
+        "name": "evidence_refs_non_empty",
+        "status": "FAIL",
+        "message": "conclusion should cite evidence refs"
+      },
+      {
+        "name": "collector_type_not_fallback",
+        "status": "PASS",
+        "message": "collector types should match planned probes without silent perf_cpu fallback"
+      },
+      {
+        "name": "required_collector_family_has_structured_artifact",
+        "status": "PASS",
+        "message": "planned evidence families should have matching structured artifacts before scoring"
+      }
+    ],
+    "summary": "4/9 checks passed"
+  }
+}

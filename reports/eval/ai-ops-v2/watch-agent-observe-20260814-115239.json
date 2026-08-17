@@ -1,0 +1,4343 @@
+{
+  "agent_id": "linux-worker-1",
+  "process": {
+    "pid": 205711,
+    "comm": "python3",
+    "cmdline": "/usr/bin/python3 -c import time; time.sleep(90); end=time.time()+150; x=0\nwhile time.time() < end:\n    x = (x + 1) % 1000003 md-aiopsv2-watch-cpu",
+    "user": "root",
+    "cpu_percent": 0.0,
+    "rss_mb": 10.2,
+    "thread_count": 1,
+    "started_at": "2026-08-14T03:52:41.560000+00:00",
+    "service_guess": "",
+    "instance_guess": "linux-worker-1:205711"
+  },
+  "watch": {
+    "watch_id": "watch_39a9e278b101",
+    "name": "vm-smoke-watch-cpu-fixture-205711",
+    "target": {
+      "agent_id": "linux-worker-1",
+      "target_pid": 205711,
+      "service_id": "watch-cpu-fixture",
+      "instance_id": "watch-cpu-fixture",
+      "endpoint": null
+    },
+    "target_config": {
+      "service_id": "watch-cpu-fixture",
+      "process_query": "md-aiopsv2-watch-cpu",
+      "container_id": null
+    },
+    "watch_profile": "low_cost_default",
+    "enabled_collectors": [
+      "sys_metrics",
+      "light_stack",
+      "trace_window"
+    ],
+    "retention_seconds": 120,
+    "trigger_policy": "relative_shift_only",
+    "trigger_action": "auto_all_registered",
+    "status": "active",
+    "created_at": "2026-08-14T03:52:53.256176Z",
+    "updated_at": "2026-08-14T03:52:53.256176Z",
+    "incidents_count": 0,
+    "last_evaluated_at": null,
+    "last_trigger_event_id": null,
+    "last_evidence_cohort_id": null,
+    "last_trigger_type": null
+  },
+  "leases": [
+    {
+      "watch_id": "watch_39a9e278b101",
+      "agent_id": "linux-worker-1",
+      "target": {
+        "agent_id": "linux-worker-1",
+        "target_pid": 205711,
+        "service_id": "watch-cpu-fixture",
+        "instance_id": "watch-cpu-fixture",
+        "endpoint": null
+      },
+      "target_config": {
+        "service_id": "watch-cpu-fixture",
+        "process_query": "md-aiopsv2-watch-cpu",
+        "container_id": null
+      },
+      "watch_profile": "low_cost_default",
+      "enabled_collectors": [
+        "sys_metrics",
+        "light_stack",
+        "trace_window"
+      ],
+      "retention_seconds": 120,
+      "state": "watching",
+      "poll_interval_seconds": 10
+    }
+  ],
+  "result": {
+    "mode": "agent_observe",
+    "fixture_node": "worker1",
+    "fixture": "none",
+    "prestart_fixture": "watch_cpu_shift_v1",
+    "baseline_wait_sec": 75,
+    "incident_timeout_sec": 320,
+    "incident": {
+      "incident_id": "inc_bf4aa3c80e7f",
+      "watch_id": "watch_39a9e278b101",
+      "trigger_event_id": "evt_493fd133b8ec",
+      "evidence_cohort_id": "cohort_fc6d0469156a",
+      "trigger_type": "cpu_shift",
+      "window_start": "2026-08-14T03:53:58.902520Z",
+      "window_end": "2026-08-14T03:54:18.934483Z",
+      "trigger_observed_at": "2026-08-14T03:54:18.934483Z",
+      "status": "collecting",
+      "analysis_status": "not_started",
+      "snapshot_id": "snap_a96afcd8dd89",
+      "snapshot_refs": [
+        {
+          "artifact_type": "rolling_metrics_summary",
+          "filename": "snap_a96afcd8dd89_metrics.json",
+          "content_type": "application/json",
+          "size_bytes": 709,
+          "bucket": "mini-drop",
+          "object_key": "watch_snapshots/snap_a96afcd8dd89/snap_a96afcd8dd89_metrics.json",
+          "local_path": "",
+          "sha256": "sha256:a3ef0f24bfc2101e6f1f56e6264717793403c9e3ce5ab853e62da4257ecf82d0",
+          "storage_status": "stored",
+          "evidence_ref": "rolling_snapshot:snap_a96afcd8dd89:metrics",
+          "raw_payload_policy": "references_only"
+        }
+      ],
+      "structured_evidence": {
+        "version": 1,
+        "task_id": "watch:watch_39a9e278b101:snapshot:snap_a96afcd8dd89",
+        "trigger_event_id": "evt_493fd133b8ec",
+        "evidence_cohort_id": "cohort_fc6d0469156a",
+        "collection_mode": "rolling_snapshot",
+        "window_start": "2026-08-14T03:53:58.902520+00:00",
+        "window_end": "2026-08-14T03:54:18.934483+00:00",
+        "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+        "timing_relation": "same_window",
+        "artifact_refs": [
+          {
+            "artifact_type": "rolling_metrics_summary",
+            "filename": "snap_a96afcd8dd89_metrics.json",
+            "content_type": "application/json",
+            "size_bytes": 709,
+            "sha256": "sha256:a3ef0f24bfc2101e6f1f56e6264717793403c9e3ce5ab853e62da4257ecf82d0",
+            "storage_status": "stored",
+            "storage_error": "",
+            "planned_object_key": "",
+            "object_key": "watch_snapshots/snap_a96afcd8dd89/snap_a96afcd8dd89_metrics.json",
+            "local_path": "",
+            "raw_payload_policy": "references_only",
+            "evidence_ref": "task:watch:watch_39a9e278b101:snapshot:snap_a96afcd8dd89:artifact:rolling_metrics_summary",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "rolling_snapshot",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            }
+          }
+        ],
+        "top_functions": [],
+        "stack_summary": {
+          "dominant_hot_frame": "",
+          "dominant_percent": 0.0,
+          "sample_count": 0,
+          "stack_sample_count": 0,
+          "has_call_path": false,
+          "has_wait_reason": false,
+          "top_wait_reason": "",
+          "total_wait_ms": 0.0,
+          "parse_status": "insufficient_structured_signal",
+          "raw_payload_policy": "references_only",
+          "artifact_ref_count": 1,
+          "evidence_ref": "structured_evidence.stack_summary",
+          "evidence_window": {
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "rolling_snapshot",
+            "window_start": "2026-08-14T03:53:58.902520+00:00",
+            "window_end": "2026-08-14T03:54:18.934483+00:00",
+            "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+            "timing_relation": "same_window"
+          }
+        },
+        "call_path_hotspots": [],
+        "evidence_index": {
+          "artifact_refs": [
+            {
+              "artifact_type": "rolling_metrics_summary",
+              "filename": "snap_a96afcd8dd89_metrics.json",
+              "content_type": "application/json",
+              "size_bytes": 709,
+              "sha256": "sha256:a3ef0f24bfc2101e6f1f56e6264717793403c9e3ce5ab853e62da4257ecf82d0",
+              "storage_status": "stored",
+              "storage_error": "",
+              "planned_object_key": "",
+              "object_key": "watch_snapshots/snap_a96afcd8dd89/snap_a96afcd8dd89_metrics.json",
+              "local_path": "",
+              "raw_payload_policy": "references_only",
+              "evidence_ref": "task:watch:watch_39a9e278b101:snapshot:snap_a96afcd8dd89:artifact:rolling_metrics_summary",
+              "evidence_window": {
+                "trigger_event_id": "evt_493fd133b8ec",
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "collection_mode": "rolling_snapshot",
+                "window_start": "2026-08-14T03:53:58.902520+00:00",
+                "window_end": "2026-08-14T03:54:18.934483+00:00",
+                "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                "timing_relation": "same_window"
+              }
+            }
+          ],
+          "stack_summary": {
+            "dominant_hot_frame": "",
+            "dominant_percent": 0.0,
+            "sample_count": 0,
+            "stack_sample_count": 0,
+            "has_call_path": false,
+            "has_wait_reason": false,
+            "top_wait_reason": "",
+            "total_wait_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "raw_payload_policy": "references_only",
+            "artifact_ref_count": 1,
+            "evidence_ref": "structured_evidence.stack_summary",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "rolling_snapshot",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            }
+          },
+          "call_path_hotspots": [],
+          "confidence_inputs": {
+            "sample_count": 0,
+            "dominant_percent": 0.0,
+            "context_completeness": "low",
+            "has_system_pressure": true,
+            "has_wait_or_io_signal": false,
+            "has_log_signal": false,
+            "has_dependency_signal": false,
+            "has_redis_signal": false,
+            "failed_dependency_count": 0,
+            "log_error_cluster_count": 0,
+            "redis_slowlog_entry_count": 0,
+            "redis_max_latency_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "artifact_types": [
+              "rolling_metrics_summary"
+            ],
+            "collector_families": [
+              "rolling_metrics_summary"
+            ],
+            "token_safety": "compact_summary_only",
+            "trace_source_status": "",
+            "stack_source_status": "",
+            "trace_correlation_status": "",
+            "trace_max_supported_level": "",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "rolling_snapshot",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            }
+          },
+          "evidence_window": {
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "rolling_snapshot",
+            "window_start": "2026-08-14T03:53:58.902520+00:00",
+            "window_end": "2026-08-14T03:54:18.934483+00:00",
+            "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+            "timing_relation": "same_window"
+          }
+        },
+        "confidence_inputs": {
+          "sample_count": 0,
+          "dominant_percent": 0.0,
+          "context_completeness": "low",
+          "has_system_pressure": true,
+          "has_wait_or_io_signal": false,
+          "has_log_signal": false,
+          "has_dependency_signal": false,
+          "has_redis_signal": false,
+          "failed_dependency_count": 0,
+          "log_error_cluster_count": 0,
+          "redis_slowlog_entry_count": 0,
+          "redis_max_latency_ms": 0.0,
+          "parse_status": "insufficient_structured_signal",
+          "artifact_types": [
+            "rolling_metrics_summary"
+          ],
+          "collector_families": [
+            "rolling_metrics_summary"
+          ],
+          "token_safety": "compact_summary_only",
+          "trace_source_status": "",
+          "stack_source_status": "",
+          "trace_correlation_status": "",
+          "trace_max_supported_level": "",
+          "evidence_window": {
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "rolling_snapshot",
+            "window_start": "2026-08-14T03:53:58.902520+00:00",
+            "window_end": "2026-08-14T03:54:18.934483+00:00",
+            "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+            "timing_relation": "same_window"
+          }
+        },
+        "sys_metrics": {
+          "summary": {
+            "observed_at": "2026-08-14T03:54:18.934483Z",
+            "cpu_percent": 63.89680168137851,
+            "thread_count": 1.0,
+            "iowait_percent": 0.19756478418364032,
+            "rss_mb": 10.25
+          }
+        },
+        "ebpf_metrics": null,
+        "memory_json": null,
+        "off_cpu_wait_json": null,
+        "log_window_json": null,
+        "dependency_check_json": null,
+        "redis_check_json": null,
+        "trace_endpoint_profile_json": null
+      },
+      "collector_tasks": [
+        {
+          "task_id": "task_20260814_035418_f3904c",
+          "probe_id": "host_process_metrics",
+          "collector_type": "sys_metrics",
+          "evidence_cohort_id": "cohort_fc6d0469156a",
+          "trigger_event_id": "evt_493fd133b8ec",
+          "collector_invocation": {
+            "schema_version": "1.0",
+            "scope_source": "watch_subscription",
+            "collector_family": "sys_metrics",
+            "probe_id": "host_process_metrics",
+            "target_config": {
+              "service_id": "watch-cpu-fixture",
+              "process_query": "md-aiopsv2-watch-cpu",
+              "container_id": null
+            },
+            "target_context": {
+              "agent_id": "linux-worker-1",
+              "service_id": "watch-cpu-fixture",
+              "instance_id": "watch-cpu-fixture",
+              "pid": 205711,
+              "endpoint": null
+            },
+            "watch_id": "watch_39a9e278b101",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a"
+          },
+          "status": "PENDING",
+          "status_reason": "",
+          "artifact_types": []
+        },
+        {
+          "task_id": "task_20260814_035418_640eb6",
+          "probe_id": "process_baseline_window",
+          "collector_type": "baseline_window_profile",
+          "evidence_cohort_id": "cohort_fc6d0469156a",
+          "trigger_event_id": "evt_493fd133b8ec",
+          "collector_invocation": {
+            "schema_version": "1.0",
+            "scope_source": "watch_subscription",
+            "collector_family": "baseline_window_profile",
+            "probe_id": "process_baseline_window",
+            "target_config": {
+              "service_id": "watch-cpu-fixture",
+              "process_query": "md-aiopsv2-watch-cpu",
+              "container_id": null
+            },
+            "target_context": {
+              "agent_id": "linux-worker-1",
+              "service_id": "watch-cpu-fixture",
+              "instance_id": "watch-cpu-fixture",
+              "pid": 205711,
+              "endpoint": null
+            },
+            "watch_id": "watch_39a9e278b101",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a"
+          },
+          "status": "PENDING",
+          "status_reason": "",
+          "artifact_types": []
+        },
+        {
+          "task_id": "task_20260814_035418_78a066",
+          "probe_id": "process_off_cpu_profile",
+          "collector_type": "off_cpu_wait_profile",
+          "evidence_cohort_id": "cohort_fc6d0469156a",
+          "trigger_event_id": "evt_493fd133b8ec",
+          "collector_invocation": {
+            "schema_version": "1.0",
+            "scope_source": "watch_subscription",
+            "collector_family": "off_cpu_wait_profile",
+            "probe_id": "process_off_cpu_profile",
+            "target_config": {
+              "service_id": "watch-cpu-fixture",
+              "process_query": "md-aiopsv2-watch-cpu",
+              "container_id": null
+            },
+            "target_context": {
+              "agent_id": "linux-worker-1",
+              "service_id": "watch-cpu-fixture",
+              "instance_id": "watch-cpu-fixture",
+              "pid": 205711,
+              "endpoint": null
+            },
+            "watch_id": "watch_39a9e278b101",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a"
+          },
+          "status": "PENDING",
+          "status_reason": "",
+          "artifact_types": []
+        },
+        {
+          "task_id": "task_20260814_035418_6cfbde",
+          "probe_id": "process_trace_endpoint_profile",
+          "collector_type": "trace_endpoint_profile",
+          "evidence_cohort_id": "cohort_fc6d0469156a",
+          "trigger_event_id": "evt_493fd133b8ec",
+          "collector_invocation": {
+            "schema_version": "1.0",
+            "scope_source": "watch_subscription",
+            "collector_family": "trace_endpoint_profile",
+            "probe_id": "process_trace_endpoint_profile",
+            "target_config": {
+              "service_id": "watch-cpu-fixture",
+              "process_query": "md-aiopsv2-watch-cpu",
+              "container_id": null
+            },
+            "target_context": {
+              "agent_id": "linux-worker-1",
+              "service_id": "watch-cpu-fixture",
+              "instance_id": "watch-cpu-fixture",
+              "pid": 205711,
+              "endpoint": null
+            },
+            "watch_id": "watch_39a9e278b101",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a"
+          },
+          "status": "PENDING",
+          "status_reason": "",
+          "artifact_types": []
+        },
+        {
+          "task_id": "task_20260814_035418_9140bb",
+          "probe_id": "process_cpu_profile",
+          "collector_type": "perf_cpu",
+          "evidence_cohort_id": "cohort_fc6d0469156a",
+          "trigger_event_id": "evt_493fd133b8ec",
+          "collector_invocation": {
+            "schema_version": "1.0",
+            "scope_source": "watch_subscription",
+            "collector_family": "perf_cpu",
+            "probe_id": "process_cpu_profile",
+            "target_config": {
+              "service_id": "watch-cpu-fixture",
+              "process_query": "md-aiopsv2-watch-cpu",
+              "container_id": null
+            },
+            "target_context": {
+              "agent_id": "linux-worker-1",
+              "service_id": "watch-cpu-fixture",
+              "instance_id": "watch-cpu-fixture",
+              "pid": 205711,
+              "endpoint": null
+            },
+            "watch_id": "watch_39a9e278b101",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a"
+          },
+          "status": "PENDING",
+          "status_reason": "",
+          "artifact_types": []
+        }
+      ],
+      "analysis_session_id": null,
+      "analysis_result": null,
+      "created_at": "2026-08-14T03:54:18.967346Z"
+    }
+  },
+  "analysis": {
+    "incident_id": "inc_bf4aa3c80e7f",
+    "watch_id": "watch_39a9e278b101",
+    "trigger_event_id": "evt_493fd133b8ec",
+    "evidence_cohort_id": "cohort_fc6d0469156a",
+    "trigger_type": "cpu_shift",
+    "window_start": "2026-08-14T03:53:58.902520Z",
+    "window_end": "2026-08-14T03:54:18.934483Z",
+    "trigger_observed_at": "2026-08-14T03:54:18.934483Z",
+    "status": "needs_evidence",
+    "analysis_status": "needs_evidence",
+    "snapshot_id": "snap_a96afcd8dd89",
+    "snapshot_refs": [
+      {
+        "artifact_type": "rolling_metrics_summary",
+        "filename": "snap_a96afcd8dd89_metrics.json",
+        "content_type": "application/json",
+        "size_bytes": 709,
+        "bucket": "mini-drop",
+        "object_key": "watch_snapshots/snap_a96afcd8dd89/snap_a96afcd8dd89_metrics.json",
+        "local_path": "",
+        "sha256": "sha256:a3ef0f24bfc2101e6f1f56e6264717793403c9e3ce5ab853e62da4257ecf82d0",
+        "storage_status": "stored",
+        "evidence_ref": "rolling_snapshot:snap_a96afcd8dd89:metrics",
+        "raw_payload_policy": "references_only"
+      }
+    ],
+    "structured_evidence": {
+      "version": 1,
+      "task_id": "watch:inc_bf4aa3c80e7f",
+      "trigger_event_id": "evt_493fd133b8ec",
+      "evidence_cohort_id": "cohort_fc6d0469156a",
+      "collection_mode": "triggered_group",
+      "window_start": "2026-08-14T03:53:58.902520+00:00",
+      "window_end": "2026-08-14T03:54:18.934483+00:00",
+      "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+      "timing_relation": "same_window",
+      "artifact_refs": [
+        {
+          "artifact_type": "ebpf_profile_raw",
+          "filename": "ebpf_profile.txt",
+          "content_type": "text/plain",
+          "size_bytes": 22,
+          "sha256": "",
+          "storage_status": "",
+          "storage_error": "",
+          "planned_object_key": "",
+          "object_key": "tasks/task_20260814_035418_6cfbde/ebpf_profile.txt",
+          "local_path": "/tmp/mini-drop/task_20260814_035418_6cfbde/ebpf_profile.txt",
+          "raw_payload_policy": "references_only",
+          "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:ebpf_profile_raw",
+          "evidence_window": {
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "triggered_group",
+            "window_start": "2026-08-14T03:53:58.902520+00:00",
+            "window_end": "2026-08-14T03:54:18.934483+00:00",
+            "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+            "timing_relation": "same_window"
+          }
+        },
+        {
+          "artifact_type": "off_cpu_wait_json",
+          "filename": "off_cpu_wait.json",
+          "content_type": "application/json",
+          "size_bytes": 3279,
+          "sha256": "",
+          "storage_status": "",
+          "storage_error": "",
+          "planned_object_key": "",
+          "object_key": "",
+          "local_path": "/tmp/mini-drop/task_20260814_035418_78a066/off_cpu_wait.json",
+          "raw_payload_policy": "references_only",
+          "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:off_cpu_wait_json",
+          "evidence_window": {
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "triggered_group",
+            "window_start": "2026-08-14T03:53:58.902520+00:00",
+            "window_end": "2026-08-14T03:54:18.934483+00:00",
+            "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+            "timing_relation": "same_window"
+          }
+        },
+        {
+          "artifact_type": "rolling_metrics_summary",
+          "filename": "snap_a96afcd8dd89_metrics.json",
+          "content_type": "application/json",
+          "size_bytes": 709,
+          "sha256": "sha256:a3ef0f24bfc2101e6f1f56e6264717793403c9e3ce5ab853e62da4257ecf82d0",
+          "storage_status": "stored",
+          "storage_error": "",
+          "planned_object_key": "",
+          "object_key": "watch_snapshots/snap_a96afcd8dd89/snap_a96afcd8dd89_metrics.json",
+          "local_path": "",
+          "raw_payload_policy": "references_only",
+          "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:rolling_metrics_summary",
+          "evidence_window": {
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "triggered_group",
+            "window_start": "2026-08-14T03:53:58.902520+00:00",
+            "window_end": "2026-08-14T03:54:18.934483+00:00",
+            "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+            "timing_relation": "same_window"
+          }
+        },
+        {
+          "artifact_type": "sys_metrics",
+          "filename": "sys_metrics.json",
+          "content_type": "application/json",
+          "size_bytes": 3581,
+          "sha256": "",
+          "storage_status": "",
+          "storage_error": "",
+          "planned_object_key": "",
+          "object_key": "tasks/task_20260814_035418_f3904c/sys_metrics.json",
+          "local_path": "/tmp/mini-drop/task_20260814_035418_f3904c/sys_metrics.json",
+          "raw_payload_policy": "references_only",
+          "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:sys_metrics",
+          "evidence_window": {
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "triggered_group",
+            "window_start": "2026-08-14T03:53:58.902520+00:00",
+            "window_end": "2026-08-14T03:54:18.934483+00:00",
+            "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+            "timing_relation": "same_window"
+          }
+        },
+        {
+          "artifact_type": "trace_endpoint_profile_json",
+          "filename": "trace_endpoint_profile.json",
+          "content_type": "application/json",
+          "size_bytes": 2828,
+          "sha256": "",
+          "storage_status": "",
+          "storage_error": "",
+          "planned_object_key": "",
+          "object_key": "tasks/task_20260814_035418_6cfbde/trace_endpoint_profile.json",
+          "local_path": "/tmp/mini-drop/task_20260814_035418_6cfbde/trace_endpoint_profile.json",
+          "raw_payload_policy": "references_only",
+          "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:trace_endpoint_profile_json",
+          "evidence_window": {
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "triggered_group",
+            "window_start": "2026-08-14T03:53:58.902520+00:00",
+            "window_end": "2026-08-14T03:54:18.934483+00:00",
+            "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+            "timing_relation": "same_window"
+          }
+        }
+      ],
+      "top_functions": [],
+      "stack_summary": {
+        "dominant_hot_frame": "",
+        "dominant_percent": 0.0,
+        "sample_count": 0,
+        "stack_sample_count": 0,
+        "has_call_path": false,
+        "has_wait_reason": false,
+        "top_wait_reason": "",
+        "total_wait_ms": 0.0,
+        "parse_status": "insufficient_structured_signal",
+        "raw_payload_policy": "references_only",
+        "artifact_ref_count": 5,
+        "evidence_ref": "structured_evidence.stack_summary",
+        "evidence_window": {
+          "trigger_event_id": "evt_493fd133b8ec",
+          "evidence_cohort_id": "cohort_fc6d0469156a",
+          "collection_mode": "triggered_group",
+          "window_start": "2026-08-14T03:53:58.902520+00:00",
+          "window_end": "2026-08-14T03:54:18.934483+00:00",
+          "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+          "timing_relation": "same_window"
+        }
+      },
+      "call_path_hotspots": [],
+      "evidence_index": {
+        "dominant_hot_frame": "",
+        "dominant_percent": 0.0,
+        "sample_count": 0,
+        "stack_sample_count": 0,
+        "has_call_path": false,
+        "has_wait_reason": false,
+        "top_wait_reason": "",
+        "total_wait_ms": 0.0,
+        "parse_status": "insufficient_structured_signal",
+        "raw_payload_policy": "references_only",
+        "artifact_ref_count": 5,
+        "evidence_ref": "structured_evidence.stack_summary",
+        "evidence_window": {
+          "trigger_event_id": "evt_493fd133b8ec",
+          "evidence_cohort_id": "cohort_fc6d0469156a",
+          "collection_mode": "triggered_group",
+          "window_start": "2026-08-14T03:53:58.902520+00:00",
+          "window_end": "2026-08-14T03:54:18.934483+00:00",
+          "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+          "timing_relation": "same_window"
+        },
+        "artifact_refs": [
+          {
+            "artifact_type": "ebpf_profile_raw",
+            "filename": "ebpf_profile.txt",
+            "content_type": "text/plain",
+            "size_bytes": 22,
+            "sha256": "",
+            "storage_status": "",
+            "storage_error": "",
+            "planned_object_key": "",
+            "object_key": "tasks/task_20260814_035418_6cfbde/ebpf_profile.txt",
+            "local_path": "/tmp/mini-drop/task_20260814_035418_6cfbde/ebpf_profile.txt",
+            "raw_payload_policy": "references_only",
+            "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:ebpf_profile_raw",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            }
+          },
+          {
+            "artifact_type": "off_cpu_wait_json",
+            "filename": "off_cpu_wait.json",
+            "content_type": "application/json",
+            "size_bytes": 3279,
+            "sha256": "",
+            "storage_status": "",
+            "storage_error": "",
+            "planned_object_key": "",
+            "object_key": "",
+            "local_path": "/tmp/mini-drop/task_20260814_035418_78a066/off_cpu_wait.json",
+            "raw_payload_policy": "references_only",
+            "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:off_cpu_wait_json",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            }
+          },
+          {
+            "artifact_type": "rolling_metrics_summary",
+            "filename": "snap_a96afcd8dd89_metrics.json",
+            "content_type": "application/json",
+            "size_bytes": 709,
+            "sha256": "sha256:a3ef0f24bfc2101e6f1f56e6264717793403c9e3ce5ab853e62da4257ecf82d0",
+            "storage_status": "stored",
+            "storage_error": "",
+            "planned_object_key": "",
+            "object_key": "watch_snapshots/snap_a96afcd8dd89/snap_a96afcd8dd89_metrics.json",
+            "local_path": "",
+            "raw_payload_policy": "references_only",
+            "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:rolling_metrics_summary",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            }
+          },
+          {
+            "artifact_type": "sys_metrics",
+            "filename": "sys_metrics.json",
+            "content_type": "application/json",
+            "size_bytes": 3581,
+            "sha256": "",
+            "storage_status": "",
+            "storage_error": "",
+            "planned_object_key": "",
+            "object_key": "tasks/task_20260814_035418_f3904c/sys_metrics.json",
+            "local_path": "/tmp/mini-drop/task_20260814_035418_f3904c/sys_metrics.json",
+            "raw_payload_policy": "references_only",
+            "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:sys_metrics",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            }
+          },
+          {
+            "artifact_type": "trace_endpoint_profile_json",
+            "filename": "trace_endpoint_profile.json",
+            "content_type": "application/json",
+            "size_bytes": 2828,
+            "sha256": "",
+            "storage_status": "",
+            "storage_error": "",
+            "planned_object_key": "",
+            "object_key": "tasks/task_20260814_035418_6cfbde/trace_endpoint_profile.json",
+            "local_path": "/tmp/mini-drop/task_20260814_035418_6cfbde/trace_endpoint_profile.json",
+            "raw_payload_policy": "references_only",
+            "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:trace_endpoint_profile_json",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            }
+          }
+        ],
+        "stack_summary": {
+          "dominant_hot_frame": "",
+          "dominant_percent": 0.0,
+          "sample_count": 0,
+          "stack_sample_count": 0,
+          "has_call_path": false,
+          "has_wait_reason": false,
+          "top_wait_reason": "",
+          "total_wait_ms": 0.0,
+          "parse_status": "insufficient_structured_signal",
+          "raw_payload_policy": "references_only",
+          "artifact_ref_count": 5,
+          "evidence_ref": "structured_evidence.stack_summary",
+          "evidence_window": {
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "triggered_group",
+            "window_start": "2026-08-14T03:53:58.902520+00:00",
+            "window_end": "2026-08-14T03:54:18.934483+00:00",
+            "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+            "timing_relation": "same_window"
+          }
+        },
+        "call_path_hotspots": [],
+        "confidence_inputs": {
+          "sample_count": 0,
+          "dominant_percent": 0.0,
+          "context_completeness": "low",
+          "has_system_pressure": true,
+          "has_wait_or_io_signal": false,
+          "has_log_signal": false,
+          "has_dependency_signal": false,
+          "has_redis_signal": false,
+          "failed_dependency_count": 0,
+          "log_error_cluster_count": 0,
+          "redis_slowlog_entry_count": 0,
+          "redis_max_latency_ms": 0.0,
+          "parse_status": "insufficient_structured_signal",
+          "artifact_types": [
+            "ebpf_profile_raw",
+            "off_cpu_wait_json",
+            "rolling_metrics_summary",
+            "sys_metrics",
+            "trace_endpoint_profile_json"
+          ],
+          "collector_families": [
+            "ebpf_profile_raw",
+            "off_cpu_wait_profile",
+            "rolling_metrics_summary",
+            "sys_metrics",
+            "trace_endpoint_profile"
+          ],
+          "token_safety": "compact_summary_only",
+          "trace_source_status": "empty_window",
+          "stack_source_status": "completed",
+          "trace_correlation_status": "partial",
+          "trace_max_supported_level": "function",
+          "evidence_window": {
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "triggered_group",
+            "window_start": "2026-08-14T03:53:58.902520+00:00",
+            "window_end": "2026-08-14T03:54:18.934483+00:00",
+            "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+            "timing_relation": "same_window"
+          }
+        },
+        "off_cpu_wait": {
+          "schema_version": "1.0",
+          "collector_family": "off_cpu_wait_profile",
+          "summary": {
+            "sample_count": 0,
+            "blocked_thread_count": 0,
+            "total_wait_ms": 0.0,
+            "top_wait_reason": "",
+            "has_wait_reason": false
+          },
+          "event_summary": {
+            "observed_wait_events": 0,
+            "events_without_user_stack": 0,
+            "events_without_kernel_stack": 0,
+            "sample_events": []
+          },
+          "cause_summary": {
+            "cause_counts": {},
+            "top_cause": "",
+            "source": "none"
+          },
+          "stack_quality": {
+            "user_stack_samples": 0,
+            "kernel_stack_samples": 0,
+            "stack_unwind_status": "not_observed"
+          },
+          "top_wait_stacks": [],
+          "kernel_stacks": [],
+          "thread_wait_summary": [],
+          "syscall_wait_summary": {},
+          "collector_status": "blocked",
+          "parser_status": "target_pid_not_found",
+          "trace_source": {},
+          "correlation": {
+            "status": "unmatched",
+            "service_id": "watch-cpu-fixture",
+            "instance_id": null,
+            "endpoint": null,
+            "trace_id": null,
+            "span_id": null,
+            "call_path": [],
+            "correlation_method": "not_available",
+            "confidence": 0.0,
+            "evidence_ref": "off_cpu_wait.correlation"
+          },
+          "endpoint_bindings": [],
+          "call_path_hotspots": [],
+          "capability_check": {
+            "status": "available",
+            "tools": {
+              "bpftrace": true,
+              "perf": true
+            },
+            "missing_tools": [],
+            "missing_capabilities": [],
+            "perf_event_paranoid": 4,
+            "tracepoints": {
+              "sched_switch": true,
+              "sched_wakeup": true,
+              "futex": true,
+              "block_io": true,
+              "tcp_recv": true,
+              "poll": true
+            },
+            "target_pid": 205711,
+            "target_present": false,
+            "repair_action": "以 root/privileged Agent 运行，并启用 pid: host、PERFMON、BPF、SYS_PTRACE、SYS_ADMIN；同时检查 kernel.perf_event_paranoid。"
+          }
+        },
+        "trace_endpoint_profile": {
+          "stack_source": {
+            "kind": "ebpf",
+            "status": "completed",
+            "blocked_reason": "",
+            "blocked_details": {},
+            "capability_check": {
+              "tools": {
+                "bpftrace": "[TRUNCATED]",
+                "perf": "[TRUNCATED]"
+              },
+              "perf_event_paranoid": 4,
+              "cap_eff": "000001ffffffffff",
+              "cap_bnd": "000001ffffffffff",
+              "missing_capabilities": [],
+              "seccomp": "0",
+              "pid_namespace": "/proc/1/ns/pid:[4026531836]",
+              "target_pid": 205711,
+              "target_present": false,
+              "tracepoints": {
+                "sched_switch": "[TRUNCATED]",
+                "sched_wakeup": "[TRUNCATED]"
+              },
+              "missing_tools": [],
+              "repair_action": "检查 bpftrace/perf 安装、Worker 的 privileged/pid:host、PERFMON、SYS_PTRACE、BPF capability 以及 perf_event_paranoid。"
+            },
+            "artifacts": [
+              "ebpf_profile.txt"
+            ]
+          },
+          "trace_source": {
+            "kind": "auto",
+            "status": "empty_window",
+            "records_read": 0,
+            "records_in_window": 0,
+            "blocked_reason": ""
+          },
+          "endpoint_bindings": [],
+          "call_path_hotspots": [],
+          "correlation_status": {
+            "status": "partial",
+            "max_supported_level": "function",
+            "blocked_reason": "",
+            "blocked_details": {},
+            "warnings": [
+              "trace_source_unavailable"
+            ],
+            "missing": [
+              "trace_source"
+            ]
+          }
+        },
+        "delayed_followups": [
+          {
+            "task_id": "task_20260814_035508_fa0157",
+            "collection_mode": "delayed_followup",
+            "timing_relation": "delayed_followup",
+            "artifact_refs": [],
+            "top_functions": [],
+            "stack_summary": {
+              "dominant_hot_frame": "",
+              "dominant_percent": 0.0,
+              "sample_count": 0,
+              "stack_sample_count": 0,
+              "has_call_path": false,
+              "has_wait_reason": false,
+              "top_wait_reason": "",
+              "total_wait_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "raw_payload_policy": "references_only",
+              "artifact_ref_count": 0,
+              "evidence_ref": "structured_evidence.stack_summary",
+              "evidence_window": {
+                "trigger_event_id": "evt_493fd133b8ec",
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "collection_mode": "delayed_followup",
+                "window_start": "2026-08-14T03:53:58.902520+00:00",
+                "window_end": "2026-08-14T03:54:18.934483+00:00",
+                "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                "timing_relation": "delayed_followup"
+              }
+            },
+            "call_path_hotspots": [],
+            "confidence_inputs": {
+              "sample_count": 0,
+              "dominant_percent": 0.0,
+              "context_completeness": "low",
+              "has_system_pressure": false,
+              "has_wait_or_io_signal": false,
+              "has_log_signal": false,
+              "has_dependency_signal": false,
+              "has_redis_signal": false,
+              "failed_dependency_count": 0,
+              "log_error_cluster_count": 0,
+              "redis_slowlog_entry_count": 0,
+              "redis_max_latency_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "artifact_types": [],
+              "collector_families": [],
+              "token_safety": "compact_summary_only",
+              "trace_source_status": "",
+              "stack_source_status": "",
+              "trace_correlation_status": "",
+              "trace_max_supported_level": "",
+              "evidence_window": {
+                "trigger_event_id": "evt_493fd133b8ec",
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "collection_mode": "delayed_followup",
+                "window_start": "2026-08-14T03:53:58.902520+00:00",
+                "window_end": "2026-08-14T03:54:18.934483+00:00",
+                "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                "timing_relation": "delayed_followup"
+              }
+            },
+            "evidence_index": {
+              "artifact_refs": [],
+              "stack_summary": {
+                "dominant_hot_frame": "",
+                "dominant_percent": 0.0,
+                "sample_count": 0,
+                "stack_sample_count": 0,
+                "has_call_path": false,
+                "has_wait_reason": false,
+                "top_wait_reason": "",
+                "total_wait_ms": 0.0,
+                "parse_status": "insufficient_structured_signal",
+                "raw_payload_policy": "references_only",
+                "artifact_ref_count": 0,
+                "evidence_ref": "structured_evidence.stack_summary",
+                "evidence_window": {
+                  "trigger_event_id": "evt_493fd133b8ec",
+                  "evidence_cohort_id": "cohort_fc6d0469156a",
+                  "collection_mode": "delayed_followup",
+                  "window_start": "2026-08-14T03:53:58.902520+00:00",
+                  "window_end": "2026-08-14T03:54:18.934483+00:00",
+                  "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                  "timing_relation": "delayed_followup"
+                }
+              },
+              "call_path_hotspots": [],
+              "confidence_inputs": {
+                "sample_count": 0,
+                "dominant_percent": 0.0,
+                "context_completeness": "low",
+                "has_system_pressure": false,
+                "has_wait_or_io_signal": false,
+                "has_log_signal": false,
+                "has_dependency_signal": false,
+                "has_redis_signal": false,
+                "failed_dependency_count": 0,
+                "log_error_cluster_count": 0,
+                "redis_slowlog_entry_count": 0,
+                "redis_max_latency_ms": 0.0,
+                "parse_status": "insufficient_structured_signal",
+                "artifact_types": [],
+                "collector_families": [],
+                "token_safety": "compact_summary_only",
+                "trace_source_status": "",
+                "stack_source_status": "",
+                "trace_correlation_status": "",
+                "trace_max_supported_level": "",
+                "evidence_window": {
+                  "trigger_event_id": "evt_493fd133b8ec",
+                  "evidence_cohort_id": "cohort_fc6d0469156a",
+                  "collection_mode": "delayed_followup",
+                  "window_start": "2026-08-14T03:53:58.902520+00:00",
+                  "window_end": "2026-08-14T03:54:18.934483+00:00",
+                  "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                  "timing_relation": "delayed_followup"
+                }
+              },
+              "evidence_window": {
+                "trigger_event_id": "evt_493fd133b8ec",
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "collection_mode": "delayed_followup",
+                "window_start": "2026-08-14T03:53:58.902520+00:00",
+                "window_end": "2026-08-14T03:54:18.934483+00:00",
+                "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                "timing_relation": "delayed_followup"
+              }
+            }
+          }
+        ],
+        "watch_collector_tasks": [
+          {
+            "task_id": "task_20260814_035418_f3904c",
+            "probe_id": "host_process_metrics",
+            "collector_type": "sys_metrics",
+            "status": "DONE",
+            "status_reason": "系统多维指标分析已生成",
+            "artifact_types": [
+              "sys_metrics"
+            ],
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "collection_mode": "triggered_group",
+            "timing_relation": "same_window"
+          },
+          {
+            "task_id": "task_20260814_035418_640eb6",
+            "probe_id": "process_baseline_window",
+            "collector_type": "baseline_window_profile",
+            "status": "FAILED",
+            "status_reason": "目标 PID 205711 不存在",
+            "artifact_types": [],
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "collection_mode": "triggered_group",
+            "timing_relation": "same_window"
+          },
+          {
+            "task_id": "task_20260814_035418_78a066",
+            "probe_id": "process_off_cpu_profile",
+            "collector_type": "off_cpu_wait_profile",
+            "status": "FAILED",
+            "status_reason": "off-CPU 工业采集器被阻断: target_pid_not_found",
+            "artifact_types": [
+              "off_cpu_wait_json"
+            ],
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "collection_mode": "triggered_group",
+            "timing_relation": "same_window"
+          },
+          {
+            "task_id": "task_20260814_035418_6cfbde",
+            "probe_id": "process_trace_endpoint_profile",
+            "collector_type": "trace_endpoint_profile",
+            "status": "DONE",
+            "status_reason": "Trace endpoint 结构化证据已生成",
+            "artifact_types": [
+              "ebpf_profile_raw",
+              "trace_endpoint_profile_json"
+            ],
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "collection_mode": "triggered_group",
+            "timing_relation": "same_window"
+          },
+          {
+            "task_id": "task_20260814_035418_9140bb",
+            "probe_id": "process_cpu_profile",
+            "collector_type": "perf_cpu",
+            "status": "FAILED",
+            "status_reason": "perf_event_paranoid 权限不足。请执行 'echo 1 > /proc/sys/kernel/perf_event_paranoid' 或使用 root 运行 Agent",
+            "artifact_types": [],
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "collection_mode": "triggered_group",
+            "timing_relation": "same_window"
+          },
+          {
+            "task_id": "task_20260814_035508_fa0157",
+            "probe_id": "process_baseline_window",
+            "collector_type": "baseline_window_profile",
+            "status": "FAILED",
+            "status_reason": "目标 PID 205711 不存在",
+            "artifact_types": [],
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "collection_mode": "delayed_followup",
+            "timing_relation": "delayed_followup"
+          }
+        ]
+      },
+      "confidence_inputs": {
+        "sample_count": 0,
+        "dominant_percent": 0.0,
+        "context_completeness": "low",
+        "has_system_pressure": true,
+        "has_wait_or_io_signal": false,
+        "has_log_signal": false,
+        "has_dependency_signal": false,
+        "has_redis_signal": false,
+        "failed_dependency_count": 0,
+        "log_error_cluster_count": 0,
+        "redis_slowlog_entry_count": 0,
+        "redis_max_latency_ms": 0.0,
+        "parse_status": "insufficient_structured_signal",
+        "artifact_types": [
+          "ebpf_profile_raw",
+          "off_cpu_wait_json",
+          "rolling_metrics_summary",
+          "sys_metrics",
+          "trace_endpoint_profile_json"
+        ],
+        "collector_families": [
+          "ebpf_profile_raw",
+          "off_cpu_wait_profile",
+          "rolling_metrics_summary",
+          "sys_metrics",
+          "trace_endpoint_profile"
+        ],
+        "token_safety": "compact_summary_only",
+        "trace_source_status": "empty_window",
+        "stack_source_status": "completed",
+        "trace_correlation_status": "partial",
+        "trace_max_supported_level": "function",
+        "evidence_window": {
+          "trigger_event_id": "evt_493fd133b8ec",
+          "evidence_cohort_id": "cohort_fc6d0469156a",
+          "collection_mode": "triggered_group",
+          "window_start": "2026-08-14T03:53:58.902520+00:00",
+          "window_end": "2026-08-14T03:54:18.934483+00:00",
+          "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+          "timing_relation": "same_window"
+        },
+        "watch_collector_tasks": [
+          {
+            "task_id": "task_20260814_035418_f3904c",
+            "probe_id": "host_process_metrics",
+            "collector_type": "sys_metrics",
+            "status": "DONE",
+            "status_reason": "系统多维指标分析已生成",
+            "artifact_types": [
+              "sys_metrics"
+            ],
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "collection_mode": "triggered_group",
+            "timing_relation": "same_window"
+          },
+          {
+            "task_id": "task_20260814_035418_640eb6",
+            "probe_id": "process_baseline_window",
+            "collector_type": "baseline_window_profile",
+            "status": "FAILED",
+            "status_reason": "目标 PID 205711 不存在",
+            "artifact_types": [],
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "collection_mode": "triggered_group",
+            "timing_relation": "same_window"
+          },
+          {
+            "task_id": "task_20260814_035418_78a066",
+            "probe_id": "process_off_cpu_profile",
+            "collector_type": "off_cpu_wait_profile",
+            "status": "FAILED",
+            "status_reason": "off-CPU 工业采集器被阻断: target_pid_not_found",
+            "artifact_types": [
+              "off_cpu_wait_json"
+            ],
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "collection_mode": "triggered_group",
+            "timing_relation": "same_window"
+          },
+          {
+            "task_id": "task_20260814_035418_6cfbde",
+            "probe_id": "process_trace_endpoint_profile",
+            "collector_type": "trace_endpoint_profile",
+            "status": "DONE",
+            "status_reason": "Trace endpoint 结构化证据已生成",
+            "artifact_types": [
+              "ebpf_profile_raw",
+              "trace_endpoint_profile_json"
+            ],
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "collection_mode": "triggered_group",
+            "timing_relation": "same_window"
+          },
+          {
+            "task_id": "task_20260814_035418_9140bb",
+            "probe_id": "process_cpu_profile",
+            "collector_type": "perf_cpu",
+            "status": "FAILED",
+            "status_reason": "perf_event_paranoid 权限不足。请执行 'echo 1 > /proc/sys/kernel/perf_event_paranoid' 或使用 root 运行 Agent",
+            "artifact_types": [],
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "collection_mode": "triggered_group",
+            "timing_relation": "same_window"
+          },
+          {
+            "task_id": "task_20260814_035508_fa0157",
+            "probe_id": "process_baseline_window",
+            "collector_type": "baseline_window_profile",
+            "status": "FAILED",
+            "status_reason": "目标 PID 205711 不存在",
+            "artifact_types": [],
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "collection_mode": "delayed_followup",
+            "timing_relation": "delayed_followup"
+          }
+        ]
+      },
+      "sys_metrics": {
+        "summary": {
+          "observed_at": "2026-08-14T03:54:18.934483Z",
+          "cpu_percent": 63.89680168137851,
+          "thread_count": 1.0,
+          "iowait_percent": 0.19756478418364032,
+          "rss_mb": 10.25
+        }
+      },
+      "ebpf_metrics": null,
+      "memory_json": null,
+      "off_cpu_wait_json": {
+        "schema_version": "1.0",
+        "task_id": "task_20260814_035418_78a066",
+        "collector_type": "off_cpu_wait_profile",
+        "collector_family": "off_cpu_wait_profile",
+        "trigger_event_id": "evt_493fd133b8ec",
+        "evidence_cohort_id": "cohort_fc6d0469156a",
+        "collection_mode": "triggered_group",
+        "timing_relation": "same_window",
+        "collector_invocation": {
+          "schema_version": "1.0",
+          "scope_source": "watch_subscription",
+          "collector_family": "off_cpu_wait_profile",
+          "probe_id": "process_off_cpu_profile",
+          "target_config": {
+            "service_id": "watch-cpu-fixture",
+            "process_query": "md-aiopsv2-watch-cpu",
+            "container_id": null
+          },
+          "target_context": {
+            "agent_id": "linux-worker-1",
+            "service_id": "watch-cpu-fixture",
+            "instance_id": "watch-cpu-fixture",
+            "pid": 205711,
+            "endpoint": null
+          },
+          "watch_id": "watch_39a9e278b101",
+          "trigger_event_id": "evt_493fd133b8ec",
+          "evidence_cohort_id": "cohort_fc6d0469156a"
+        },
+        "target_pid": 205711,
+        "target_thread_ids": [],
+        "evidence_window": {
+          "window_start": "2026-08-14T03:53:58.902520+00:00",
+          "window_end": "2026-08-14T03:54:18.934483+00:00",
+          "duration_sec": 15,
+          "trigger_event_id": "evt_493fd133b8ec",
+          "evidence_cohort_id": "cohort_fc6d0469156a",
+          "collection_mode": "triggered_group",
+          "timing_relation": "same_window"
+        },
+        "collector_status": "blocked",
+        "parser_status": "target_pid_not_found",
+        "capability_check": {
+          "status": "available",
+          "tools": {
+            "bpftrace": true,
+            "perf": true
+          },
+          "missing_tools": [],
+          "missing_capabilities": [],
+          "perf_event_paranoid": 4,
+          "tracepoints": {
+            "sched_switch": true,
+            "sched_wakeup": true,
+            "futex": true,
+            "block_io": true,
+            "tcp_recv": true,
+            "poll": true
+          },
+          "target_pid": 205711,
+          "target_present": false,
+          "repair_action": "以 root/privileged Agent 运行，并启用 pid: host、PERFMON、BPF、SYS_PTRACE、SYS_ADMIN；同时检查 kernel.perf_event_paranoid。"
+        },
+        "strategy": {
+          "kind": "industrial_offcpu_v2",
+          "adapter_kind": "unavailable",
+          "source_status": "blocked",
+          "fallback_used": false,
+          "layers": [
+            "event",
+            "cause",
+            "stack",
+            "correlation"
+          ],
+          "stack_sources": [
+            "user",
+            "kernel"
+          ]
+        },
+        "event_summary": {
+          "observed_wait_events": 0,
+          "events_without_user_stack": 0,
+          "events_without_kernel_stack": 0,
+          "sample_events": []
+        },
+        "cause_summary": {
+          "cause_counts": {},
+          "top_cause": "",
+          "source": "none"
+        },
+        "stack_quality": {
+          "user_stack_samples": 0,
+          "kernel_stack_samples": 0,
+          "stack_unwind_status": "not_observed"
+        },
+        "correlation": {
+          "status": "unmatched",
+          "service_id": "watch-cpu-fixture",
+          "instance_id": null,
+          "endpoint": null,
+          "trace_id": null,
+          "span_id": null,
+          "call_path": [],
+          "correlation_method": "not_available",
+          "confidence": 0.0,
+          "evidence_ref": "off_cpu_wait.correlation"
+        },
+        "summary": {
+          "sample_count": 0,
+          "blocked_thread_count": 0,
+          "total_wait_ms": 0.0,
+          "top_wait_reason": "",
+          "has_wait_reason": false
+        },
+        "top_wait_stacks": [],
+        "thread_wait_summary": [],
+        "syscall_wait_summary": {}
+      },
+      "log_window_json": null,
+      "dependency_check_json": null,
+      "redis_check_json": null,
+      "trace_endpoint_profile_json": {
+        "schema_version": "1.0",
+        "task_id": "task_20260814_035418_6cfbde",
+        "collector_type": "trace_endpoint_profile",
+        "collector_family": "trace_endpoint_profile",
+        "target": {
+          "pid": 205711,
+          "service_id": "watch-cpu-fixture",
+          "instance_id": "",
+          "host_id": "",
+          "endpoint": ""
+        },
+        "evidence_window": {
+          "start": 1786679638.90252,
+          "end": 1786679658.934483,
+          "duration_sec": 15,
+          "trigger_event_id": "evt_493fd133b8ec",
+          "evidence_cohort_id": "cohort_fc6d0469156a",
+          "collection_mode": "triggered_group",
+          "timing_relation": "same_window"
+        },
+        "stack_source": {
+          "kind": "ebpf",
+          "status": "completed",
+          "blocked_reason": "",
+          "blocked_details": {},
+          "capability_check": {
+            "tools": {
+              "bpftrace": "[TRUNCATED]",
+              "perf": "[TRUNCATED]"
+            },
+            "perf_event_paranoid": 4,
+            "cap_eff": "000001ffffffffff",
+            "cap_bnd": "000001ffffffffff",
+            "missing_capabilities": [],
+            "seccomp": "0",
+            "pid_namespace": "/proc/1/ns/pid:[4026531836]",
+            "target_pid": 205711,
+            "target_present": false,
+            "tracepoints": {
+              "sched_switch": "[TRUNCATED]",
+              "sched_wakeup": "[TRUNCATED]"
+            },
+            "missing_tools": [],
+            "repair_action": "检查 bpftrace/perf 安装、Worker 的 privileged/pid:host、PERFMON、SYS_PTRACE、BPF capability 以及 perf_event_paranoid。"
+          },
+          "artifacts": [
+            "ebpf_profile.txt"
+          ]
+        },
+        "trace_source": {
+          "kind": "auto",
+          "status": "empty_window",
+          "paths": [
+            "/var/lib/mini-drop/traces"
+          ],
+          "readable_paths": [],
+          "existing_sources": [
+            "/var/lib/mini-drop/traces"
+          ],
+          "records_read": 0,
+          "records_in_window": 0,
+          "blocked_reason": ""
+        },
+        "capability_check": {
+          "tools": {
+            "bpftrace": true,
+            "perf": true
+          },
+          "perf_event_paranoid": 4,
+          "cap_eff": "000001ffffffffff",
+          "cap_bnd": "000001ffffffffff",
+          "missing_capabilities": [],
+          "seccomp": "0",
+          "pid_namespace": "/proc/1/ns/pid:[4026531836]",
+          "target_pid": 205711,
+          "target_present": false,
+          "tracepoints": {
+            "sched_switch": true,
+            "sched_wakeup": true
+          },
+          "missing_tools": [],
+          "repair_action": "检查 bpftrace/perf 安装、Worker 的 privileged/pid:host、PERFMON、SYS_PTRACE、BPF capability 以及 perf_event_paranoid。"
+        },
+        "top_functions": [],
+        "endpoint_bindings": [],
+        "call_path_hotspots": [],
+        "correlation_status": {
+          "status": "partial",
+          "max_supported_level": "function",
+          "blocked_reason": "",
+          "blocked_details": {},
+          "warnings": [
+            "trace_source_unavailable"
+          ],
+          "missing": [
+            "trace_source"
+          ]
+        },
+        "trigger_event_id": "evt_493fd133b8ec",
+        "evidence_cohort_id": "cohort_fc6d0469156a",
+        "collection_mode": "triggered_group",
+        "timing_relation": "same_window"
+      }
+    },
+    "collector_tasks": [
+      {
+        "task_id": "task_20260814_035418_f3904c",
+        "probe_id": "host_process_metrics",
+        "collector_type": "sys_metrics",
+        "evidence_cohort_id": "cohort_fc6d0469156a",
+        "trigger_event_id": "evt_493fd133b8ec",
+        "collector_invocation": {
+          "schema_version": "1.0",
+          "scope_source": "watch_subscription",
+          "collector_family": "sys_metrics",
+          "probe_id": "host_process_metrics",
+          "target_config": {
+            "service_id": "watch-cpu-fixture",
+            "process_query": "md-aiopsv2-watch-cpu",
+            "container_id": null
+          },
+          "target_context": {
+            "agent_id": "linux-worker-1",
+            "service_id": "watch-cpu-fixture",
+            "instance_id": "watch-cpu-fixture",
+            "pid": 205711,
+            "endpoint": null
+          },
+          "watch_id": "watch_39a9e278b101",
+          "trigger_event_id": "evt_493fd133b8ec",
+          "evidence_cohort_id": "cohort_fc6d0469156a"
+        },
+        "status": "DONE",
+        "status_reason": "系统多维指标分析已生成",
+        "artifact_types": [
+          "sys_metrics"
+        ]
+      },
+      {
+        "task_id": "task_20260814_035418_640eb6",
+        "probe_id": "process_baseline_window",
+        "collector_type": "baseline_window_profile",
+        "evidence_cohort_id": "cohort_fc6d0469156a",
+        "trigger_event_id": "evt_493fd133b8ec",
+        "collector_invocation": {
+          "schema_version": "1.0",
+          "scope_source": "watch_subscription",
+          "collector_family": "baseline_window_profile",
+          "probe_id": "process_baseline_window",
+          "target_config": {
+            "service_id": "watch-cpu-fixture",
+            "process_query": "md-aiopsv2-watch-cpu",
+            "container_id": null
+          },
+          "target_context": {
+            "agent_id": "linux-worker-1",
+            "service_id": "watch-cpu-fixture",
+            "instance_id": "watch-cpu-fixture",
+            "pid": 205711,
+            "endpoint": null
+          },
+          "watch_id": "watch_39a9e278b101",
+          "trigger_event_id": "evt_493fd133b8ec",
+          "evidence_cohort_id": "cohort_fc6d0469156a"
+        },
+        "status": "FAILED",
+        "status_reason": "目标 PID 205711 不存在",
+        "artifact_types": []
+      },
+      {
+        "task_id": "task_20260814_035418_78a066",
+        "probe_id": "process_off_cpu_profile",
+        "collector_type": "off_cpu_wait_profile",
+        "evidence_cohort_id": "cohort_fc6d0469156a",
+        "trigger_event_id": "evt_493fd133b8ec",
+        "collector_invocation": {
+          "schema_version": "1.0",
+          "scope_source": "watch_subscription",
+          "collector_family": "off_cpu_wait_profile",
+          "probe_id": "process_off_cpu_profile",
+          "target_config": {
+            "service_id": "watch-cpu-fixture",
+            "process_query": "md-aiopsv2-watch-cpu",
+            "container_id": null
+          },
+          "target_context": {
+            "agent_id": "linux-worker-1",
+            "service_id": "watch-cpu-fixture",
+            "instance_id": "watch-cpu-fixture",
+            "pid": 205711,
+            "endpoint": null
+          },
+          "watch_id": "watch_39a9e278b101",
+          "trigger_event_id": "evt_493fd133b8ec",
+          "evidence_cohort_id": "cohort_fc6d0469156a"
+        },
+        "status": "FAILED",
+        "status_reason": "off-CPU 工业采集器被阻断: target_pid_not_found",
+        "artifact_types": [
+          "off_cpu_wait_json"
+        ]
+      },
+      {
+        "task_id": "task_20260814_035418_6cfbde",
+        "probe_id": "process_trace_endpoint_profile",
+        "collector_type": "trace_endpoint_profile",
+        "evidence_cohort_id": "cohort_fc6d0469156a",
+        "trigger_event_id": "evt_493fd133b8ec",
+        "collector_invocation": {
+          "schema_version": "1.0",
+          "scope_source": "watch_subscription",
+          "collector_family": "trace_endpoint_profile",
+          "probe_id": "process_trace_endpoint_profile",
+          "target_config": {
+            "service_id": "watch-cpu-fixture",
+            "process_query": "md-aiopsv2-watch-cpu",
+            "container_id": null
+          },
+          "target_context": {
+            "agent_id": "linux-worker-1",
+            "service_id": "watch-cpu-fixture",
+            "instance_id": "watch-cpu-fixture",
+            "pid": 205711,
+            "endpoint": null
+          },
+          "watch_id": "watch_39a9e278b101",
+          "trigger_event_id": "evt_493fd133b8ec",
+          "evidence_cohort_id": "cohort_fc6d0469156a"
+        },
+        "status": "DONE",
+        "status_reason": "Trace endpoint 结构化证据已生成",
+        "artifact_types": [
+          "ebpf_profile_raw",
+          "trace_endpoint_profile_json"
+        ]
+      },
+      {
+        "task_id": "task_20260814_035418_9140bb",
+        "probe_id": "process_cpu_profile",
+        "collector_type": "perf_cpu",
+        "evidence_cohort_id": "cohort_fc6d0469156a",
+        "trigger_event_id": "evt_493fd133b8ec",
+        "collector_invocation": {
+          "schema_version": "1.0",
+          "scope_source": "watch_subscription",
+          "collector_family": "perf_cpu",
+          "probe_id": "process_cpu_profile",
+          "target_config": {
+            "service_id": "watch-cpu-fixture",
+            "process_query": "md-aiopsv2-watch-cpu",
+            "container_id": null
+          },
+          "target_context": {
+            "agent_id": "linux-worker-1",
+            "service_id": "watch-cpu-fixture",
+            "instance_id": "watch-cpu-fixture",
+            "pid": 205711,
+            "endpoint": null
+          },
+          "watch_id": "watch_39a9e278b101",
+          "trigger_event_id": "evt_493fd133b8ec",
+          "evidence_cohort_id": "cohort_fc6d0469156a"
+        },
+        "status": "FAILED",
+        "status_reason": "perf_event_paranoid 权限不足。请执行 'echo 1 > /proc/sys/kernel/perf_event_paranoid' 或使用 root 运行 Agent",
+        "artifact_types": []
+      },
+      {
+        "task_id": "task_20260814_035508_fa0157",
+        "probe_id": "process_baseline_window",
+        "collector_type": "baseline_window_profile",
+        "evidence_cohort_id": "cohort_fc6d0469156a",
+        "trigger_event_id": "evt_493fd133b8ec",
+        "collector_invocation": {
+          "schema_version": "1.0",
+          "scope_source": "watch_followup",
+          "collector_family": "baseline_window_profile",
+          "probe_id": "process_baseline_window",
+          "target_config": {
+            "service_id": "watch-cpu-fixture",
+            "process_query": "md-aiopsv2-watch-cpu",
+            "container_id": null
+          },
+          "target_context": {
+            "agent_id": "linux-worker-1",
+            "service_id": "watch-cpu-fixture",
+            "instance_id": "watch-cpu-fixture",
+            "pid": 205711,
+            "endpoint": null
+          },
+          "watch_id": "watch_39a9e278b101",
+          "trigger_event_id": "evt_493fd133b8ec",
+          "evidence_cohort_id": "cohort_fc6d0469156a",
+          "collection_mode": "delayed_followup",
+          "timing_relation": "delayed_followup",
+          "parent_incident_id": "inc_bf4aa3c80e7f"
+        },
+        "status": "FAILED",
+        "status_reason": "目标 PID 205711 不存在",
+        "artifact_types": []
+      }
+    ],
+    "analysis_session_id": "analysis_inc_bf4aa3c80e7f",
+    "analysis_result": {
+      "analysis_session_id": "analysis_inc_bf4aa3c80e7f",
+      "incident_id": "inc_bf4aa3c80e7f",
+      "watch_id": "watch_39a9e278b101",
+      "trigger_event_id": "evt_493fd133b8ec",
+      "evidence_cohort_id": "cohort_fc6d0469156a",
+      "analysis_strategy": "linear",
+      "analysis_pipeline": "evidence_to_attribution",
+      "collection_mode": "rolling_snapshot",
+      "timing_relation": "same_window",
+      "model": "deepseek-v4-flash",
+      "validated": true,
+      "summary": "当前证据显示目标 PID 205711 在采集窗口内不存在，导致多个采集器（baseline_window_profile、off_cpu_wait_profile、perf_cpu）失败，且结构化信号不足，无法定位根因。结论卡在 resource 层级，需补充 baseline_window_profile 等证据。",
+      "report": {
+        "summary": "当前证据显示目标 PID 205711 在采集窗口内不存在，导致多个采集器（baseline_window_profile、off_cpu_wait_profile、perf_cpu）失败，且结构化信号不足，无法定位根因。结论卡在 resource 层级，需补充 baseline_window_profile 等证据。",
+        "ranked_causes": [],
+        "facts": [
+          "目标 PID 205711 在采集窗口内不存在（off_cpu_wait.capability_check.target_present=false）",
+          "sys_metrics 显示 CPU 63.9%，线程数 1，iowait 0.2%，RSS 10.25MB",
+          "多个采集器失败：baseline_window_profile（目标 PID 不存在）、off_cpu_wait_profile（target_pid_not_found）、perf_cpu（perf_event_paranoid 权限不足）",
+          "trace_endpoint_profile 状态为 DONE，但 trace_source 为空窗口，无结构化信号",
+          "analysis_result 的 stability_score 为 0.0，can_claim_root_cause 为 false",
+          "结论窗口为 same_window，时间范围 2026-08-14T03:53:58.902520+00:00 至 03:54:18.934483+00:00"
+        ],
+        "not_enough_evidence": true,
+        "analysis_result": {
+          "facts": [
+            {
+              "fact_id": "fact_thread_normal",
+              "source": "sys_metrics",
+              "evidence_ref": "sys_metrics.summary",
+              "value": 1.0,
+              "status": "normal",
+              "threshold_band": "below",
+              "evidence_window": {
+                "trigger_event_id": "evt_493fd133b8ec",
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "collection_mode": "triggered_group",
+                "window_start": "2026-08-14T03:53:58.902520+00:00",
+                "window_end": "2026-08-14T03:54:18.934483+00:00",
+                "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                "timing_relation": "same_window"
+              },
+              "timing_relation": "same_window"
+            }
+          ],
+          "symptoms": [],
+          "localizations": [],
+          "ai_tree": [
+            {
+              "node_id": "tree_root",
+              "level": "resource",
+              "branch_key": "entry:resource",
+              "decision": "stop",
+              "leaf_status": "unknown_leaf",
+              "conflict_type": null,
+              "evidence_family": [],
+              "conflict_candidates": [],
+              "next_evidence_requests": [
+                "baseline_window_profile"
+              ],
+              "evidence_refs": [
+                "sys_metrics.summary"
+              ],
+              "reason": "当前树需继续补证，优先请求：baseline_window_profile。"
+            }
+          ],
+          "graph_entities": [],
+          "graph_links": [],
+          "attributions": [
+            {
+              "candidate_id": "insufficient_data",
+              "status": "forbidden",
+              "supporting_fact_ids": [],
+              "opposing_fact_ids": [],
+              "missing_evidence": [
+                "更长的采样时长",
+                "多采集器交叉验证",
+                "历史基线对比"
+              ],
+              "max_supported_level": "resource"
+            }
+          ],
+          "evidence_challenges": [],
+          "missing_evidence": [
+            "当前结论稳定性偏低，缺少 baseline_window_profile 进行多窗口对齐和重复任务稳定化。",
+            "更长的采样时长",
+            "多采集器交叉验证",
+            "历史基线对比"
+          ],
+          "blocked_upgrades": [
+            "低稳定性结果需要 baseline_window_profile 进行重复窗口验证。"
+          ],
+          "collection_gaps": [
+            "baseline_window_profile"
+          ],
+          "graph_extension_points": [
+            "graph_context_correlation",
+            "graph_path_propagation",
+            "graph_reasoning_upgrade"
+          ],
+          "allowed_cause_ids": [],
+          "primary_cause_id": null,
+          "stability_score": 0.0,
+          "primary_cause_reason": "",
+          "conclusion_boundary": {
+            "can_claim_root_cause": false,
+            "max_supported_level": "resource",
+            "reason": "低稳定性结果需要 baseline_window_profile 进行重复窗口验证。 结论窗口关系：same_window。",
+            "conclusion_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            },
+            "timing_relation": "same_window",
+            "delayed_followup_reproduction_status": "not_applicable",
+            "non_refutable_evidence_boundaries": []
+          }
+        },
+        "symptoms": [],
+        "localizations": [],
+        "ai_tree": [
+          {
+            "node_id": "tree_root",
+            "level": "resource",
+            "branch_key": "entry:resource",
+            "decision": "stop",
+            "leaf_status": "unknown_leaf",
+            "conflict_type": null,
+            "evidence_family": [],
+            "conflict_candidates": [],
+            "next_evidence_requests": [
+              "baseline_window_profile"
+            ],
+            "evidence_refs": [
+              "sys_metrics.summary"
+            ],
+            "reason": "当前树需继续补证，优先请求：baseline_window_profile。"
+          }
+        ],
+        "graph_entities": [],
+        "graph_links": [],
+        "attributions": [
+          {
+            "candidate_id": "insufficient_data",
+            "status": "forbidden",
+            "supporting_fact_ids": [],
+            "opposing_fact_ids": [],
+            "missing_evidence": [
+              "更长的采样时长",
+              "多采集器交叉验证",
+              "历史基线对比"
+            ],
+            "max_supported_level": "resource"
+          }
+        ],
+        "evidence_challenges": [],
+        "missing_evidence": [
+          "当前结论稳定性偏低，缺少 baseline_window_profile 进行多窗口对齐和重复任务稳定化。",
+          "更长的采样时长",
+          "多采集器交叉验证",
+          "历史基线对比"
+        ],
+        "blocked_upgrades": [
+          "低稳定性结果需要 baseline_window_profile 进行重复窗口验证。"
+        ],
+        "collection_gaps": [
+          "baseline_window_profile"
+        ],
+        "graph_extension_points": [
+          "graph_context_correlation",
+          "graph_path_propagation",
+          "graph_reasoning_upgrade"
+        ],
+        "structured_evidence": {
+          "version": 1,
+          "task_id": "watch:inc_bf4aa3c80e7f",
+          "trigger_event_id": "evt_493fd133b8ec",
+          "evidence_cohort_id": "cohort_fc6d0469156a",
+          "collection_mode": "triggered_group",
+          "window_start": "2026-08-14T03:53:58.902520+00:00",
+          "window_end": "2026-08-14T03:54:18.934483+00:00",
+          "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+          "timing_relation": "same_window",
+          "artifact_refs": [
+            {
+              "artifact_type": "ebpf_profile_raw",
+              "filename": "ebpf_profile.txt",
+              "content_type": "text/plain",
+              "size_bytes": 22,
+              "sha256": "",
+              "storage_status": "",
+              "storage_error": "",
+              "planned_object_key": "",
+              "object_key": "tasks/task_20260814_035418_6cfbde/ebpf_profile.txt",
+              "local_path": "/tmp/mini-drop/task_20260814_035418_6cfbde/ebpf_profile.txt",
+              "raw_payload_policy": "references_only",
+              "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:ebpf_profile_raw",
+              "evidence_window": {
+                "trigger_event_id": "evt_493fd133b8ec",
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "collection_mode": "triggered_group",
+                "window_start": "2026-08-14T03:53:58.902520+00:00",
+                "window_end": "2026-08-14T03:54:18.934483+00:00",
+                "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                "timing_relation": "same_window"
+              }
+            },
+            {
+              "artifact_type": "off_cpu_wait_json",
+              "filename": "off_cpu_wait.json",
+              "content_type": "application/json",
+              "size_bytes": 3279,
+              "sha256": "",
+              "storage_status": "",
+              "storage_error": "",
+              "planned_object_key": "",
+              "object_key": "",
+              "local_path": "/tmp/mini-drop/task_20260814_035418_78a066/off_cpu_wait.json",
+              "raw_payload_policy": "references_only",
+              "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:off_cpu_wait_json",
+              "evidence_window": {
+                "trigger_event_id": "evt_493fd133b8ec",
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "collection_mode": "triggered_group",
+                "window_start": "2026-08-14T03:53:58.902520+00:00",
+                "window_end": "2026-08-14T03:54:18.934483+00:00",
+                "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                "timing_relation": "same_window"
+              }
+            },
+            {
+              "artifact_type": "rolling_metrics_summary",
+              "filename": "snap_a96afcd8dd89_metrics.json",
+              "content_type": "application/json",
+              "size_bytes": 709,
+              "sha256": "sha256:a3ef0f24bfc2101e6f1f56e6264717793403c9e3ce5ab853e62da4257ecf82d0",
+              "storage_status": "stored",
+              "storage_error": "",
+              "planned_object_key": "",
+              "object_key": "watch_snapshots/snap_a96afcd8dd89/snap_a96afcd8dd89_metrics.json",
+              "local_path": "",
+              "raw_payload_policy": "references_only",
+              "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:rolling_metrics_summary",
+              "evidence_window": {
+                "trigger_event_id": "evt_493fd133b8ec",
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "collection_mode": "triggered_group",
+                "window_start": "2026-08-14T03:53:58.902520+00:00",
+                "window_end": "2026-08-14T03:54:18.934483+00:00",
+                "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                "timing_relation": "same_window"
+              }
+            },
+            {
+              "artifact_type": "sys_metrics",
+              "filename": "sys_metrics.json",
+              "content_type": "application/json",
+              "size_bytes": 3581,
+              "sha256": "",
+              "storage_status": "",
+              "storage_error": "",
+              "planned_object_key": "",
+              "object_key": "tasks/task_20260814_035418_f3904c/sys_metrics.json",
+              "local_path": "/tmp/mini-drop/task_20260814_035418_f3904c/sys_metrics.json",
+              "raw_payload_policy": "references_only",
+              "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:sys_metrics",
+              "evidence_window": {
+                "trigger_event_id": "evt_493fd133b8ec",
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "collection_mode": "triggered_group",
+                "window_start": "2026-08-14T03:53:58.902520+00:00",
+                "window_end": "2026-08-14T03:54:18.934483+00:00",
+                "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                "timing_relation": "same_window"
+              }
+            },
+            {
+              "artifact_type": "trace_endpoint_profile_json",
+              "filename": "trace_endpoint_profile.json",
+              "content_type": "application/json",
+              "size_bytes": 2828,
+              "sha256": "",
+              "storage_status": "",
+              "storage_error": "",
+              "planned_object_key": "",
+              "object_key": "tasks/task_20260814_035418_6cfbde/trace_endpoint_profile.json",
+              "local_path": "/tmp/mini-drop/task_20260814_035418_6cfbde/trace_endpoint_profile.json",
+              "raw_payload_policy": "references_only",
+              "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:trace_endpoint_profile_json",
+              "evidence_window": {
+                "trigger_event_id": "evt_493fd133b8ec",
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "collection_mode": "triggered_group",
+                "window_start": "2026-08-14T03:53:58.902520+00:00",
+                "window_end": "2026-08-14T03:54:18.934483+00:00",
+                "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                "timing_relation": "same_window"
+              }
+            }
+          ],
+          "top_functions": [],
+          "stack_summary": {
+            "dominant_hot_frame": "",
+            "dominant_percent": 0.0,
+            "sample_count": 0,
+            "stack_sample_count": 0,
+            "has_call_path": false,
+            "has_wait_reason": false,
+            "top_wait_reason": "",
+            "total_wait_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "raw_payload_policy": "references_only",
+            "artifact_ref_count": 5,
+            "evidence_ref": "structured_evidence.stack_summary",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            }
+          },
+          "call_path_hotspots": [],
+          "evidence_index": {
+            "dominant_hot_frame": "",
+            "dominant_percent": 0.0,
+            "sample_count": 0,
+            "stack_sample_count": 0,
+            "has_call_path": false,
+            "has_wait_reason": false,
+            "top_wait_reason": "",
+            "total_wait_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "raw_payload_policy": "references_only",
+            "artifact_ref_count": 5,
+            "evidence_ref": "structured_evidence.stack_summary",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            },
+            "artifact_refs": [
+              {
+                "artifact_type": "ebpf_profile_raw",
+                "filename": "ebpf_profile.txt",
+                "content_type": "text/plain",
+                "size_bytes": 22,
+                "sha256": "",
+                "storage_status": "",
+                "storage_error": "",
+                "planned_object_key": "",
+                "object_key": "tasks/task_20260814_035418_6cfbde/ebpf_profile.txt",
+                "local_path": "/tmp/mini-drop/task_20260814_035418_6cfbde/ebpf_profile.txt",
+                "raw_payload_policy": "references_only",
+                "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:ebpf_profile_raw",
+                "evidence_window": {
+                  "trigger_event_id": "evt_493fd133b8ec",
+                  "evidence_cohort_id": "cohort_fc6d0469156a",
+                  "collection_mode": "triggered_group",
+                  "window_start": "2026-08-14T03:53:58.902520+00:00",
+                  "window_end": "2026-08-14T03:54:18.934483+00:00",
+                  "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                  "timing_relation": "same_window"
+                }
+              },
+              {
+                "artifact_type": "off_cpu_wait_json",
+                "filename": "off_cpu_wait.json",
+                "content_type": "application/json",
+                "size_bytes": 3279,
+                "sha256": "",
+                "storage_status": "",
+                "storage_error": "",
+                "planned_object_key": "",
+                "object_key": "",
+                "local_path": "/tmp/mini-drop/task_20260814_035418_78a066/off_cpu_wait.json",
+                "raw_payload_policy": "references_only",
+                "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:off_cpu_wait_json",
+                "evidence_window": {
+                  "trigger_event_id": "evt_493fd133b8ec",
+                  "evidence_cohort_id": "cohort_fc6d0469156a",
+                  "collection_mode": "triggered_group",
+                  "window_start": "2026-08-14T03:53:58.902520+00:00",
+                  "window_end": "2026-08-14T03:54:18.934483+00:00",
+                  "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                  "timing_relation": "same_window"
+                }
+              },
+              {
+                "artifact_type": "rolling_metrics_summary",
+                "filename": "snap_a96afcd8dd89_metrics.json",
+                "content_type": "application/json",
+                "size_bytes": 709,
+                "sha256": "sha256:a3ef0f24bfc2101e6f1f56e6264717793403c9e3ce5ab853e62da4257ecf82d0",
+                "storage_status": "stored",
+                "storage_error": "",
+                "planned_object_key": "",
+                "object_key": "watch_snapshots/snap_a96afcd8dd89/snap_a96afcd8dd89_metrics.json",
+                "local_path": "",
+                "raw_payload_policy": "references_only",
+                "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:rolling_metrics_summary",
+                "evidence_window": {
+                  "trigger_event_id": "evt_493fd133b8ec",
+                  "evidence_cohort_id": "cohort_fc6d0469156a",
+                  "collection_mode": "triggered_group",
+                  "window_start": "2026-08-14T03:53:58.902520+00:00",
+                  "window_end": "2026-08-14T03:54:18.934483+00:00",
+                  "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                  "timing_relation": "same_window"
+                }
+              },
+              {
+                "artifact_type": "sys_metrics",
+                "filename": "sys_metrics.json",
+                "content_type": "application/json",
+                "size_bytes": 3581,
+                "sha256": "",
+                "storage_status": "",
+                "storage_error": "",
+                "planned_object_key": "",
+                "object_key": "tasks/task_20260814_035418_f3904c/sys_metrics.json",
+                "local_path": "/tmp/mini-drop/task_20260814_035418_f3904c/sys_metrics.json",
+                "raw_payload_policy": "references_only",
+                "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:sys_metrics",
+                "evidence_window": {
+                  "trigger_event_id": "evt_493fd133b8ec",
+                  "evidence_cohort_id": "cohort_fc6d0469156a",
+                  "collection_mode": "triggered_group",
+                  "window_start": "2026-08-14T03:53:58.902520+00:00",
+                  "window_end": "2026-08-14T03:54:18.934483+00:00",
+                  "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                  "timing_relation": "same_window"
+                }
+              },
+              {
+                "artifact_type": "trace_endpoint_profile_json",
+                "filename": "trace_endpoint_profile.json",
+                "content_type": "application/json",
+                "size_bytes": 2828,
+                "sha256": "",
+                "storage_status": "",
+                "storage_error": "",
+                "planned_object_key": "",
+                "object_key": "tasks/task_20260814_035418_6cfbde/trace_endpoint_profile.json",
+                "local_path": "/tmp/mini-drop/task_20260814_035418_6cfbde/trace_endpoint_profile.json",
+                "raw_payload_policy": "references_only",
+                "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:trace_endpoint_profile_json",
+                "evidence_window": {
+                  "trigger_event_id": "evt_493fd133b8ec",
+                  "evidence_cohort_id": "cohort_fc6d0469156a",
+                  "collection_mode": "triggered_group",
+                  "window_start": "2026-08-14T03:53:58.902520+00:00",
+                  "window_end": "2026-08-14T03:54:18.934483+00:00",
+                  "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                  "timing_relation": "same_window"
+                }
+              }
+            ],
+            "stack_summary": {
+              "dominant_hot_frame": "",
+              "dominant_percent": 0.0,
+              "sample_count": 0,
+              "stack_sample_count": 0,
+              "has_call_path": false,
+              "has_wait_reason": false,
+              "top_wait_reason": "",
+              "total_wait_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "raw_payload_policy": "references_only",
+              "artifact_ref_count": 5,
+              "evidence_ref": "structured_evidence.stack_summary",
+              "evidence_window": {
+                "trigger_event_id": "evt_493fd133b8ec",
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "collection_mode": "triggered_group",
+                "window_start": "2026-08-14T03:53:58.902520+00:00",
+                "window_end": "2026-08-14T03:54:18.934483+00:00",
+                "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                "timing_relation": "same_window"
+              }
+            },
+            "call_path_hotspots": [],
+            "confidence_inputs": {
+              "sample_count": 0,
+              "dominant_percent": 0.0,
+              "context_completeness": "low",
+              "has_system_pressure": true,
+              "has_wait_or_io_signal": false,
+              "has_log_signal": false,
+              "has_dependency_signal": false,
+              "has_redis_signal": false,
+              "failed_dependency_count": 0,
+              "log_error_cluster_count": 0,
+              "redis_slowlog_entry_count": 0,
+              "redis_max_latency_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "artifact_types": [
+                "ebpf_profile_raw",
+                "off_cpu_wait_json",
+                "rolling_metrics_summary",
+                "sys_metrics",
+                "trace_endpoint_profile_json"
+              ],
+              "collector_families": [
+                "ebpf_profile_raw",
+                "off_cpu_wait_profile",
+                "rolling_metrics_summary",
+                "sys_metrics",
+                "trace_endpoint_profile"
+              ],
+              "token_safety": "compact_summary_only",
+              "trace_source_status": "empty_window",
+              "stack_source_status": "completed",
+              "trace_correlation_status": "partial",
+              "trace_max_supported_level": "function",
+              "evidence_window": {
+                "trigger_event_id": "evt_493fd133b8ec",
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "collection_mode": "triggered_group",
+                "window_start": "2026-08-14T03:53:58.902520+00:00",
+                "window_end": "2026-08-14T03:54:18.934483+00:00",
+                "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                "timing_relation": "same_window"
+              }
+            },
+            "off_cpu_wait": {
+              "schema_version": "1.0",
+              "collector_family": "off_cpu_wait_profile",
+              "summary": {
+                "sample_count": 0,
+                "blocked_thread_count": 0,
+                "total_wait_ms": 0.0,
+                "top_wait_reason": "",
+                "has_wait_reason": false
+              },
+              "event_summary": {
+                "observed_wait_events": 0,
+                "events_without_user_stack": 0,
+                "events_without_kernel_stack": 0,
+                "sample_events": []
+              },
+              "cause_summary": {
+                "cause_counts": {},
+                "top_cause": "",
+                "source": "none"
+              },
+              "stack_quality": {
+                "user_stack_samples": 0,
+                "kernel_stack_samples": 0,
+                "stack_unwind_status": "not_observed"
+              },
+              "top_wait_stacks": [],
+              "kernel_stacks": [],
+              "thread_wait_summary": [],
+              "syscall_wait_summary": {},
+              "collector_status": "blocked",
+              "parser_status": "target_pid_not_found",
+              "trace_source": {},
+              "correlation": {
+                "status": "unmatched",
+                "service_id": "watch-cpu-fixture",
+                "instance_id": null,
+                "endpoint": null,
+                "trace_id": null,
+                "span_id": null,
+                "call_path": [],
+                "correlation_method": "not_available",
+                "confidence": 0.0,
+                "evidence_ref": "off_cpu_wait.correlation"
+              },
+              "endpoint_bindings": [],
+              "call_path_hotspots": [],
+              "capability_check": {
+                "status": "available",
+                "tools": {
+                  "bpftrace": true,
+                  "perf": true
+                },
+                "missing_tools": [],
+                "missing_capabilities": [],
+                "perf_event_paranoid": 4,
+                "tracepoints": {
+                  "sched_switch": true,
+                  "sched_wakeup": true,
+                  "futex": true,
+                  "block_io": true,
+                  "tcp_recv": true,
+                  "poll": true
+                },
+                "target_pid": 205711,
+                "target_present": false,
+                "repair_action": "以 root/privileged Agent 运行，并启用 pid: host、PERFMON、BPF、SYS_PTRACE、SYS_ADMIN；同时检查 kernel.perf_event_paranoid。"
+              }
+            },
+            "trace_endpoint_profile": {
+              "stack_source": {
+                "kind": "ebpf",
+                "status": "completed",
+                "blocked_reason": "",
+                "blocked_details": {},
+                "capability_check": {
+                  "tools": {
+                    "bpftrace": "[TRUNCATED]",
+                    "perf": "[TRUNCATED]"
+                  },
+                  "perf_event_paranoid": 4,
+                  "cap_eff": "000001ffffffffff",
+                  "cap_bnd": "000001ffffffffff",
+                  "missing_capabilities": [],
+                  "seccomp": "0",
+                  "pid_namespace": "/proc/1/ns/pid:[4026531836]",
+                  "target_pid": 205711,
+                  "target_present": false,
+                  "tracepoints": {
+                    "sched_switch": "[TRUNCATED]",
+                    "sched_wakeup": "[TRUNCATED]"
+                  },
+                  "missing_tools": [],
+                  "repair_action": "检查 bpftrace/perf 安装、Worker 的 privileged/pid:host、PERFMON、SYS_PTRACE、BPF capability 以及 perf_event_paranoid。"
+                },
+                "artifacts": [
+                  "ebpf_profile.txt"
+                ]
+              },
+              "trace_source": {
+                "kind": "auto",
+                "status": "empty_window",
+                "records_read": 0,
+                "records_in_window": 0,
+                "blocked_reason": ""
+              },
+              "endpoint_bindings": [],
+              "call_path_hotspots": [],
+              "correlation_status": {
+                "status": "partial",
+                "max_supported_level": "function",
+                "blocked_reason": "",
+                "blocked_details": {},
+                "warnings": [
+                  "trace_source_unavailable"
+                ],
+                "missing": [
+                  "trace_source"
+                ]
+              }
+            },
+            "delayed_followups": [
+              {
+                "task_id": "task_20260814_035508_fa0157",
+                "collection_mode": "delayed_followup",
+                "timing_relation": "delayed_followup",
+                "artifact_refs": [],
+                "top_functions": [],
+                "stack_summary": {
+                  "dominant_hot_frame": "",
+                  "dominant_percent": 0.0,
+                  "sample_count": 0,
+                  "stack_sample_count": 0,
+                  "has_call_path": false,
+                  "has_wait_reason": false,
+                  "top_wait_reason": "",
+                  "total_wait_ms": 0.0,
+                  "parse_status": "insufficient_structured_signal",
+                  "raw_payload_policy": "references_only",
+                  "artifact_ref_count": 0,
+                  "evidence_ref": "structured_evidence.stack_summary",
+                  "evidence_window": {
+                    "trigger_event_id": "evt_493fd133b8ec",
+                    "evidence_cohort_id": "cohort_fc6d0469156a",
+                    "collection_mode": "delayed_followup",
+                    "window_start": "2026-08-14T03:53:58.902520+00:00",
+                    "window_end": "2026-08-14T03:54:18.934483+00:00",
+                    "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                    "timing_relation": "delayed_followup"
+                  }
+                },
+                "call_path_hotspots": [],
+                "confidence_inputs": {
+                  "sample_count": 0,
+                  "dominant_percent": 0.0,
+                  "context_completeness": "low",
+                  "has_system_pressure": false,
+                  "has_wait_or_io_signal": false,
+                  "has_log_signal": false,
+                  "has_dependency_signal": false,
+                  "has_redis_signal": false,
+                  "failed_dependency_count": 0,
+                  "log_error_cluster_count": 0,
+                  "redis_slowlog_entry_count": 0,
+                  "redis_max_latency_ms": 0.0,
+                  "parse_status": "insufficient_structured_signal",
+                  "artifact_types": [],
+                  "collector_families": [],
+                  "token_safety": "compact_summary_only",
+                  "trace_source_status": "",
+                  "stack_source_status": "",
+                  "trace_correlation_status": "",
+                  "trace_max_supported_level": "",
+                  "evidence_window": {
+                    "trigger_event_id": "evt_493fd133b8ec",
+                    "evidence_cohort_id": "cohort_fc6d0469156a",
+                    "collection_mode": "delayed_followup",
+                    "window_start": "2026-08-14T03:53:58.902520+00:00",
+                    "window_end": "2026-08-14T03:54:18.934483+00:00",
+                    "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                    "timing_relation": "delayed_followup"
+                  }
+                },
+                "evidence_index": {
+                  "artifact_refs": [],
+                  "stack_summary": {
+                    "dominant_hot_frame": "",
+                    "dominant_percent": 0.0,
+                    "sample_count": 0,
+                    "stack_sample_count": 0,
+                    "has_call_path": false,
+                    "has_wait_reason": false,
+                    "top_wait_reason": "",
+                    "total_wait_ms": 0.0,
+                    "parse_status": "insufficient_structured_signal",
+                    "raw_payload_policy": "references_only",
+                    "artifact_ref_count": 0,
+                    "evidence_ref": "structured_evidence.stack_summary",
+                    "evidence_window": {
+                      "trigger_event_id": "evt_493fd133b8ec",
+                      "evidence_cohort_id": "cohort_fc6d0469156a",
+                      "collection_mode": "delayed_followup",
+                      "window_start": "2026-08-14T03:53:58.902520+00:00",
+                      "window_end": "2026-08-14T03:54:18.934483+00:00",
+                      "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                      "timing_relation": "delayed_followup"
+                    }
+                  },
+                  "call_path_hotspots": [],
+                  "confidence_inputs": {
+                    "sample_count": 0,
+                    "dominant_percent": 0.0,
+                    "context_completeness": "low",
+                    "has_system_pressure": false,
+                    "has_wait_or_io_signal": false,
+                    "has_log_signal": false,
+                    "has_dependency_signal": false,
+                    "has_redis_signal": false,
+                    "failed_dependency_count": 0,
+                    "log_error_cluster_count": 0,
+                    "redis_slowlog_entry_count": 0,
+                    "redis_max_latency_ms": 0.0,
+                    "parse_status": "insufficient_structured_signal",
+                    "artifact_types": [],
+                    "collector_families": [],
+                    "token_safety": "compact_summary_only",
+                    "trace_source_status": "",
+                    "stack_source_status": "",
+                    "trace_correlation_status": "",
+                    "trace_max_supported_level": "",
+                    "evidence_window": {
+                      "trigger_event_id": "evt_493fd133b8ec",
+                      "evidence_cohort_id": "cohort_fc6d0469156a",
+                      "collection_mode": "delayed_followup",
+                      "window_start": "2026-08-14T03:53:58.902520+00:00",
+                      "window_end": "2026-08-14T03:54:18.934483+00:00",
+                      "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                      "timing_relation": "delayed_followup"
+                    }
+                  },
+                  "evidence_window": {
+                    "trigger_event_id": "evt_493fd133b8ec",
+                    "evidence_cohort_id": "cohort_fc6d0469156a",
+                    "collection_mode": "delayed_followup",
+                    "window_start": "2026-08-14T03:53:58.902520+00:00",
+                    "window_end": "2026-08-14T03:54:18.934483+00:00",
+                    "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                    "timing_relation": "delayed_followup"
+                  }
+                }
+              }
+            ],
+            "watch_collector_tasks": [
+              {
+                "task_id": "task_20260814_035418_f3904c",
+                "probe_id": "host_process_metrics",
+                "collector_type": "sys_metrics",
+                "status": "DONE",
+                "status_reason": "系统多维指标分析已生成",
+                "artifact_types": [
+                  "sys_metrics"
+                ],
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "trigger_event_id": "evt_493fd133b8ec",
+                "collection_mode": "triggered_group",
+                "timing_relation": "same_window"
+              },
+              {
+                "task_id": "task_20260814_035418_640eb6",
+                "probe_id": "process_baseline_window",
+                "collector_type": "baseline_window_profile",
+                "status": "FAILED",
+                "status_reason": "目标 PID 205711 不存在",
+                "artifact_types": [],
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "trigger_event_id": "evt_493fd133b8ec",
+                "collection_mode": "triggered_group",
+                "timing_relation": "same_window"
+              },
+              {
+                "task_id": "task_20260814_035418_78a066",
+                "probe_id": "process_off_cpu_profile",
+                "collector_type": "off_cpu_wait_profile",
+                "status": "FAILED",
+                "status_reason": "off-CPU 工业采集器被阻断: target_pid_not_found",
+                "artifact_types": [
+                  "off_cpu_wait_json"
+                ],
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "trigger_event_id": "evt_493fd133b8ec",
+                "collection_mode": "triggered_group",
+                "timing_relation": "same_window"
+              },
+              {
+                "task_id": "task_20260814_035418_6cfbde",
+                "probe_id": "process_trace_endpoint_profile",
+                "collector_type": "trace_endpoint_profile",
+                "status": "DONE",
+                "status_reason": "Trace endpoint 结构化证据已生成",
+                "artifact_types": [
+                  "ebpf_profile_raw",
+                  "trace_endpoint_profile_json"
+                ],
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "trigger_event_id": "evt_493fd133b8ec",
+                "collection_mode": "triggered_group",
+                "timing_relation": "same_window"
+              },
+              {
+                "task_id": "task_20260814_035418_9140bb",
+                "probe_id": "process_cpu_profile",
+                "collector_type": "perf_cpu",
+                "status": "FAILED",
+                "status_reason": "perf_event_paranoid 权限不足。请执行 'echo 1 > /proc/sys/kernel/perf_event_paranoid' 或使用 root 运行 Agent",
+                "artifact_types": [],
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "trigger_event_id": "evt_493fd133b8ec",
+                "collection_mode": "triggered_group",
+                "timing_relation": "same_window"
+              },
+              {
+                "task_id": "task_20260814_035508_fa0157",
+                "probe_id": "process_baseline_window",
+                "collector_type": "baseline_window_profile",
+                "status": "FAILED",
+                "status_reason": "目标 PID 205711 不存在",
+                "artifact_types": [],
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "trigger_event_id": "evt_493fd133b8ec",
+                "collection_mode": "delayed_followup",
+                "timing_relation": "delayed_followup"
+              }
+            ]
+          },
+          "confidence_inputs": {
+            "sample_count": 0,
+            "dominant_percent": 0.0,
+            "context_completeness": "low",
+            "has_system_pressure": true,
+            "has_wait_or_io_signal": false,
+            "has_log_signal": false,
+            "has_dependency_signal": false,
+            "has_redis_signal": false,
+            "failed_dependency_count": 0,
+            "log_error_cluster_count": 0,
+            "redis_slowlog_entry_count": 0,
+            "redis_max_latency_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "artifact_types": [
+              "ebpf_profile_raw",
+              "off_cpu_wait_json",
+              "rolling_metrics_summary",
+              "sys_metrics",
+              "trace_endpoint_profile_json"
+            ],
+            "collector_families": [
+              "ebpf_profile_raw",
+              "off_cpu_wait_profile",
+              "rolling_metrics_summary",
+              "sys_metrics",
+              "trace_endpoint_profile"
+            ],
+            "token_safety": "compact_summary_only",
+            "trace_source_status": "empty_window",
+            "stack_source_status": "completed",
+            "trace_correlation_status": "partial",
+            "trace_max_supported_level": "function",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            },
+            "watch_collector_tasks": [
+              {
+                "task_id": "task_20260814_035418_f3904c",
+                "probe_id": "host_process_metrics",
+                "collector_type": "sys_metrics",
+                "status": "DONE",
+                "status_reason": "系统多维指标分析已生成",
+                "artifact_types": [
+                  "sys_metrics"
+                ],
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "trigger_event_id": "evt_493fd133b8ec",
+                "collection_mode": "triggered_group",
+                "timing_relation": "same_window"
+              },
+              {
+                "task_id": "task_20260814_035418_640eb6",
+                "probe_id": "process_baseline_window",
+                "collector_type": "baseline_window_profile",
+                "status": "FAILED",
+                "status_reason": "目标 PID 205711 不存在",
+                "artifact_types": [],
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "trigger_event_id": "evt_493fd133b8ec",
+                "collection_mode": "triggered_group",
+                "timing_relation": "same_window"
+              },
+              {
+                "task_id": "task_20260814_035418_78a066",
+                "probe_id": "process_off_cpu_profile",
+                "collector_type": "off_cpu_wait_profile",
+                "status": "FAILED",
+                "status_reason": "off-CPU 工业采集器被阻断: target_pid_not_found",
+                "artifact_types": [
+                  "off_cpu_wait_json"
+                ],
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "trigger_event_id": "evt_493fd133b8ec",
+                "collection_mode": "triggered_group",
+                "timing_relation": "same_window"
+              },
+              {
+                "task_id": "task_20260814_035418_6cfbde",
+                "probe_id": "process_trace_endpoint_profile",
+                "collector_type": "trace_endpoint_profile",
+                "status": "DONE",
+                "status_reason": "Trace endpoint 结构化证据已生成",
+                "artifact_types": [
+                  "ebpf_profile_raw",
+                  "trace_endpoint_profile_json"
+                ],
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "trigger_event_id": "evt_493fd133b8ec",
+                "collection_mode": "triggered_group",
+                "timing_relation": "same_window"
+              },
+              {
+                "task_id": "task_20260814_035418_9140bb",
+                "probe_id": "process_cpu_profile",
+                "collector_type": "perf_cpu",
+                "status": "FAILED",
+                "status_reason": "perf_event_paranoid 权限不足。请执行 'echo 1 > /proc/sys/kernel/perf_event_paranoid' 或使用 root 运行 Agent",
+                "artifact_types": [],
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "trigger_event_id": "evt_493fd133b8ec",
+                "collection_mode": "triggered_group",
+                "timing_relation": "same_window"
+              },
+              {
+                "task_id": "task_20260814_035508_fa0157",
+                "probe_id": "process_baseline_window",
+                "collector_type": "baseline_window_profile",
+                "status": "FAILED",
+                "status_reason": "目标 PID 205711 不存在",
+                "artifact_types": [],
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "trigger_event_id": "evt_493fd133b8ec",
+                "collection_mode": "delayed_followup",
+                "timing_relation": "delayed_followup"
+              }
+            ]
+          },
+          "sys_metrics": {
+            "summary": {
+              "observed_at": "2026-08-14T03:54:18.934483Z",
+              "cpu_percent": 63.89680168137851,
+              "thread_count": 1.0,
+              "iowait_percent": 0.19756478418364032,
+              "rss_mb": 10.25
+            }
+          },
+          "ebpf_metrics": null,
+          "memory_json": null,
+          "off_cpu_wait_json": {
+            "schema_version": "1.0",
+            "task_id": "task_20260814_035418_78a066",
+            "collector_type": "off_cpu_wait_profile",
+            "collector_family": "off_cpu_wait_profile",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "triggered_group",
+            "timing_relation": "same_window",
+            "collector_invocation": {
+              "schema_version": "1.0",
+              "scope_source": "watch_subscription",
+              "collector_family": "off_cpu_wait_profile",
+              "probe_id": "process_off_cpu_profile",
+              "target_config": {
+                "service_id": "watch-cpu-fixture",
+                "process_query": "md-aiopsv2-watch-cpu",
+                "container_id": null
+              },
+              "target_context": {
+                "agent_id": "linux-worker-1",
+                "service_id": "watch-cpu-fixture",
+                "instance_id": "watch-cpu-fixture",
+                "pid": 205711,
+                "endpoint": null
+              },
+              "watch_id": "watch_39a9e278b101",
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a"
+            },
+            "target_pid": 205711,
+            "target_thread_ids": [],
+            "evidence_window": {
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "duration_sec": 15,
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "timing_relation": "same_window"
+            },
+            "collector_status": "blocked",
+            "parser_status": "target_pid_not_found",
+            "capability_check": {
+              "status": "available",
+              "tools": {
+                "bpftrace": true,
+                "perf": true
+              },
+              "missing_tools": [],
+              "missing_capabilities": [],
+              "perf_event_paranoid": 4,
+              "tracepoints": {
+                "sched_switch": true,
+                "sched_wakeup": true,
+                "futex": true,
+                "block_io": true,
+                "tcp_recv": true,
+                "poll": true
+              },
+              "target_pid": 205711,
+              "target_present": false,
+              "repair_action": "以 root/privileged Agent 运行，并启用 pid: host、PERFMON、BPF、SYS_PTRACE、SYS_ADMIN；同时检查 kernel.perf_event_paranoid。"
+            },
+            "strategy": {
+              "kind": "industrial_offcpu_v2",
+              "adapter_kind": "unavailable",
+              "source_status": "blocked",
+              "fallback_used": false,
+              "layers": [
+                "event",
+                "cause",
+                "stack",
+                "correlation"
+              ],
+              "stack_sources": [
+                "user",
+                "kernel"
+              ]
+            },
+            "event_summary": {
+              "observed_wait_events": 0,
+              "events_without_user_stack": 0,
+              "events_without_kernel_stack": 0,
+              "sample_events": []
+            },
+            "cause_summary": {
+              "cause_counts": {},
+              "top_cause": "",
+              "source": "none"
+            },
+            "stack_quality": {
+              "user_stack_samples": 0,
+              "kernel_stack_samples": 0,
+              "stack_unwind_status": "not_observed"
+            },
+            "correlation": {
+              "status": "unmatched",
+              "service_id": "watch-cpu-fixture",
+              "instance_id": null,
+              "endpoint": null,
+              "trace_id": null,
+              "span_id": null,
+              "call_path": [],
+              "correlation_method": "not_available",
+              "confidence": 0.0,
+              "evidence_ref": "off_cpu_wait.correlation"
+            },
+            "summary": {
+              "sample_count": 0,
+              "blocked_thread_count": 0,
+              "total_wait_ms": 0.0,
+              "top_wait_reason": "",
+              "has_wait_reason": false
+            },
+            "top_wait_stacks": [],
+            "thread_wait_summary": [],
+            "syscall_wait_summary": {}
+          },
+          "log_window_json": null,
+          "dependency_check_json": null,
+          "redis_check_json": null,
+          "trace_endpoint_profile_json": {
+            "schema_version": "1.0",
+            "task_id": "task_20260814_035418_6cfbde",
+            "collector_type": "trace_endpoint_profile",
+            "collector_family": "trace_endpoint_profile",
+            "target": {
+              "pid": 205711,
+              "service_id": "watch-cpu-fixture",
+              "instance_id": "",
+              "host_id": "",
+              "endpoint": ""
+            },
+            "evidence_window": {
+              "start": 1786679638.90252,
+              "end": 1786679658.934483,
+              "duration_sec": 15,
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "timing_relation": "same_window"
+            },
+            "stack_source": {
+              "kind": "ebpf",
+              "status": "completed",
+              "blocked_reason": "",
+              "blocked_details": {},
+              "capability_check": {
+                "tools": {
+                  "bpftrace": "[TRUNCATED]",
+                  "perf": "[TRUNCATED]"
+                },
+                "perf_event_paranoid": 4,
+                "cap_eff": "000001ffffffffff",
+                "cap_bnd": "000001ffffffffff",
+                "missing_capabilities": [],
+                "seccomp": "0",
+                "pid_namespace": "/proc/1/ns/pid:[4026531836]",
+                "target_pid": 205711,
+                "target_present": false,
+                "tracepoints": {
+                  "sched_switch": "[TRUNCATED]",
+                  "sched_wakeup": "[TRUNCATED]"
+                },
+                "missing_tools": [],
+                "repair_action": "检查 bpftrace/perf 安装、Worker 的 privileged/pid:host、PERFMON、SYS_PTRACE、BPF capability 以及 perf_event_paranoid。"
+              },
+              "artifacts": [
+                "ebpf_profile.txt"
+              ]
+            },
+            "trace_source": {
+              "kind": "auto",
+              "status": "empty_window",
+              "paths": [
+                "/var/lib/mini-drop/traces"
+              ],
+              "readable_paths": [],
+              "existing_sources": [
+                "/var/lib/mini-drop/traces"
+              ],
+              "records_read": 0,
+              "records_in_window": 0,
+              "blocked_reason": ""
+            },
+            "capability_check": {
+              "tools": {
+                "bpftrace": true,
+                "perf": true
+              },
+              "perf_event_paranoid": 4,
+              "cap_eff": "000001ffffffffff",
+              "cap_bnd": "000001ffffffffff",
+              "missing_capabilities": [],
+              "seccomp": "0",
+              "pid_namespace": "/proc/1/ns/pid:[4026531836]",
+              "target_pid": 205711,
+              "target_present": false,
+              "tracepoints": {
+                "sched_switch": true,
+                "sched_wakeup": true
+              },
+              "missing_tools": [],
+              "repair_action": "检查 bpftrace/perf 安装、Worker 的 privileged/pid:host、PERFMON、SYS_PTRACE、BPF capability 以及 perf_event_paranoid。"
+            },
+            "top_functions": [],
+            "endpoint_bindings": [],
+            "call_path_hotspots": [],
+            "correlation_status": {
+              "status": "partial",
+              "max_supported_level": "function",
+              "blocked_reason": "",
+              "blocked_details": {},
+              "warnings": [
+                "trace_source_unavailable"
+              ],
+              "missing": [
+                "trace_source"
+              ]
+            },
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "triggered_group",
+            "timing_relation": "same_window"
+          }
+        },
+        "primary_cause_id": null,
+        "stability_score": 0.0,
+        "primary_cause_reason": "",
+        "secondary_causes": [],
+        "correlated_symptoms": [],
+        "unsupported_causes": [],
+        "conclusion_boundary": {
+          "can_claim_root_cause": false,
+          "max_supported_level": "resource",
+          "reason": "低稳定性结果需要 baseline_window_profile 进行重复窗口验证。 结论窗口关系：same_window。",
+          "conclusion_window": {
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "triggered_group",
+            "window_start": "2026-08-14T03:53:58.902520+00:00",
+            "window_end": "2026-08-14T03:54:18.934483+00:00",
+            "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+            "timing_relation": "same_window"
+          },
+          "timing_relation": "same_window",
+          "delayed_followup_reproduction_status": "not_applicable",
+          "non_refutable_evidence_boundaries": []
+        }
+      },
+      "ranked_causes": [],
+      "facts": [
+        "目标 PID 205711 在采集窗口内不存在（off_cpu_wait.capability_check.target_present=false）",
+        "sys_metrics 显示 CPU 63.9%，线程数 1，iowait 0.2%，RSS 10.25MB",
+        "多个采集器失败：baseline_window_profile（目标 PID 不存在）、off_cpu_wait_profile（target_pid_not_found）、perf_cpu（perf_event_paranoid 权限不足）",
+        "trace_endpoint_profile 状态为 DONE，但 trace_source 为空窗口，无结构化信号",
+        "analysis_result 的 stability_score 为 0.0，can_claim_root_cause 为 false",
+        "结论窗口为 same_window，时间范围 2026-08-14T03:53:58.902520+00:00 至 03:54:18.934483+00:00"
+      ],
+      "not_enough_evidence": true,
+      "ai_tree": [
+        {
+          "node_id": "tree_root",
+          "level": "resource",
+          "branch_key": "entry:resource",
+          "decision": "stop",
+          "leaf_status": "unknown_leaf",
+          "conflict_type": null,
+          "evidence_family": [],
+          "conflict_candidates": [],
+          "next_evidence_requests": [
+            "baseline_window_profile"
+          ],
+          "evidence_refs": [
+            "sys_metrics.summary"
+          ],
+          "reason": "当前树需继续补证，优先请求：baseline_window_profile。"
+        }
+      ],
+      "next_evidence_requests": [
+        "baseline_window_profile"
+      ],
+      "missing_evidence": [
+        "当前结论稳定性偏低，缺少 baseline_window_profile 进行多窗口对齐和重复任务稳定化。",
+        "更长的采样时长",
+        "多采集器交叉验证",
+        "历史基线对比"
+      ],
+      "collection_gaps": [
+        "baseline_window_profile"
+      ],
+      "blocked_upgrades": [
+        "低稳定性结果需要 baseline_window_profile 进行重复窗口验证。"
+      ],
+      "conclusion_boundary": {
+        "can_claim_root_cause": false,
+        "max_supported_level": "resource",
+        "reason": "低稳定性结果需要 baseline_window_profile 进行重复窗口验证。 结论窗口关系：same_window。",
+        "conclusion_window": {
+          "trigger_event_id": "evt_493fd133b8ec",
+          "evidence_cohort_id": "cohort_fc6d0469156a",
+          "collection_mode": "triggered_group",
+          "window_start": "2026-08-14T03:53:58.902520+00:00",
+          "window_end": "2026-08-14T03:54:18.934483+00:00",
+          "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+          "timing_relation": "same_window"
+        },
+        "timing_relation": "same_window",
+        "delayed_followup_reproduction_status": "not_applicable",
+        "non_refutable_evidence_boundaries": []
+      },
+      "analysis_result": {
+        "facts": [
+          {
+            "fact_id": "fact_thread_normal",
+            "source": "sys_metrics",
+            "evidence_ref": "sys_metrics.summary",
+            "value": 1.0,
+            "status": "normal",
+            "threshold_band": "below",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            },
+            "timing_relation": "same_window"
+          }
+        ],
+        "symptoms": [],
+        "localizations": [],
+        "ai_tree": [
+          {
+            "node_id": "tree_root",
+            "level": "resource",
+            "branch_key": "entry:resource",
+            "decision": "stop",
+            "leaf_status": "unknown_leaf",
+            "conflict_type": null,
+            "evidence_family": [],
+            "conflict_candidates": [],
+            "next_evidence_requests": [
+              "baseline_window_profile"
+            ],
+            "evidence_refs": [
+              "sys_metrics.summary"
+            ],
+            "reason": "当前树需继续补证，优先请求：baseline_window_profile。"
+          }
+        ],
+        "graph_entities": [],
+        "graph_links": [],
+        "attributions": [
+          {
+            "candidate_id": "insufficient_data",
+            "status": "forbidden",
+            "supporting_fact_ids": [],
+            "opposing_fact_ids": [],
+            "missing_evidence": [
+              "更长的采样时长",
+              "多采集器交叉验证",
+              "历史基线对比"
+            ],
+            "max_supported_level": "resource"
+          }
+        ],
+        "evidence_challenges": [],
+        "missing_evidence": [
+          "当前结论稳定性偏低，缺少 baseline_window_profile 进行多窗口对齐和重复任务稳定化。",
+          "更长的采样时长",
+          "多采集器交叉验证",
+          "历史基线对比"
+        ],
+        "blocked_upgrades": [
+          "低稳定性结果需要 baseline_window_profile 进行重复窗口验证。"
+        ],
+        "collection_gaps": [
+          "baseline_window_profile"
+        ],
+        "graph_extension_points": [
+          "graph_context_correlation",
+          "graph_path_propagation",
+          "graph_reasoning_upgrade"
+        ],
+        "allowed_cause_ids": [],
+        "primary_cause_id": null,
+        "stability_score": 0.0,
+        "primary_cause_reason": "",
+        "conclusion_boundary": {
+          "can_claim_root_cause": false,
+          "max_supported_level": "resource",
+          "reason": "低稳定性结果需要 baseline_window_profile 进行重复窗口验证。 结论窗口关系：same_window。",
+          "conclusion_window": {
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "triggered_group",
+            "window_start": "2026-08-14T03:53:58.902520+00:00",
+            "window_end": "2026-08-14T03:54:18.934483+00:00",
+            "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+            "timing_relation": "same_window"
+          },
+          "timing_relation": "same_window",
+          "delayed_followup_reproduction_status": "not_applicable",
+          "non_refutable_evidence_boundaries": []
+        }
+      },
+      "tool_results": [
+        {
+          "tool_name": "get_flamegraph_top",
+          "status": "missing",
+          "evidence_ref": "tool_results.get_flamegraph_top",
+          "input": {},
+          "output": {
+            "top_functions": [],
+            "top_percent": 0,
+            "sample_count": 0
+          },
+          "error_message": "缺少火焰图 TopN 数据"
+        },
+        {
+          "tool_name": "get_ebpf_latency_summary",
+          "status": "missing",
+          "evidence_ref": "tool_results.get_ebpf_latency_summary",
+          "input": {},
+          "output": {
+            "total_samples": 0,
+            "dominant_bucket": null,
+            "histogram": {}
+          },
+          "error_message": "缺少 eBPF IO 延迟样本"
+        },
+        {
+          "tool_name": "compare_baseline",
+          "status": "missing",
+          "evidence_ref": "tool_results.compare_baseline",
+          "input": {},
+          "output": {},
+          "error_message": "缺少历史 baseline 对比"
+        },
+        {
+          "tool_name": "inspect_task_events",
+          "status": "success",
+          "evidence_ref": "tool_results.inspect_task_events",
+          "input": {},
+          "output": {
+            "events": [
+              {
+                "task_id": "watch_incident:inc_bf4aa3c80e7f",
+                "to_status": "DONE",
+                "reason": "WatchIncident 冻结现场进入 AI 树分析",
+                "metadata": {
+                  "watch_id": "watch_39a9e278b101",
+                  "incident_id": "inc_bf4aa3c80e7f",
+                  "trigger_event_id": "evt_493fd133b8ec",
+                  "evidence_cohort_id": "cohort_fc6d0469156a",
+                  "collection_mode": "rolling_snapshot",
+                  "timing_relation": "same_window"
+                }
+              }
+            ],
+            "failure_reasons": []
+          },
+          "error_message": null
+        },
+        {
+          "tool_name": "check_agent_health",
+          "status": "success",
+          "evidence_ref": "tool_results.check_agent_health",
+          "input": {
+            "agent_id": "linux-worker-1"
+          },
+          "output": {
+            "agent_id": "linux-worker-1",
+            "status": "ONLINE",
+            "capabilities": [
+              "baseline_window_profile",
+              "continuous_perf",
+              "dependency_check",
+              "ebpf_io",
+              "go_pprof",
+              "java_async",
+              "log_scan",
+              "memory_smaps",
+              "off_cpu_wait_profile",
+              "perf_cpu",
+              "process_inventory",
+              "pyspy",
+              "redis_check",
+              "sys_metrics",
+              "trace_endpoint_profile"
+            ],
+            "last_heartbeat_at": "2026-08-14 03:55:15.117108+00:00"
+          },
+          "error_message": null
+        }
+      ],
+      "structured_evidence": {
+        "version": 1,
+        "task_id": "watch:inc_bf4aa3c80e7f",
+        "trigger_event_id": "evt_493fd133b8ec",
+        "evidence_cohort_id": "cohort_fc6d0469156a",
+        "collection_mode": "triggered_group",
+        "window_start": "2026-08-14T03:53:58.902520+00:00",
+        "window_end": "2026-08-14T03:54:18.934483+00:00",
+        "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+        "timing_relation": "same_window",
+        "artifact_refs": [
+          {
+            "artifact_type": "ebpf_profile_raw",
+            "filename": "ebpf_profile.txt",
+            "content_type": "text/plain",
+            "size_bytes": 22,
+            "sha256": "",
+            "storage_status": "",
+            "storage_error": "",
+            "planned_object_key": "",
+            "object_key": "tasks/task_20260814_035418_6cfbde/ebpf_profile.txt",
+            "local_path": "/tmp/mini-drop/task_20260814_035418_6cfbde/ebpf_profile.txt",
+            "raw_payload_policy": "references_only",
+            "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:ebpf_profile_raw",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            }
+          },
+          {
+            "artifact_type": "off_cpu_wait_json",
+            "filename": "off_cpu_wait.json",
+            "content_type": "application/json",
+            "size_bytes": 3279,
+            "sha256": "",
+            "storage_status": "",
+            "storage_error": "",
+            "planned_object_key": "",
+            "object_key": "",
+            "local_path": "/tmp/mini-drop/task_20260814_035418_78a066/off_cpu_wait.json",
+            "raw_payload_policy": "references_only",
+            "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:off_cpu_wait_json",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            }
+          },
+          {
+            "artifact_type": "rolling_metrics_summary",
+            "filename": "snap_a96afcd8dd89_metrics.json",
+            "content_type": "application/json",
+            "size_bytes": 709,
+            "sha256": "sha256:a3ef0f24bfc2101e6f1f56e6264717793403c9e3ce5ab853e62da4257ecf82d0",
+            "storage_status": "stored",
+            "storage_error": "",
+            "planned_object_key": "",
+            "object_key": "watch_snapshots/snap_a96afcd8dd89/snap_a96afcd8dd89_metrics.json",
+            "local_path": "",
+            "raw_payload_policy": "references_only",
+            "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:rolling_metrics_summary",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            }
+          },
+          {
+            "artifact_type": "sys_metrics",
+            "filename": "sys_metrics.json",
+            "content_type": "application/json",
+            "size_bytes": 3581,
+            "sha256": "",
+            "storage_status": "",
+            "storage_error": "",
+            "planned_object_key": "",
+            "object_key": "tasks/task_20260814_035418_f3904c/sys_metrics.json",
+            "local_path": "/tmp/mini-drop/task_20260814_035418_f3904c/sys_metrics.json",
+            "raw_payload_policy": "references_only",
+            "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:sys_metrics",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            }
+          },
+          {
+            "artifact_type": "trace_endpoint_profile_json",
+            "filename": "trace_endpoint_profile.json",
+            "content_type": "application/json",
+            "size_bytes": 2828,
+            "sha256": "",
+            "storage_status": "",
+            "storage_error": "",
+            "planned_object_key": "",
+            "object_key": "tasks/task_20260814_035418_6cfbde/trace_endpoint_profile.json",
+            "local_path": "/tmp/mini-drop/task_20260814_035418_6cfbde/trace_endpoint_profile.json",
+            "raw_payload_policy": "references_only",
+            "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:trace_endpoint_profile_json",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            }
+          }
+        ],
+        "top_functions": [],
+        "stack_summary": {
+          "dominant_hot_frame": "",
+          "dominant_percent": 0.0,
+          "sample_count": 0,
+          "stack_sample_count": 0,
+          "has_call_path": false,
+          "has_wait_reason": false,
+          "top_wait_reason": "",
+          "total_wait_ms": 0.0,
+          "parse_status": "insufficient_structured_signal",
+          "raw_payload_policy": "references_only",
+          "artifact_ref_count": 5,
+          "evidence_ref": "structured_evidence.stack_summary",
+          "evidence_window": {
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "triggered_group",
+            "window_start": "2026-08-14T03:53:58.902520+00:00",
+            "window_end": "2026-08-14T03:54:18.934483+00:00",
+            "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+            "timing_relation": "same_window"
+          }
+        },
+        "call_path_hotspots": [],
+        "evidence_index": {
+          "dominant_hot_frame": "",
+          "dominant_percent": 0.0,
+          "sample_count": 0,
+          "stack_sample_count": 0,
+          "has_call_path": false,
+          "has_wait_reason": false,
+          "top_wait_reason": "",
+          "total_wait_ms": 0.0,
+          "parse_status": "insufficient_structured_signal",
+          "raw_payload_policy": "references_only",
+          "artifact_ref_count": 5,
+          "evidence_ref": "structured_evidence.stack_summary",
+          "evidence_window": {
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "triggered_group",
+            "window_start": "2026-08-14T03:53:58.902520+00:00",
+            "window_end": "2026-08-14T03:54:18.934483+00:00",
+            "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+            "timing_relation": "same_window"
+          },
+          "artifact_refs": [
+            {
+              "artifact_type": "ebpf_profile_raw",
+              "filename": "ebpf_profile.txt",
+              "content_type": "text/plain",
+              "size_bytes": 22,
+              "sha256": "",
+              "storage_status": "",
+              "storage_error": "",
+              "planned_object_key": "",
+              "object_key": "tasks/task_20260814_035418_6cfbde/ebpf_profile.txt",
+              "local_path": "/tmp/mini-drop/task_20260814_035418_6cfbde/ebpf_profile.txt",
+              "raw_payload_policy": "references_only",
+              "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:ebpf_profile_raw",
+              "evidence_window": {
+                "trigger_event_id": "evt_493fd133b8ec",
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "collection_mode": "triggered_group",
+                "window_start": "2026-08-14T03:53:58.902520+00:00",
+                "window_end": "2026-08-14T03:54:18.934483+00:00",
+                "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                "timing_relation": "same_window"
+              }
+            },
+            {
+              "artifact_type": "off_cpu_wait_json",
+              "filename": "off_cpu_wait.json",
+              "content_type": "application/json",
+              "size_bytes": 3279,
+              "sha256": "",
+              "storage_status": "",
+              "storage_error": "",
+              "planned_object_key": "",
+              "object_key": "",
+              "local_path": "/tmp/mini-drop/task_20260814_035418_78a066/off_cpu_wait.json",
+              "raw_payload_policy": "references_only",
+              "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:off_cpu_wait_json",
+              "evidence_window": {
+                "trigger_event_id": "evt_493fd133b8ec",
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "collection_mode": "triggered_group",
+                "window_start": "2026-08-14T03:53:58.902520+00:00",
+                "window_end": "2026-08-14T03:54:18.934483+00:00",
+                "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                "timing_relation": "same_window"
+              }
+            },
+            {
+              "artifact_type": "rolling_metrics_summary",
+              "filename": "snap_a96afcd8dd89_metrics.json",
+              "content_type": "application/json",
+              "size_bytes": 709,
+              "sha256": "sha256:a3ef0f24bfc2101e6f1f56e6264717793403c9e3ce5ab853e62da4257ecf82d0",
+              "storage_status": "stored",
+              "storage_error": "",
+              "planned_object_key": "",
+              "object_key": "watch_snapshots/snap_a96afcd8dd89/snap_a96afcd8dd89_metrics.json",
+              "local_path": "",
+              "raw_payload_policy": "references_only",
+              "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:rolling_metrics_summary",
+              "evidence_window": {
+                "trigger_event_id": "evt_493fd133b8ec",
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "collection_mode": "triggered_group",
+                "window_start": "2026-08-14T03:53:58.902520+00:00",
+                "window_end": "2026-08-14T03:54:18.934483+00:00",
+                "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                "timing_relation": "same_window"
+              }
+            },
+            {
+              "artifact_type": "sys_metrics",
+              "filename": "sys_metrics.json",
+              "content_type": "application/json",
+              "size_bytes": 3581,
+              "sha256": "",
+              "storage_status": "",
+              "storage_error": "",
+              "planned_object_key": "",
+              "object_key": "tasks/task_20260814_035418_f3904c/sys_metrics.json",
+              "local_path": "/tmp/mini-drop/task_20260814_035418_f3904c/sys_metrics.json",
+              "raw_payload_policy": "references_only",
+              "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:sys_metrics",
+              "evidence_window": {
+                "trigger_event_id": "evt_493fd133b8ec",
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "collection_mode": "triggered_group",
+                "window_start": "2026-08-14T03:53:58.902520+00:00",
+                "window_end": "2026-08-14T03:54:18.934483+00:00",
+                "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                "timing_relation": "same_window"
+              }
+            },
+            {
+              "artifact_type": "trace_endpoint_profile_json",
+              "filename": "trace_endpoint_profile.json",
+              "content_type": "application/json",
+              "size_bytes": 2828,
+              "sha256": "",
+              "storage_status": "",
+              "storage_error": "",
+              "planned_object_key": "",
+              "object_key": "tasks/task_20260814_035418_6cfbde/trace_endpoint_profile.json",
+              "local_path": "/tmp/mini-drop/task_20260814_035418_6cfbde/trace_endpoint_profile.json",
+              "raw_payload_policy": "references_only",
+              "evidence_ref": "task:watch:inc_bf4aa3c80e7f:artifact:trace_endpoint_profile_json",
+              "evidence_window": {
+                "trigger_event_id": "evt_493fd133b8ec",
+                "evidence_cohort_id": "cohort_fc6d0469156a",
+                "collection_mode": "triggered_group",
+                "window_start": "2026-08-14T03:53:58.902520+00:00",
+                "window_end": "2026-08-14T03:54:18.934483+00:00",
+                "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                "timing_relation": "same_window"
+              }
+            }
+          ],
+          "stack_summary": {
+            "dominant_hot_frame": "",
+            "dominant_percent": 0.0,
+            "sample_count": 0,
+            "stack_sample_count": 0,
+            "has_call_path": false,
+            "has_wait_reason": false,
+            "top_wait_reason": "",
+            "total_wait_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "raw_payload_policy": "references_only",
+            "artifact_ref_count": 5,
+            "evidence_ref": "structured_evidence.stack_summary",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            }
+          },
+          "call_path_hotspots": [],
+          "confidence_inputs": {
+            "sample_count": 0,
+            "dominant_percent": 0.0,
+            "context_completeness": "low",
+            "has_system_pressure": true,
+            "has_wait_or_io_signal": false,
+            "has_log_signal": false,
+            "has_dependency_signal": false,
+            "has_redis_signal": false,
+            "failed_dependency_count": 0,
+            "log_error_cluster_count": 0,
+            "redis_slowlog_entry_count": 0,
+            "redis_max_latency_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "artifact_types": [
+              "ebpf_profile_raw",
+              "off_cpu_wait_json",
+              "rolling_metrics_summary",
+              "sys_metrics",
+              "trace_endpoint_profile_json"
+            ],
+            "collector_families": [
+              "ebpf_profile_raw",
+              "off_cpu_wait_profile",
+              "rolling_metrics_summary",
+              "sys_metrics",
+              "trace_endpoint_profile"
+            ],
+            "token_safety": "compact_summary_only",
+            "trace_source_status": "empty_window",
+            "stack_source_status": "completed",
+            "trace_correlation_status": "partial",
+            "trace_max_supported_level": "function",
+            "evidence_window": {
+              "trigger_event_id": "evt_493fd133b8ec",
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "collection_mode": "triggered_group",
+              "window_start": "2026-08-14T03:53:58.902520+00:00",
+              "window_end": "2026-08-14T03:54:18.934483+00:00",
+              "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+              "timing_relation": "same_window"
+            }
+          },
+          "off_cpu_wait": {
+            "schema_version": "1.0",
+            "collector_family": "off_cpu_wait_profile",
+            "summary": {
+              "sample_count": 0,
+              "blocked_thread_count": 0,
+              "total_wait_ms": 0.0,
+              "top_wait_reason": "",
+              "has_wait_reason": false
+            },
+            "event_summary": {
+              "observed_wait_events": 0,
+              "events_without_user_stack": 0,
+              "events_without_kernel_stack": 0,
+              "sample_events": []
+            },
+            "cause_summary": {
+              "cause_counts": {},
+              "top_cause": "",
+              "source": "none"
+            },
+            "stack_quality": {
+              "user_stack_samples": 0,
+              "kernel_stack_samples": 0,
+              "stack_unwind_status": "not_observed"
+            },
+            "top_wait_stacks": [],
+            "kernel_stacks": [],
+            "thread_wait_summary": [],
+            "syscall_wait_summary": {},
+            "collector_status": "blocked",
+            "parser_status": "target_pid_not_found",
+            "trace_source": {},
+            "correlation": {
+              "status": "unmatched",
+              "service_id": "watch-cpu-fixture",
+              "instance_id": null,
+              "endpoint": null,
+              "trace_id": null,
+              "span_id": null,
+              "call_path": [],
+              "correlation_method": "not_available",
+              "confidence": 0.0,
+              "evidence_ref": "off_cpu_wait.correlation"
+            },
+            "endpoint_bindings": [],
+            "call_path_hotspots": [],
+            "capability_check": {
+              "status": "available",
+              "tools": {
+                "bpftrace": true,
+                "perf": true
+              },
+              "missing_tools": [],
+              "missing_capabilities": [],
+              "perf_event_paranoid": 4,
+              "tracepoints": {
+                "sched_switch": true,
+                "sched_wakeup": true,
+                "futex": true,
+                "block_io": true,
+                "tcp_recv": true,
+                "poll": true
+              },
+              "target_pid": 205711,
+              "target_present": false,
+              "repair_action": "以 root/privileged Agent 运行，并启用 pid: host、PERFMON、BPF、SYS_PTRACE、SYS_ADMIN；同时检查 kernel.perf_event_paranoid。"
+            }
+          },
+          "trace_endpoint_profile": {
+            "stack_source": {
+              "kind": "ebpf",
+              "status": "completed",
+              "blocked_reason": "",
+              "blocked_details": {},
+              "capability_check": {
+                "tools": {
+                  "bpftrace": "[TRUNCATED]",
+                  "perf": "[TRUNCATED]"
+                },
+                "perf_event_paranoid": 4,
+                "cap_eff": "000001ffffffffff",
+                "cap_bnd": "000001ffffffffff",
+                "missing_capabilities": [],
+                "seccomp": "0",
+                "pid_namespace": "/proc/1/ns/pid:[4026531836]",
+                "target_pid": 205711,
+                "target_present": false,
+                "tracepoints": {
+                  "sched_switch": "[TRUNCATED]",
+                  "sched_wakeup": "[TRUNCATED]"
+                },
+                "missing_tools": [],
+                "repair_action": "检查 bpftrace/perf 安装、Worker 的 privileged/pid:host、PERFMON、SYS_PTRACE、BPF capability 以及 perf_event_paranoid。"
+              },
+              "artifacts": [
+                "ebpf_profile.txt"
+              ]
+            },
+            "trace_source": {
+              "kind": "auto",
+              "status": "empty_window",
+              "records_read": 0,
+              "records_in_window": 0,
+              "blocked_reason": ""
+            },
+            "endpoint_bindings": [],
+            "call_path_hotspots": [],
+            "correlation_status": {
+              "status": "partial",
+              "max_supported_level": "function",
+              "blocked_reason": "",
+              "blocked_details": {},
+              "warnings": [
+                "trace_source_unavailable"
+              ],
+              "missing": [
+                "trace_source"
+              ]
+            }
+          },
+          "delayed_followups": [
+            {
+              "task_id": "task_20260814_035508_fa0157",
+              "collection_mode": "delayed_followup",
+              "timing_relation": "delayed_followup",
+              "artifact_refs": [],
+              "top_functions": [],
+              "stack_summary": {
+                "dominant_hot_frame": "",
+                "dominant_percent": 0.0,
+                "sample_count": 0,
+                "stack_sample_count": 0,
+                "has_call_path": false,
+                "has_wait_reason": false,
+                "top_wait_reason": "",
+                "total_wait_ms": 0.0,
+                "parse_status": "insufficient_structured_signal",
+                "raw_payload_policy": "references_only",
+                "artifact_ref_count": 0,
+                "evidence_ref": "structured_evidence.stack_summary",
+                "evidence_window": {
+                  "trigger_event_id": "evt_493fd133b8ec",
+                  "evidence_cohort_id": "cohort_fc6d0469156a",
+                  "collection_mode": "delayed_followup",
+                  "window_start": "2026-08-14T03:53:58.902520+00:00",
+                  "window_end": "2026-08-14T03:54:18.934483+00:00",
+                  "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                  "timing_relation": "delayed_followup"
+                }
+              },
+              "call_path_hotspots": [],
+              "confidence_inputs": {
+                "sample_count": 0,
+                "dominant_percent": 0.0,
+                "context_completeness": "low",
+                "has_system_pressure": false,
+                "has_wait_or_io_signal": false,
+                "has_log_signal": false,
+                "has_dependency_signal": false,
+                "has_redis_signal": false,
+                "failed_dependency_count": 0,
+                "log_error_cluster_count": 0,
+                "redis_slowlog_entry_count": 0,
+                "redis_max_latency_ms": 0.0,
+                "parse_status": "insufficient_structured_signal",
+                "artifact_types": [],
+                "collector_families": [],
+                "token_safety": "compact_summary_only",
+                "trace_source_status": "",
+                "stack_source_status": "",
+                "trace_correlation_status": "",
+                "trace_max_supported_level": "",
+                "evidence_window": {
+                  "trigger_event_id": "evt_493fd133b8ec",
+                  "evidence_cohort_id": "cohort_fc6d0469156a",
+                  "collection_mode": "delayed_followup",
+                  "window_start": "2026-08-14T03:53:58.902520+00:00",
+                  "window_end": "2026-08-14T03:54:18.934483+00:00",
+                  "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                  "timing_relation": "delayed_followup"
+                }
+              },
+              "evidence_index": {
+                "artifact_refs": [],
+                "stack_summary": {
+                  "dominant_hot_frame": "",
+                  "dominant_percent": 0.0,
+                  "sample_count": 0,
+                  "stack_sample_count": 0,
+                  "has_call_path": false,
+                  "has_wait_reason": false,
+                  "top_wait_reason": "",
+                  "total_wait_ms": 0.0,
+                  "parse_status": "insufficient_structured_signal",
+                  "raw_payload_policy": "references_only",
+                  "artifact_ref_count": 0,
+                  "evidence_ref": "structured_evidence.stack_summary",
+                  "evidence_window": {
+                    "trigger_event_id": "evt_493fd133b8ec",
+                    "evidence_cohort_id": "cohort_fc6d0469156a",
+                    "collection_mode": "delayed_followup",
+                    "window_start": "2026-08-14T03:53:58.902520+00:00",
+                    "window_end": "2026-08-14T03:54:18.934483+00:00",
+                    "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                    "timing_relation": "delayed_followup"
+                  }
+                },
+                "call_path_hotspots": [],
+                "confidence_inputs": {
+                  "sample_count": 0,
+                  "dominant_percent": 0.0,
+                  "context_completeness": "low",
+                  "has_system_pressure": false,
+                  "has_wait_or_io_signal": false,
+                  "has_log_signal": false,
+                  "has_dependency_signal": false,
+                  "has_redis_signal": false,
+                  "failed_dependency_count": 0,
+                  "log_error_cluster_count": 0,
+                  "redis_slowlog_entry_count": 0,
+                  "redis_max_latency_ms": 0.0,
+                  "parse_status": "insufficient_structured_signal",
+                  "artifact_types": [],
+                  "collector_families": [],
+                  "token_safety": "compact_summary_only",
+                  "trace_source_status": "",
+                  "stack_source_status": "",
+                  "trace_correlation_status": "",
+                  "trace_max_supported_level": "",
+                  "evidence_window": {
+                    "trigger_event_id": "evt_493fd133b8ec",
+                    "evidence_cohort_id": "cohort_fc6d0469156a",
+                    "collection_mode": "delayed_followup",
+                    "window_start": "2026-08-14T03:53:58.902520+00:00",
+                    "window_end": "2026-08-14T03:54:18.934483+00:00",
+                    "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                    "timing_relation": "delayed_followup"
+                  }
+                },
+                "evidence_window": {
+                  "trigger_event_id": "evt_493fd133b8ec",
+                  "evidence_cohort_id": "cohort_fc6d0469156a",
+                  "collection_mode": "delayed_followup",
+                  "window_start": "2026-08-14T03:53:58.902520+00:00",
+                  "window_end": "2026-08-14T03:54:18.934483+00:00",
+                  "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+                  "timing_relation": "delayed_followup"
+                }
+              }
+            }
+          ],
+          "watch_collector_tasks": [
+            {
+              "task_id": "task_20260814_035418_f3904c",
+              "probe_id": "host_process_metrics",
+              "collector_type": "sys_metrics",
+              "status": "DONE",
+              "status_reason": "系统多维指标分析已生成",
+              "artifact_types": [
+                "sys_metrics"
+              ],
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "trigger_event_id": "evt_493fd133b8ec",
+              "collection_mode": "triggered_group",
+              "timing_relation": "same_window"
+            },
+            {
+              "task_id": "task_20260814_035418_640eb6",
+              "probe_id": "process_baseline_window",
+              "collector_type": "baseline_window_profile",
+              "status": "FAILED",
+              "status_reason": "目标 PID 205711 不存在",
+              "artifact_types": [],
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "trigger_event_id": "evt_493fd133b8ec",
+              "collection_mode": "triggered_group",
+              "timing_relation": "same_window"
+            },
+            {
+              "task_id": "task_20260814_035418_78a066",
+              "probe_id": "process_off_cpu_profile",
+              "collector_type": "off_cpu_wait_profile",
+              "status": "FAILED",
+              "status_reason": "off-CPU 工业采集器被阻断: target_pid_not_found",
+              "artifact_types": [
+                "off_cpu_wait_json"
+              ],
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "trigger_event_id": "evt_493fd133b8ec",
+              "collection_mode": "triggered_group",
+              "timing_relation": "same_window"
+            },
+            {
+              "task_id": "task_20260814_035418_6cfbde",
+              "probe_id": "process_trace_endpoint_profile",
+              "collector_type": "trace_endpoint_profile",
+              "status": "DONE",
+              "status_reason": "Trace endpoint 结构化证据已生成",
+              "artifact_types": [
+                "ebpf_profile_raw",
+                "trace_endpoint_profile_json"
+              ],
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "trigger_event_id": "evt_493fd133b8ec",
+              "collection_mode": "triggered_group",
+              "timing_relation": "same_window"
+            },
+            {
+              "task_id": "task_20260814_035418_9140bb",
+              "probe_id": "process_cpu_profile",
+              "collector_type": "perf_cpu",
+              "status": "FAILED",
+              "status_reason": "perf_event_paranoid 权限不足。请执行 'echo 1 > /proc/sys/kernel/perf_event_paranoid' 或使用 root 运行 Agent",
+              "artifact_types": [],
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "trigger_event_id": "evt_493fd133b8ec",
+              "collection_mode": "triggered_group",
+              "timing_relation": "same_window"
+            },
+            {
+              "task_id": "task_20260814_035508_fa0157",
+              "probe_id": "process_baseline_window",
+              "collector_type": "baseline_window_profile",
+              "status": "FAILED",
+              "status_reason": "目标 PID 205711 不存在",
+              "artifact_types": [],
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "trigger_event_id": "evt_493fd133b8ec",
+              "collection_mode": "delayed_followup",
+              "timing_relation": "delayed_followup"
+            }
+          ]
+        },
+        "confidence_inputs": {
+          "sample_count": 0,
+          "dominant_percent": 0.0,
+          "context_completeness": "low",
+          "has_system_pressure": true,
+          "has_wait_or_io_signal": false,
+          "has_log_signal": false,
+          "has_dependency_signal": false,
+          "has_redis_signal": false,
+          "failed_dependency_count": 0,
+          "log_error_cluster_count": 0,
+          "redis_slowlog_entry_count": 0,
+          "redis_max_latency_ms": 0.0,
+          "parse_status": "insufficient_structured_signal",
+          "artifact_types": [
+            "ebpf_profile_raw",
+            "off_cpu_wait_json",
+            "rolling_metrics_summary",
+            "sys_metrics",
+            "trace_endpoint_profile_json"
+          ],
+          "collector_families": [
+            "ebpf_profile_raw",
+            "off_cpu_wait_profile",
+            "rolling_metrics_summary",
+            "sys_metrics",
+            "trace_endpoint_profile"
+          ],
+          "token_safety": "compact_summary_only",
+          "trace_source_status": "empty_window",
+          "stack_source_status": "completed",
+          "trace_correlation_status": "partial",
+          "trace_max_supported_level": "function",
+          "evidence_window": {
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "triggered_group",
+            "window_start": "2026-08-14T03:53:58.902520+00:00",
+            "window_end": "2026-08-14T03:54:18.934483+00:00",
+            "trigger_observed_at": "2026-08-14T03:54:18.934483+00:00",
+            "timing_relation": "same_window"
+          },
+          "watch_collector_tasks": [
+            {
+              "task_id": "task_20260814_035418_f3904c",
+              "probe_id": "host_process_metrics",
+              "collector_type": "sys_metrics",
+              "status": "DONE",
+              "status_reason": "系统多维指标分析已生成",
+              "artifact_types": [
+                "sys_metrics"
+              ],
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "trigger_event_id": "evt_493fd133b8ec",
+              "collection_mode": "triggered_group",
+              "timing_relation": "same_window"
+            },
+            {
+              "task_id": "task_20260814_035418_640eb6",
+              "probe_id": "process_baseline_window",
+              "collector_type": "baseline_window_profile",
+              "status": "FAILED",
+              "status_reason": "目标 PID 205711 不存在",
+              "artifact_types": [],
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "trigger_event_id": "evt_493fd133b8ec",
+              "collection_mode": "triggered_group",
+              "timing_relation": "same_window"
+            },
+            {
+              "task_id": "task_20260814_035418_78a066",
+              "probe_id": "process_off_cpu_profile",
+              "collector_type": "off_cpu_wait_profile",
+              "status": "FAILED",
+              "status_reason": "off-CPU 工业采集器被阻断: target_pid_not_found",
+              "artifact_types": [
+                "off_cpu_wait_json"
+              ],
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "trigger_event_id": "evt_493fd133b8ec",
+              "collection_mode": "triggered_group",
+              "timing_relation": "same_window"
+            },
+            {
+              "task_id": "task_20260814_035418_6cfbde",
+              "probe_id": "process_trace_endpoint_profile",
+              "collector_type": "trace_endpoint_profile",
+              "status": "DONE",
+              "status_reason": "Trace endpoint 结构化证据已生成",
+              "artifact_types": [
+                "ebpf_profile_raw",
+                "trace_endpoint_profile_json"
+              ],
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "trigger_event_id": "evt_493fd133b8ec",
+              "collection_mode": "triggered_group",
+              "timing_relation": "same_window"
+            },
+            {
+              "task_id": "task_20260814_035418_9140bb",
+              "probe_id": "process_cpu_profile",
+              "collector_type": "perf_cpu",
+              "status": "FAILED",
+              "status_reason": "perf_event_paranoid 权限不足。请执行 'echo 1 > /proc/sys/kernel/perf_event_paranoid' 或使用 root 运行 Agent",
+              "artifact_types": [],
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "trigger_event_id": "evt_493fd133b8ec",
+              "collection_mode": "triggered_group",
+              "timing_relation": "same_window"
+            },
+            {
+              "task_id": "task_20260814_035508_fa0157",
+              "probe_id": "process_baseline_window",
+              "collector_type": "baseline_window_profile",
+              "status": "FAILED",
+              "status_reason": "目标 PID 205711 不存在",
+              "artifact_types": [],
+              "evidence_cohort_id": "cohort_fc6d0469156a",
+              "trigger_event_id": "evt_493fd133b8ec",
+              "collection_mode": "delayed_followup",
+              "timing_relation": "delayed_followup"
+            }
+          ]
+        },
+        "sys_metrics": {
+          "summary": {
+            "observed_at": "2026-08-14T03:54:18.934483Z",
+            "cpu_percent": 63.89680168137851,
+            "thread_count": 1.0,
+            "iowait_percent": 0.19756478418364032,
+            "rss_mb": 10.25
+          }
+        },
+        "ebpf_metrics": null,
+        "memory_json": null,
+        "off_cpu_wait_json": {
+          "schema_version": "1.0",
+          "task_id": "task_20260814_035418_78a066",
+          "collector_type": "off_cpu_wait_profile",
+          "collector_family": "off_cpu_wait_profile",
+          "trigger_event_id": "evt_493fd133b8ec",
+          "evidence_cohort_id": "cohort_fc6d0469156a",
+          "collection_mode": "triggered_group",
+          "timing_relation": "same_window",
+          "collector_invocation": {
+            "schema_version": "1.0",
+            "scope_source": "watch_subscription",
+            "collector_family": "off_cpu_wait_profile",
+            "probe_id": "process_off_cpu_profile",
+            "target_config": {
+              "service_id": "watch-cpu-fixture",
+              "process_query": "md-aiopsv2-watch-cpu",
+              "container_id": null
+            },
+            "target_context": {
+              "agent_id": "linux-worker-1",
+              "service_id": "watch-cpu-fixture",
+              "instance_id": "watch-cpu-fixture",
+              "pid": 205711,
+              "endpoint": null
+            },
+            "watch_id": "watch_39a9e278b101",
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a"
+          },
+          "target_pid": 205711,
+          "target_thread_ids": [],
+          "evidence_window": {
+            "window_start": "2026-08-14T03:53:58.902520+00:00",
+            "window_end": "2026-08-14T03:54:18.934483+00:00",
+            "duration_sec": 15,
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "triggered_group",
+            "timing_relation": "same_window"
+          },
+          "collector_status": "blocked",
+          "parser_status": "target_pid_not_found",
+          "capability_check": {
+            "status": "available",
+            "tools": {
+              "bpftrace": true,
+              "perf": true
+            },
+            "missing_tools": [],
+            "missing_capabilities": [],
+            "perf_event_paranoid": 4,
+            "tracepoints": {
+              "sched_switch": true,
+              "sched_wakeup": true,
+              "futex": true,
+              "block_io": true,
+              "tcp_recv": true,
+              "poll": true
+            },
+            "target_pid": 205711,
+            "target_present": false,
+            "repair_action": "以 root/privileged Agent 运行，并启用 pid: host、PERFMON、BPF、SYS_PTRACE、SYS_ADMIN；同时检查 kernel.perf_event_paranoid。"
+          },
+          "strategy": {
+            "kind": "industrial_offcpu_v2",
+            "adapter_kind": "unavailable",
+            "source_status": "blocked",
+            "fallback_used": false,
+            "layers": [
+              "event",
+              "cause",
+              "stack",
+              "correlation"
+            ],
+            "stack_sources": [
+              "user",
+              "kernel"
+            ]
+          },
+          "event_summary": {
+            "observed_wait_events": 0,
+            "events_without_user_stack": 0,
+            "events_without_kernel_stack": 0,
+            "sample_events": []
+          },
+          "cause_summary": {
+            "cause_counts": {},
+            "top_cause": "",
+            "source": "none"
+          },
+          "stack_quality": {
+            "user_stack_samples": 0,
+            "kernel_stack_samples": 0,
+            "stack_unwind_status": "not_observed"
+          },
+          "correlation": {
+            "status": "unmatched",
+            "service_id": "watch-cpu-fixture",
+            "instance_id": null,
+            "endpoint": null,
+            "trace_id": null,
+            "span_id": null,
+            "call_path": [],
+            "correlation_method": "not_available",
+            "confidence": 0.0,
+            "evidence_ref": "off_cpu_wait.correlation"
+          },
+          "summary": {
+            "sample_count": 0,
+            "blocked_thread_count": 0,
+            "total_wait_ms": 0.0,
+            "top_wait_reason": "",
+            "has_wait_reason": false
+          },
+          "top_wait_stacks": [],
+          "thread_wait_summary": [],
+          "syscall_wait_summary": {}
+        },
+        "log_window_json": null,
+        "dependency_check_json": null,
+        "redis_check_json": null,
+        "trace_endpoint_profile_json": {
+          "schema_version": "1.0",
+          "task_id": "task_20260814_035418_6cfbde",
+          "collector_type": "trace_endpoint_profile",
+          "collector_family": "trace_endpoint_profile",
+          "target": {
+            "pid": 205711,
+            "service_id": "watch-cpu-fixture",
+            "instance_id": "",
+            "host_id": "",
+            "endpoint": ""
+          },
+          "evidence_window": {
+            "start": 1786679638.90252,
+            "end": 1786679658.934483,
+            "duration_sec": 15,
+            "trigger_event_id": "evt_493fd133b8ec",
+            "evidence_cohort_id": "cohort_fc6d0469156a",
+            "collection_mode": "triggered_group",
+            "timing_relation": "same_window"
+          },
+          "stack_source": {
+            "kind": "ebpf",
+            "status": "completed",
+            "blocked_reason": "",
+            "blocked_details": {},
+            "capability_check": {
+              "tools": {
+                "bpftrace": "[TRUNCATED]",
+                "perf": "[TRUNCATED]"
+              },
+              "perf_event_paranoid": 4,
+              "cap_eff": "000001ffffffffff",
+              "cap_bnd": "000001ffffffffff",
+              "missing_capabilities": [],
+              "seccomp": "0",
+              "pid_namespace": "/proc/1/ns/pid:[4026531836]",
+              "target_pid": 205711,
+              "target_present": false,
+              "tracepoints": {
+                "sched_switch": "[TRUNCATED]",
+                "sched_wakeup": "[TRUNCATED]"
+              },
+              "missing_tools": [],
+              "repair_action": "检查 bpftrace/perf 安装、Worker 的 privileged/pid:host、PERFMON、SYS_PTRACE、BPF capability 以及 perf_event_paranoid。"
+            },
+            "artifacts": [
+              "ebpf_profile.txt"
+            ]
+          },
+          "trace_source": {
+            "kind": "auto",
+            "status": "empty_window",
+            "paths": [
+              "/var/lib/mini-drop/traces"
+            ],
+            "readable_paths": [],
+            "existing_sources": [
+              "/var/lib/mini-drop/traces"
+            ],
+            "records_read": 0,
+            "records_in_window": 0,
+            "blocked_reason": ""
+          },
+          "capability_check": {
+            "tools": {
+              "bpftrace": true,
+              "perf": true
+            },
+            "perf_event_paranoid": 4,
+            "cap_eff": "000001ffffffffff",
+            "cap_bnd": "000001ffffffffff",
+            "missing_capabilities": [],
+            "seccomp": "0",
+            "pid_namespace": "/proc/1/ns/pid:[4026531836]",
+            "target_pid": 205711,
+            "target_present": false,
+            "tracepoints": {
+              "sched_switch": true,
+              "sched_wakeup": true
+            },
+            "missing_tools": [],
+            "repair_action": "检查 bpftrace/perf 安装、Worker 的 privileged/pid:host、PERFMON、SYS_PTRACE、BPF capability 以及 perf_event_paranoid。"
+          },
+          "top_functions": [],
+          "endpoint_bindings": [],
+          "call_path_hotspots": [],
+          "correlation_status": {
+            "status": "partial",
+            "max_supported_level": "function",
+            "blocked_reason": "",
+            "blocked_details": {},
+            "warnings": [
+              "trace_source_unavailable"
+            ],
+            "missing": [
+              "trace_source"
+            ]
+          },
+          "trigger_event_id": "evt_493fd133b8ec",
+          "evidence_cohort_id": "cohort_fc6d0469156a",
+          "collection_mode": "triggered_group",
+          "timing_relation": "same_window"
+        }
+      },
+      "repair_plan": {
+        "plan_id": "repair_652649e6e7",
+        "task_id": "watch_incident:inc_bf4aa3c80e7f",
+        "cause_id": "insufficient_data",
+        "risk_level": "manual_only",
+        "actions": [
+          {
+            "action_id": "action_44f0308a",
+            "action_type": "collect_more_evidence",
+            "risk_level": "manual_only",
+            "description": "当前证据不足，建议补充 baseline、火焰图 TopN 或 eBPF 延迟数据后重试。",
+            "command": null,
+            "payload": {},
+            "status": "planned",
+            "result": null
+          }
+        ],
+        "requires_user_confirm": true,
+        "status": "planned"
+      },
+      "analysis_attempt_id": "attempt_d82d2cbe2e33"
+    },
+    "created_at": "2026-08-14T03:54:18.967346Z"
+  },
+  "auto_analysis_verified": true,
+  "checked_at": "2026-08-14T03:55:21.984834Z"
+}

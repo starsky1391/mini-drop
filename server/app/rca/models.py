@@ -31,6 +31,7 @@ class EvidenceInput(BaseModel):
     suggestions: list[str] = Field(default_factory=list)
     failure_events: list[str] = Field(default_factory=list)
     analysis_result: Optional[dict] = None
+    source_context: Optional[dict[str, Any]] = None
 
 
 class CandidateCause(BaseModel):
@@ -91,7 +92,7 @@ class AnalysisSymptom(BaseModel):
 class AnalysisLocalization(BaseModel):
     """现有证据能够支撑的最大定位层级。"""
 
-    level: Literal["resource", "process", "thread", "syscall", "function", "call_path", "line"]
+    level: Literal["resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"]
     target: Optional[str] = None
     fact_ids: list[str] = Field(default_factory=list)
     file_path: Optional[str] = None
@@ -103,7 +104,7 @@ class AnalysisTreeDecision(BaseModel):
     """AI 树中的单个门控或叶子决策。"""
 
     node_id: str
-    level: Literal["resource", "process", "thread", "syscall", "function", "call_path", "line"]
+    level: Literal["resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"]
     branch_key: str
     decision: Literal["continue", "downgrade", "stop"]
     leaf_status: Literal["clear_leaf", "conservative_leaf", "unknown_leaf"]
@@ -143,7 +144,7 @@ class GuardedAttribution(BaseModel):
     supporting_fact_ids: list[str] = Field(default_factory=list)
     opposing_fact_ids: list[str] = Field(default_factory=list)
     missing_evidence: list[str] = Field(default_factory=list)
-    max_supported_level: Literal["resource", "process", "thread", "syscall", "function", "call_path", "line"] = "resource"
+    max_supported_level: Literal["resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"] = "resource"
 
 
 class EvidenceChallengeTest(BaseModel):
@@ -183,7 +184,7 @@ class ConclusionBoundary(BaseModel):
     """最终报告允许表达的结论范围。"""
 
     can_claim_root_cause: bool
-    max_supported_level: Literal["resource", "process", "thread", "syscall", "function", "call_path", "line"] = "resource"
+    max_supported_level: Literal["resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"] = "resource"
     reason: str
     conclusion_window: dict[str, Any] = Field(default_factory=dict)
     timing_relation: Literal[
@@ -203,6 +204,101 @@ class ConclusionBoundary(BaseModel):
     non_refutable_evidence_boundaries: list[str] = Field(default_factory=list)
 
 
+class AITreeSelfChallenge(BaseModel):
+    """一个受控 AI 树节点内部的反问约束。"""
+
+    why_this_claim: str = ""
+    why_not_other_claims: str = ""
+    supporting_evidence_refs: list[str] = Field(default_factory=list)
+    opposing_evidence_refs: list[str] = Field(default_factory=list)
+    missing_evidence: list[str] = Field(default_factory=list)
+    what_would_change_my_mind: str = ""
+
+
+class AITreeCandidateNode(BaseModel):
+    """受控 AI 树某一层里的候选结论。"""
+
+    candidate_id: str
+    role: Literal["primary", "secondary", "rejected", "unknown"]
+    claim: str
+    supported_level: Literal["resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"] = "resource"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    status: Literal["supported", "weakened", "missing_evidence", "forbidden", "unknown"] = "unknown"
+    evidence_refs: list[str] = Field(default_factory=list)
+    self_challenge: AITreeSelfChallenge = Field(default_factory=AITreeSelfChallenge)
+
+
+class AITreeProbeResult(BaseModel):
+    """受控 AI 树边上的探针结果摘要。"""
+
+    status: Literal["completed", "blocked", "failed", "reused", "not_started", "unknown"] = "unknown"
+    evidence_refs: list[str] = Field(default_factory=list)
+    blocked_reason: str = ""
+
+
+class AITreeProbeEdge(BaseModel):
+    """两层候选之间的探针请求与回流结果。"""
+
+    edge_id: str
+    from_layer_id: str
+    to_layer_id: Optional[str] = None
+    probe_requests: list[str] = Field(default_factory=list)
+    probe_results: list[AITreeProbeResult] = Field(default_factory=list)
+    reuse_status: Literal[
+        "reuse_hit",
+        "reuse_blocked_result",
+        "reuse_miss",
+        "reuse_expired",
+        "reuse_forbidden",
+        "not_checked",
+    ] = "not_checked"
+    effect: Literal["refined", "reranked", "rejected", "added_candidate", "rollback", "no_change", "pending"] = "pending"
+    reason: str = ""
+
+
+class AITreeLayer(BaseModel):
+    """受控 AI 树的一层候选集合。"""
+
+    layer_id: str
+    depth: int
+    generated_by: Literal["ai_guarded", "analyzer_fallback"] = "analyzer_fallback"
+    summary: str = ""
+    primary_causes: list[AITreeCandidateNode] = Field(default_factory=list)
+    secondary_causes: list[AITreeCandidateNode] = Field(default_factory=list)
+    rejected_causes: list[AITreeCandidateNode] = Field(default_factory=list)
+    unknown_causes: list[AITreeCandidateNode] = Field(default_factory=list)
+
+
+class AITreeBudgetSnapshot(BaseModel):
+    """受控 AI 树本轮可用预算快照。"""
+
+    max_ai_rounds: int = 3
+    max_tree_depth: int = 4
+    max_candidates_per_layer: int = 4
+    max_probe_requests_per_round: int = 3
+    max_total_llm_tokens: int = 12000
+    max_wall_time_seconds: int = 180
+    used_ai_rounds: int = 0
+    used_probe_requests: int = 0
+
+
+class ControlledAITree(BaseModel):
+    """完整版受控 AI 树。"""
+
+    tree_id: str
+    schema_version: str = "1.0"
+    source_context_hash: Optional[str] = None
+    final_supported_level: Literal["resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"] = "resource"
+    stop_reason: str = ""
+    budget: AITreeBudgetSnapshot = Field(default_factory=AITreeBudgetSnapshot)
+    layers: list[AITreeLayer] = Field(default_factory=list)
+    probe_edges: list[AITreeProbeEdge] = Field(default_factory=list)
+    final_primary_causes: list[str] = Field(default_factory=list)
+    final_secondary_causes: list[str] = Field(default_factory=list)
+    final_rejected_causes: list[str] = Field(default_factory=list)
+    final_unknown_causes: list[str] = Field(default_factory=list)
+
+
 class EvidenceAttributionResult(BaseModel):
     """供报告生成使用的受证据约束分析结果。"""
 
@@ -210,6 +306,7 @@ class EvidenceAttributionResult(BaseModel):
     symptoms: list[AnalysisSymptom] = Field(default_factory=list)
     localizations: list[AnalysisLocalization] = Field(default_factory=list)
     ai_tree: list[AnalysisTreeDecision] = Field(default_factory=list)
+    controlled_ai_tree: Optional[ControlledAITree] = None
     graph_entities: list[AnalysisGraphEntity] = Field(default_factory=list)
     graph_links: list[AnalysisGraphLink] = Field(default_factory=list)
     attributions: list[GuardedAttribution] = Field(default_factory=list)
@@ -264,6 +361,7 @@ class DiagnosisReport(BaseModel):
     symptoms: list[AnalysisSymptom] = Field(default_factory=list)
     localizations: list[AnalysisLocalization] = Field(default_factory=list)
     ai_tree: list[AnalysisTreeDecision] = Field(default_factory=list)
+    controlled_ai_tree: Optional[ControlledAITree] = None
     graph_entities: list[AnalysisGraphEntity] = Field(default_factory=list)
     graph_links: list[AnalysisGraphLink] = Field(default_factory=list)
     attributions: list[GuardedAttribution] = Field(default_factory=list)

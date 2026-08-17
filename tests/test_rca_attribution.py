@@ -27,6 +27,11 @@ def test_cpu_hotspot_requires_cpu_and_function_evidence():
                 "avg_cpu_iowait_pct": 1.0,
             },
         },
+        source_context={
+            "source_paths": ["src/app"],
+            "repo_revision": "rev-1",
+            "language": "python",
+        },
     )
 
     result = analyze_evidence(evidence, [_candidate("cpu_hotspot_recursive", ["top_functions[0]"])])
@@ -139,6 +144,11 @@ def test_depth_evidence_can_promote_to_line_level():
                 "trace_id": "trace-1",
             },
         },
+        source_context={
+            "source_paths": ["src/app"],
+            "repo_revision": "rev-1",
+            "language": "python",
+        },
     )
 
     result = analyze_evidence(evidence, [_candidate("cpu_hotspot_recursive", ["top_functions[0]"])])
@@ -181,6 +191,10 @@ def test_hotspot_ownership_edges_are_stable_across_repeated_runs():
                 "evidence_ref": "evidence_index.line_candidates[0]",
             }],
         },
+        source_context={
+            "source_paths": ["src/app"],
+            "repo_revision": "rev-1",
+        },
     )
 
     result_a = analyze_evidence(evidence, [_candidate("cpu_hotspot_recursive", ["top_functions[0]"])])
@@ -191,6 +205,55 @@ def test_hotspot_ownership_edges_are_stable_across_repeated_runs():
     assert ownership_links
     assert ownership_links[0].source_id == "call_path:main;worker;compute_hotspot"
     assert ownership_links[0].target_id == "function:compute_hotspot"
+
+
+def test_line_candidate_without_source_context_stays_at_call_path():
+    evidence = EvidenceInput(
+        top_functions=[{"name": "compute_hotspot", "percent": 62.0}],
+        sys_metrics={"summary": {"avg_cpu_user_pct": 91.0}},
+        evidence_index={
+            "stack_samples": [{
+                "hot_frame": "compute_hotspot",
+                "call_path": "main;worker;compute_hotspot",
+                "stack_fragment": ["main", "worker", "compute_hotspot"],
+            }],
+            "line_candidates": [{
+                "file": "src/app/service.py",
+                "line": 128,
+                "symbol": "compute_hotspot",
+                "confidence": 0.92,
+            }],
+            "context": {
+                "call_path": "main;worker;compute_hotspot",
+                "endpoint": "/api/order/create",
+            },
+        },
+    )
+
+    result = analyze_evidence(evidence, [_candidate("cpu_hotspot_recursive", ["top_functions[0]"])])
+
+    assert result.conclusion_boundary.max_supported_level == "call_path"
+    assert all(item.level != "line" for item in result.localizations)
+    assert result.controlled_ai_tree is not None
+    assert result.controlled_ai_tree.source_context_hash is None
+
+
+def test_controlled_ai_tree_contains_layers_self_challenge_and_probe_edge():
+    evidence = EvidenceInput(
+        top_functions=[{"name": "compute_hotspot", "percent": 62.0}],
+        sys_metrics={"summary": {"avg_cpu_user_pct": 91.0, "avg_cpu_iowait_pct": 1.0}},
+    )
+
+    result_a = analyze_evidence(evidence, [_candidate("cpu_hotspot_recursive", ["top_functions[0]"])])
+    result_b = analyze_evidence(evidence, [_candidate("cpu_hotspot_recursive", ["top_functions[0]"])])
+
+    assert result_a.controlled_ai_tree == result_b.controlled_ai_tree
+    tree = result_a.controlled_ai_tree
+    assert tree is not None
+    assert tree.layers[0].primary_causes
+    assert tree.layers[0].primary_causes[0].self_challenge.supporting_evidence_refs
+    assert tree.probe_edges
+    assert tree.probe_edges[0].probe_requests == ["off_cpu_wait_profile", "trace_endpoint_profile"]
 
 
 def test_hotspot_ownership_edges_do_not_become_root_cause_assertions():

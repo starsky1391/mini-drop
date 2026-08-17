@@ -15,8 +15,8 @@ from server.app import storage
 from server.app.ai_provider import get_ai_settings, is_feature_enabled
 from server.app.common_utils import status_value
 from server.app.diagnosis.intent import parse_diagnosis_intent
-from server.app.diagnosis.collector_invocation import build_collector_invocation
-from server.app.diagnosis.probe_registry import choose_probe_ids, get_probe
+from server.app.diagnosis.collector_invocation import build_collector_invocation, collector_request_fingerprint
+from server.app.diagnosis.probe_registry import build_probe_manifest, choose_probe_ids, evidence_gap_to_probe_id, get_probe
 from server.app.diagnosis.schemas import (
     ApprovalRequest,
     BulkApprovalRequest,
@@ -32,6 +32,7 @@ from server.app.rca.calibrator import calibrate
 from server.app.rca.candidates import generate_candidates
 from server.app.rca.evidence import collect_evidence
 from server.app.rca.attribution import analyze_evidence
+from server.app.rca.llm_client import generate_controlled_ai_tree
 from server.app.rca.models import CandidateCause, EvidenceInput
 from server.app.diagnosis.evidence_structurer import rca_inputs_from_structured, structure_artifact_evidence
 from server.app.schemas import CreateTaskRequest, MAX_SAMPLE_RATE, MAX_TASK_DURATION_SEC, MIN_SAMPLE_RATE
@@ -103,7 +104,7 @@ class DiagnosisOrchestrator:
                 "max_medium_risk_probes": budget.max_medium_risk_probes,
                 "no_automatic_remediation": True,
                 "registered_probes_only": True,
-                "auto_execute_policy": request.auto_execute_policy or os.getenv("MINI_DROP_DIAGNOSIS_AUTO_EXECUTE_POLICY", "safe_only"),
+                "auto_execute_policy": request.auto_execute_policy or os.getenv("MINI_DROP_DIAGNOSIS_AUTO_EXECUTE_POLICY", "all_registered"),
             },
             "resource_budget": budget.model_dump(mode="json"),
             "budget_used": budget_usage,
@@ -444,13 +445,13 @@ class DiagnosisOrchestrator:
         for index, instance in enumerate(instances):
             for probe_id in probe_ids:
                 definition = get_probe(probe_id)
-                if definition.risk_level == "R2":
+                if definition.risk_level == "R2" and auto_policy != "all_registered":
                     if index > 0 or r2_count >= budget.max_medium_risk_probes:
                         continue
                     r2_count += 1
-                elif auto_count >= budget.max_parallel_probes:
-                    continue
-                else:
+                elif probe_id != "host_process_metrics":
+                    if auto_count >= budget.max_parallel_probes:
+                        continue
                     auto_count += 1
                 duration = min(definition.default_duration_seconds, definition.max_duration_seconds)
                 if planned_duration + duration > duration_limit:
@@ -459,6 +460,18 @@ class DiagnosisOrchestrator:
                 key = f"{diagnosis_id}:{probe_id}:{instance['instance_id']}"
                 step_id = f"step_{hashlib.sha256(key.encode()).hexdigest()[:14]}"
                 collector_parameters = self._collector_probe_parameters(probe_id, target_scope, instance)
+                collector_invocation = _collector_invocation(
+                    step={"diagnosis_id": diagnosis_id, "step_id": step_id},
+                    definition=definition,
+                    target=instance,
+                    collector_parameters=collector_parameters,
+                )
+                fingerprint_inputs = {
+                    "duration_sec": duration,
+                    "sample_rate": definition.default_sample_rate,
+                    "evidence_gap": self._probe_evidence_gap(probe_id),
+                    "budget_phase": "initial",
+                }
                 planned.append(ProbePlan(
                     step_id=step_id,
                     probe_id=probe_id,
@@ -470,11 +483,10 @@ class DiagnosisOrchestrator:
                         "budget_phase": "initial",
                         "execution_policy": auto_policy,
                         **collector_parameters,
-                        "collector_invocation": _collector_invocation(
-                            step={"diagnosis_id": diagnosis_id, "step_id": step_id},
-                            definition=definition,
-                            target=instance,
-                            collector_parameters=collector_parameters,
+                        "collector_invocation": collector_invocation,
+                        "collector_fingerprint": collector_request_fingerprint(
+                            collector_invocation,
+                            {**fingerprint_inputs, **collector_parameters},
                         ),
                     },
                     reason=f"用于区分 {', '.join(definition.applicable_hypotheses[:3])} 等候选假设",
@@ -536,6 +548,23 @@ class DiagnosisOrchestrator:
             self.store.update_probe(step_id, status="UNAVAILABLE")
             return
 
+        reusable = self._find_reusable_probe_task(step)
+        if reusable is not None:
+            reused_status = "COMPLETED" if status_value(reusable.status) == "DONE" else "FAILED"
+            self.store.update_probe(step_id, status=reused_status, task_id=reusable.id)
+            self._append_child_task(step["diagnosis_id"], reusable.id, definition)
+            self.store.record_event(
+                step["diagnosis_id"],
+                "probe_reused",
+                {
+                    "step_id": step_id,
+                    "task_id": reusable.id,
+                    "collector_fingerprint": (step.get("parameters") or {}).get("collector_fingerprint"),
+                    "reuse_status": "reuse_hit" if reused_status == "COMPLETED" else "reuse_blocked_result",
+                },
+            )
+            return
+
         # 恢复时先通过幂等键查找已创建任务，避免重复下发。
         for task in self.repo.tasks.values():
             options = (task.request_params or {}).get("options", {})
@@ -588,11 +617,22 @@ class DiagnosisOrchestrator:
         target: dict[str, Any],
     ) -> dict[str, Any]:
         collector_parameters = self._collector_probe_parameters(definition.probe_id, target_scope, target)
-        return {
+        invocation = _collector_invocation(
+            step=step,
+            definition=definition,
+            target=target,
+            collector_parameters=collector_parameters,
+        )
+        options = {
             "diagnosis_id": step["diagnosis_id"],
             "diagnosis_step_id": step["step_id"],
             "probe_id": definition.probe_id,
             "registered_probe": True,
+            "duration_sec": (step.get("parameters") or {}).get("duration_sec"),
+            "sample_rate": (step.get("parameters") or {}).get("sample_rate"),
+            "evidence_gap": (step.get("parameters") or {}).get("evidence_gap"),
+            "budget_phase": (step.get("parameters") or {}).get("budget_phase"),
+            "parent_task_id": (step.get("parameters") or {}).get("parent_task_id"),
             **collector_parameters,
             "collector_context": {
                 "task_id": step["diagnosis_id"],
@@ -603,13 +643,10 @@ class DiagnosisOrchestrator:
                 "instance_id": target.get("instance_id"),
                 "host_id": target.get("host_id"),
             },
-            "collector_invocation": _collector_invocation(
-                step=step,
-                definition=definition,
-                target=target,
-                collector_parameters=collector_parameters,
-            ),
+            "collector_invocation": invocation,
         }
+        options["collector_fingerprint"] = collector_request_fingerprint(invocation, options)
+        return options
 
     def _collector_probe_parameters(
         self,
@@ -654,6 +691,7 @@ class DiagnosisOrchestrator:
                 **({"source_paths": source_paths} if source_paths else {}),
             }
         if probe_id == "process_trace_endpoint_profile":
+            source_context = _source_context_for_target(target, target_scope)
             return {
                 "target_config": {
                     "stack_source": "auto",
@@ -665,10 +703,13 @@ class DiagnosisOrchestrator:
                     "host_id": target.get("host_id"),
                     "endpoint": target.get("endpoint") or target_scope.get("endpoint"),
                     "container_id": target.get("container_id"),
+                    "source_context": source_context,
                 },
                 "trace_paths": target.get("trace_paths") or target_scope.get("trace_paths") or [],
+                "source_context": source_context,
             }
         if probe_id == "process_off_cpu_profile":
+            source_context = _source_context_for_target(target, target_scope)
             return {
                 "target_config": {
                     "pid": target.get("pid"),
@@ -677,11 +718,26 @@ class DiagnosisOrchestrator:
                     "host_id": target.get("host_id"),
                     "endpoint": target.get("endpoint") or target_scope.get("endpoint"),
                     "trace_paths": target.get("trace_paths") or target_scope.get("trace_paths") or [],
+                    "source_context": source_context,
                 },
                 "min_wait_ms": 1,
                 "stack_depth": 32,
                 "trace_paths": target.get("trace_paths") or target_scope.get("trace_paths") or [],
+                "source_context": source_context,
             }
+        if probe_id in {"process_cpu_profile", "process_baseline_window", "process_python_runtime_profile"}:
+            source_context = _source_context_for_target(target, target_scope)
+            return {
+                "target_config": {
+                    "pid": target.get("pid"),
+                    "service_id": target.get("service_id"),
+                    "instance_id": target.get("instance_id"),
+                    "host_id": target.get("host_id"),
+                    "container_id": target.get("container_id"),
+                    "source_context": source_context,
+                },
+                "source_context": source_context,
+            } if source_context else {}
         return {}
 
     def _append_child_task(self, diagnosis_id: str, task_id: str, definition) -> None:
@@ -689,8 +745,11 @@ class DiagnosisOrchestrator:
         if session is None:
             return
         task_ids = list(session.get("child_task_ids", []))
+        is_new_child = task_id not in task_ids
         if task_id not in task_ids:
             task_ids.append(task_id)
+        if not is_new_child:
+            return
         usage = dict(session.get("budget_used", {}))
         probe = next(
             (
@@ -732,6 +791,7 @@ class DiagnosisOrchestrator:
         self._last_followup_scheduled = False
         all_candidates: list[dict[str, Any]] = []
         followup_requests: list[str] = []
+        controlled_ai_trees: list[dict[str, Any]] = []
         task_observations: list[dict[str, Any]] = []
         missing: list[str] = []
         failed_targets: list[str] = []
@@ -780,6 +840,7 @@ class DiagnosisOrchestrator:
                 self._build_task_observation(diagnosis_id, task, values, evidence_ids)
             )
             task_events = [self.repo.as_dict(event) for event in self.repo.events if event.task_id == task.id]
+            session_for_evidence = self.store.get_session(diagnosis_id) or {}
             evidence = collect_evidence(
                 task_id=task.id,
                 task_record=task,
@@ -790,13 +851,34 @@ class DiagnosisOrchestrator:
                 agent_stats=self.repo.agent_metrics.get(task.agent_id, {}),
                 evidence_index=values.get("evidence_index") if isinstance(values.get("evidence_index"), dict) else {},
                 tool_results=_tool_results_from_structured_values(values),
+                source_context=_source_context_for_target(
+                    self._target_for_task(diagnosis_id, task),
+                    session_for_evidence.get("target_scope", {}),
+                ),
             )
             candidates = generate_candidates(evidence, self.repo.get_feedback_priors())
             analysis_result = analyze_evidence(evidence, candidates)
+            probe_manifest = build_probe_manifest()
+            analysis_payload = analysis_result.model_dump(mode="json")
+            analysis_payload["probe_registry_manifest"] = probe_manifest
+            controlled_tree = generate_controlled_ai_tree(
+                task_id=task.id,
+                evidence=evidence.model_copy(update={"analysis_result": analysis_payload}),
+                analyzer_result=analysis_result,
+                probe_manifest=probe_manifest,
+            )
+            analysis_result = analysis_result.model_copy(update={"controlled_ai_tree": controlled_tree})
+            if analysis_result.controlled_ai_tree is not None:
+                controlled_ai_trees.append(analysis_result.controlled_ai_tree.model_dump(mode="json"))
             for tree_node in analysis_result.ai_tree:
                 for request_id in tree_node.next_evidence_requests:
                     if request_id not in followup_requests:
                         followup_requests.append(request_id)
+            if analysis_result.controlled_ai_tree is not None:
+                for edge in analysis_result.controlled_ai_tree.probe_edges:
+                    for request_id in edge.probe_requests:
+                        if request_id not in followup_requests:
+                            followup_requests.append(request_id)
             calibrated = calibrate(candidates, evidence, self.repo.get_feedback_priors())
             for candidate in calibrated:
                 if candidate.candidate_id == "insufficient_data":
@@ -879,6 +961,8 @@ class DiagnosisOrchestrator:
             }],
             "limitations": sorted(set(missing + (["部分目标采集失败"] if failed_targets else []))),
             "next_evidence_requests": followup_requests,
+            "controlled_ai_tree": controlled_ai_trees[-1] if controlled_ai_trees else None,
+            "controlled_ai_trees": controlled_ai_trees,
             "coverage": {
                 "task_count": len(tasks),
                 "failed_targets": failed_targets,
@@ -902,6 +986,8 @@ class DiagnosisOrchestrator:
             "process_log_scan": "log_scan",
             "process_dependency_check": "dependency_check",
             "process_redis_check": "redis_check",
+            "process_io_latency": "io_latency",
+            "process_memory_map": "memory_map",
         }.get(probe_id, "")
 
     def _plan_followup_requests(self, diagnosis_id: str, request_ids: list[str], parent_task) -> int:
@@ -917,18 +1003,8 @@ class DiagnosisOrchestrator:
         policy = str((session.get("risk_budget") or {}).get("auto_execute_policy") or "safe_only")
         created = 0
         self._last_followup_scheduled = False
-        request_map = {
-            "cpu_profile": "process_cpu_profile",
-            "off_cpu_wait_profile": "process_off_cpu_profile",
-            "trace_endpoint_profile": "process_trace_endpoint_profile",
-            "baseline_window_profile": "process_baseline_window",
-            "python_runtime_profile": "process_python_runtime_profile",
-            "log_scan": "process_log_scan",
-            "dependency_check": "process_dependency_check",
-            "redis_check": "process_redis_check",
-        }
         for evidence_gap in request_ids:
-            probe_id = request_map.get(evidence_gap)
+            probe_id = evidence_gap_to_probe_id(evidence_gap)
             if not probe_id or evidence_gap in existing_gaps:
                 continue
             definition = get_probe(probe_id)
@@ -975,6 +1051,12 @@ class DiagnosisOrchestrator:
                 session.get("target_scope", {}),
                 target,
             )
+            collector_invocation = _collector_invocation(
+                step={"diagnosis_id": diagnosis_id, "step_id": step_id},
+                definition=definition,
+                target=target,
+                collector_parameters=collector_parameters,
+            )
             plan = ProbePlan(
                 step_id=step_id,
                 probe_id=probe_id,
@@ -987,11 +1069,17 @@ class DiagnosisOrchestrator:
                     "parent_task_id": parent_task.id,
                     "execution_policy": policy,
                     **collector_parameters,
-                    "collector_invocation": _collector_invocation(
-                        step={"diagnosis_id": diagnosis_id, "step_id": step_id},
-                        definition=definition,
-                        target=target,
-                        collector_parameters=collector_parameters,
+                    "collector_invocation": collector_invocation,
+                    "collector_fingerprint": collector_request_fingerprint(
+                        collector_invocation,
+                        {
+                            "duration_sec": duration,
+                            "sample_rate": definition.default_sample_rate,
+                            "evidence_gap": evidence_gap,
+                            "budget_phase": "followup",
+                            "parent_task_id": parent_task.id,
+                            **collector_parameters,
+                        },
                     ),
                 },
                 reason=f"AI 树请求补充证据: {evidence_gap}",
@@ -1027,7 +1115,8 @@ class DiagnosisOrchestrator:
             return "诊断会话不存在"
 
         probes = self.store.list_probes(diagnosis_id)
-        if definition.risk_level == "R2":
+        policy = str((session.get("risk_budget") or {}).get("auto_execute_policy") or "all_registered")
+        if definition.risk_level == "R2" and policy != "all_registered":
             used_r2 = sum(
                 1
                 for probe in probes
@@ -1057,6 +1146,24 @@ class DiagnosisOrchestrator:
                 f"(phase=followup, used={used_duration}s, requested={duration}s, "
                 f"limit={duration_limit}s, reserved={reserve}s)"
             )
+        return None
+
+    def _find_reusable_probe_task(self, step: dict[str, Any]):
+        parameters = step.get("parameters") if isinstance(step.get("parameters"), dict) else {}
+        fingerprint = parameters.get("collector_fingerprint")
+        if not fingerprint:
+            return None
+        for task in self.repo.tasks.values():
+            options = (task.request_params or {}).get("options", {})
+            if not isinstance(options, dict):
+                continue
+            if options.get("collector_fingerprint") != fingerprint:
+                continue
+            task_status = status_value(task.status)
+            if task_status == "DONE":
+                return task
+            if task_status == "FAILED" and _is_stable_blocked_result(task.status_reason):
+                return task
         return None
 
     @classmethod
@@ -1662,6 +1769,7 @@ class DiagnosisOrchestrator:
             "target_service": intent.target_service,
             "environment": intent.environment,
             "instances": unique,
+            "source_context": request.context.source_context.model_dump(mode="json") if request.context.source_context else {},
             "same_host_instance_ids": [item["instance_id"] for item in same_host],
             "downstream_service_ids": sorted(downstream_services),
             "dependency_targets": dependency_targets,
@@ -2380,6 +2488,30 @@ def _dependency_targets(target_scope: dict[str, Any]) -> list[dict[str, Any]]:
             "path": item.get("path") or "/",
         })
     return targets
+
+
+def _source_context_for_target(target: dict[str, Any], target_scope: dict[str, Any]) -> dict[str, Any]:
+    scoped = target_scope.get("source_context") if isinstance(target_scope.get("source_context"), dict) else {}
+    local = target.get("source_context") if isinstance(target.get("source_context"), dict) else {}
+    merged = {**scoped, **local}
+    return {key: value for key, value in merged.items() if value not in (None, "", [])}
+
+
+def _is_stable_blocked_result(reason: str) -> bool:
+    normalized = str(reason or "").lower()
+    return any(
+        token in normalized
+        for token in (
+            "perf_event_paranoid",
+            "permission denied",
+            "operation not permitted",
+            "missing capability",
+            "capability",
+            "seccomp",
+            "bpf",
+            "perfmon",
+        )
+    )
 
 
 def _is_redis_dependency(item: dict[str, Any]) -> bool:

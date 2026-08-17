@@ -1,0 +1,69 @@
+<h2>AI 归因系统升级总览</h2>
+<p class="subtitle">这张图把 6 个需求拆成 4 条产品/架构线：看得懂、少操作、采得到、AI 真参与。</p>
+
+<div class="mockup">
+  <div class="mockup-header">从当前方案 B 到下一阶段</div>
+  <div class="mockup-body">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div class="placeholder" style="min-height:160px;text-align:left">
+        <div class="label">用户体验线</div>
+        <h3>1. AI 树策略可视化</h3>
+        <p>展示每个分支为什么继续、停止、降级、补证。</p>
+        <h3>2. 报告可读性提升</h3>
+        <p>把“结构化诊断结果”翻译成可读结论、证据依据、下一步动作。</p>
+      </div>
+      <div class="placeholder" style="min-height:160px;text-align:left">
+        <div class="label">交互降噪线</div>
+        <h3>3. 审批改为 all_registered</h3>
+        <p>注册采集器默认自动执行；不再让 R2 采集命令频繁打断用户。</p>
+        <p>安全边界保留在注册、预算、并发、权限和禁用高危动作上。</p>
+      </div>
+      <div class="placeholder" style="min-height:190px;text-align:left">
+        <div class="label">深采集线</div>
+        <h3>4. 源码 + 栈 + Trace 下钻</h3>
+        <p>没有源码也能到函数/调用路径；有源码映射才升级到代码行。</p>
+        <p>源码不是所有诊断必须项，但“代码行级定位”需要源码或 debug/symbol 映射。</p>
+        <h3>5. 容器权限 Profile</h3>
+        <p>解决 perf/eBPF 被 perf_event_paranoid、capability、pid namespace 阻断。</p>
+      </div>
+      <div class="placeholder" style="min-height:190px;text-align:left">
+        <div class="label">AI 树核心线</div>
+        <h3>6. AI 参与裁决</h3>
+        <p>规则退为证据整理器 + 安全校验器。</p>
+        <p>AI 生成候选、裁决冲突、解释主因/次因，并被 evidence_refs 硬校验。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>两个可讨论方向</h3>
+  <div class="options">
+    <div class="option" data-choice="scheme-b-plus" onclick="toggleSelect(this)">
+      <div class="letter">B+</div>
+      <div class="content">
+        <h3>AI 树裁决核心</h3>
+        <p>AI 在树内做候选生成和冲突裁决；系统只做证据整理、预算、安全和引用校验。推荐先做。</p>
+      </div>
+    </div>
+    <div class="option" data-choice="scheme-c-agent" onclick="toggleSelect(this)">
+      <div class="letter">C</div>
+      <div class="content">
+        <h3>多轮 Agent 式归因器</h3>
+        <p>AI 多轮建假设、补证、修正、收敛。上限更高，但状态、成本、回放调试更复杂。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>我建议的落地顺序</h3>
+  <div class="mockup">
+    <div class="mockup-body">
+      <p><strong>第一段：</strong>前端可视化 + 报告可读性 + all_registered 默认策略。</p>
+      <p><strong>第二段：</strong>容器权限 Profile + 源码上下文契约，让深采集能真正升级到函数/行。</p>
+      <p><strong>第三段：</strong>AI 树 B+，把 AI 从“报告生成器”提升成“树内裁决者”。</p>
+      <p><strong>第四段：</strong>等 B+ 稳定后，再演进到方案 C 的多轮 investigation agent。</p>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,21 @@
+{
+  "planned_runs": 1,
+  "completed_runs": 1,
+  "failed_runs": 0,
+  "terminal_statuses": {
+    "BUDGET_EXHAUSTED": 1
+  },
+  "mean_elapsed_sec": 60.84,
+  "p95_elapsed_sec": 60.84,
+  "rollback_failures": 0,
+  "final_health": {
+    "errors": [],
+    "unhealthy_services": [],
+    "frontend": {
+      "ok": true,
+      "status": 200,
+      "latency_ms": 16.0
+    }
+  },
+  "finished_at": "2026-08-12T16:56:19.340726+00:00"
+}

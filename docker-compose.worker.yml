@@ -39,8 +39,11 @@ services:
       - trace_exports:/var/lib/mini-drop/traces:ro
       - profile_exports:/var/lib/mini-drop/profiles:ro
       - /var/lib/docker/containers:/host/var/lib/docker/containers:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
       - /sys/kernel/debug:/sys/kernel/debug
       - /lib/modules:/lib/modules:ro
+      - /usr/src:/usr/src:ro
     privileged: true
     pid: host
     cap_add:
@@ -50,7 +53,6 @@ services:
       - BPF
       - SYS_RESOURCE
     security_opt:
-      - no-new-privileges:true
       - seccomp:unconfined
     restart: unless-stopped
 

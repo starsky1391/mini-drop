@@ -12,7 +12,16 @@ import pytest
 from server.app.rca.calibrator import calibrate, interpret_confidence
 from server.app.rca.candidates import generate_candidates, load_rules
 from server.app.rca.evidence import collect_evidence, evidence_to_json
-from server.app.rca.llm_client import _extract_json, _validate_and_parse, _ref_exists, _collect_evidence_paths
+from server.app.rca.attribution import analyze_evidence
+from server.app.rca.llm_client import (
+    _attach_analysis_result,
+    _collect_evidence_paths,
+    _extract_json,
+    _ref_exists,
+    _validate_and_parse,
+    generate_controlled_ai_tree,
+)
+from server.app.diagnosis.probe_registry import build_probe_manifest
 from server.app.rca.models import CandidateCause, CauseEntry, DiagnosisReport, EvidenceInput, FeedbackPrior
 from server.app.rca.prompt import build_system_prompt, build_user_message
 from server.app.rca.report import run_diagnosis, run_diagnosis_context
@@ -216,6 +225,167 @@ class TestCalibrator:
         assert interpret_confidence(0.70) == "可能"
         assert interpret_confidence(0.50) == "待验证"
         assert interpret_confidence(0.30) == "证据不足"
+
+
+class TestControlledAITreeMerge:
+    """受控 AI 树只允许 LLM 改写解释，不允许越界裁决。"""
+
+    def test_llm_can_enrich_controlled_tree_explanations(self):
+        evidence = EvidenceInput(
+            top_functions=[{"name": "compute_hotspot", "percent": 72.0}],
+            sys_metrics={"summary": {"avg_cpu_user_pct": 92.0, "avg_cpu_iowait_pct": 1.0}},
+        )
+        analysis = analyze_evidence(
+            evidence,
+            [CandidateCause(
+                candidate_id="cpu_hotspot_recursive",
+                description="CPU hotspot",
+                evidence_refs=["top_functions[0]"],
+                rule_score=0.8,
+            )],
+        )
+        evidence.analysis_result = analysis.model_dump(mode="json")
+        proposed_tree = analysis.controlled_ai_tree.model_copy(deep=True)
+        proposed_primary = proposed_tree.layers[0].primary_causes[0]
+        proposed_tree.layers[0].primary_causes[0] = proposed_primary.model_copy(update={
+            "claim": "AI 提议：热点集中在 compute_hotspot，当前只支持函数层定位。",
+            "self_challenge": proposed_primary.self_challenge.model_copy(update={
+                "why_this_claim": "CPU 与 top function 证据同向支持。",
+                "why_not_other_claims": "IO wait 证据没有同向升高。",
+            }),
+        })
+        report = DiagnosisReport(
+            summary="CPU hotspot",
+            ranked_causes=[CauseEntry(
+                cause_id="cpu_hotspot_recursive",
+                confidence=0.8,
+                claim="CPU hotspot",
+                evidence_refs=["top_functions[0]"],
+            )],
+            facts=["compute_hotspot 72%"],
+            controlled_ai_tree=proposed_tree,
+        )
+
+        attached = _attach_analysis_result(report, evidence)
+
+        assert attached.controlled_ai_tree.layers[0].primary_causes[0].claim.startswith("AI 提议")
+        assert attached.controlled_ai_tree.final_primary_causes == analysis.controlled_ai_tree.final_primary_causes
+        assert attached.controlled_ai_tree.probe_edges == analysis.controlled_ai_tree.probe_edges
+
+    def test_llm_controlled_tree_cannot_promote_level_or_add_refs(self):
+        evidence = EvidenceInput(
+            top_functions=[{"name": "compute_hotspot", "percent": 72.0}],
+            sys_metrics={"summary": {"avg_cpu_user_pct": 92.0, "avg_cpu_iowait_pct": 1.0}},
+        )
+        analysis = analyze_evidence(
+            evidence,
+            [CandidateCause(
+                candidate_id="cpu_hotspot_recursive",
+                description="CPU hotspot",
+                evidence_refs=["top_functions[0]"],
+                rule_score=0.8,
+            )],
+        )
+        evidence.analysis_result = analysis.model_dump(mode="json")
+        unsafe_tree = analysis.controlled_ai_tree.model_copy(deep=True)
+        unsafe_primary = unsafe_tree.layers[0].primary_causes[0]
+        unsafe_tree.layers[0].primary_causes[0] = unsafe_primary.model_copy(update={
+            "supported_level": "line",
+            "claim": "越权提升到代码行。",
+            "evidence_refs": ["evidence_index.fake_line[0]"],
+        })
+        report = DiagnosisReport(
+            summary="CPU hotspot",
+            ranked_causes=[CauseEntry(
+                cause_id="cpu_hotspot_recursive",
+                confidence=0.8,
+                claim="CPU hotspot",
+                evidence_refs=["top_functions[0]"],
+            )],
+            facts=["compute_hotspot 72%"],
+            controlled_ai_tree=unsafe_tree,
+        )
+
+        attached = _attach_analysis_result(report, evidence)
+
+        assert attached.controlled_ai_tree == analysis.controlled_ai_tree
+
+    def test_llm_controlled_tree_can_select_manifest_probe(self):
+        evidence = EvidenceInput(
+            top_functions=[{"name": "compute_hotspot", "percent": 72.0}],
+            sys_metrics={"summary": {"avg_cpu_user_pct": 92.0, "avg_cpu_iowait_pct": 1.0}},
+        )
+        analysis = analyze_evidence(
+            evidence,
+            [CandidateCause(
+                candidate_id="cpu_hotspot_recursive",
+                description="CPU hotspot",
+                evidence_refs=["top_functions[0]"],
+                rule_score=0.8,
+            )],
+        )
+        manifest = build_probe_manifest()
+        evidence = evidence.model_copy(update={
+            "analysis_result": {
+                **analysis.model_dump(mode="json"),
+                "probe_registry_manifest": manifest,
+            }
+        })
+        proposed_tree = analysis.controlled_ai_tree.model_copy(deep=True)
+        proposed_tree.probe_edges[0] = proposed_tree.probe_edges[0].model_copy(update={
+            "probe_requests": ["redis_check"],
+            "reason": "AI 选择 Redis 专项检查来反证下游依赖方向。",
+        })
+        mock_resp = mock.MagicMock(status_code=200)
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": json.dumps(proposed_tree.model_dump(mode="json"))}}]
+        }
+
+        with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key"}):
+            with mock.patch("server.app.rca.llm_client.chat_completions", return_value=mock_resp):
+                tree = generate_controlled_ai_tree(
+                    task_id="t1",
+                    evidence=evidence,
+                    analyzer_result=analysis,
+                    probe_manifest=manifest,
+                )
+
+        assert tree.probe_edges[0].probe_requests == ["redis_check"]
+
+    def test_llm_controlled_tree_rejects_unregistered_probe_request(self):
+        evidence = EvidenceInput(
+            top_functions=[{"name": "compute_hotspot", "percent": 72.0}],
+            sys_metrics={"summary": {"avg_cpu_user_pct": 92.0, "avg_cpu_iowait_pct": 1.0}},
+        )
+        analysis = analyze_evidence(
+            evidence,
+            [CandidateCause(
+                candidate_id="cpu_hotspot_recursive",
+                description="CPU hotspot",
+                evidence_refs=["top_functions[0]"],
+                rule_score=0.8,
+            )],
+        )
+        manifest = build_probe_manifest()
+        proposed_tree = analysis.controlled_ai_tree.model_copy(deep=True)
+        proposed_tree.probe_edges[0] = proposed_tree.probe_edges[0].model_copy(update={
+            "probe_requests": ["arbitrary_shell"],
+        })
+        mock_resp = mock.MagicMock(status_code=200)
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": json.dumps(proposed_tree.model_dump(mode="json"))}}]
+        }
+
+        with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key"}):
+            with mock.patch("server.app.rca.llm_client.chat_completions", return_value=mock_resp):
+                tree = generate_controlled_ai_tree(
+                    task_id="t1",
+                    evidence=evidence,
+                    analyzer_result=analysis,
+                    probe_manifest=manifest,
+                )
+
+        assert tree == analysis.controlled_ai_tree
 
 
 # ── Prompt 模板 ──

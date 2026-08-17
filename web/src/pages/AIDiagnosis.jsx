@@ -11,6 +11,7 @@ import {
   InputNumber,
   List,
   Modal,
+  Popover,
   Row,
   Select,
   Space,
@@ -22,8 +23,6 @@ import {
   message,
 } from "antd";
 import {
-  CheckOutlined,
-  CloseOutlined,
   ExperimentOutlined,
   MinusCircleOutlined,
   PlusOutlined,
@@ -32,8 +31,6 @@ import {
   SafetyCertificateOutlined,
 } from "@ant-design/icons";
 import {
-  approveDiagnosisProbe,
-  approveWaitingDiagnosisProbes,
   createDiagnosisSession,
   getDiagnosisSession,
   listAgents,
@@ -65,6 +62,117 @@ const STATUS_COLORS = {
 
 function Status({ value }) {
   return <Tag color={STATUS_COLORS[value] || "default"}>{value || "UNKNOWN"}</Tag>;
+}
+
+function normalizeSourceContext(value = {}) {
+  const sourcePaths = String(value.source_paths_text || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const payload = {
+    source_paths: sourcePaths,
+    repo_revision: value.repo_revision || undefined,
+    language: value.language || undefined,
+    symbol_map_paths: [],
+    build_id: value.build_id || undefined,
+    container_workdir: value.container_workdir || undefined,
+  };
+  return Object.values(payload).some((item) => (Array.isArray(item) ? item.length > 0 : Boolean(item)))
+    ? payload
+    : null;
+}
+
+function ControlledAITreeView({ tree, evidenceMap }) {
+  const layers = tree.layers || [];
+  const edges = tree.probe_edges || [];
+  return (
+    <Card
+      title="受控 AI 树"
+      extra={<Tag color={tree.final_supported_level === "line" ? "green" : "blue"}>停在 {tree.final_supported_level}</Tag>}
+    >
+      <Alert
+        type={tree.probe_edges?.length ? "warning" : "success"}
+        showIcon
+        message={tree.stop_reason || "AI 树已按当前证据边界停止。"}
+        description={`预算：AI rounds ${tree.budget?.used_ai_rounds || 0}/${tree.budget?.max_ai_rounds || 0}，探针请求 ${tree.budget?.used_probe_requests || 0}/${tree.budget?.max_probe_requests_per_round || 0}`}
+        style={{ marginBottom: 12 }}
+      />
+      <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+        {layers.map((layer, index) => {
+          const edge = edges.find((item) => item.from_layer_id === layer.layer_id);
+          return (
+            <Card
+              key={layer.layer_id}
+              size="small"
+              type="inner"
+              title={<Space><Tag color="geekblue">Layer {layer.depth}</Tag><Typography.Text>{layer.summary}</Typography.Text></Space>}
+            >
+              <CandidateGroup title="主因候选" color="red" items={layer.primary_causes} evidenceMap={evidenceMap} />
+              <CandidateGroup title="次因候选" color="orange" items={layer.secondary_causes} evidenceMap={evidenceMap} />
+              <CandidateGroup title="反证/降级候选" color="default" items={layer.rejected_causes} evidenceMap={evidenceMap} muted />
+              <CandidateGroup title="未知候选" color="blue" items={layer.unknown_causes} evidenceMap={evidenceMap} />
+              {edge && (
+                <div style={{ marginTop: 12, padding: 12, border: "1px dashed #91caff", borderRadius: 8, background: "#f0f7ff" }}>
+                  <Space wrap>
+                    <Tag color="blue">探针边</Tag>
+                    {(edge.probe_requests || []).map((request) => <Tag key={request}>{request}</Tag>)}
+                    <Tag color={edge.reuse_status === "reuse_hit" ? "green" : "gold"}>{edge.reuse_status}</Tag>
+                    <Tag>{edge.effect}</Tag>
+                  </Space>
+                  <Typography.Paragraph type="secondary" style={{ margin: "8px 0 0" }}>
+                    {edge.reason || `从 Layer ${index} 请求补证后进入下一层。`}
+                  </Typography.Paragraph>
+                </div>
+              )}
+            </Card>
+          );
+        })}
+      </Space>
+    </Card>
+  );
+}
+
+function CandidateGroup({ title, color, items = [], evidenceMap, muted = false }) {
+  if (!items.length) return null;
+  return (
+    <div style={{ marginBottom: 10, opacity: muted ? 0.58 : 1 }}>
+      <Typography.Text strong>{title}</Typography.Text>
+      <Space wrap style={{ marginLeft: 8 }}>
+        {items.map((item) => (
+          <Popover
+            key={item.candidate_id}
+            trigger="hover"
+            placement="topLeft"
+            content={<CandidatePopover item={item} evidenceMap={evidenceMap} />}
+          >
+            <Tag color={color} style={{ cursor: "pointer", marginBottom: 6 }}>
+              {item.candidate_id} · {item.supported_level} · {Math.round((item.confidence || 0) * 100)}%
+            </Tag>
+          </Popover>
+        ))}
+      </Space>
+    </div>
+  );
+}
+
+function CandidatePopover({ item, evidenceMap }) {
+  const challenge = item.self_challenge || {};
+  return (
+    <Space direction="vertical" size={4} style={{ maxWidth: 520 }}>
+      <Typography.Text strong>{item.claim}</Typography.Text>
+      <Typography.Text type="secondary">为什么是它：{challenge.why_this_claim || "未说明"}</Typography.Text>
+      <Typography.Text type="secondary">为什么不是其他：{challenge.why_not_other_claims || "未说明"}</Typography.Text>
+      <Typography.Text type="secondary">改变结论条件：{challenge.what_would_change_my_mind || "未说明"}</Typography.Text>
+      <Space wrap>
+        {(item.evidence_refs || []).map((ref) => (
+          <Tag key={ref} color={evidenceMap?.has(ref) ? "blue" : "gold"}>{ref}</Tag>
+        ))}
+      </Space>
+      {(challenge.missing_evidence || []).length > 0 && (
+        <Typography.Text type="warning">缺失：{challenge.missing_evidence.join("；")}</Typography.Text>
+      )}
+    </Space>
+  );
 }
 
 export default function AIDiagnosis() {
@@ -131,8 +239,10 @@ export default function AIDiagnosis() {
         host_id: item.host_id,
         agent_id: item.agent_id,
         pid: item.pid,
+        container_id: item.container_id || undefined,
         environment: item.environment || values.environment,
       }));
+      const sourceContext = normalizeSourceContext(values.source_context);
       const detail = await createDiagnosisSession({
         query: values.query,
         context: {
@@ -140,15 +250,13 @@ export default function AIDiagnosis() {
           environment: values.environment,
           instances,
           dependencies: values.dependencies || [],
+          source_context: sourceContext || undefined,
         },
         budget_profile: values.budget_profile,
-        auto_execute_policy: values.auto_execute_policy,
       });
       setSelected(detail);
       await refreshSessions();
-      message.success(values.auto_execute_policy === "all_registered"
-        ? "诊断会话已创建；开发模式会自动批准 AI 树补证探针"
-        : "诊断会话已创建；系统将先复用已有证据并运行低风险探针");
+      message.success("诊断会话已创建；系统会自动执行已注册采集器，无法自动完成的事项会单独提示");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -161,43 +269,6 @@ export default function AIDiagnosis() {
     setError("");
     try {
       setSelected(await getDiagnosisSession(id));
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function decideProbe(stepId, decision) {
-    if (!selected) return;
-    setLoading(true);
-    try {
-      const detail = await approveDiagnosisProbe(selected.diagnosis_id, {
-        step_id: stepId,
-        decision,
-        scope: "single_execution",
-        approver_id: "demo_user",
-      });
-      setSelected(detail);
-      message.success(decision === "approve" ? "已批准本次探针" : "已拒绝本次探针");
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function approveWaitingProbes() {
-    if (!selected) return;
-    setLoading(true);
-    try {
-      const detail = await approveWaitingDiagnosisProbes(selected.diagnosis_id, {
-        decision: "approve",
-        scope: "all_waiting",
-        approver_id: "demo_user",
-      });
-      setSelected(detail);
-      message.success("已批准当前所有待采集探针");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -296,7 +367,7 @@ export default function AIDiagnosis() {
       <Alert
         type="info"
         showIcon
-        message="诊断智能体只可选择已注册探针；R2 深度采样必须逐次审批，R3 变更仅生成建议。"
+        message="诊断会自动执行已注册采集器；任意 shell、宿主机 sysctl、服务变更和修复动作仍只生成建议，不会自动执行。"
       />
       {error && <Alert type="error" showIcon closable message={error} onClose={() => setError("")} />}
 
@@ -309,7 +380,6 @@ export default function AIDiagnosis() {
               initialValues={{
                 environment: "production",
                 budget_profile: "production_safe",
-                auto_execute_policy: "safe_only",
                 target_service: "service-a",
                 instances: [{
                   service_id: "service-a",
@@ -343,13 +413,33 @@ export default function AIDiagnosis() {
                     ]} />
                   </Form.Item>
                 </Col>
+              </Row>
+
+              <Typography.Title level={5}>源码上下文（可选，用于代码行级定位）</Typography.Title>
+              <Row gutter={12}>
                 <Col xs={24} md={12}>
-                  <Form.Item name="auto_execute_policy" label="执行策略">
-                    <Select options={[
-                      { value: "safe_only", label: "仅自动执行低风险" },
-                      { value: "all_registered", label: "自动批准 AI 树补证（开发）" },
-                      { value: "manual", label: "全部人工审批" },
-                    ]} />
+                  <Form.Item name={["source_context", "source_paths_text"]} label="源码路径">
+                    <Input placeholder="/repo/service-a/src, /repo/common/src" />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={12}>
+                  <Form.Item name={["source_context", "repo_revision"]} label="Repo Revision">
+                    <Input placeholder="git commit / tag" />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={8}>
+                  <Form.Item name={["source_context", "language"]} label="语言">
+                    <Input placeholder="java / go / python / node" />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={8}>
+                  <Form.Item name={["source_context", "build_id"]} label="Build ID">
+                    <Input placeholder="镜像 digest / build id" />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={8}>
+                  <Form.Item name={["source_context", "container_workdir"]} label="容器工作目录">
+                    <Input placeholder="/app" />
                   </Form.Item>
                 </Col>
               </Row>
@@ -397,6 +487,11 @@ export default function AIDiagnosis() {
                           <Col xs={24} md={8}>
                             <Form.Item name={[field.name, "pid"]} label="目标 PID" rules={[{ required: true }]}>
                               <InputNumber min={1} max={4194304} style={{ width: "100%" }} />
+                            </Form.Item>
+                          </Col>
+                          <Col xs={24} md={8}>
+                            <Form.Item name={[field.name, "container_id"]} label="容器 ID（可选）">
+                              <Input placeholder="用于 Docker 日志和进程回连" />
                             </Form.Item>
                           </Col>
                           <Col xs={24} md={8}>
@@ -488,13 +583,13 @@ export default function AIDiagnosis() {
       </Row>
 
       <Spin spinning={loading}>
-        {selected ? <DiagnosisDetail detail={selected} onDecision={decideProbe} onApproveWaiting={approveWaitingProbes} /> : <Card><Empty description="创建或打开一个诊断会话以查看假设、探针和证据" /></Card>}
+        {selected ? <DiagnosisDetail detail={selected} /> : <Card><Empty description="创建或打开一个诊断会话以查看假设、探针和证据" /></Card>}
       </Spin>
     </Space>
   );
 }
 
-function DiagnosisDetail({ detail, onDecision, onApproveWaiting }) {
+function DiagnosisDetail({ detail }) {
   const conclusion = detail.latest_conclusion;
   const candidates = conclusion?.root_cause_candidates || [];
   const assessment = conclusion?.cluster_assessment;
@@ -525,7 +620,12 @@ function DiagnosisDetail({ detail, onDecision, onApproveWaiting }) {
   const initialBudget = Math.max(0, totalBudget - followUpReserve);
   const usedBudget = Number(budgetUsed.probe_duration_seconds || 0);
   const isTerminal = TERMINAL.has(detail.status);
-  const waitingProbeCount = probes.filter((item) => item.status === "WAITING_APPROVAL").length;
+  const manualActionProbes = probes.filter((item) => (
+    item.status === "WAITING_APPROVAL"
+    || item.status === "UNAVAILABLE"
+    || item.status === "REJECTED_POLICY"
+    || item.status === "FAILED"
+  ));
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
@@ -607,6 +707,10 @@ function DiagnosisDetail({ detail, onDecision, onApproveWaiting }) {
             <Alert type="warning" message="限制与缺失证据" description={conclusion.limitations.join("；")} style={{ marginTop: 12 }} />
           )}
         </Card>
+      )}
+
+      {conclusion?.controlled_ai_tree && (
+        <ControlledAITreeView tree={conclusion.controlled_ai_tree} evidenceMap={evidenceMap} />
       )}
 
       {traceProfiles.length > 0 && (
@@ -772,19 +876,12 @@ function DiagnosisDetail({ detail, onDecision, onApproveWaiting }) {
           </Card>
         </Col>
         <Col xs={24} xl={12}>
-          <Card
-            title="受控探针与审批"
-            extra={!isTerminal && waitingProbeCount > 0 ? (
-              <Button size="small" type="primary" icon={<CheckOutlined />} onClick={onApproveWaiting}>
-                一键批准当前待采集
-              </Button>
-            ) : null}
-          >
-            {!isTerminal && waitingProbeCount > 0 && (
+          <Card title="自动采集状态">
+            {manualActionProbes.length > 0 && (
               <Alert
-                type="info"
+                type="warning"
                 showIcon
-                message="只批准当前 WAITING_APPROVAL 的注册探针；仍受 R2 预算和并发预算限制，不执行任意命令。"
+                message="以下项目需要人工处理或外部环境调整；普通已注册采集器会自动执行。"
                 style={{ marginBottom: 12 }}
               />
             )}
@@ -800,15 +897,23 @@ function DiagnosisDetail({ detail, onDecision, onApproveWaiting }) {
               dataSource={probes}
               locale={{ emptyText: "尚未规划探针" }}
               renderItem={(item) => (
-                <List.Item
-                  actions={!isTerminal && item.status === "WAITING_APPROVAL" ? [
-                    <Button key="approve" size="small" type="primary" icon={<CheckOutlined />} onClick={() => onDecision(item.step_id, "approve")}>单次批准</Button>,
-                    <Button key="reject" size="small" danger icon={<CloseOutlined />} onClick={() => onDecision(item.step_id, "reject")}>拒绝</Button>,
-                  ] : []}
-                >
+                <List.Item>
                   <List.Item.Meta
                     title={<Space><Typography.Text>{item.probe_id}</Typography.Text><Tag color={item.risk_level === "R2" ? "orange" : "green"}>{item.risk_level}</Tag><Status value={item.status} /></Space>}
-                    description={`${item.reason} · ${item.parameters?.duration_sec || 0}s`}
+                    description={(
+                      <Space direction="vertical" size={2}>
+                        <Typography.Text type="secondary">{`${item.reason} · ${item.parameters?.duration_sec || 0}s`}</Typography.Text>
+                        {item.parameters?.collector_fingerprint && (
+                          <Typography.Text copyable type="secondary">fingerprint: {item.parameters.collector_fingerprint.slice(0, 24)}...</Typography.Text>
+                        )}
+                        {item.status === "WAITING_APPROVAL" && (
+                          <Typography.Text type="warning">需要人工处理：当前策略或外部边界不允许自动执行。</Typography.Text>
+                        )}
+                        {item.status === "UNAVAILABLE" && (
+                          <Typography.Text type="danger">需要人工处理：目标 Agent 未注册该采集器或当前离线。</Typography.Text>
+                        )}
+                      </Space>
+                    )}
                   />
                 </List.Item>
               )}

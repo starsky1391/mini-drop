@@ -24,6 +24,7 @@ def collect_evidence(
     agent_stats: dict | None = None,
     evidence_index: dict | None = None,
     tool_results: list[dict] | None = None,
+    source_context: dict | None = None,
 ) -> EvidenceInput:
     """从各数据源汇总结构化证据。
 
@@ -61,6 +62,7 @@ def collect_evidence(
         agent_stats=agent_stats or {},
         evidence_index=evidence_index or {},
         tool_results=tool_results or [],
+        source_context=source_context or None,
         suggestions=suggestions or [],
         failure_events=failure_events or [],
     )
@@ -109,6 +111,9 @@ def _build_llm_payload(
         parts["evidence_index"] = _compact_index(evidence.evidence_index)
         if _has_requested_evidence_index_ref(requested_refs):
             parts["evidence_index_raw"] = _compact_index(evidence.evidence_index)
+
+    if evidence.source_context:
+        parts["source_context"] = _compact_index(evidence.source_context)
 
     if evidence.tool_results:
         parts["tool_results"] = evidence.tool_results

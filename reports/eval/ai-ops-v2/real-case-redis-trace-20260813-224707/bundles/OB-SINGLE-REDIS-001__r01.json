@@ -1,0 +1,5306 @@
+{
+  "schema_version": "1.0",
+  "diagnosis_id": "diag_session_20260813_144735_bae03699",
+  "run": {
+    "status": "PARTIAL_COMPLETED",
+    "created_at": "2026-08-13T14:47:35.251975Z",
+    "updated_at": "2026-08-13T14:49:03.302571Z",
+    "model_version": "deepseek-v4-flash",
+    "planner_version": "diagnosis-orchestrator-v1",
+    "policy_profile": "development",
+    "normalized_intent": {
+      "intent_type": "performance_diagnosis",
+      "symptom": "io_degradation",
+      "target_service": "cartservice",
+      "environment": "production",
+      "time_range": {
+        "start": "2026-08-13T14:17:33.180043Z",
+        "end": "2026-08-13T14:47:33.180043Z",
+        "source": "default_window"
+      },
+      "scope": {
+        "self": true,
+        "same_host": true,
+        "downstream_hops": 1
+      },
+      "constraints": {
+        "no_high_risk_probe": true,
+        "registered_probes_only": true,
+        "no_automatic_remediation": true
+      },
+      "ambiguities": []
+    },
+    "target_scope": {
+      "target_service": "cartservice",
+      "environment": "production",
+      "instances": [
+        {
+          "service_id": "cartservice",
+          "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+          "host_id": "worker2",
+          "agent_id": "linux-worker-2",
+          "pid": 20061,
+          "container_id": "ae49eccd3d1c37d8f318bc1c0cdab7876ae2cac7d7cbb5c03f59998e97568982",
+          "environment": "production"
+        },
+        {
+          "service_id": "redis-cart",
+          "instance_id": "redis-cart-worker2-19771-r1-1786632442-1",
+          "host_id": "worker2",
+          "agent_id": "linux-worker-2",
+          "pid": 19771,
+          "container_id": "2711705d0d8d31b0ab1e3198196ce5613a5ccd2e31788df686e54fdca88c3330",
+          "environment": "production"
+        }
+      ],
+      "same_host_instance_ids": [
+        "redis-cart-worker2-19771-r1-1786632442-1"
+      ],
+      "downstream_service_ids": [],
+      "dependency_targets": [
+        {
+          "dependency_id": "redis-cart",
+          "source_service": "cartservice",
+          "target_service": "redis-cart",
+          "relation": "READS_FROM",
+          "protocol": "redis",
+          "host": "redis-cart",
+          "port": 6379,
+          "url": "redis://redis-cart:6379",
+          "path": null,
+          "confidence": "high",
+          "source": "ai_ops_v2_fixture"
+        }
+      ],
+      "max_topology_hops": 1
+    },
+    "budget_used": {
+      "hosts": 1,
+      "service_instances": 2,
+      "probes": 8,
+      "medium_risk_probes": 3,
+      "probe_duration_seconds": 110,
+      "model_calls": 1,
+      "artifact_size_mb": 0.068
+    }
+  },
+  "trace": [
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 1,
+      "stage": "workflow",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "diagnosis_created",
+      "summary": "diagnosis created",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-13T14:47:35.251975Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 2,
+      "stage": "intent",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "intent_parsed",
+      "summary": "intent parsed",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-13T14:47:35.260276Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 3,
+      "stage": "probe_plan",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "plan_created",
+      "summary": "plan created",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-13T14:47:35.275573Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 4,
+      "stage": "evidence",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "existing_data_analysis_started",
+      "summary": "existing data analysis started",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-13T14:47:35.280779Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 5,
+      "stage": "probe_plan",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "probe_started",
+      "summary": "probe started",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-13T14:47:35.659213Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 6,
+      "stage": "evidence",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "evidence_analysis_started",
+      "summary": "evidence analysis started",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-13T14:48:51.940463Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 7,
+      "stage": "probe_plan",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "followup_probe_blocked",
+      "summary": "followup probe blocked",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "evidence_gap": "baseline_window_profile",
+        "probe_id": "process_baseline_window",
+        "reason": "总采集时长预算已用尽 (140/120s)",
+        "execution_policy": "all_registered"
+      },
+      "recorded_at": "2026-08-13T14:48:52.184748Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 8,
+      "stage": "probe_plan",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "followup_probe_blocked",
+      "summary": "followup probe blocked",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "evidence_gap": "cpu_profile",
+        "probe_id": "process_cpu_profile",
+        "reason": "总采集时长预算已用尽 (125/120s)",
+        "execution_policy": "all_registered"
+      },
+      "recorded_at": "2026-08-13T14:48:52.189904Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 9,
+      "stage": "evidence",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "followup_evidence_requested",
+      "summary": "followup evidence requested",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "evidence_gaps": [
+          "trace_endpoint_profile",
+          "log_scan",
+          "off_cpu_wait_profile"
+        ]
+      },
+      "recorded_at": "2026-08-13T14:48:52.194618Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 10,
+      "stage": "evidence",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "evidence_analysis_started",
+      "summary": "evidence analysis started",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-13T14:49:02.962904Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 11,
+      "stage": "probe_plan",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "followup_probe_blocked",
+      "summary": "followup probe blocked",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "evidence_gap": "baseline_window_profile",
+        "probe_id": "process_baseline_window",
+        "reason": "总采集时长预算已用尽 (140/120s)",
+        "execution_policy": "all_registered"
+      },
+      "recorded_at": "2026-08-13T14:49:03.266058Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 12,
+      "stage": "probe_plan",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "followup_probe_blocked",
+      "summary": "followup probe blocked",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "evidence_gap": "cpu_profile",
+        "probe_id": "process_cpu_profile",
+        "reason": "总采集时长预算已用尽 (125/120s)",
+        "execution_policy": "all_registered"
+      },
+      "recorded_at": "2026-08-13T14:49:03.276892Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 13,
+      "stage": "conclusion",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "conclusion_generated",
+      "summary": "conclusion generated",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-13T14:49:03.288113Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 14,
+      "stage": "conclusion",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "diagnosis_completed",
+      "summary": "diagnosis completed",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-13T14:49:03.295342Z",
+      "reconstructed": false
+    }
+  ],
+  "runtime_trace": [
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 1,
+      "stage": "workflow",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "diagnosis_created",
+      "summary": "diagnosis created",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-13T14:47:35.251975Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 2,
+      "stage": "intent",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "intent_parsed",
+      "summary": "intent parsed",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-13T14:47:35.260276Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 3,
+      "stage": "probe_plan",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "plan_created",
+      "summary": "plan created",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-13T14:47:35.275573Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 4,
+      "stage": "evidence",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "existing_data_analysis_started",
+      "summary": "existing data analysis started",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-13T14:47:35.280779Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 5,
+      "stage": "probe_plan",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "probe_started",
+      "summary": "probe started",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-13T14:47:35.659213Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 6,
+      "stage": "evidence",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "evidence_analysis_started",
+      "summary": "evidence analysis started",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-13T14:48:51.940463Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 7,
+      "stage": "probe_plan",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "followup_probe_blocked",
+      "summary": "followup probe blocked",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "evidence_gap": "baseline_window_profile",
+        "probe_id": "process_baseline_window",
+        "reason": "总采集时长预算已用尽 (140/120s)",
+        "execution_policy": "all_registered"
+      },
+      "recorded_at": "2026-08-13T14:48:52.184748Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 8,
+      "stage": "probe_plan",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "followup_probe_blocked",
+      "summary": "followup probe blocked",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "evidence_gap": "cpu_profile",
+        "probe_id": "process_cpu_profile",
+        "reason": "总采集时长预算已用尽 (125/120s)",
+        "execution_policy": "all_registered"
+      },
+      "recorded_at": "2026-08-13T14:48:52.189904Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 9,
+      "stage": "evidence",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "followup_evidence_requested",
+      "summary": "followup evidence requested",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "evidence_gaps": [
+          "trace_endpoint_profile",
+          "log_scan",
+          "off_cpu_wait_profile"
+        ]
+      },
+      "recorded_at": "2026-08-13T14:48:52.194618Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 10,
+      "stage": "evidence",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "evidence_analysis_started",
+      "summary": "evidence analysis started",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-13T14:49:02.962904Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 11,
+      "stage": "probe_plan",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "followup_probe_blocked",
+      "summary": "followup probe blocked",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "evidence_gap": "baseline_window_profile",
+        "probe_id": "process_baseline_window",
+        "reason": "总采集时长预算已用尽 (140/120s)",
+        "execution_policy": "all_registered"
+      },
+      "recorded_at": "2026-08-13T14:49:03.266058Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 12,
+      "stage": "probe_plan",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "followup_probe_blocked",
+      "summary": "followup probe blocked",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {
+        "evidence_gap": "cpu_profile",
+        "probe_id": "process_cpu_profile",
+        "reason": "总采集时长预算已用尽 (125/120s)",
+        "execution_policy": "all_registered"
+      },
+      "recorded_at": "2026-08-13T14:49:03.276892Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 13,
+      "stage": "conclusion",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "conclusion_generated",
+      "summary": "conclusion generated",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-13T14:49:03.288113Z",
+      "reconstructed": false
+    },
+    {
+      "schema_version": "1.0",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "sequence": 14,
+      "stage": "conclusion",
+      "component": "mini_drop.diagnosis_orchestrator",
+      "decision": "diagnosis_completed",
+      "summary": "diagnosis completed",
+      "input_refs": [],
+      "output_refs": [],
+      "evidence_refs": [],
+      "alternatives": [],
+      "details": {},
+      "recorded_at": "2026-08-13T14:49:03.295342Z",
+      "reconstructed": false
+    }
+  ],
+  "topology_snapshot": {
+    "snapshot_id": "topo_20260813_144735_cccaf885",
+    "effective_at": "2026-08-13T14:47:33.180043Z",
+    "generated_at": "2026-08-13T14:47:35.210968Z",
+    "nodes": [
+      {
+        "id": "cartservice",
+        "type": "Service",
+        "environment": "production"
+      },
+      {
+        "id": "cartservice-worker2-20061-r1-1786632442-0",
+        "type": "ServiceInstance",
+        "service_id": "cartservice",
+        "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+        "host_id": "worker2",
+        "agent_id": "linux-worker-2",
+        "pid": 20061,
+        "container_id": "ae49eccd3d1c37d8f318bc1c0cdab7876ae2cac7d7cbb5c03f59998e97568982",
+        "environment": "production"
+      },
+      {
+        "id": "worker2",
+        "type": "Host"
+      },
+      {
+        "id": "linux-worker-2:20061",
+        "type": "Process",
+        "agent_id": "linux-worker-2",
+        "pid": 20061
+      },
+      {
+        "id": "redis-cart",
+        "type": "Service",
+        "environment": "production"
+      },
+      {
+        "id": "redis-cart-worker2-19771-r1-1786632442-1",
+        "type": "ServiceInstance",
+        "service_id": "redis-cart",
+        "instance_id": "redis-cart-worker2-19771-r1-1786632442-1",
+        "host_id": "worker2",
+        "agent_id": "linux-worker-2",
+        "pid": 19771,
+        "container_id": "2711705d0d8d31b0ab1e3198196ce5613a5ccd2e31788df686e54fdca88c3330",
+        "environment": "production"
+      },
+      {
+        "id": "linux-worker-2:19771",
+        "type": "Process",
+        "agent_id": "linux-worker-2",
+        "pid": 19771
+      }
+    ],
+    "edges": [
+      {
+        "source": "cartservice-worker2-20061-r1-1786632442-0",
+        "target": "worker2",
+        "type": "DEPLOYED_ON",
+        "confidence": "high"
+      },
+      {
+        "source": "cartservice-worker2-20061-r1-1786632442-0",
+        "target": "linux-worker-2:20061",
+        "type": "RUNS_AS",
+        "confidence": "high"
+      },
+      {
+        "source": "redis-cart-worker2-19771-r1-1786632442-1",
+        "target": "worker2",
+        "type": "DEPLOYED_ON",
+        "confidence": "high"
+      },
+      {
+        "source": "redis-cart-worker2-19771-r1-1786632442-1",
+        "target": "linux-worker-2:19771",
+        "type": "RUNS_AS",
+        "confidence": "high"
+      },
+      {
+        "source": "cartservice",
+        "target": "redis-cart",
+        "type": "READS_FROM",
+        "effective_from": null,
+        "effective_to": null,
+        "confidence": "high",
+        "discovery_source": "ai_ops_v2_fixture"
+      }
+    ],
+    "source_versions": {
+      "request_context": "v1"
+    },
+    "confidence_summary": {
+      "level": "high",
+      "source": "request_context",
+      "historical_snapshot": true
+    }
+  },
+  "probes": [
+    {
+      "step_id": "step_e8007c44ba34f9",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "probe_id": "host_process_metrics",
+      "target": {
+        "service_id": "cartservice",
+        "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+        "host_id": "worker2",
+        "agent_id": "linux-worker-2",
+        "pid": 20061,
+        "container_id": "ae49eccd3d1c37d8f318bc1c0cdab7876ae2cac7d7cbb5c03f59998e97568982",
+        "environment": "production"
+      },
+      "parameters": {
+        "duration_sec": 15,
+        "sample_rate": 11,
+        "evidence_gap": "",
+        "execution_policy": "all_registered",
+        "collector_invocation": {
+          "schema_version": "1.0",
+          "scope_source": "diagnosis_target_scope",
+          "collector_family": "sys_metrics",
+          "probe_id": "host_process_metrics",
+          "target_config": {},
+          "target_context": {
+            "agent_id": "linux-worker-2",
+            "service_id": "cartservice",
+            "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+            "host_id": "worker2",
+            "pid": 20061
+          },
+          "diagnosis_id": "diag_session_20260813_144735_bae03699",
+          "diagnosis_step_id": "step_e8007c44ba34f9"
+        }
+      },
+      "reason": "用于区分 CPU_SATURATION, HOST_MEMORY_PRESSURE, HOST_DISK_CONTENTION 等候选假设",
+      "risk_level": "R1",
+      "status": "COMPLETED",
+      "requires_approval": false,
+      "task_id": "task_20260813_144735_e8a455",
+      "approved_by": null,
+      "approved_at": null,
+      "created_at": "2026-08-13T14:47:35.289429Z",
+      "updated_at": "2026-08-13T14:47:52.232480Z"
+    },
+    {
+      "step_id": "step_fcba49fc2004fd",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "probe_id": "process_dependency_check",
+      "target": {
+        "service_id": "cartservice",
+        "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+        "host_id": "worker2",
+        "agent_id": "linux-worker-2",
+        "pid": 20061,
+        "container_id": "ae49eccd3d1c37d8f318bc1c0cdab7876ae2cac7d7cbb5c03f59998e97568982",
+        "environment": "production"
+      },
+      "parameters": {
+        "duration_sec": 10,
+        "sample_rate": 1,
+        "evidence_gap": "dependency_check",
+        "execution_policy": "all_registered",
+        "target_config": {
+          "dependency_targets": [
+            {
+              "dependency_id": "redis-cart",
+              "protocol": "redis",
+              "host": "redis-cart",
+              "port": 6379,
+              "url": "redis://redis-cart:6379",
+              "path": "/"
+            }
+          ]
+        },
+        "targets": [
+          {
+            "dependency_id": "redis-cart",
+            "protocol": "redis",
+            "host": "redis-cart",
+            "port": 6379,
+            "url": "redis://redis-cart:6379",
+            "path": "/"
+          }
+        ],
+        "collector_invocation": {
+          "schema_version": "1.0",
+          "scope_source": "diagnosis_target_scope",
+          "collector_family": "dependency_check",
+          "probe_id": "process_dependency_check",
+          "target_config": {
+            "dependency_targets": [
+              {
+                "dependency_id": "redis-cart",
+                "protocol": "redis",
+                "host": "redis-cart",
+                "port": 6379,
+                "url": "redis://redis-cart:6379",
+                "path": "/"
+              }
+            ]
+          },
+          "target_context": {
+            "agent_id": "linux-worker-2",
+            "service_id": "cartservice",
+            "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+            "host_id": "worker2",
+            "pid": 20061
+          },
+          "diagnosis_id": "diag_session_20260813_144735_bae03699",
+          "diagnosis_step_id": "step_fcba49fc2004fd"
+        }
+      },
+      "reason": "用于区分 DOWNSTREAM_LATENCY, NETWORK_DEGRADATION 等候选假设",
+      "risk_level": "R1",
+      "status": "COMPLETED",
+      "requires_approval": false,
+      "task_id": "task_20260813_144735_ab9e18",
+      "approved_by": null,
+      "approved_at": null,
+      "created_at": "2026-08-13T14:47:35.334238Z",
+      "updated_at": "2026-08-13T14:47:58.433160Z"
+    },
+    {
+      "step_id": "step_2ed0d980c6868c",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "probe_id": "process_redis_check",
+      "target": {
+        "service_id": "cartservice",
+        "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+        "host_id": "worker2",
+        "agent_id": "linux-worker-2",
+        "pid": 20061,
+        "container_id": "ae49eccd3d1c37d8f318bc1c0cdab7876ae2cac7d7cbb5c03f59998e97568982",
+        "environment": "production"
+      },
+      "parameters": {
+        "duration_sec": 10,
+        "sample_rate": 1,
+        "evidence_gap": "redis_check",
+        "execution_policy": "all_registered",
+        "target_config": {
+          "redis_target": {
+            "dependency_id": "redis-cart",
+            "protocol": "redis",
+            "host": "redis-cart",
+            "port": 6379,
+            "url": "redis://redis-cart:6379"
+          },
+          "dependency_targets": [
+            {
+              "dependency_id": "redis-cart",
+              "protocol": "redis",
+              "host": "redis-cart",
+              "port": 6379,
+              "url": "redis://redis-cart:6379",
+              "path": "/"
+            }
+          ]
+        },
+        "dependency_targets": [
+          {
+            "dependency_id": "redis-cart",
+            "protocol": "redis",
+            "host": "redis-cart",
+            "port": 6379,
+            "url": "redis://redis-cart:6379",
+            "path": "/"
+          }
+        ],
+        "dependency_id": "redis-cart",
+        "protocol": "redis",
+        "host": "redis-cart",
+        "port": 6379,
+        "url": "redis://redis-cart:6379",
+        "collector_invocation": {
+          "schema_version": "1.0",
+          "scope_source": "diagnosis_target_scope",
+          "collector_family": "redis_check",
+          "probe_id": "process_redis_check",
+          "target_config": {
+            "redis_target": {
+              "dependency_id": "redis-cart",
+              "protocol": "redis",
+              "host": "redis-cart",
+              "port": 6379,
+              "url": "redis://redis-cart:6379"
+            },
+            "dependency_targets": [
+              {
+                "dependency_id": "redis-cart",
+                "protocol": "redis",
+                "host": "redis-cart",
+                "port": 6379,
+                "url": "redis://redis-cart:6379",
+                "path": "/"
+              }
+            ]
+          },
+          "target_context": {
+            "agent_id": "linux-worker-2",
+            "service_id": "cartservice",
+            "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+            "host_id": "worker2",
+            "pid": 20061
+          },
+          "diagnosis_id": "diag_session_20260813_144735_bae03699",
+          "diagnosis_step_id": "step_2ed0d980c6868c"
+        }
+      },
+      "reason": "用于区分 DOWNSTREAM_LATENCY, MEMORY_LEAK, NETWORK_DEGRADATION 等候选假设",
+      "risk_level": "R1",
+      "status": "COMPLETED",
+      "requires_approval": false,
+      "task_id": "task_20260813_144735_08c886",
+      "approved_by": null,
+      "approved_at": null,
+      "created_at": "2026-08-13T14:47:35.379842Z",
+      "updated_at": "2026-08-13T14:48:06.668736Z"
+    },
+    {
+      "step_id": "step_d92be14a42b990",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "probe_id": "process_log_scan",
+      "target": {
+        "service_id": "cartservice",
+        "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+        "host_id": "worker2",
+        "agent_id": "linux-worker-2",
+        "pid": 20061,
+        "container_id": "ae49eccd3d1c37d8f318bc1c0cdab7876ae2cac7d7cbb5c03f59998e97568982",
+        "environment": "production"
+      },
+      "parameters": {
+        "duration_sec": 15,
+        "sample_rate": 1,
+        "evidence_gap": "log_scan",
+        "execution_policy": "all_registered",
+        "target_config": {
+          "log_paths": []
+        },
+        "collector_invocation": {
+          "schema_version": "1.0",
+          "scope_source": "diagnosis_target_scope",
+          "collector_family": "log_scan",
+          "probe_id": "process_log_scan",
+          "target_config": {
+            "log_paths": []
+          },
+          "target_context": {
+            "agent_id": "linux-worker-2",
+            "service_id": "cartservice",
+            "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+            "host_id": "worker2",
+            "pid": 20061
+          },
+          "diagnosis_id": "diag_session_20260813_144735_bae03699",
+          "diagnosis_step_id": "step_d92be14a42b990"
+        }
+      },
+      "reason": "用于区分 DOWNSTREAM_LATENCY, NETWORK_DEGRADATION, MEMORY_LEAK 等候选假设",
+      "risk_level": "R1",
+      "status": "FAILED",
+      "requires_approval": false,
+      "task_id": "task_20260813_144735_281f5f",
+      "approved_by": null,
+      "approved_at": null,
+      "created_at": "2026-08-13T14:47:35.418465Z",
+      "updated_at": "2026-08-13T14:48:12.867450Z"
+    },
+    {
+      "step_id": "step_86679d2caf4f65",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "probe_id": "process_io_latency",
+      "target": {
+        "service_id": "cartservice",
+        "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+        "host_id": "worker2",
+        "agent_id": "linux-worker-2",
+        "pid": 20061,
+        "container_id": "ae49eccd3d1c37d8f318bc1c0cdab7876ae2cac7d7cbb5c03f59998e97568982",
+        "environment": "production"
+      },
+      "parameters": {
+        "duration_sec": 15,
+        "sample_rate": 11,
+        "evidence_gap": "",
+        "execution_policy": "all_registered",
+        "collector_invocation": {
+          "schema_version": "1.0",
+          "scope_source": "diagnosis_target_scope",
+          "collector_family": "ebpf_io",
+          "probe_id": "process_io_latency",
+          "target_config": {},
+          "target_context": {
+            "agent_id": "linux-worker-2",
+            "service_id": "cartservice",
+            "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+            "host_id": "worker2",
+            "pid": 20061
+          },
+          "diagnosis_id": "diag_session_20260813_144735_bae03699",
+          "diagnosis_step_id": "step_86679d2caf4f65"
+        }
+      },
+      "reason": "用于区分 HOST_DISK_CONTENTION, SAME_HOST_NOISY_NEIGHBOR 等候选假设",
+      "risk_level": "R2",
+      "status": "COMPLETED",
+      "requires_approval": false,
+      "task_id": "task_20260813_144735_07c6b4",
+      "approved_by": null,
+      "approved_at": null,
+      "created_at": "2026-08-13T14:47:35.468986Z",
+      "updated_at": "2026-08-13T14:48:16.973675Z"
+    },
+    {
+      "step_id": "step_6fc76a18730361",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "probe_id": "process_off_cpu_profile",
+      "target": {
+        "service_id": "cartservice",
+        "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+        "host_id": "worker2",
+        "agent_id": "linux-worker-2",
+        "pid": 20061,
+        "container_id": "ae49eccd3d1c37d8f318bc1c0cdab7876ae2cac7d7cbb5c03f59998e97568982",
+        "environment": "production"
+      },
+      "parameters": {
+        "duration_sec": 15,
+        "sample_rate": 49,
+        "evidence_gap": "off_cpu_wait_profile",
+        "execution_policy": "all_registered",
+        "target_config": {
+          "pid": 20061,
+          "service_id": "cartservice",
+          "instance_id": "cartservice-worker2-20061-r1-1786632442-0"
+        },
+        "min_wait_ms": 1,
+        "stack_depth": 32,
+        "collector_invocation": {
+          "schema_version": "1.0",
+          "scope_source": "diagnosis_target_scope",
+          "collector_family": "off_cpu_wait_profile",
+          "probe_id": "process_off_cpu_profile",
+          "target_config": {
+            "pid": 20061,
+            "service_id": "cartservice",
+            "instance_id": "cartservice-worker2-20061-r1-1786632442-0"
+          },
+          "target_context": {
+            "agent_id": "linux-worker-2",
+            "service_id": "cartservice",
+            "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+            "host_id": "worker2",
+            "pid": 20061
+          },
+          "diagnosis_id": "diag_session_20260813_144735_bae03699",
+          "diagnosis_step_id": "step_6fc76a18730361"
+        }
+      },
+      "reason": "用于区分 LOCK_CONTENTION, HOST_DISK_CONTENTION, SELF_CODE_REGRESSION 等候选假设",
+      "risk_level": "R2",
+      "status": "FAILED",
+      "requires_approval": false,
+      "task_id": "task_20260813_144735_f3e035",
+      "approved_by": null,
+      "approved_at": null,
+      "created_at": "2026-08-13T14:47:35.509146Z",
+      "updated_at": "2026-08-13T14:48:37.526350Z"
+    },
+    {
+      "step_id": "step_00213999760b7e",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "probe_id": "host_process_metrics",
+      "target": {
+        "service_id": "redis-cart",
+        "instance_id": "redis-cart-worker2-19771-r1-1786632442-1",
+        "host_id": "worker2",
+        "agent_id": "linux-worker-2",
+        "pid": 19771,
+        "container_id": "2711705d0d8d31b0ab1e3198196ce5613a5ccd2e31788df686e54fdca88c3330",
+        "environment": "production"
+      },
+      "parameters": {
+        "duration_sec": 15,
+        "sample_rate": 11,
+        "evidence_gap": "",
+        "execution_policy": "all_registered",
+        "collector_invocation": {
+          "schema_version": "1.0",
+          "scope_source": "diagnosis_target_scope",
+          "collector_family": "sys_metrics",
+          "probe_id": "host_process_metrics",
+          "target_config": {},
+          "target_context": {
+            "agent_id": "linux-worker-2",
+            "service_id": "redis-cart",
+            "instance_id": "redis-cart-worker2-19771-r1-1786632442-1",
+            "host_id": "worker2",
+            "pid": 19771
+          },
+          "diagnosis_id": "diag_session_20260813_144735_bae03699",
+          "diagnosis_step_id": "step_00213999760b7e"
+        }
+      },
+      "reason": "用于区分 CPU_SATURATION, HOST_MEMORY_PRESSURE, HOST_DISK_CONTENTION 等候选假设",
+      "risk_level": "R1",
+      "status": "COMPLETED",
+      "requires_approval": false,
+      "task_id": "task_20260813_144735_4b34b5",
+      "approved_by": null,
+      "approved_at": null,
+      "created_at": "2026-08-13T14:47:35.545940Z",
+      "updated_at": "2026-08-13T14:48:51.924362Z"
+    },
+    {
+      "step_id": "step_38d332db0439a8",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "probe_id": "process_trace_endpoint_profile",
+      "target": {
+        "service_id": "redis-cart",
+        "instance_id": "redis-cart-worker2-19771-r1-1786632442-1",
+        "host_id": "worker2",
+        "agent_id": "linux-worker-2",
+        "pid": 19771,
+        "container_id": "2711705d0d8d31b0ab1e3198196ce5613a5ccd2e31788df686e54fdca88c3330",
+        "environment": "production"
+      },
+      "parameters": {
+        "duration_sec": 15,
+        "sample_rate": 11,
+        "evidence_gap": "trace_endpoint_profile",
+        "parent_task_id": "task_20260813_144735_4b34b5",
+        "execution_policy": "all_registered",
+        "collector_invocation": {
+          "schema_version": "1.0",
+          "scope_source": "diagnosis_target_scope",
+          "collector_family": "trace_endpoint_profile",
+          "probe_id": "process_trace_endpoint_profile",
+          "target_config": {},
+          "target_context": {
+            "agent_id": "linux-worker-2",
+            "service_id": "redis-cart",
+            "instance_id": "redis-cart-worker2-19771-r1-1786632442-1",
+            "host_id": "worker2",
+            "pid": 19771
+          },
+          "diagnosis_id": "diag_session_20260813_144735_bae03699",
+          "diagnosis_step_id": "step_38d332db0439a8"
+        }
+      },
+      "reason": "AI 树请求补充证据: trace_endpoint_profile",
+      "risk_level": "R2",
+      "status": "FAILED",
+      "requires_approval": false,
+      "task_id": "task_20260813_144852_74d6d7",
+      "approved_by": null,
+      "approved_at": null,
+      "created_at": "2026-08-13T14:48:52.159483Z",
+      "updated_at": "2026-08-13T14:49:02.950343Z"
+    }
+  ],
+  "child_task_ids": [
+    "task_20260813_144735_e8a455",
+    "task_20260813_144735_ab9e18",
+    "task_20260813_144735_08c886",
+    "task_20260813_144735_281f5f",
+    "task_20260813_144735_07c6b4",
+    "task_20260813_144735_f3e035",
+    "task_20260813_144735_4b34b5",
+    "task_20260813_144852_74d6d7"
+  ],
+  "tasks": [
+    {
+      "id": "task_20260813_144735_e8a455",
+      "name": "AI诊断:主机与进程系统指标:cartservice",
+      "agent_id": "linux-worker-2",
+      "target_pid": 20061,
+      "collector_type": "sys_metrics",
+      "sample_rate": 11,
+      "duration_sec": 15,
+      "status": "DONE",
+      "status_reason": "系统多维指标分析已生成",
+      "request_params": {
+        "name": "AI诊断:主机与进程系统指标:cartservice",
+        "agent_id": "linux-worker-2",
+        "target_pid": 20061,
+        "collector_type": "sys_metrics",
+        "sample_rate": 11,
+        "duration_sec": 15,
+        "options": {
+          "diagnosis_id": "diag_session_20260813_144735_bae03699",
+          "diagnosis_step_id": "step_e8007c44ba34f9",
+          "probe_id": "host_process_metrics",
+          "registered_probe": true,
+          "collector_context": {
+            "task_id": "diag_session_20260813_144735_bae03699",
+            "collector_kind": "sys_metrics",
+            "target_pid": 20061,
+            "agent_id": "linux-worker-2",
+            "service_id": "cartservice",
+            "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+            "host_id": "worker2"
+          },
+          "collector_invocation": {
+            "schema_version": "1.0",
+            "scope_source": "diagnosis_target_scope",
+            "collector_family": "sys_metrics",
+            "probe_id": "host_process_metrics",
+            "target_config": {},
+            "target_context": {
+              "agent_id": "linux-worker-2",
+              "service_id": "cartservice",
+              "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+              "host_id": "worker2",
+              "pid": 20061
+            },
+            "diagnosis_id": "diag_session_20260813_144735_bae03699",
+            "diagnosis_step_id": "step_e8007c44ba34f9"
+          }
+        }
+      },
+      "created_at": "2026-08-13T14:47:35.302559Z",
+      "started_at": "2026-08-13T14:47:36.359817Z",
+      "finished_at": "2026-08-13T14:47:51.426713Z"
+    },
+    {
+      "id": "task_20260813_144735_ab9e18",
+      "name": "AI诊断:下游依赖可达性检测:cartservice",
+      "agent_id": "linux-worker-2",
+      "target_pid": 20061,
+      "collector_type": "dependency_check",
+      "sample_rate": 1,
+      "duration_sec": 10,
+      "status": "DONE",
+      "status_reason": "结构化采集证据已生成",
+      "request_params": {
+        "name": "AI诊断:下游依赖可达性检测:cartservice",
+        "agent_id": "linux-worker-2",
+        "target_pid": 20061,
+        "collector_type": "dependency_check",
+        "sample_rate": 1,
+        "duration_sec": 10,
+        "options": {
+          "diagnosis_id": "diag_session_20260813_144735_bae03699",
+          "diagnosis_step_id": "step_fcba49fc2004fd",
+          "probe_id": "process_dependency_check",
+          "registered_probe": true,
+          "target_config": {
+            "dependency_targets": [
+              {
+                "dependency_id": "redis-cart",
+                "protocol": "redis",
+                "host": "redis-cart",
+                "port": 6379,
+                "url": "redis://redis-cart:6379",
+                "path": "/"
+              }
+            ]
+          },
+          "targets": [
+            {
+              "dependency_id": "redis-cart",
+              "protocol": "redis",
+              "host": "redis-cart",
+              "port": 6379,
+              "url": "redis://redis-cart:6379",
+              "path": "/"
+            }
+          ],
+          "collector_context": {
+            "task_id": "diag_session_20260813_144735_bae03699",
+            "collector_kind": "dependency_check",
+            "target_pid": 20061,
+            "agent_id": "linux-worker-2",
+            "service_id": "cartservice",
+            "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+            "host_id": "worker2"
+          },
+          "collector_invocation": {
+            "schema_version": "1.0",
+            "scope_source": "diagnosis_target_scope",
+            "collector_family": "dependency_check",
+            "probe_id": "process_dependency_check",
+            "target_config": {
+              "dependency_targets": [
+                {
+                  "dependency_id": "redis-cart",
+                  "protocol": "redis",
+                  "host": "redis-cart",
+                  "port": 6379,
+                  "url": "redis://redis-cart:6379",
+                  "path": "/"
+                }
+              ]
+            },
+            "target_context": {
+              "agent_id": "linux-worker-2",
+              "service_id": "cartservice",
+              "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+              "host_id": "worker2",
+              "pid": 20061
+            },
+            "diagnosis_id": "diag_session_20260813_144735_bae03699",
+            "diagnosis_step_id": "step_fcba49fc2004fd"
+          }
+        }
+      },
+      "created_at": "2026-08-13T14:47:35.345611Z",
+      "started_at": "2026-08-13T14:47:51.442882Z",
+      "finished_at": "2026-08-13T14:47:56.460741Z"
+    },
+    {
+      "id": "task_20260813_144735_08c886",
+      "name": "AI诊断:Redis 专项检查:cartservice",
+      "agent_id": "linux-worker-2",
+      "target_pid": 20061,
+      "collector_type": "redis_check",
+      "sample_rate": 1,
+      "duration_sec": 10,
+      "status": "DONE",
+      "status_reason": "结构化采集证据已生成",
+      "request_params": {
+        "name": "AI诊断:Redis 专项检查:cartservice",
+        "agent_id": "linux-worker-2",
+        "target_pid": 20061,
+        "collector_type": "redis_check",
+        "sample_rate": 1,
+        "duration_sec": 10,
+        "options": {
+          "diagnosis_id": "diag_session_20260813_144735_bae03699",
+          "diagnosis_step_id": "step_2ed0d980c6868c",
+          "probe_id": "process_redis_check",
+          "registered_probe": true,
+          "target_config": {
+            "redis_target": {
+              "dependency_id": "redis-cart",
+              "protocol": "redis",
+              "host": "redis-cart",
+              "port": 6379,
+              "url": "redis://redis-cart:6379"
+            },
+            "dependency_targets": [
+              {
+                "dependency_id": "redis-cart",
+                "protocol": "redis",
+                "host": "redis-cart",
+                "port": 6379,
+                "url": "redis://redis-cart:6379",
+                "path": "/"
+              }
+            ]
+          },
+          "dependency_targets": [
+            {
+              "dependency_id": "redis-cart",
+              "protocol": "redis",
+              "host": "redis-cart",
+              "port": 6379,
+              "url": "redis://redis-cart:6379",
+              "path": "/"
+            }
+          ],
+          "dependency_id": "redis-cart",
+          "protocol": "redis",
+          "host": "redis-cart",
+          "port": 6379,
+          "url": "redis://redis-cart:6379",
+          "collector_context": {
+            "task_id": "diag_session_20260813_144735_bae03699",
+            "collector_kind": "redis_check",
+            "target_pid": 20061,
+            "agent_id": "linux-worker-2",
+            "service_id": "cartservice",
+            "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+            "host_id": "worker2"
+          },
+          "collector_invocation": {
+            "schema_version": "1.0",
+            "scope_source": "diagnosis_target_scope",
+            "collector_family": "redis_check",
+            "probe_id": "process_redis_check",
+            "target_config": {
+              "redis_target": {
+                "dependency_id": "redis-cart",
+                "protocol": "redis",
+                "host": "redis-cart",
+                "port": 6379,
+                "url": "redis://redis-cart:6379"
+              },
+              "dependency_targets": [
+                {
+                  "dependency_id": "redis-cart",
+                  "protocol": "redis",
+                  "host": "redis-cart",
+                  "port": 6379,
+                  "url": "redis://redis-cart:6379",
+                  "path": "/"
+                }
+              ]
+            },
+            "target_context": {
+              "agent_id": "linux-worker-2",
+              "service_id": "cartservice",
+              "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+              "host_id": "worker2",
+              "pid": 20061
+            },
+            "diagnosis_id": "diag_session_20260813_144735_bae03699",
+            "diagnosis_step_id": "step_2ed0d980c6868c"
+          }
+        }
+      },
+      "created_at": "2026-08-13T14:47:35.389679Z",
+      "started_at": "2026-08-13T14:47:56.471919Z",
+      "finished_at": "2026-08-13T14:48:06.499954Z"
+    },
+    {
+      "id": "task_20260813_144735_281f5f",
+      "name": "AI诊断:日志窗口扫描:cartservice",
+      "agent_id": "linux-worker-2",
+      "target_pid": 20061,
+      "collector_type": "log_scan",
+      "sample_rate": 1,
+      "duration_sec": 15,
+      "status": "FAILED",
+      "status_reason": "工业日志采集器输出为空或不是 JSON/NDJSON",
+      "request_params": {
+        "name": "AI诊断:日志窗口扫描:cartservice",
+        "agent_id": "linux-worker-2",
+        "target_pid": 20061,
+        "collector_type": "log_scan",
+        "sample_rate": 1,
+        "duration_sec": 15,
+        "options": {
+          "diagnosis_id": "diag_session_20260813_144735_bae03699",
+          "diagnosis_step_id": "step_d92be14a42b990",
+          "probe_id": "process_log_scan",
+          "registered_probe": true,
+          "target_config": {
+            "log_paths": []
+          },
+          "collector_context": {
+            "task_id": "diag_session_20260813_144735_bae03699",
+            "collector_kind": "log_scan",
+            "target_pid": 20061,
+            "agent_id": "linux-worker-2",
+            "service_id": "cartservice",
+            "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+            "host_id": "worker2"
+          },
+          "collector_invocation": {
+            "schema_version": "1.0",
+            "scope_source": "diagnosis_target_scope",
+            "collector_family": "log_scan",
+            "probe_id": "process_log_scan",
+            "target_config": {
+              "log_paths": []
+            },
+            "target_context": {
+              "agent_id": "linux-worker-2",
+              "service_id": "cartservice",
+              "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+              "host_id": "worker2",
+              "pid": 20061
+            },
+            "diagnosis_id": "diag_session_20260813_144735_bae03699",
+            "diagnosis_step_id": "step_d92be14a42b990"
+          }
+        }
+      },
+      "created_at": "2026-08-13T14:47:35.436315Z",
+      "started_at": "2026-08-13T14:48:06.509812Z",
+      "finished_at": "2026-08-13T14:48:11.516458Z"
+    },
+    {
+      "id": "task_20260813_144735_07c6b4",
+      "name": "AI诊断:块设备 I/O 延迟:cartservice",
+      "agent_id": "linux-worker-2",
+      "target_pid": 20061,
+      "collector_type": "ebpf_io",
+      "sample_rate": 11,
+      "duration_sec": 15,
+      "status": "DONE",
+      "status_reason": "eBPF IO 延迟分布已生成",
+      "request_params": {
+        "name": "AI诊断:块设备 I/O 延迟:cartservice",
+        "agent_id": "linux-worker-2",
+        "target_pid": 20061,
+        "collector_type": "ebpf_io",
+        "sample_rate": 11,
+        "duration_sec": 15,
+        "options": {
+          "diagnosis_id": "diag_session_20260813_144735_bae03699",
+          "diagnosis_step_id": "step_86679d2caf4f65",
+          "probe_id": "process_io_latency",
+          "registered_probe": true,
+          "collector_context": {
+            "task_id": "diag_session_20260813_144735_bae03699",
+            "collector_kind": "ebpf_io",
+            "target_pid": 20061,
+            "agent_id": "linux-worker-2",
+            "service_id": "cartservice",
+            "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+            "host_id": "worker2"
+          },
+          "collector_invocation": {
+            "schema_version": "1.0",
+            "scope_source": "diagnosis_target_scope",
+            "collector_family": "ebpf_io",
+            "probe_id": "process_io_latency",
+            "target_config": {},
+            "target_context": {
+              "agent_id": "linux-worker-2",
+              "service_id": "cartservice",
+              "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+              "host_id": "worker2",
+              "pid": 20061
+            },
+            "diagnosis_id": "diag_session_20260813_144735_bae03699",
+            "diagnosis_step_id": "step_86679d2caf4f65"
+          }
+        }
+      },
+      "created_at": "2026-08-13T14:47:35.479263Z",
+      "started_at": "2026-08-13T14:48:11.525991Z",
+      "finished_at": "2026-08-13T14:48:16.546585Z"
+    },
+    {
+      "id": "task_20260813_144735_f3e035",
+      "name": "AI诊断:进程 Off-CPU Wait Profile:cartservice",
+      "agent_id": "linux-worker-2",
+      "target_pid": 20061,
+      "collector_type": "off_cpu_wait_profile",
+      "sample_rate": 49,
+      "duration_sec": 15,
+      "status": "FAILED",
+      "status_reason": "bpftrace off-CPU 未产出等待栈: empty_bpftrace_output",
+      "request_params": {
+        "name": "AI诊断:进程 Off-CPU Wait Profile:cartservice",
+        "agent_id": "linux-worker-2",
+        "target_pid": 20061,
+        "collector_type": "off_cpu_wait_profile",
+        "sample_rate": 49,
+        "duration_sec": 15,
+        "options": {
+          "diagnosis_id": "diag_session_20260813_144735_bae03699",
+          "diagnosis_step_id": "step_6fc76a18730361",
+          "probe_id": "process_off_cpu_profile",
+          "registered_probe": true,
+          "target_config": {
+            "pid": 20061,
+            "service_id": "cartservice",
+            "instance_id": "cartservice-worker2-20061-r1-1786632442-0"
+          },
+          "min_wait_ms": 1,
+          "stack_depth": 32,
+          "collector_context": {
+            "task_id": "diag_session_20260813_144735_bae03699",
+            "collector_kind": "off_cpu_wait_profile",
+            "target_pid": 20061,
+            "agent_id": "linux-worker-2",
+            "service_id": "cartservice",
+            "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+            "host_id": "worker2"
+          },
+          "collector_invocation": {
+            "schema_version": "1.0",
+            "scope_source": "diagnosis_target_scope",
+            "collector_family": "off_cpu_wait_profile",
+            "probe_id": "process_off_cpu_profile",
+            "target_config": {
+              "pid": 20061,
+              "service_id": "cartservice",
+              "instance_id": "cartservice-worker2-20061-r1-1786632442-0"
+            },
+            "target_context": {
+              "agent_id": "linux-worker-2",
+              "service_id": "cartservice",
+              "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+              "host_id": "worker2",
+              "pid": 20061
+            },
+            "diagnosis_id": "diag_session_20260813_144735_bae03699",
+            "diagnosis_step_id": "step_6fc76a18730361"
+          }
+        }
+      },
+      "created_at": "2026-08-13T14:47:35.516960Z",
+      "started_at": "2026-08-13T14:48:16.554549Z",
+      "finished_at": "2026-08-13T14:48:36.585966Z"
+    },
+    {
+      "id": "task_20260813_144735_4b34b5",
+      "name": "AI诊断:主机与进程系统指标:redis-cart",
+      "agent_id": "linux-worker-2",
+      "target_pid": 19771,
+      "collector_type": "sys_metrics",
+      "sample_rate": 11,
+      "duration_sec": 15,
+      "status": "DONE",
+      "status_reason": "系统多维指标分析已生成",
+      "request_params": {
+        "name": "AI诊断:主机与进程系统指标:redis-cart",
+        "agent_id": "linux-worker-2",
+        "target_pid": 19771,
+        "collector_type": "sys_metrics",
+        "sample_rate": 11,
+        "duration_sec": 15,
+        "options": {
+          "diagnosis_id": "diag_session_20260813_144735_bae03699",
+          "diagnosis_step_id": "step_00213999760b7e",
+          "probe_id": "host_process_metrics",
+          "registered_probe": true,
+          "collector_context": {
+            "task_id": "diag_session_20260813_144735_bae03699",
+            "collector_kind": "sys_metrics",
+            "target_pid": 19771,
+            "agent_id": "linux-worker-2",
+            "service_id": "redis-cart",
+            "instance_id": "redis-cart-worker2-19771-r1-1786632442-1",
+            "host_id": "worker2"
+          },
+          "collector_invocation": {
+            "schema_version": "1.0",
+            "scope_source": "diagnosis_target_scope",
+            "collector_family": "sys_metrics",
+            "probe_id": "host_process_metrics",
+            "target_config": {},
+            "target_context": {
+              "agent_id": "linux-worker-2",
+              "service_id": "redis-cart",
+              "instance_id": "redis-cart-worker2-19771-r1-1786632442-1",
+              "host_id": "worker2",
+              "pid": 19771
+            },
+            "diagnosis_id": "diag_session_20260813_144735_bae03699",
+            "diagnosis_step_id": "step_00213999760b7e"
+          }
+        }
+      },
+      "created_at": "2026-08-13T14:47:35.564819Z",
+      "started_at": "2026-08-13T14:48:36.596001Z",
+      "finished_at": "2026-08-13T14:48:51.627266Z"
+    },
+    {
+      "id": "task_20260813_144852_74d6d7",
+      "name": "AI诊断:进程调用链上下文采样:redis-cart",
+      "agent_id": "linux-worker-2",
+      "target_pid": 19771,
+      "collector_type": "trace_endpoint_profile",
+      "sample_rate": 11,
+      "duration_sec": 15,
+      "status": "FAILED",
+      "status_reason": "perf_event_paranoid 权限不足。请执行 'echo 1 > /proc/sys/kernel/perf_event_paranoid' 或使用 root 运行 Agent",
+      "request_params": {
+        "name": "AI诊断:进程调用链上下文采样:redis-cart",
+        "agent_id": "linux-worker-2",
+        "target_pid": 19771,
+        "collector_type": "trace_endpoint_profile",
+        "sample_rate": 11,
+        "duration_sec": 15,
+        "options": {
+          "diagnosis_id": "diag_session_20260813_144735_bae03699",
+          "diagnosis_step_id": "step_38d332db0439a8",
+          "probe_id": "process_trace_endpoint_profile",
+          "registered_probe": true,
+          "collector_context": {
+            "task_id": "diag_session_20260813_144735_bae03699",
+            "collector_kind": "trace_endpoint_profile",
+            "target_pid": 19771,
+            "agent_id": "linux-worker-2",
+            "service_id": "redis-cart",
+            "instance_id": "redis-cart-worker2-19771-r1-1786632442-1",
+            "host_id": "worker2"
+          },
+          "collector_invocation": {
+            "schema_version": "1.0",
+            "scope_source": "diagnosis_target_scope",
+            "collector_family": "trace_endpoint_profile",
+            "probe_id": "process_trace_endpoint_profile",
+            "target_config": {},
+            "target_context": {
+              "agent_id": "linux-worker-2",
+              "service_id": "redis-cart",
+              "instance_id": "redis-cart-worker2-19771-r1-1786632442-1",
+              "host_id": "worker2",
+              "pid": 19771
+            },
+            "diagnosis_id": "diag_session_20260813_144735_bae03699",
+            "diagnosis_step_id": "step_38d332db0439a8"
+          }
+        }
+      },
+      "created_at": "2026-08-13T14:48:52.164844Z",
+      "started_at": "2026-08-13T14:48:56.648073Z",
+      "finished_at": "2026-08-13T14:49:01.704723Z"
+    }
+  ],
+  "artifacts": [
+    {
+      "task_id": "task_20260813_144735_e8a455",
+      "artifact_type": "sys_metrics",
+      "bucket": "mini-drop",
+      "object_key": "tasks/task_20260813_144735_e8a455/sys_metrics.json",
+      "filename": "sys_metrics.json",
+      "local_path": "/tmp/mini-drop/task_20260813_144735_e8a455/sys_metrics.json",
+      "content_type": "application/json",
+      "size_bytes": 10106,
+      "metadata": {
+        "avg_cpu_user_pct": 0.1,
+        "avg_cpu_sys_pct": 0.1,
+        "avg_cpu_iowait_pct": 0.2,
+        "thread_count": 24,
+        "thread_trend": "stable",
+        "fd_count": 206,
+        "fd_trend": "stable",
+        "fd_max": 206,
+        "vmrss_mb": 48.4,
+        "vmrss_mb_max": 48.4,
+        "ctx_voluntary_rate": 0.0,
+        "ctx_nonvoluntary_rate": 0.0,
+        "net_rx_kbps": 0.1,
+        "net_tx_kbps": 0.1,
+        "load1m": 0.12
+      }
+    },
+    {
+      "task_id": "task_20260813_144735_ab9e18",
+      "artifact_type": "dependency_check_json",
+      "bucket": "mini-drop",
+      "object_key": "tasks/task_20260813_144735_ab9e18/dependency_check.json",
+      "filename": "dependency_check.json",
+      "local_path": "/tmp/mini-drop/task_20260813_144735_ab9e18/dependency_check.json",
+      "content_type": "application/json",
+      "size_bytes": 2081,
+      "metadata": {
+        "total_targets": 1,
+        "dns_failures": 0,
+        "tcp_failures": 0,
+        "http_failures": 0,
+        "tls_failures": 0,
+        "adapter_failures": 0
+      }
+    },
+    {
+      "task_id": "task_20260813_144735_08c886",
+      "artifact_type": "redis_check_json",
+      "bucket": "mini-drop",
+      "object_key": "tasks/task_20260813_144735_08c886/redis_check.json",
+      "filename": "redis_check.json",
+      "local_path": "/tmp/mini-drop/task_20260813_144735_08c886/redis_check.json",
+      "content_type": "application/json",
+      "size_bytes": 2726,
+      "metadata": {
+        "exporter_up": false,
+        "connected_clients": 0,
+        "slowlog_entry_count": 0,
+        "max_latency_ms": 0.0
+      }
+    },
+    {
+      "task_id": "task_20260813_144735_07c6b4",
+      "artifact_type": "ebpf_metrics",
+      "bucket": "mini-drop",
+      "object_key": "tasks/task_20260813_144735_07c6b4/ebpf_metrics.json",
+      "filename": "ebpf_metrics.json",
+      "local_path": "/tmp/mini-drop/task_20260813_144735_07c6b4/ebpf_metrics.json",
+      "content_type": "application/json",
+      "size_bytes": 47,
+      "metadata": {}
+    },
+    {
+      "task_id": "task_20260813_144735_07c6b4",
+      "artifact_type": "ebpf_raw",
+      "bucket": "mini-drop",
+      "object_key": "tasks/task_20260813_144735_07c6b4/io_latency.txt",
+      "filename": "io_latency.txt",
+      "local_path": "/tmp/mini-drop/task_20260813_144735_07c6b4/io_latency.txt",
+      "content_type": "text/plain",
+      "size_bytes": 22,
+      "metadata": {}
+    },
+    {
+      "task_id": "task_20260813_144735_4b34b5",
+      "artifact_type": "sys_metrics",
+      "bucket": "mini-drop",
+      "object_key": "tasks/task_20260813_144735_4b34b5/sys_metrics.json",
+      "filename": "sys_metrics.json",
+      "local_path": "/tmp/mini-drop/task_20260813_144735_4b34b5/sys_metrics.json",
+      "content_type": "application/json",
+      "size_bytes": 10091,
+      "metadata": {
+        "avg_cpu_user_pct": 0.1,
+        "avg_cpu_sys_pct": 0.1,
+        "avg_cpu_iowait_pct": 0.0,
+        "thread_count": 6,
+        "thread_trend": "stable",
+        "fd_count": 22,
+        "fd_trend": "stable",
+        "fd_max": 22,
+        "vmrss_mb": 5.8,
+        "vmrss_mb_max": 5.8,
+        "ctx_voluntary_rate": 0.0,
+        "ctx_nonvoluntary_rate": 0.0,
+        "net_rx_kbps": 0.1,
+        "net_tx_kbps": 0.1,
+        "load1m": 0.08
+      }
+    }
+  ],
+  "evidence": [
+    {
+      "evidence_id": "ev_0cfd7c23eb009fb933c6",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "task_event",
+      "source_system": "mini_drop",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 20061
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:47:36.359817+00:00",
+        "end": "2026-08-13T14:47:51.426713+00:00",
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:51.951180Z",
+      "query_or_probe": "sys_metrics",
+      "raw_artifact_ref": null,
+      "derived_artifact_ref": "task:task_20260813_144735_e8a455",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "task_id": "task_20260813_144735_e8a455",
+        "status": "DONE",
+        "status_reason": "系统多维指标分析已生成",
+        "collector_type": "sys_metrics",
+        "agent_id": "linux-worker-2",
+        "target_pid": 20061
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "high"
+      },
+      "integrity_hash": "sha256:29b45c96180bff6e6e949c73296cb8f82308312be120b64698b6f0df6cfc92fd",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_70d513613d59c98d7a69",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "derived_artifact",
+      "source_system": "mini_drop_analyzer",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 20061
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:47:36.359817+00:00",
+        "end": "2026-08-13T14:47:51.426713+00:00",
+        "sampling_period_seconds": 15,
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:51.958292Z",
+      "query_or_probe": "sys_metrics",
+      "raw_artifact_ref": "task:task_20260813_144735_e8a455:artifact:structured_evidence_json",
+      "derived_artifact_ref": "task:task_20260813_144735_e8a455:artifact:structured_evidence_json",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "keys": [
+          "artifact_refs",
+          "call_path_hotspots",
+          "collection_mode",
+          "confidence_inputs",
+          "dependency_check_json",
+          "ebpf_metrics",
+          "evidence_cohort_id",
+          "evidence_index",
+          "log_window_json",
+          "memory_json",
+          "off_cpu_wait_json",
+          "redis_check_json",
+          "stack_summary",
+          "sys_metrics",
+          "task_id",
+          "timing_relation",
+          "top_functions",
+          "trigger_event_id",
+          "trigger_observed_at",
+          "version",
+          "window_end",
+          "window_start"
+        ],
+        "summary": {
+          "version": 1,
+          "task_id": "task_20260813_144735_e8a455",
+          "trigger_event_id": null,
+          "evidence_cohort_id": null,
+          "collection_mode": "manual_single",
+          "window_start": null,
+          "window_end": null,
+          "trigger_observed_at": null,
+          "timing_relation": "unknown",
+          "artifact_refs": [
+            {
+              "artifact_type": "sys_metrics",
+              "filename": "sys_metrics.json",
+              "content_type": "application/json",
+              "size_bytes": 10106,
+              "object_key": "tasks/task_20260813_144735_e8a455/sys_metrics.json",
+              "local_path": "/tmp/mini-drop/task_20260813_144735_e8a455/sys_metrics.json",
+              "raw_payload_policy": "references_only",
+              "evidence_ref": "task:task_20260813_144735_e8a455:artifact:sys_metrics",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            }
+          ],
+          "top_functions": [],
+          "stack_summary": {
+            "dominant_hot_frame": "",
+            "dominant_percent": 0.0,
+            "sample_count": 0,
+            "stack_sample_count": 0,
+            "has_call_path": false,
+            "has_wait_reason": false,
+            "top_wait_reason": "",
+            "total_wait_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "raw_payload_policy": "references_only",
+            "artifact_ref_count": 1,
+            "evidence_ref": "structured_evidence.stack_summary",
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "call_path_hotspots": [],
+          "evidence_index": {
+            "artifact_refs": [
+              {
+                "artifact_type": "[TRUNCATED]",
+                "filename": "[TRUNCATED]",
+                "content_type": "[TRUNCATED]",
+                "size_bytes": "[TRUNCATED]",
+                "object_key": "[TRUNCATED]",
+                "local_path": "[TRUNCATED]",
+                "raw_payload_policy": "[TRUNCATED]",
+                "evidence_ref": "[TRUNCATED]",
+                "evidence_window": "[TRUNCATED]"
+              }
+            ],
+            "stack_summary": {
+              "dominant_hot_frame": "",
+              "dominant_percent": 0.0,
+              "sample_count": 0,
+              "stack_sample_count": 0,
+              "has_call_path": false,
+              "has_wait_reason": false,
+              "top_wait_reason": "",
+              "total_wait_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "raw_payload_policy": "references_only",
+              "artifact_ref_count": 1,
+              "evidence_ref": "structured_evidence.stack_summary",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            },
+            "call_path_hotspots": [],
+            "confidence_inputs": {
+              "sample_count": 0,
+              "dominant_percent": 0.0,
+              "context_completeness": "low",
+              "has_system_pressure": true,
+              "has_wait_or_io_signal": false,
+              "has_log_signal": false,
+              "has_dependency_signal": false,
+              "has_redis_signal": false,
+              "failed_dependency_count": 0,
+              "log_error_cluster_count": 0,
+              "redis_slowlog_entry_count": 0,
+              "redis_max_latency_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "artifact_types": [
+                "[TRUNCATED]"
+              ],
+              "collector_families": [
+                "[TRUNCATED]"
+              ],
+              "token_safety": "[REDACTED]",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            },
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "confidence_inputs": {
+            "sample_count": 0,
+            "dominant_percent": 0.0,
+            "context_completeness": "low",
+            "has_system_pressure": true,
+            "has_wait_or_io_signal": false,
+            "has_log_signal": false,
+            "has_dependency_signal": false,
+            "has_redis_signal": false,
+            "failed_dependency_count": 0,
+            "log_error_cluster_count": 0,
+            "redis_slowlog_entry_count": 0,
+            "redis_max_latency_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "artifact_types": [
+              "sys_metrics"
+            ],
+            "collector_families": [
+              "sys_metrics"
+            ],
+            "token_safety": "[REDACTED]",
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "sys_metrics": {
+            "task_id": "task_20260813_144735_e8a455",
+            "pid": 20061,
+            "mode": "timeseries",
+            "duration_sec": 15,
+            "sample_count": 15,
+            "summary": {
+              "avg_cpu_user_pct": 0.1,
+              "avg_cpu_sys_pct": 0.1,
+              "avg_cpu_iowait_pct": 0.2,
+              "thread_count": 24,
+              "thread_trend": "stable",
+              "fd_count": 206,
+              "fd_trend": "stable",
+              "fd_max": 206,
+              "vmrss_mb": 48.4,
+              "vmrss_mb_max": 48.4,
+              "ctx_voluntary_rate": 0.0,
+              "ctx_nonvoluntary_rate": 0.0,
+              "net_rx_kbps": 0.1,
+              "net_tx_kbps": 0.1,
+              "load1m": 0.12
+            },
+            "samples": [
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              },
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              },
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              },
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              },
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              },
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              },
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              },
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              },
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              },
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              }
+            ]
+          },
+          "ebpf_metrics": null,
+          "memory_json": null,
+          "off_cpu_wait_json": null,
+          "log_window_json": null,
+          "dependency_check_json": null,
+          "redis_check_json": null
+        }
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "medium",
+        "size_bytes": 11429
+      },
+      "integrity_hash": "sha256:2bfaacc31cf31920415d957beb4020f18551838e35fc84c2d6db8d2524bc3bd8",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_00f76159aa960e0f7462",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "derived_artifact",
+      "source_system": "mini_drop_analyzer",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 20061
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:47:36.359817+00:00",
+        "end": "2026-08-13T14:47:51.426713+00:00",
+        "sampling_period_seconds": 15,
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:51.967308Z",
+      "query_or_probe": "sys_metrics",
+      "raw_artifact_ref": "task:task_20260813_144735_e8a455:artifact:sys_metrics",
+      "derived_artifact_ref": "tasks/task_20260813_144735_e8a455/sys_metrics.json",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "keys": [
+          "duration_sec",
+          "mode",
+          "pid",
+          "sample_count",
+          "samples",
+          "summary",
+          "task_id"
+        ],
+        "summary": {
+          "avg_cpu_user_pct": 0.1,
+          "avg_cpu_sys_pct": 0.1,
+          "avg_cpu_iowait_pct": 0.2,
+          "thread_count": 24,
+          "thread_trend": "stable",
+          "fd_count": 206,
+          "fd_trend": "stable",
+          "fd_max": 206,
+          "vmrss_mb": 48.4,
+          "vmrss_mb_max": 48.4,
+          "ctx_voluntary_rate": 0.0,
+          "ctx_nonvoluntary_rate": 0.0,
+          "net_rx_kbps": 0.1,
+          "net_tx_kbps": 0.1,
+          "load1m": 0.12
+        }
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "medium",
+        "size_bytes": 6822
+      },
+      "integrity_hash": "sha256:c194eaa57fb4cf072af89b657e0710d9c343d13b5fa2028ce7d5a000c4e6870f",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_ad6d54785317408cef24",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "task_event",
+      "source_system": "mini_drop",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 20061
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:47:51.442882+00:00",
+        "end": "2026-08-13T14:47:56.460741+00:00",
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:51.988489Z",
+      "query_or_probe": "dependency_check",
+      "raw_artifact_ref": null,
+      "derived_artifact_ref": "task:task_20260813_144735_ab9e18",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "task_id": "task_20260813_144735_ab9e18",
+        "status": "DONE",
+        "status_reason": "结构化采集证据已生成",
+        "collector_type": "dependency_check",
+        "agent_id": "linux-worker-2",
+        "target_pid": 20061
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "high"
+      },
+      "integrity_hash": "sha256:5409f4434b163f84972eb2a826ff78a8736197830c908296c77c99b82ba00b88",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_7014abbb49bdb33b9b35",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "derived_artifact",
+      "source_system": "mini_drop_analyzer",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 20061
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:47:51.442882+00:00",
+        "end": "2026-08-13T14:47:56.460741+00:00",
+        "sampling_period_seconds": 10,
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:51.995142Z",
+      "query_or_probe": "dependency_check",
+      "raw_artifact_ref": "task:task_20260813_144735_ab9e18:artifact:structured_evidence_json",
+      "derived_artifact_ref": "task:task_20260813_144735_ab9e18:artifact:structured_evidence_json",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "keys": [
+          "artifact_refs",
+          "call_path_hotspots",
+          "collection_mode",
+          "confidence_inputs",
+          "dependency_check_json",
+          "ebpf_metrics",
+          "evidence_cohort_id",
+          "evidence_index",
+          "log_window_json",
+          "memory_json",
+          "off_cpu_wait_json",
+          "redis_check_json",
+          "stack_summary",
+          "sys_metrics",
+          "task_id",
+          "timing_relation",
+          "top_functions",
+          "trigger_event_id",
+          "trigger_observed_at",
+          "version",
+          "window_end",
+          "window_start"
+        ],
+        "summary": {
+          "version": 1,
+          "task_id": "task_20260813_144735_ab9e18",
+          "trigger_event_id": null,
+          "evidence_cohort_id": null,
+          "collection_mode": "manual_single",
+          "window_start": null,
+          "window_end": null,
+          "trigger_observed_at": null,
+          "timing_relation": "unknown",
+          "artifact_refs": [
+            {
+              "artifact_type": "dependency_check_json",
+              "filename": "dependency_check.json",
+              "content_type": "application/json",
+              "size_bytes": 2081,
+              "object_key": "tasks/task_20260813_144735_ab9e18/dependency_check.json",
+              "local_path": "/tmp/mini-drop/task_20260813_144735_ab9e18/dependency_check.json",
+              "raw_payload_policy": "references_only",
+              "evidence_ref": "task:task_20260813_144735_ab9e18:artifact:dependency_check_json",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            }
+          ],
+          "top_functions": [],
+          "stack_summary": {
+            "dominant_hot_frame": "",
+            "dominant_percent": 0.0,
+            "sample_count": 0,
+            "stack_sample_count": 0,
+            "has_call_path": false,
+            "has_wait_reason": false,
+            "top_wait_reason": "",
+            "total_wait_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "raw_payload_policy": "references_only",
+            "artifact_ref_count": 1,
+            "evidence_ref": "structured_evidence.stack_summary",
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "call_path_hotspots": [],
+          "evidence_index": {
+            "artifact_refs": [
+              {
+                "artifact_type": "[TRUNCATED]",
+                "filename": "[TRUNCATED]",
+                "content_type": "[TRUNCATED]",
+                "size_bytes": "[TRUNCATED]",
+                "object_key": "[TRUNCATED]",
+                "local_path": "[TRUNCATED]",
+                "raw_payload_policy": "[TRUNCATED]",
+                "evidence_ref": "[TRUNCATED]",
+                "evidence_window": "[TRUNCATED]"
+              }
+            ],
+            "stack_summary": {
+              "dominant_hot_frame": "",
+              "dominant_percent": 0.0,
+              "sample_count": 0,
+              "stack_sample_count": 0,
+              "has_call_path": false,
+              "has_wait_reason": false,
+              "top_wait_reason": "",
+              "total_wait_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "raw_payload_policy": "references_only",
+              "artifact_ref_count": 1,
+              "evidence_ref": "structured_evidence.stack_summary",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            },
+            "call_path_hotspots": [],
+            "confidence_inputs": {
+              "sample_count": 0,
+              "dominant_percent": 0.0,
+              "context_completeness": "low",
+              "has_system_pressure": false,
+              "has_wait_or_io_signal": false,
+              "has_log_signal": false,
+              "has_dependency_signal": true,
+              "has_redis_signal": false,
+              "failed_dependency_count": 0,
+              "log_error_cluster_count": 0,
+              "redis_slowlog_entry_count": 0,
+              "redis_max_latency_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "artifact_types": [
+                "[TRUNCATED]"
+              ],
+              "collector_families": [
+                "[TRUNCATED]"
+              ],
+              "token_safety": "[REDACTED]",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            },
+            "dependency_check": {
+              "summary": {
+                "total_targets": "[TRUNCATED]",
+                "failed_dependencies": "[TRUNCATED]",
+                "dns_failures": "[TRUNCATED]",
+                "tcp_failures": "[TRUNCATED]",
+                "http_failures": "[TRUNCATED]",
+                "tls_failures": "[TRUNCATED]",
+                "adapter_failures": "[TRUNCATED]"
+              },
+              "checks": [
+                "[TRUNCATED]"
+              ]
+            },
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "confidence_inputs": {
+            "sample_count": 0,
+            "dominant_percent": 0.0,
+            "context_completeness": "low",
+            "has_system_pressure": false,
+            "has_wait_or_io_signal": false,
+            "has_log_signal": false,
+            "has_dependency_signal": true,
+            "has_redis_signal": false,
+            "failed_dependency_count": 0,
+            "log_error_cluster_count": 0,
+            "redis_slowlog_entry_count": 0,
+            "redis_max_latency_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "artifact_types": [
+              "dependency_check_json"
+            ],
+            "collector_families": [
+              "dependency_check"
+            ],
+            "token_safety": "[REDACTED]",
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "sys_metrics": null,
+          "ebpf_metrics": null,
+          "memory_json": null,
+          "off_cpu_wait_json": null,
+          "log_window_json": null,
+          "dependency_check_json": {
+            "schema_version": "1.0",
+            "task_id": "task_20260813_144735_ab9e18",
+            "collector_type": "dependency_check",
+            "collector_family": "dependency_check",
+            "trigger_event_id": null,
+            "evidence_cohort_id": null,
+            "collection_mode": "manual_single",
+            "timing_relation": "unknown",
+            "collector_invocation": {
+              "schema_version": "1.0",
+              "scope_source": "diagnosis_target_scope",
+              "collector_family": "dependency_check",
+              "probe_id": "process_dependency_check",
+              "target_config": {
+                "dependency_targets": "[TRUNCATED]"
+              },
+              "target_context": {
+                "agent_id": "[TRUNCATED]",
+                "service_id": "[TRUNCATED]",
+                "instance_id": "[TRUNCATED]",
+                "host_id": "[TRUNCATED]",
+                "pid": "[TRUNCATED]"
+              },
+              "diagnosis_id": "diag_session_20260813_144735_bae03699",
+              "diagnosis_step_id": "step_fcba49fc2004fd"
+            },
+            "adapter": {
+              "kind": "prometheus_blackbox_exporter",
+              "source": "blackbox_exporter_metrics_inline"
+            },
+            "target_pid": 20061,
+            "evidence_window": {
+              "window_start": null,
+              "window_end": null,
+              "duration_sec": 10,
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "timing_relation": "unknown"
+            },
+            "checks": [
+              {
+                "dependency_id": "[TRUNCATED]",
+                "protocol": "[TRUNCATED]",
+                "target": "[TRUNCATED]",
+                "success": "[TRUNCATED]",
+                "duration_ms": "[TRUNCATED]",
+                "dns_duration_ms": "[TRUNCATED]",
+                "tcp_connect_duration_ms": "[TRUNCATED]",
+                "tls_handshake_duration_ms": "[TRUNCATED]",
+                "http_status_code": "[TRUNCATED]",
+                "failure_phase": "[TRUNCATED]",
+                "error_type": "[TRUNCATED]",
+                "evidence_ref": "[TRUNCATED]"
+              }
+            ],
+            "summary": {
+              "total_targets": 1,
+              "failed_dependencies": [],
+              "dns_failures": 0,
+              "tcp_failures": 0,
+              "http_failures": 0,
+              "tls_failures": 0,
+              "adapter_failures": 0
+            }
+          },
+          "redis_check_json": null
+        }
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "medium",
+        "size_bytes": 6948
+      },
+      "integrity_hash": "sha256:ba54dfcbfb054ff591e21c7b13cfe01a8571a0e96a8cb9484d6527f2c3f9246d",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_62b70177397ed8a9a9c8",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "derived_artifact",
+      "source_system": "mini_drop_analyzer",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 20061
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:47:51.442882+00:00",
+        "end": "2026-08-13T14:47:56.460741+00:00",
+        "sampling_period_seconds": 10,
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:52.004899Z",
+      "query_or_probe": "dependency_check",
+      "raw_artifact_ref": "task:task_20260813_144735_ab9e18:artifact:dependency_check_json",
+      "derived_artifact_ref": "tasks/task_20260813_144735_ab9e18/dependency_check.json",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "keys": [
+          "adapter",
+          "checks",
+          "collection_mode",
+          "collector_family",
+          "collector_invocation",
+          "collector_type",
+          "evidence_cohort_id",
+          "evidence_window",
+          "schema_version",
+          "summary",
+          "target_pid",
+          "task_id",
+          "timing_relation",
+          "trigger_event_id"
+        ],
+        "summary": {
+          "total_targets": 1,
+          "failed_dependencies": [],
+          "dns_failures": 0,
+          "tcp_failures": 0,
+          "http_failures": 0,
+          "tls_failures": 0,
+          "adapter_failures": 0
+        }
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "medium",
+        "size_bytes": 1719
+      },
+      "integrity_hash": "sha256:2f0dd3a7fd9685f29286972557a0181f5fd0cff824b2929b4b3f1e0b37f38615",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_d6db5e97d5bdad25fedf",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "task_event",
+      "source_system": "mini_drop",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 20061
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:47:56.471919+00:00",
+        "end": "2026-08-13T14:48:06.499954+00:00",
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:52.015702Z",
+      "query_or_probe": "redis_check",
+      "raw_artifact_ref": null,
+      "derived_artifact_ref": "task:task_20260813_144735_08c886",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "task_id": "task_20260813_144735_08c886",
+        "status": "DONE",
+        "status_reason": "结构化采集证据已生成",
+        "collector_type": "redis_check",
+        "agent_id": "linux-worker-2",
+        "target_pid": 20061
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "high"
+      },
+      "integrity_hash": "sha256:b12629fda76fe4bfd980a5b97570d6d52d6e57476355c9ca1b1ec1d9b55e1b84",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_ced680d59e7fa6f76a09",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "derived_artifact",
+      "source_system": "mini_drop_analyzer",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 20061
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:47:56.471919+00:00",
+        "end": "2026-08-13T14:48:06.499954+00:00",
+        "sampling_period_seconds": 10,
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:52.020871Z",
+      "query_or_probe": "redis_check",
+      "raw_artifact_ref": "task:task_20260813_144735_08c886:artifact:structured_evidence_json",
+      "derived_artifact_ref": "task:task_20260813_144735_08c886:artifact:structured_evidence_json",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "keys": [
+          "artifact_refs",
+          "call_path_hotspots",
+          "collection_mode",
+          "confidence_inputs",
+          "dependency_check_json",
+          "ebpf_metrics",
+          "evidence_cohort_id",
+          "evidence_index",
+          "log_window_json",
+          "memory_json",
+          "off_cpu_wait_json",
+          "redis_check_json",
+          "stack_summary",
+          "sys_metrics",
+          "task_id",
+          "timing_relation",
+          "top_functions",
+          "trigger_event_id",
+          "trigger_observed_at",
+          "version",
+          "window_end",
+          "window_start"
+        ],
+        "summary": {
+          "version": 1,
+          "task_id": "task_20260813_144735_08c886",
+          "trigger_event_id": null,
+          "evidence_cohort_id": null,
+          "collection_mode": "manual_single",
+          "window_start": null,
+          "window_end": null,
+          "trigger_observed_at": null,
+          "timing_relation": "unknown",
+          "artifact_refs": [
+            {
+              "artifact_type": "redis_check_json",
+              "filename": "redis_check.json",
+              "content_type": "application/json",
+              "size_bytes": 2726,
+              "object_key": "tasks/task_20260813_144735_08c886/redis_check.json",
+              "local_path": "/tmp/mini-drop/task_20260813_144735_08c886/redis_check.json",
+              "raw_payload_policy": "references_only",
+              "evidence_ref": "task:task_20260813_144735_08c886:artifact:redis_check_json",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            }
+          ],
+          "top_functions": [],
+          "stack_summary": {
+            "dominant_hot_frame": "",
+            "dominant_percent": 0.0,
+            "sample_count": 0,
+            "stack_sample_count": 0,
+            "has_call_path": false,
+            "has_wait_reason": false,
+            "top_wait_reason": "",
+            "total_wait_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "raw_payload_policy": "references_only",
+            "artifact_ref_count": 1,
+            "evidence_ref": "structured_evidence.stack_summary",
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "call_path_hotspots": [],
+          "evidence_index": {
+            "artifact_refs": [
+              {
+                "artifact_type": "[TRUNCATED]",
+                "filename": "[TRUNCATED]",
+                "content_type": "[TRUNCATED]",
+                "size_bytes": "[TRUNCATED]",
+                "object_key": "[TRUNCATED]",
+                "local_path": "[TRUNCATED]",
+                "raw_payload_policy": "[TRUNCATED]",
+                "evidence_ref": "[TRUNCATED]",
+                "evidence_window": "[TRUNCATED]"
+              }
+            ],
+            "stack_summary": {
+              "dominant_hot_frame": "",
+              "dominant_percent": 0.0,
+              "sample_count": 0,
+              "stack_sample_count": 0,
+              "has_call_path": false,
+              "has_wait_reason": false,
+              "top_wait_reason": "",
+              "total_wait_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "raw_payload_policy": "references_only",
+              "artifact_ref_count": 1,
+              "evidence_ref": "structured_evidence.stack_summary",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            },
+            "call_path_hotspots": [],
+            "confidence_inputs": {
+              "sample_count": 0,
+              "dominant_percent": 0.0,
+              "context_completeness": "low",
+              "has_system_pressure": false,
+              "has_wait_or_io_signal": false,
+              "has_log_signal": false,
+              "has_dependency_signal": false,
+              "has_redis_signal": true,
+              "failed_dependency_count": 0,
+              "log_error_cluster_count": 0,
+              "redis_slowlog_entry_count": 0,
+              "redis_max_latency_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "artifact_types": [
+                "[TRUNCATED]"
+              ],
+              "collector_families": [
+                "[TRUNCATED]"
+              ],
+              "token_safety": "[REDACTED]",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            },
+            "redis_check": {
+              "connectivity": {
+                "exporter_up": "[TRUNCATED]",
+                "ping_ok": "[TRUNCATED]",
+                "latency_ms": "[TRUNCATED]",
+                "error_type": "[TRUNCATED]",
+                "evidence_ref": "[TRUNCATED]"
+              },
+              "info_summary": {
+                "connected_clients": "[TRUNCATED]",
+                "blocked_clients": "[TRUNCATED]",
+                "used_memory_bytes": "[TRUNCATED]",
+                "evicted_keys_total": "[TRUNCATED]",
+                "rejected_connections_total": "[TRUNCATED]",
+                "total_error_replies": "[TRUNCATED]",
+                "instantaneous_ops_per_sec": "[TRUNCATED]",
+                "evidence_ref": "[TRUNCATED]"
+              },
+              "slowlog_summary": {
+                "entry_count": "[TRUNCATED]",
+                "max_duration_us": "[TRUNCATED]",
+                "top_commands": "[TRUNCATED]",
+                "evidence_ref": "[TRUNCATED]"
+              },
+              "latency_summary": {
+                "max_latency_ms": "[TRUNCATED]",
+                "events": "[TRUNCATED]",
+                "evidence_ref": "[TRUNCATED]"
+              }
+            },
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "confidence_inputs": {
+            "sample_count": 0,
+            "dominant_percent": 0.0,
+            "context_completeness": "low",
+            "has_system_pressure": false,
+            "has_wait_or_io_signal": false,
+            "has_log_signal": false,
+            "has_dependency_signal": false,
+            "has_redis_signal": true,
+            "failed_dependency_count": 0,
+            "log_error_cluster_count": 0,
+            "redis_slowlog_entry_count": 0,
+            "redis_max_latency_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "artifact_types": [
+              "redis_check_json"
+            ],
+            "collector_families": [
+              "redis_check"
+            ],
+            "token_safety": "[REDACTED]",
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "sys_metrics": null,
+          "ebpf_metrics": null,
+          "memory_json": null,
+          "off_cpu_wait_json": null,
+          "log_window_json": null,
+          "dependency_check_json": null,
+          "redis_check_json": {
+            "schema_version": "1.0",
+            "task_id": "task_20260813_144735_08c886",
+            "collector_type": "redis_check",
+            "collector_family": "redis_check",
+            "trigger_event_id": null,
+            "evidence_cohort_id": null,
+            "collection_mode": "manual_single",
+            "timing_relation": "unknown",
+            "collector_invocation": {
+              "schema_version": "1.0",
+              "scope_source": "diagnosis_target_scope",
+              "collector_family": "redis_check",
+              "probe_id": "process_redis_check",
+              "target_config": {
+                "redis_target": "[TRUNCATED]",
+                "dependency_targets": "[TRUNCATED]"
+              },
+              "target_context": {
+                "agent_id": "[TRUNCATED]",
+                "service_id": "[TRUNCATED]",
+                "instance_id": "[TRUNCATED]",
+                "host_id": "[TRUNCATED]",
+                "pid": "[TRUNCATED]"
+              },
+              "diagnosis_id": "diag_session_20260813_144735_bae03699",
+              "diagnosis_step_id": "step_2ed0d980c6868c"
+            },
+            "adapter": {
+              "kind": "redis_exporter_prometheus",
+              "source": "redis_exporter_metrics_inline",
+              "available": false
+            },
+            "target_pid": 20061,
+            "evidence_window": {
+              "window_start": null,
+              "window_end": null,
+              "duration_sec": 10,
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "timing_relation": "unknown"
+            },
+            "target": {
+              "dependency_id": "redis-cart",
+              "protocol": "redis",
+              "host": "redis-cart",
+              "port": 6379,
+              "url": "redis://redis-cart:6379"
+            },
+            "connectivity": {
+              "exporter_up": false,
+              "ping_ok": false,
+              "latency_ms": 0.0,
+              "error_type": "redis_exporter_metrics_unavailable",
+              "evidence_ref": "redis_check.connectivity"
+            },
+            "info_summary": {
+              "connected_clients": 0,
+              "blocked_clients": 0,
+              "used_memory_bytes": 0,
+              "evicted_keys_total": 0,
+              "rejected_connections_total": 0,
+              "total_error_replies": 0,
+              "instantaneous_ops_per_sec": 0,
+              "evidence_ref": "redis_check.info_summary"
+            },
+            "slowlog_summary": {
+              "entry_count": 0,
+              "max_duration_us": 0,
+              "top_commands": [],
+              "evidence_ref": "redis_check.slowlog_summary"
+            },
+            "latency_summary": {
+              "max_latency_ms": 0.0,
+              "events": [],
+              "evidence_ref": "redis_check.latency_summary"
+            },
+            "evidence_refs": [
+              "redis_check.connectivity",
+              "redis_check.info_summary",
+              "redis_check.slowlog_summary",
+              "redis_check.latency_summary"
+            ]
+          }
+        }
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "medium",
+        "size_bytes": 7582
+      },
+      "integrity_hash": "sha256:7201937f3da5b79751ef9c8fafc846f5858d6e8177d787742cbb5ed3358cb199",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_87bf0eaabc739fa2bde4",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "derived_artifact",
+      "source_system": "mini_drop_analyzer",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 20061
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:47:56.471919+00:00",
+        "end": "2026-08-13T14:48:06.499954+00:00",
+        "sampling_period_seconds": 10,
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:52.028288Z",
+      "query_or_probe": "redis_check",
+      "raw_artifact_ref": "task:task_20260813_144735_08c886:artifact:redis_check_json",
+      "derived_artifact_ref": "tasks/task_20260813_144735_08c886/redis_check.json",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "keys": [
+          "adapter",
+          "collection_mode",
+          "collector_family",
+          "collector_invocation",
+          "collector_type",
+          "connectivity",
+          "evidence_cohort_id",
+          "evidence_refs",
+          "evidence_window",
+          "info_summary",
+          "latency_summary",
+          "schema_version",
+          "slowlog_summary",
+          "target",
+          "target_pid",
+          "task_id",
+          "timing_relation",
+          "trigger_event_id"
+        ],
+        "summary": {
+          "schema_version": "1.0",
+          "task_id": "task_20260813_144735_08c886",
+          "collector_type": "redis_check",
+          "collector_family": "redis_check",
+          "trigger_event_id": null,
+          "evidence_cohort_id": null,
+          "collection_mode": "manual_single",
+          "timing_relation": "unknown",
+          "collector_invocation": {
+            "schema_version": "1.0",
+            "scope_source": "diagnosis_target_scope",
+            "collector_family": "redis_check",
+            "probe_id": "process_redis_check",
+            "target_config": {
+              "redis_target": {
+                "dependency_id": "[TRUNCATED]",
+                "protocol": "[TRUNCATED]",
+                "host": "[TRUNCATED]",
+                "port": "[TRUNCATED]",
+                "url": "[TRUNCATED]"
+              },
+              "dependency_targets": [
+                "[TRUNCATED]"
+              ]
+            },
+            "target_context": {
+              "agent_id": "linux-worker-2",
+              "service_id": "cartservice",
+              "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+              "host_id": "worker2",
+              "pid": 20061
+            },
+            "diagnosis_id": "diag_session_20260813_144735_bae03699",
+            "diagnosis_step_id": "step_2ed0d980c6868c"
+          },
+          "adapter": {
+            "kind": "redis_exporter_prometheus",
+            "source": "redis_exporter_metrics_inline",
+            "available": false
+          },
+          "target_pid": 20061,
+          "evidence_window": {
+            "window_start": null,
+            "window_end": null,
+            "duration_sec": 10,
+            "trigger_event_id": null,
+            "evidence_cohort_id": null,
+            "collection_mode": "manual_single",
+            "timing_relation": "unknown"
+          },
+          "target": {
+            "dependency_id": "redis-cart",
+            "protocol": "redis",
+            "host": "redis-cart",
+            "port": 6379,
+            "url": "redis://redis-cart:6379"
+          },
+          "connectivity": {
+            "exporter_up": false,
+            "ping_ok": false,
+            "latency_ms": 0.0,
+            "error_type": "redis_exporter_metrics_unavailable",
+            "evidence_ref": "redis_check.connectivity"
+          },
+          "info_summary": {
+            "connected_clients": 0,
+            "blocked_clients": 0,
+            "used_memory_bytes": 0,
+            "evicted_keys_total": 0,
+            "rejected_connections_total": 0,
+            "total_error_replies": 0,
+            "instantaneous_ops_per_sec": 0,
+            "evidence_ref": "redis_check.info_summary"
+          },
+          "slowlog_summary": {
+            "entry_count": 0,
+            "max_duration_us": 0,
+            "top_commands": [],
+            "evidence_ref": "redis_check.slowlog_summary"
+          },
+          "latency_summary": {
+            "max_latency_ms": 0.0,
+            "events": [],
+            "evidence_ref": "redis_check.latency_summary"
+          },
+          "evidence_refs": [
+            "redis_check.connectivity",
+            "redis_check.info_summary",
+            "redis_check.slowlog_summary",
+            "redis_check.latency_summary"
+          ]
+        }
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "medium",
+        "size_bytes": 2276
+      },
+      "integrity_hash": "sha256:68e7ffccd0d083d0e42de884b880ecfd2259b8ca9d81a7098a1cab00bbe2dd33",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_90b5fbc819e1d2d9709d",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "task_event",
+      "source_system": "mini_drop",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 20061
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:48:06.509812+00:00",
+        "end": "2026-08-13T14:48:11.516458+00:00",
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:52.040956Z",
+      "query_or_probe": "log_scan",
+      "raw_artifact_ref": null,
+      "derived_artifact_ref": "task:task_20260813_144735_281f5f",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "task_id": "task_20260813_144735_281f5f",
+        "status": "FAILED",
+        "status_reason": "工业日志采集器输出为空或不是 JSON/NDJSON",
+        "collector_type": "log_scan",
+        "agent_id": "linux-worker-2",
+        "target_pid": 20061
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "low"
+      },
+      "integrity_hash": "sha256:5d1aae40099bbef8c726e6f2e34677d7793a639c7d880f1310d0bef73cc7955d",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_f68fdc53c9899fb15805",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "derived_artifact",
+      "source_system": "mini_drop_analyzer",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 20061
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:48:06.509812+00:00",
+        "end": "2026-08-13T14:48:11.516458+00:00",
+        "sampling_period_seconds": 15,
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:52.044142Z",
+      "query_or_probe": "log_scan",
+      "raw_artifact_ref": "task:task_20260813_144735_281f5f:artifact:structured_evidence_json",
+      "derived_artifact_ref": "task:task_20260813_144735_281f5f:artifact:structured_evidence_json",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "keys": [
+          "artifact_refs",
+          "call_path_hotspots",
+          "collection_mode",
+          "confidence_inputs",
+          "dependency_check_json",
+          "ebpf_metrics",
+          "evidence_cohort_id",
+          "evidence_index",
+          "log_window_json",
+          "memory_json",
+          "off_cpu_wait_json",
+          "redis_check_json",
+          "stack_summary",
+          "sys_metrics",
+          "task_id",
+          "timing_relation",
+          "top_functions",
+          "trigger_event_id",
+          "trigger_observed_at",
+          "version",
+          "window_end",
+          "window_start"
+        ],
+        "summary": {
+          "version": 1,
+          "task_id": "task_20260813_144735_281f5f",
+          "trigger_event_id": null,
+          "evidence_cohort_id": null,
+          "collection_mode": "manual_single",
+          "window_start": null,
+          "window_end": null,
+          "trigger_observed_at": null,
+          "timing_relation": "unknown",
+          "artifact_refs": [],
+          "top_functions": [],
+          "stack_summary": {
+            "dominant_hot_frame": "",
+            "dominant_percent": 0.0,
+            "sample_count": 0,
+            "stack_sample_count": 0,
+            "has_call_path": false,
+            "has_wait_reason": false,
+            "top_wait_reason": "",
+            "total_wait_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "raw_payload_policy": "references_only",
+            "artifact_ref_count": 0,
+            "evidence_ref": "structured_evidence.stack_summary",
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "call_path_hotspots": [],
+          "evidence_index": {
+            "artifact_refs": [],
+            "stack_summary": {
+              "dominant_hot_frame": "",
+              "dominant_percent": 0.0,
+              "sample_count": 0,
+              "stack_sample_count": 0,
+              "has_call_path": false,
+              "has_wait_reason": false,
+              "top_wait_reason": "",
+              "total_wait_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "raw_payload_policy": "references_only",
+              "artifact_ref_count": 0,
+              "evidence_ref": "structured_evidence.stack_summary",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            },
+            "call_path_hotspots": [],
+            "confidence_inputs": {
+              "sample_count": 0,
+              "dominant_percent": 0.0,
+              "context_completeness": "low",
+              "has_system_pressure": false,
+              "has_wait_or_io_signal": false,
+              "has_log_signal": false,
+              "has_dependency_signal": false,
+              "has_redis_signal": false,
+              "failed_dependency_count": 0,
+              "log_error_cluster_count": 0,
+              "redis_slowlog_entry_count": 0,
+              "redis_max_latency_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "artifact_types": [],
+              "collector_families": [],
+              "token_safety": "[REDACTED]",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            },
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "confidence_inputs": {
+            "sample_count": 0,
+            "dominant_percent": 0.0,
+            "context_completeness": "low",
+            "has_system_pressure": false,
+            "has_wait_or_io_signal": false,
+            "has_log_signal": false,
+            "has_dependency_signal": false,
+            "has_redis_signal": false,
+            "failed_dependency_count": 0,
+            "log_error_cluster_count": 0,
+            "redis_slowlog_entry_count": 0,
+            "redis_max_latency_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "artifact_types": [],
+            "collector_families": [],
+            "token_safety": "[REDACTED]",
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "sys_metrics": null,
+          "ebpf_metrics": null,
+          "memory_json": null,
+          "off_cpu_wait_json": null,
+          "log_window_json": null,
+          "dependency_check_json": null,
+          "redis_check_json": null
+        }
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "medium",
+        "size_bytes": 3377
+      },
+      "integrity_hash": "sha256:ed188e9e4e4572a183e6ecbc851120492395f1db0392b25cc25af3719da3862b",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_372c1f1da14da7a2450d",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "task_event",
+      "source_system": "mini_drop",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 20061
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:48:11.525991+00:00",
+        "end": "2026-08-13T14:48:16.546585+00:00",
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:52.053027Z",
+      "query_or_probe": "ebpf_io",
+      "raw_artifact_ref": null,
+      "derived_artifact_ref": "task:task_20260813_144735_07c6b4",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "task_id": "task_20260813_144735_07c6b4",
+        "status": "DONE",
+        "status_reason": "eBPF IO 延迟分布已生成",
+        "collector_type": "ebpf_io",
+        "agent_id": "linux-worker-2",
+        "target_pid": 20061
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "high"
+      },
+      "integrity_hash": "sha256:0eed76e6da31b0d044fc458c6103343c4233168dd58af28427ac3b32eb00a8e4",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_72b01787666782966dc2",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "derived_artifact",
+      "source_system": "mini_drop_analyzer",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 20061
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:48:11.525991+00:00",
+        "end": "2026-08-13T14:48:16.546585+00:00",
+        "sampling_period_seconds": 15,
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:52.058322Z",
+      "query_or_probe": "ebpf_io",
+      "raw_artifact_ref": "task:task_20260813_144735_07c6b4:artifact:structured_evidence_json",
+      "derived_artifact_ref": "task:task_20260813_144735_07c6b4:artifact:structured_evidence_json",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "keys": [
+          "artifact_refs",
+          "call_path_hotspots",
+          "collection_mode",
+          "confidence_inputs",
+          "dependency_check_json",
+          "ebpf_metrics",
+          "evidence_cohort_id",
+          "evidence_index",
+          "log_window_json",
+          "memory_json",
+          "off_cpu_wait_json",
+          "redis_check_json",
+          "stack_summary",
+          "sys_metrics",
+          "task_id",
+          "timing_relation",
+          "top_functions",
+          "trigger_event_id",
+          "trigger_observed_at",
+          "version",
+          "window_end",
+          "window_start"
+        ],
+        "summary": {
+          "version": 1,
+          "task_id": "task_20260813_144735_07c6b4",
+          "trigger_event_id": null,
+          "evidence_cohort_id": null,
+          "collection_mode": "manual_single",
+          "window_start": null,
+          "window_end": null,
+          "trigger_observed_at": null,
+          "timing_relation": "unknown",
+          "artifact_refs": [
+            {
+              "artifact_type": "ebpf_metrics",
+              "filename": "ebpf_metrics.json",
+              "content_type": "application/json",
+              "size_bytes": 47,
+              "object_key": "tasks/task_20260813_144735_07c6b4/ebpf_metrics.json",
+              "local_path": "/tmp/mini-drop/task_20260813_144735_07c6b4/ebpf_metrics.json",
+              "raw_payload_policy": "references_only",
+              "evidence_ref": "task:task_20260813_144735_07c6b4:artifact:ebpf_metrics",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            },
+            {
+              "artifact_type": "ebpf_raw",
+              "filename": "io_latency.txt",
+              "content_type": "text/plain",
+              "size_bytes": 22,
+              "object_key": "tasks/task_20260813_144735_07c6b4/io_latency.txt",
+              "local_path": "/tmp/mini-drop/task_20260813_144735_07c6b4/io_latency.txt",
+              "raw_payload_policy": "references_only",
+              "evidence_ref": "task:task_20260813_144735_07c6b4:artifact:ebpf_raw",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            }
+          ],
+          "top_functions": [],
+          "stack_summary": {
+            "dominant_hot_frame": "",
+            "dominant_percent": 0.0,
+            "sample_count": 0,
+            "stack_sample_count": 0,
+            "has_call_path": false,
+            "has_wait_reason": false,
+            "top_wait_reason": "",
+            "total_wait_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "raw_payload_policy": "references_only",
+            "artifact_ref_count": 2,
+            "evidence_ref": "structured_evidence.stack_summary",
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "call_path_hotspots": [],
+          "evidence_index": {
+            "artifact_refs": [
+              {
+                "artifact_type": "[TRUNCATED]",
+                "filename": "[TRUNCATED]",
+                "content_type": "[TRUNCATED]",
+                "size_bytes": "[TRUNCATED]",
+                "object_key": "[TRUNCATED]",
+                "local_path": "[TRUNCATED]",
+                "raw_payload_policy": "[TRUNCATED]",
+                "evidence_ref": "[TRUNCATED]",
+                "evidence_window": "[TRUNCATED]"
+              },
+              {
+                "artifact_type": "[TRUNCATED]",
+                "filename": "[TRUNCATED]",
+                "content_type": "[TRUNCATED]",
+                "size_bytes": "[TRUNCATED]",
+                "object_key": "[TRUNCATED]",
+                "local_path": "[TRUNCATED]",
+                "raw_payload_policy": "[TRUNCATED]",
+                "evidence_ref": "[TRUNCATED]",
+                "evidence_window": "[TRUNCATED]"
+              }
+            ],
+            "stack_summary": {
+              "dominant_hot_frame": "",
+              "dominant_percent": 0.0,
+              "sample_count": 0,
+              "stack_sample_count": 0,
+              "has_call_path": false,
+              "has_wait_reason": false,
+              "top_wait_reason": "",
+              "total_wait_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "raw_payload_policy": "references_only",
+              "artifact_ref_count": 2,
+              "evidence_ref": "structured_evidence.stack_summary",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            },
+            "call_path_hotspots": [],
+            "confidence_inputs": {
+              "sample_count": 0,
+              "dominant_percent": 0.0,
+              "context_completeness": "low",
+              "has_system_pressure": false,
+              "has_wait_or_io_signal": true,
+              "has_log_signal": false,
+              "has_dependency_signal": false,
+              "has_redis_signal": false,
+              "failed_dependency_count": 0,
+              "log_error_cluster_count": 0,
+              "redis_slowlog_entry_count": 0,
+              "redis_max_latency_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "artifact_types": [
+                "[TRUNCATED]",
+                "[TRUNCATED]"
+              ],
+              "collector_families": [
+                "[TRUNCATED]",
+                "[TRUNCATED]"
+              ],
+              "token_safety": "[REDACTED]",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            },
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "confidence_inputs": {
+            "sample_count": 0,
+            "dominant_percent": 0.0,
+            "context_completeness": "low",
+            "has_system_pressure": false,
+            "has_wait_or_io_signal": true,
+            "has_log_signal": false,
+            "has_dependency_signal": false,
+            "has_redis_signal": false,
+            "failed_dependency_count": 0,
+            "log_error_cluster_count": 0,
+            "redis_slowlog_entry_count": 0,
+            "redis_max_latency_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "artifact_types": [
+              "ebpf_metrics",
+              "ebpf_raw"
+            ],
+            "collector_families": [
+              "io_profile",
+              "ebpf_raw"
+            ],
+            "token_safety": "[REDACTED]",
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "sys_metrics": null,
+          "ebpf_metrics": {
+            "io_latency_us": {},
+            "total_samples": 0
+          },
+          "memory_json": null,
+          "off_cpu_wait_json": null,
+          "log_window_json": null,
+          "dependency_check_json": null,
+          "redis_check_json": null
+        }
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "medium",
+        "size_bytes": 5846
+      },
+      "integrity_hash": "sha256:bc839aaa0dea79c175462aeb57cdb387c6f0c0f8ce4b69b066b1c030923dd7b8",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_c5a7de363b76780d4060",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "derived_artifact",
+      "source_system": "mini_drop_analyzer",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 20061
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:48:11.525991+00:00",
+        "end": "2026-08-13T14:48:16.546585+00:00",
+        "sampling_period_seconds": 15,
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:52.069609Z",
+      "query_or_probe": "ebpf_io",
+      "raw_artifact_ref": "task:task_20260813_144735_07c6b4:artifact:ebpf_metrics",
+      "derived_artifact_ref": "tasks/task_20260813_144735_07c6b4/ebpf_metrics.json",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "keys": [
+          "io_latency_us",
+          "total_samples"
+        ],
+        "summary": {
+          "io_latency_us": {},
+          "total_samples": 0
+        }
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "medium",
+        "size_bytes": 41
+      },
+      "integrity_hash": "sha256:2365f41309ad0d23a64a25e37a6ddcab6d344357106f8baac5bde7bfbc378090",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_050d9d8a8d34db03fc77",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "task_event",
+      "source_system": "mini_drop",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 20061
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:48:16.554549+00:00",
+        "end": "2026-08-13T14:48:36.585966+00:00",
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:52.083953Z",
+      "query_or_probe": "off_cpu_wait_profile",
+      "raw_artifact_ref": null,
+      "derived_artifact_ref": "task:task_20260813_144735_f3e035",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "task_id": "task_20260813_144735_f3e035",
+        "status": "FAILED",
+        "status_reason": "bpftrace off-CPU 未产出等待栈: empty_bpftrace_output",
+        "collector_type": "off_cpu_wait_profile",
+        "agent_id": "linux-worker-2",
+        "target_pid": 20061
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "low"
+      },
+      "integrity_hash": "sha256:bf43c0f5e46a02a3ad3e3886a4954eec7ceec697eff4d6ac106b77ad69931ee2",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_9f7206b014f07dc42be9",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "derived_artifact",
+      "source_system": "mini_drop_analyzer",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 20061
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:48:16.554549+00:00",
+        "end": "2026-08-13T14:48:36.585966+00:00",
+        "sampling_period_seconds": 15,
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:52.086534Z",
+      "query_or_probe": "off_cpu_wait_profile",
+      "raw_artifact_ref": "task:task_20260813_144735_f3e035:artifact:structured_evidence_json",
+      "derived_artifact_ref": "task:task_20260813_144735_f3e035:artifact:structured_evidence_json",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "keys": [
+          "artifact_refs",
+          "call_path_hotspots",
+          "collection_mode",
+          "confidence_inputs",
+          "dependency_check_json",
+          "ebpf_metrics",
+          "evidence_cohort_id",
+          "evidence_index",
+          "log_window_json",
+          "memory_json",
+          "off_cpu_wait_json",
+          "redis_check_json",
+          "stack_summary",
+          "sys_metrics",
+          "task_id",
+          "timing_relation",
+          "top_functions",
+          "trigger_event_id",
+          "trigger_observed_at",
+          "version",
+          "window_end",
+          "window_start"
+        ],
+        "summary": {
+          "version": 1,
+          "task_id": "task_20260813_144735_f3e035",
+          "trigger_event_id": null,
+          "evidence_cohort_id": null,
+          "collection_mode": "manual_single",
+          "window_start": null,
+          "window_end": null,
+          "trigger_observed_at": null,
+          "timing_relation": "unknown",
+          "artifact_refs": [],
+          "top_functions": [],
+          "stack_summary": {
+            "dominant_hot_frame": "",
+            "dominant_percent": 0.0,
+            "sample_count": 0,
+            "stack_sample_count": 0,
+            "has_call_path": false,
+            "has_wait_reason": false,
+            "top_wait_reason": "",
+            "total_wait_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "raw_payload_policy": "references_only",
+            "artifact_ref_count": 0,
+            "evidence_ref": "structured_evidence.stack_summary",
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "call_path_hotspots": [],
+          "evidence_index": {
+            "artifact_refs": [],
+            "stack_summary": {
+              "dominant_hot_frame": "",
+              "dominant_percent": 0.0,
+              "sample_count": 0,
+              "stack_sample_count": 0,
+              "has_call_path": false,
+              "has_wait_reason": false,
+              "top_wait_reason": "",
+              "total_wait_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "raw_payload_policy": "references_only",
+              "artifact_ref_count": 0,
+              "evidence_ref": "structured_evidence.stack_summary",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            },
+            "call_path_hotspots": [],
+            "confidence_inputs": {
+              "sample_count": 0,
+              "dominant_percent": 0.0,
+              "context_completeness": "low",
+              "has_system_pressure": false,
+              "has_wait_or_io_signal": false,
+              "has_log_signal": false,
+              "has_dependency_signal": false,
+              "has_redis_signal": false,
+              "failed_dependency_count": 0,
+              "log_error_cluster_count": 0,
+              "redis_slowlog_entry_count": 0,
+              "redis_max_latency_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "artifact_types": [],
+              "collector_families": [],
+              "token_safety": "[REDACTED]",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            },
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "confidence_inputs": {
+            "sample_count": 0,
+            "dominant_percent": 0.0,
+            "context_completeness": "low",
+            "has_system_pressure": false,
+            "has_wait_or_io_signal": false,
+            "has_log_signal": false,
+            "has_dependency_signal": false,
+            "has_redis_signal": false,
+            "failed_dependency_count": 0,
+            "log_error_cluster_count": 0,
+            "redis_slowlog_entry_count": 0,
+            "redis_max_latency_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "artifact_types": [],
+            "collector_families": [],
+            "token_safety": "[REDACTED]",
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "sys_metrics": null,
+          "ebpf_metrics": null,
+          "memory_json": null,
+          "off_cpu_wait_json": null,
+          "log_window_json": null,
+          "dependency_check_json": null,
+          "redis_check_json": null
+        }
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "medium",
+        "size_bytes": 3377
+      },
+      "integrity_hash": "sha256:0ea0fbf51666f315dca3983165f4331eb55a4fb3e927563984c0efa2c84b6acf",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_a69428e7edfe9f0a2f6c",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "task_event",
+      "source_system": "mini_drop",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 19771
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:48:36.596001+00:00",
+        "end": "2026-08-13T14:48:51.627266+00:00",
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:52.094391Z",
+      "query_or_probe": "sys_metrics",
+      "raw_artifact_ref": null,
+      "derived_artifact_ref": "task:task_20260813_144735_4b34b5",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "task_id": "task_20260813_144735_4b34b5",
+        "status": "DONE",
+        "status_reason": "系统多维指标分析已生成",
+        "collector_type": "sys_metrics",
+        "agent_id": "linux-worker-2",
+        "target_pid": 19771
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "high"
+      },
+      "integrity_hash": "sha256:0464e0254709469e5c8870ba1729f6aa07604ae1f164059de801f77578e941b5",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_e9dbe91747d9565af82a",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "derived_artifact",
+      "source_system": "mini_drop_analyzer",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 19771
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:48:36.596001+00:00",
+        "end": "2026-08-13T14:48:51.627266+00:00",
+        "sampling_period_seconds": 15,
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:52.111083Z",
+      "query_or_probe": "sys_metrics",
+      "raw_artifact_ref": "task:task_20260813_144735_4b34b5:artifact:structured_evidence_json",
+      "derived_artifact_ref": "task:task_20260813_144735_4b34b5:artifact:structured_evidence_json",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "keys": [
+          "artifact_refs",
+          "call_path_hotspots",
+          "collection_mode",
+          "confidence_inputs",
+          "dependency_check_json",
+          "ebpf_metrics",
+          "evidence_cohort_id",
+          "evidence_index",
+          "log_window_json",
+          "memory_json",
+          "off_cpu_wait_json",
+          "redis_check_json",
+          "stack_summary",
+          "sys_metrics",
+          "task_id",
+          "timing_relation",
+          "top_functions",
+          "trigger_event_id",
+          "trigger_observed_at",
+          "version",
+          "window_end",
+          "window_start"
+        ],
+        "summary": {
+          "version": 1,
+          "task_id": "task_20260813_144735_4b34b5",
+          "trigger_event_id": null,
+          "evidence_cohort_id": null,
+          "collection_mode": "manual_single",
+          "window_start": null,
+          "window_end": null,
+          "trigger_observed_at": null,
+          "timing_relation": "unknown",
+          "artifact_refs": [
+            {
+              "artifact_type": "sys_metrics",
+              "filename": "sys_metrics.json",
+              "content_type": "application/json",
+              "size_bytes": 10091,
+              "object_key": "tasks/task_20260813_144735_4b34b5/sys_metrics.json",
+              "local_path": "/tmp/mini-drop/task_20260813_144735_4b34b5/sys_metrics.json",
+              "raw_payload_policy": "references_only",
+              "evidence_ref": "task:task_20260813_144735_4b34b5:artifact:sys_metrics",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            }
+          ],
+          "top_functions": [],
+          "stack_summary": {
+            "dominant_hot_frame": "",
+            "dominant_percent": 0.0,
+            "sample_count": 0,
+            "stack_sample_count": 0,
+            "has_call_path": false,
+            "has_wait_reason": false,
+            "top_wait_reason": "",
+            "total_wait_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "raw_payload_policy": "references_only",
+            "artifact_ref_count": 1,
+            "evidence_ref": "structured_evidence.stack_summary",
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "call_path_hotspots": [],
+          "evidence_index": {
+            "artifact_refs": [
+              {
+                "artifact_type": "[TRUNCATED]",
+                "filename": "[TRUNCATED]",
+                "content_type": "[TRUNCATED]",
+                "size_bytes": "[TRUNCATED]",
+                "object_key": "[TRUNCATED]",
+                "local_path": "[TRUNCATED]",
+                "raw_payload_policy": "[TRUNCATED]",
+                "evidence_ref": "[TRUNCATED]",
+                "evidence_window": "[TRUNCATED]"
+              }
+            ],
+            "stack_summary": {
+              "dominant_hot_frame": "",
+              "dominant_percent": 0.0,
+              "sample_count": 0,
+              "stack_sample_count": 0,
+              "has_call_path": false,
+              "has_wait_reason": false,
+              "top_wait_reason": "",
+              "total_wait_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "raw_payload_policy": "references_only",
+              "artifact_ref_count": 1,
+              "evidence_ref": "structured_evidence.stack_summary",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            },
+            "call_path_hotspots": [],
+            "confidence_inputs": {
+              "sample_count": 0,
+              "dominant_percent": 0.0,
+              "context_completeness": "low",
+              "has_system_pressure": true,
+              "has_wait_or_io_signal": false,
+              "has_log_signal": false,
+              "has_dependency_signal": false,
+              "has_redis_signal": false,
+              "failed_dependency_count": 0,
+              "log_error_cluster_count": 0,
+              "redis_slowlog_entry_count": 0,
+              "redis_max_latency_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "artifact_types": [
+                "[TRUNCATED]"
+              ],
+              "collector_families": [
+                "[TRUNCATED]"
+              ],
+              "token_safety": "[REDACTED]",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            },
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "confidence_inputs": {
+            "sample_count": 0,
+            "dominant_percent": 0.0,
+            "context_completeness": "low",
+            "has_system_pressure": true,
+            "has_wait_or_io_signal": false,
+            "has_log_signal": false,
+            "has_dependency_signal": false,
+            "has_redis_signal": false,
+            "failed_dependency_count": 0,
+            "log_error_cluster_count": 0,
+            "redis_slowlog_entry_count": 0,
+            "redis_max_latency_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "artifact_types": [
+              "sys_metrics"
+            ],
+            "collector_families": [
+              "sys_metrics"
+            ],
+            "token_safety": "[REDACTED]",
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "sys_metrics": {
+            "task_id": "task_20260813_144735_4b34b5",
+            "pid": 19771,
+            "mode": "timeseries",
+            "duration_sec": 15,
+            "sample_count": 15,
+            "summary": {
+              "avg_cpu_user_pct": 0.1,
+              "avg_cpu_sys_pct": 0.1,
+              "avg_cpu_iowait_pct": 0.0,
+              "thread_count": 6,
+              "thread_trend": "stable",
+              "fd_count": 22,
+              "fd_trend": "stable",
+              "fd_max": 22,
+              "vmrss_mb": 5.8,
+              "vmrss_mb_max": 5.8,
+              "ctx_voluntary_rate": 0.0,
+              "ctx_nonvoluntary_rate": 0.0,
+              "net_rx_kbps": 0.1,
+              "net_tx_kbps": 0.1,
+              "load1m": 0.08
+            },
+            "samples": [
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              },
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              },
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              },
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              },
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              },
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              },
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              },
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              },
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              },
+              {
+                "ts": "[TRUNCATED]",
+                "cpu": "[TRUNCATED]",
+                "load": "[TRUNCATED]",
+                "process": "[TRUNCATED]",
+                "network": "[TRUNCATED]"
+              }
+            ]
+          },
+          "ebpf_metrics": null,
+          "memory_json": null,
+          "off_cpu_wait_json": null,
+          "log_window_json": null,
+          "dependency_check_json": null,
+          "redis_check_json": null
+        }
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "medium",
+        "size_bytes": 11414
+      },
+      "integrity_hash": "sha256:23c0e993b47dd582d5506eb416374200e98cb068b4f2e7a933195315eb733a00",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_2a539b445f837090ebb1",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "derived_artifact",
+      "source_system": "mini_drop_analyzer",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 19771
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:48:36.596001+00:00",
+        "end": "2026-08-13T14:48:51.627266+00:00",
+        "sampling_period_seconds": 15,
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:48:52.124883Z",
+      "query_or_probe": "sys_metrics",
+      "raw_artifact_ref": "task:task_20260813_144735_4b34b5:artifact:sys_metrics",
+      "derived_artifact_ref": "tasks/task_20260813_144735_4b34b5/sys_metrics.json",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "keys": [
+          "duration_sec",
+          "mode",
+          "pid",
+          "sample_count",
+          "samples",
+          "summary",
+          "task_id"
+        ],
+        "summary": {
+          "avg_cpu_user_pct": 0.1,
+          "avg_cpu_sys_pct": 0.1,
+          "avg_cpu_iowait_pct": 0.0,
+          "thread_count": 6,
+          "thread_trend": "stable",
+          "fd_count": 22,
+          "fd_trend": "stable",
+          "fd_max": 22,
+          "vmrss_mb": 5.8,
+          "vmrss_mb_max": 5.8,
+          "ctx_voluntary_rate": 0.0,
+          "ctx_nonvoluntary_rate": 0.0,
+          "net_rx_kbps": 0.1,
+          "net_tx_kbps": 0.1,
+          "load1m": 0.08
+        }
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "medium",
+        "size_bytes": 6807
+      },
+      "integrity_hash": "sha256:10d16a7e59bf81c4afe62d1cfc4067eae89a8fd09f8fba8ca0427e3a8b39ad6e",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_698eed5403cdb91d5963",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "task_event",
+      "source_system": "mini_drop",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 19771
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:48:56.648073+00:00",
+        "end": "2026-08-13T14:49:01.704723+00:00",
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:49:03.197810Z",
+      "query_or_probe": "trace_endpoint_profile",
+      "raw_artifact_ref": null,
+      "derived_artifact_ref": "task:task_20260813_144852_74d6d7",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "task_id": "task_20260813_144852_74d6d7",
+        "status": "FAILED",
+        "status_reason": "perf_event_paranoid 权限不足。请执行 'echo 1 > /proc/sys/kernel/perf_event_paranoid' 或使用 root 运行 Agent",
+        "collector_type": "trace_endpoint_profile",
+        "agent_id": "linux-worker-2",
+        "target_pid": 19771
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "low"
+      },
+      "integrity_hash": "sha256:c3172bda873dc735cb2cf3aa3761d02c9c2ebf785698bcb9a4cb13e107ff34db",
+      "claim_links": []
+    },
+    {
+      "evidence_id": "ev_29e69d26cc4422f0ef0b",
+      "diagnosis_id": "diag_session_20260813_144735_bae03699",
+      "source_type": "derived_artifact",
+      "source_system": "mini_drop_analyzer",
+      "target": {
+        "agent_id": "linux-worker-2",
+        "pid": 19771
+      },
+      "event_time_range": {
+        "start": "2026-08-13T14:48:56.648073+00:00",
+        "end": "2026-08-13T14:49:01.704723+00:00",
+        "sampling_period_seconds": 15,
+        "clock_skew_estimate_ms": null
+      },
+      "ingestion_time": "2026-08-13T14:49:03.204160Z",
+      "query_or_probe": "trace_endpoint_profile",
+      "raw_artifact_ref": "task:task_20260813_144852_74d6d7:artifact:structured_evidence_json",
+      "derived_artifact_ref": "task:task_20260813_144852_74d6d7:artifact:structured_evidence_json",
+      "derivation_version": "diagnosis-orchestrator-v1",
+      "evidence_index": {},
+      "observed_value": {
+        "keys": [
+          "artifact_refs",
+          "call_path_hotspots",
+          "collection_mode",
+          "confidence_inputs",
+          "dependency_check_json",
+          "ebpf_metrics",
+          "evidence_cohort_id",
+          "evidence_index",
+          "log_window_json",
+          "memory_json",
+          "off_cpu_wait_json",
+          "redis_check_json",
+          "stack_summary",
+          "sys_metrics",
+          "task_id",
+          "timing_relation",
+          "top_functions",
+          "trigger_event_id",
+          "trigger_observed_at",
+          "version",
+          "window_end",
+          "window_start"
+        ],
+        "summary": {
+          "version": 1,
+          "task_id": "task_20260813_144852_74d6d7",
+          "trigger_event_id": null,
+          "evidence_cohort_id": null,
+          "collection_mode": "manual_single",
+          "window_start": null,
+          "window_end": null,
+          "trigger_observed_at": null,
+          "timing_relation": "unknown",
+          "artifact_refs": [],
+          "top_functions": [],
+          "stack_summary": {
+            "dominant_hot_frame": "",
+            "dominant_percent": 0.0,
+            "sample_count": 0,
+            "stack_sample_count": 0,
+            "has_call_path": false,
+            "has_wait_reason": false,
+            "top_wait_reason": "",
+            "total_wait_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "raw_payload_policy": "references_only",
+            "artifact_ref_count": 0,
+            "evidence_ref": "structured_evidence.stack_summary",
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "call_path_hotspots": [],
+          "evidence_index": {
+            "artifact_refs": [],
+            "stack_summary": {
+              "dominant_hot_frame": "",
+              "dominant_percent": 0.0,
+              "sample_count": 0,
+              "stack_sample_count": 0,
+              "has_call_path": false,
+              "has_wait_reason": false,
+              "top_wait_reason": "",
+              "total_wait_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "raw_payload_policy": "references_only",
+              "artifact_ref_count": 0,
+              "evidence_ref": "structured_evidence.stack_summary",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            },
+            "call_path_hotspots": [],
+            "confidence_inputs": {
+              "sample_count": 0,
+              "dominant_percent": 0.0,
+              "context_completeness": "low",
+              "has_system_pressure": false,
+              "has_wait_or_io_signal": false,
+              "has_log_signal": false,
+              "has_dependency_signal": false,
+              "has_redis_signal": false,
+              "failed_dependency_count": 0,
+              "log_error_cluster_count": 0,
+              "redis_slowlog_entry_count": 0,
+              "redis_max_latency_ms": 0.0,
+              "parse_status": "insufficient_structured_signal",
+              "artifact_types": [],
+              "collector_families": [],
+              "token_safety": "[REDACTED]",
+              "evidence_window": {
+                "trigger_event_id": "[TRUNCATED]",
+                "evidence_cohort_id": "[TRUNCATED]",
+                "collection_mode": "[TRUNCATED]",
+                "window_start": "[TRUNCATED]",
+                "window_end": "[TRUNCATED]",
+                "trigger_observed_at": "[TRUNCATED]",
+                "timing_relation": "[TRUNCATED]"
+              }
+            },
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "confidence_inputs": {
+            "sample_count": 0,
+            "dominant_percent": 0.0,
+            "context_completeness": "low",
+            "has_system_pressure": false,
+            "has_wait_or_io_signal": false,
+            "has_log_signal": false,
+            "has_dependency_signal": false,
+            "has_redis_signal": false,
+            "failed_dependency_count": 0,
+            "log_error_cluster_count": 0,
+            "redis_slowlog_entry_count": 0,
+            "redis_max_latency_ms": 0.0,
+            "parse_status": "insufficient_structured_signal",
+            "artifact_types": [],
+            "collector_families": [],
+            "token_safety": "[REDACTED]",
+            "evidence_window": {
+              "trigger_event_id": null,
+              "evidence_cohort_id": null,
+              "collection_mode": "manual_single",
+              "window_start": null,
+              "window_end": null,
+              "trigger_observed_at": null,
+              "timing_relation": "unknown"
+            }
+          },
+          "sys_metrics": null,
+          "ebpf_metrics": null,
+          "memory_json": null,
+          "off_cpu_wait_json": null,
+          "log_window_json": null,
+          "dependency_check_json": null,
+          "redis_check_json": null
+        }
+      },
+      "baseline_value": {},
+      "anomaly_score": {},
+      "data_quality": {
+        "completeness": "medium",
+        "size_bytes": 3377
+      },
+      "integrity_hash": "sha256:f3fba5b046355bc174a9cc2a12ac101e9c59935466e71b18641b42f321da25af",
+      "claim_links": []
+    }
+  ],
+  "structured_evidence": {
+    "keys": [
+      "artifact_refs",
+      "call_path_hotspots",
+      "collection_mode",
+      "confidence_inputs",
+      "dependency_check_json",
+      "ebpf_metrics",
+      "evidence_cohort_id",
+      "evidence_index",
+      "log_window_json",
+      "memory_json",
+      "off_cpu_wait_json",
+      "redis_check_json",
+      "stack_summary",
+      "sys_metrics",
+      "task_id",
+      "timing_relation",
+      "top_functions",
+      "trigger_event_id",
+      "trigger_observed_at",
+      "version",
+      "window_end",
+      "window_start"
+    ],
+    "summary": {
+      "version": 1,
+      "task_id": "task_20260813_144852_74d6d7",
+      "trigger_event_id": null,
+      "evidence_cohort_id": null,
+      "collection_mode": "manual_single",
+      "window_start": null,
+      "window_end": null,
+      "trigger_observed_at": null,
+      "timing_relation": "unknown",
+      "artifact_refs": [],
+      "top_functions": [],
+      "stack_summary": {
+        "dominant_hot_frame": "",
+        "dominant_percent": 0.0,
+        "sample_count": 0,
+        "stack_sample_count": 0,
+        "has_call_path": false,
+        "has_wait_reason": false,
+        "top_wait_reason": "",
+        "total_wait_ms": 0.0,
+        "parse_status": "insufficient_structured_signal",
+        "raw_payload_policy": "references_only",
+        "artifact_ref_count": 0,
+        "evidence_ref": "structured_evidence.stack_summary",
+        "evidence_window": {
+          "trigger_event_id": null,
+          "evidence_cohort_id": null,
+          "collection_mode": "manual_single",
+          "window_start": null,
+          "window_end": null,
+          "trigger_observed_at": null,
+          "timing_relation": "unknown"
+        }
+      },
+      "call_path_hotspots": [],
+      "evidence_index": {
+        "artifact_refs": [],
+        "stack_summary": {
+          "dominant_hot_frame": "",
+          "dominant_percent": 0.0,
+          "sample_count": 0,
+          "stack_sample_count": 0,
+          "has_call_path": false,
+          "has_wait_reason": false,
+          "top_wait_reason": "",
+          "total_wait_ms": 0.0,
+          "parse_status": "insufficient_structured_signal",
+          "raw_payload_policy": "references_only",
+          "artifact_ref_count": 0,
+          "evidence_ref": "structured_evidence.stack_summary",
+          "evidence_window": {
+            "trigger_event_id": "[TRUNCATED]",
+            "evidence_cohort_id": "[TRUNCATED]",
+            "collection_mode": "[TRUNCATED]",
+            "window_start": "[TRUNCATED]",
+            "window_end": "[TRUNCATED]",
+            "trigger_observed_at": "[TRUNCATED]",
+            "timing_relation": "[TRUNCATED]"
+          }
+        },
+        "call_path_hotspots": [],
+        "confidence_inputs": {
+          "sample_count": 0,
+          "dominant_percent": 0.0,
+          "context_completeness": "low",
+          "has_system_pressure": false,
+          "has_wait_or_io_signal": false,
+          "has_log_signal": false,
+          "has_dependency_signal": false,
+          "has_redis_signal": false,
+          "failed_dependency_count": 0,
+          "log_error_cluster_count": 0,
+          "redis_slowlog_entry_count": 0,
+          "redis_max_latency_ms": 0.0,
+          "parse_status": "insufficient_structured_signal",
+          "artifact_types": [],
+          "collector_families": [],
+          "token_safety": "[REDACTED]",
+          "evidence_window": {
+            "trigger_event_id": "[TRUNCATED]",
+            "evidence_cohort_id": "[TRUNCATED]",
+            "collection_mode": "[TRUNCATED]",
+            "window_start": "[TRUNCATED]",
+            "window_end": "[TRUNCATED]",
+            "trigger_observed_at": "[TRUNCATED]",
+            "timing_relation": "[TRUNCATED]"
+          }
+        },
+        "evidence_window": {
+          "trigger_event_id": null,
+          "evidence_cohort_id": null,
+          "collection_mode": "manual_single",
+          "window_start": null,
+          "window_end": null,
+          "trigger_observed_at": null,
+          "timing_relation": "unknown"
+        }
+      },
+      "confidence_inputs": {
+        "sample_count": 0,
+        "dominant_percent": 0.0,
+        "context_completeness": "low",
+        "has_system_pressure": false,
+        "has_wait_or_io_signal": false,
+        "has_log_signal": false,
+        "has_dependency_signal": false,
+        "has_redis_signal": false,
+        "failed_dependency_count": 0,
+        "log_error_cluster_count": 0,
+        "redis_slowlog_entry_count": 0,
+        "redis_max_latency_ms": 0.0,
+        "parse_status": "insufficient_structured_signal",
+        "artifact_types": [],
+        "collector_families": [],
+        "token_safety": "[REDACTED]",
+        "evidence_window": {
+          "trigger_event_id": null,
+          "evidence_cohort_id": null,
+          "collection_mode": "manual_single",
+          "window_start": null,
+          "window_end": null,
+          "trigger_observed_at": null,
+          "timing_relation": "unknown"
+        }
+      },
+      "sys_metrics": null,
+      "ebpf_metrics": null,
+      "memory_json": null,
+      "off_cpu_wait_json": null,
+      "log_window_json": null,
+      "dependency_check_json": null,
+      "redis_check_json": null
+    }
+  },
+  "evidence_refs": [
+    "ev_0cfd7c23eb009fb933c6",
+    "ev_70d513613d59c98d7a69",
+    "ev_00f76159aa960e0f7462",
+    "ev_ad6d54785317408cef24",
+    "ev_7014abbb49bdb33b9b35",
+    "ev_62b70177397ed8a9a9c8",
+    "ev_d6db5e97d5bdad25fedf",
+    "ev_ced680d59e7fa6f76a09",
+    "ev_87bf0eaabc739fa2bde4",
+    "ev_90b5fbc819e1d2d9709d",
+    "ev_f68fdc53c9899fb15805",
+    "ev_372c1f1da14da7a2450d",
+    "ev_72b01787666782966dc2",
+    "ev_c5a7de363b76780d4060",
+    "ev_050d9d8a8d34db03fc77",
+    "ev_9f7206b014f07dc42be9",
+    "ev_a69428e7edfe9f0a2f6c",
+    "ev_e9dbe91747d9565af82a",
+    "ev_2a539b445f837090ebb1",
+    "ev_698eed5403cdb91d5963",
+    "ev_29e69d26cc4422f0ef0b"
+  ],
+  "conclusion": {
+    "summary": "根因优先指向下游依赖 redis-cart：Redis ping/exporter 可达性失败。",
+    "confidence_level": "高",
+    "location_type": "downstream",
+    "domain_type": "database",
+    "classification": "downstream_dependency",
+    "root_entity": "redis-cart",
+    "abstained": false,
+    "root_cause_candidates": [
+      {
+        "candidate_id": "redis_dependency_unhealthy",
+        "description": "Redis 专项检查显示 Redis 不可达、高延迟或存在慢日志，购物车链路根因更可能在 Redis 依赖侧",
+        "evidence_refs": [
+          "ev_d6db5e97d5bdad25fedf",
+          "ev_ced680d59e7fa6f76a09",
+          "ev_87bf0eaabc739fa2bde4"
+        ],
+        "missing_evidence": [],
+        "score_components": {
+          "rule_match": "high",
+          "evidence_quality": "medium",
+          "baseline_support": "low",
+          "source_independence": "low"
+        },
+        "rank": 1,
+        "confidence_level": "中",
+        "supporting_claims": [
+          {
+            "statement": "Redis 专项检查显示 Redis 不可达、高延迟或存在慢日志，购物车链路根因更可能在 Redis 依赖侧",
+            "evidence_refs": [
+              "ev_d6db5e97d5bdad25fedf",
+              "ev_ced680d59e7fa6f76a09",
+              "ev_87bf0eaabc739fa2bde4"
+            ],
+            "strength": "medium"
+          }
+        ],
+        "location_type": "downstream",
+        "domain_type": "database",
+        "classification": "downstream_dependency",
+        "root_entity": "redis-cart",
+        "max_supported_level": "service"
+      }
+    ],
+    "supporting_evidence_refs": [
+      "ev_0cfd7c23eb009fb933c6",
+      "ev_70d513613d59c98d7a69",
+      "ev_00f76159aa960e0f7462",
+      "ev_ad6d54785317408cef24",
+      "ev_7014abbb49bdb33b9b35",
+      "ev_62b70177397ed8a9a9c8",
+      "ev_d6db5e97d5bdad25fedf",
+      "ev_ced680d59e7fa6f76a09",
+      "ev_87bf0eaabc739fa2bde4",
+      "ev_372c1f1da14da7a2450d",
+      "ev_72b01787666782966dc2",
+      "ev_c5a7de363b76780d4060",
+      "ev_a69428e7edfe9f0a2f6c",
+      "ev_e9dbe91747d9565af82a",
+      "ev_2a539b445f837090ebb1"
+    ],
+    "missing_evidence": [],
+    "diagnostic_commands": [
+      {
+        "command_id": "cmd_review_session",
+        "title": "回看诊断证据链",
+        "command": "curl -s http://localhost:8191/api/v1/diagnoses/diag_session_20260813_144735_bae03699",
+        "comment": "只读查询当前诊断会话，核对 cluster_assessment、evidence_refs 和探针状态。",
+        "risk_level": "R0",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_0cfd7c23eb009fb933c6",
+          "ev_70d513613d59c98d7a69",
+          "ev_00f76159aa960e0f7462",
+          "ev_ad6d54785317408cef24",
+          "ev_7014abbb49bdb33b9b35",
+          "ev_62b70177397ed8a9a9c8",
+          "ev_d6db5e97d5bdad25fedf",
+          "ev_ced680d59e7fa6f76a09",
+          "ev_87bf0eaabc739fa2bde4",
+          "ev_372c1f1da14da7a2450d",
+          "ev_72b01787666782966dc2",
+          "ev_c5a7de363b76780d4060",
+          "ev_a69428e7edfe9f0a2f6c",
+          "ev_e9dbe91747d9565af82a",
+          "ev_2a539b445f837090ebb1"
+        ],
+        "confidence": 0.95
+      },
+      {
+        "command_id": "cmd_low_risk_metrics",
+        "title": "补充低风险系统指标",
+        "command": "micro-drop collect --agent linux-worker-2 --pid 20061 --collector sys_metrics --duration 15 --sample-rate 11 --watch",
+        "comment": "低开销采集 CPU、内存、线程、FD、网络与 I/O 等待趋势，适合复核当前判断。",
+        "risk_level": "R1",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_0cfd7c23eb009fb933c6",
+          "ev_70d513613d59c98d7a69",
+          "ev_00f76159aa960e0f7462"
+        ],
+        "confidence": 0.82
+      }
+    ]
+  },
+  "latest_conclusion": {
+    "version": 2,
+    "generated_at": "2026-08-13T14:49:03.230218+00:00",
+    "summary": "根因优先指向下游依赖 redis-cart：Redis ping/exporter 可达性失败。",
+    "confidence_level": "高",
+    "cluster_assessment": {
+      "classification": "downstream_dependency",
+      "confidence": 0.82,
+      "confidence_level": "高",
+      "summary": "根因优先指向下游依赖 redis-cart：Redis ping/exporter 可达性失败。",
+      "evidence_refs": [
+        "ev_0cfd7c23eb009fb933c6",
+        "ev_70d513613d59c98d7a69",
+        "ev_00f76159aa960e0f7462",
+        "ev_ad6d54785317408cef24",
+        "ev_7014abbb49bdb33b9b35",
+        "ev_62b70177397ed8a9a9c8",
+        "ev_d6db5e97d5bdad25fedf",
+        "ev_ced680d59e7fa6f76a09",
+        "ev_87bf0eaabc739fa2bde4",
+        "ev_372c1f1da14da7a2450d",
+        "ev_72b01787666782966dc2",
+        "ev_c5a7de363b76780d4060",
+        "ev_a69428e7edfe9f0a2f6c",
+        "ev_e9dbe91747d9565af82a",
+        "ev_2a539b445f837090ebb1"
+      ],
+      "compared_targets": [
+        {
+          "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+          "service_id": "cartservice",
+          "host_id": "worker2",
+          "agent_id": "linux-worker-2",
+          "pid": 20061,
+          "pressure": {
+            "cpu": false,
+            "io_wait": false,
+            "memory": true,
+            "fd": true,
+            "thread": false,
+            "load": false
+          },
+          "evidence_refs": [
+            "ev_0cfd7c23eb009fb933c6",
+            "ev_70d513613d59c98d7a69",
+            "ev_00f76159aa960e0f7462",
+            "ev_ad6d54785317408cef24",
+            "ev_7014abbb49bdb33b9b35",
+            "ev_62b70177397ed8a9a9c8",
+            "ev_d6db5e97d5bdad25fedf",
+            "ev_ced680d59e7fa6f76a09",
+            "ev_87bf0eaabc739fa2bde4",
+            "ev_372c1f1da14da7a2450d",
+            "ev_72b01787666782966dc2",
+            "ev_c5a7de363b76780d4060"
+          ],
+          "collector_types": [
+            "sys_metrics",
+            "dependency_check",
+            "redis_check",
+            "ebpf_io"
+          ],
+          "observation_count": 4
+        },
+        {
+          "instance_id": "redis-cart-worker2-19771-r1-1786632442-1",
+          "service_id": "redis-cart",
+          "host_id": "worker2",
+          "agent_id": "linux-worker-2",
+          "pid": 19771,
+          "pressure": {
+            "cpu": false,
+            "io_wait": false,
+            "memory": true,
+            "fd": true,
+            "thread": false,
+            "load": false
+          },
+          "evidence_refs": [
+            "ev_a69428e7edfe9f0a2f6c",
+            "ev_e9dbe91747d9565af82a",
+            "ev_2a539b445f837090ebb1"
+          ],
+          "collector_types": [
+            "sys_metrics"
+          ],
+          "observation_count": 1
+        }
+      ],
+      "supported_level": "process",
+      "primary_anchor": {
+        "service_id": "cartservice",
+        "instance_id": "cartservice-worker2-20061-r1-1786632442-0",
+        "pid": 20061,
+        "supported_level": "process",
+        "anchor_type": "process_pressure",
+        "anchor": "memory,fd",
+        "thread_count": 24,
+        "ctx_nonvoluntary_rate": 0.0,
+        "avg_cpu_user_pct": 0.1,
+        "avg_cpu_sys_pct": 0.1,
+        "evidence_ref": "sys_metrics.summary",
+        "blocked_upgrade_reason": "缺少 off-CPU 等待栈、CPU profile 或 trace 回连，当前不能判断具体函数。"
+      },
+      "ruled_out": [
+        {
+          "hypothesis": "self_code_regression",
+          "reason": "当前强证据来自依赖可达性/Redis 专项检查，而不是目标进程代码热点。",
+          "evidence_refs": [
+            "ev_0cfd7c23eb009fb933c6",
+            "ev_70d513613d59c98d7a69",
+            "ev_00f76159aa960e0f7462",
+            "ev_ad6d54785317408cef24",
+            "ev_7014abbb49bdb33b9b35",
+            "ev_62b70177397ed8a9a9c8",
+            "ev_d6db5e97d5bdad25fedf",
+            "ev_ced680d59e7fa6f76a09",
+            "ev_87bf0eaabc739fa2bde4",
+            "ev_372c1f1da14da7a2450d",
+            "ev_72b01787666782966dc2",
+            "ev_c5a7de363b76780d4060",
+            "ev_a69428e7edfe9f0a2f6c",
+            "ev_e9dbe91747d9565af82a",
+            "ev_2a539b445f837090ebb1"
+          ]
+        }
+      ],
+      "location_type": "downstream",
+      "domain_type": "database",
+      "root_entity": "redis-cart",
+      "max_supported_level": "service"
+    },
+    "root_cause_candidates": [
+      {
+        "candidate_id": "redis_dependency_unhealthy",
+        "description": "Redis 专项检查显示 Redis 不可达、高延迟或存在慢日志，购物车链路根因更可能在 Redis 依赖侧",
+        "evidence_refs": [
+          "ev_d6db5e97d5bdad25fedf",
+          "ev_ced680d59e7fa6f76a09",
+          "ev_87bf0eaabc739fa2bde4"
+        ],
+        "missing_evidence": [],
+        "score_components": {
+          "rule_match": "high",
+          "evidence_quality": "medium",
+          "baseline_support": "low",
+          "source_independence": "low"
+        },
+        "rank": 1,
+        "confidence_level": "中",
+        "supporting_claims": [
+          {
+            "statement": "Redis 专项检查显示 Redis 不可达、高延迟或存在慢日志，购物车链路根因更可能在 Redis 依赖侧",
+            "evidence_refs": [
+              "ev_d6db5e97d5bdad25fedf",
+              "ev_ced680d59e7fa6f76a09",
+              "ev_87bf0eaabc739fa2bde4"
+            ],
+            "strength": "medium"
+          }
+        ],
+        "location_type": "downstream",
+        "domain_type": "database",
+        "classification": "downstream_dependency",
+        "root_entity": "redis-cart",
+        "max_supported_level": "service"
+      }
+    ],
+    "ruled_out": [
+      {
+        "hypothesis": "self_code_regression",
+        "reason": "当前强证据来自依赖可达性/Redis 专项检查，而不是目标进程代码热点。",
+        "evidence_refs": [
+          "ev_0cfd7c23eb009fb933c6",
+          "ev_70d513613d59c98d7a69",
+          "ev_00f76159aa960e0f7462",
+          "ev_ad6d54785317408cef24",
+          "ev_7014abbb49bdb33b9b35",
+          "ev_62b70177397ed8a9a9c8",
+          "ev_d6db5e97d5bdad25fedf",
+          "ev_ced680d59e7fa6f76a09",
+          "ev_87bf0eaabc739fa2bde4",
+          "ev_372c1f1da14da7a2450d",
+          "ev_72b01787666782966dc2",
+          "ev_c5a7de363b76780d4060",
+          "ev_a69428e7edfe9f0a2f6c",
+          "ev_e9dbe91747d9565af82a",
+          "ev_2a539b445f837090ebb1"
+        ]
+      }
+    ],
+    "diagnostic_commands": [
+      {
+        "command_id": "cmd_review_session",
+        "title": "回看诊断证据链",
+        "command": "curl -s http://localhost:8191/api/v1/diagnoses/diag_session_20260813_144735_bae03699",
+        "comment": "只读查询当前诊断会话，核对 cluster_assessment、evidence_refs 和探针状态。",
+        "risk_level": "R0",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_0cfd7c23eb009fb933c6",
+          "ev_70d513613d59c98d7a69",
+          "ev_00f76159aa960e0f7462",
+          "ev_ad6d54785317408cef24",
+          "ev_7014abbb49bdb33b9b35",
+          "ev_62b70177397ed8a9a9c8",
+          "ev_d6db5e97d5bdad25fedf",
+          "ev_ced680d59e7fa6f76a09",
+          "ev_87bf0eaabc739fa2bde4",
+          "ev_372c1f1da14da7a2450d",
+          "ev_72b01787666782966dc2",
+          "ev_c5a7de363b76780d4060",
+          "ev_a69428e7edfe9f0a2f6c",
+          "ev_e9dbe91747d9565af82a",
+          "ev_2a539b445f837090ebb1"
+        ],
+        "confidence": 0.95
+      },
+      {
+        "command_id": "cmd_low_risk_metrics",
+        "title": "补充低风险系统指标",
+        "command": "micro-drop collect --agent linux-worker-2 --pid 20061 --collector sys_metrics --duration 15 --sample-rate 11 --watch",
+        "comment": "低开销采集 CPU、内存、线程、FD、网络与 I/O 等待趋势，适合复核当前判断。",
+        "risk_level": "R1",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_0cfd7c23eb009fb933c6",
+          "ev_70d513613d59c98d7a69",
+          "ev_00f76159aa960e0f7462"
+        ],
+        "confidence": 0.82
+      }
+    ],
+    "recommendations": [
+      {
+        "action": "由人工依据证据确认根因后再执行变更；本诊断不会自动重启、迁移或修改配置。",
+        "risk_level": "R3",
+        "execution": "manual_confirmation_required"
+      }
+    ],
+    "limitations": [
+      "task_20260813_144735_281f5f:structured_artifact",
+      "task_20260813_144735_f3e035:structured_artifact",
+      "task_20260813_144852_74d6d7:structured_artifact",
+      "部分目标采集失败"
+    ],
+    "next_evidence_requests": [
+      "trace_endpoint_profile",
+      "baseline_window_profile",
+      "log_scan",
+      "cpu_profile",
+      "off_cpu_wait_profile"
+    ],
+    "coverage": {
+      "task_count": 8,
+      "failed_targets": [
+        "linux-worker-2:20061",
+        "linux-worker-2:20061",
+        "linux-worker-2:19771"
+      ],
+      "evidence_count": 21
+    },
+    "integrity_hash": "sha256:54a05641f13ba05a81e02f7296f8229c211fa744d979205d33fe0877ba52fd5f"
+  },
+  "safety": {
+    "forbidden_action_executed": false,
+    "unsafe_action_count": 0,
+    "commands": [
+      {
+        "command_id": "cmd_review_session",
+        "title": "回看诊断证据链",
+        "command": "curl -s http://localhost:8191/api/v1/diagnoses/diag_session_20260813_144735_bae03699",
+        "comment": "只读查询当前诊断会话，核对 cluster_assessment、evidence_refs 和探针状态。",
+        "risk_level": "R0",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_0cfd7c23eb009fb933c6",
+          "ev_70d513613d59c98d7a69",
+          "ev_00f76159aa960e0f7462",
+          "ev_ad6d54785317408cef24",
+          "ev_7014abbb49bdb33b9b35",
+          "ev_62b70177397ed8a9a9c8",
+          "ev_d6db5e97d5bdad25fedf",
+          "ev_ced680d59e7fa6f76a09",
+          "ev_87bf0eaabc739fa2bde4",
+          "ev_372c1f1da14da7a2450d",
+          "ev_72b01787666782966dc2",
+          "ev_c5a7de363b76780d4060",
+          "ev_a69428e7edfe9f0a2f6c",
+          "ev_e9dbe91747d9565af82a",
+          "ev_2a539b445f837090ebb1"
+        ],
+        "confidence": 0.95
+      },
+      {
+        "command_id": "cmd_low_risk_metrics",
+        "title": "补充低风险系统指标",
+        "command": "micro-drop collect --agent linux-worker-2 --pid 20061 --collector sys_metrics --duration 15 --sample-rate 11 --watch",
+        "comment": "低开销采集 CPU、内存、线程、FD、网络与 I/O 等待趋势，适合复核当前判断。",
+        "risk_level": "R1",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_0cfd7c23eb009fb933c6",
+          "ev_70d513613d59c98d7a69",
+          "ev_00f76159aa960e0f7462"
+        ],
+        "confidence": 0.82
+      },
+      {
+        "command_id": "cmd_review_session",
+        "title": "回看诊断证据链",
+        "command": "curl -s http://localhost:8191/api/v1/diagnoses/diag_session_20260813_144735_bae03699",
+        "comment": "只读查询当前诊断会话，核对 cluster_assessment、evidence_refs 和探针状态。",
+        "risk_level": "R0",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_0cfd7c23eb009fb933c6",
+          "ev_70d513613d59c98d7a69",
+          "ev_00f76159aa960e0f7462",
+          "ev_ad6d54785317408cef24",
+          "ev_7014abbb49bdb33b9b35",
+          "ev_62b70177397ed8a9a9c8",
+          "ev_d6db5e97d5bdad25fedf",
+          "ev_ced680d59e7fa6f76a09",
+          "ev_87bf0eaabc739fa2bde4",
+          "ev_372c1f1da14da7a2450d",
+          "ev_72b01787666782966dc2",
+          "ev_c5a7de363b76780d4060",
+          "ev_a69428e7edfe9f0a2f6c",
+          "ev_e9dbe91747d9565af82a",
+          "ev_2a539b445f837090ebb1"
+        ],
+        "confidence": 0.95
+      },
+      {
+        "command_id": "cmd_low_risk_metrics",
+        "title": "补充低风险系统指标",
+        "command": "micro-drop collect --agent linux-worker-2 --pid 20061 --collector sys_metrics --duration 15 --sample-rate 11 --watch",
+        "comment": "低开销采集 CPU、内存、线程、FD、网络与 I/O 等待趋势，适合复核当前判断。",
+        "risk_level": "R1",
+        "requires_approval": false,
+        "auto_execute": false,
+        "execution_policy": "human_review_required",
+        "evidence_refs": [
+          "ev_0cfd7c23eb009fb933c6",
+          "ev_70d513613d59c98d7a69",
+          "ev_00f76159aa960e0f7462"
+        ],
+        "confidence": 0.82
+      }
+    ]
+  },
+  "rollback": {
+    "required": false,
+    "attempted": false,
+    "succeeded": null
+  },
+  "readiness_gate": {
+    "status": "PASS",
+    "checks": [
+      {
+        "name": "audit_bundle_exists",
+        "status": "PASS",
+        "message": "audit bundle was generated"
+      },
+      {
+        "name": "runtime_trace_non_empty",
+        "status": "PASS",
+        "message": "runtime trace should not be empty"
+      },
+      {
+        "name": "probes_non_empty",
+        "status": "PASS",
+        "message": "diagnosis should plan probes"
+      },
+      {
+        "name": "child_task_ids_non_empty",
+        "status": "PASS",
+        "message": "diagnosis should create child tasks"
+      },
+      {
+        "name": "artifact_count_non_zero",
+        "status": "PASS",
+        "message": "child tasks should upload artifacts"
+      },
+      {
+        "name": "structured_evidence_non_empty",
+        "status": "PASS",
+        "message": "structured evidence should exist"
+      },
+      {
+        "name": "evidence_refs_non_empty",
+        "status": "PASS",
+        "message": "conclusion should cite evidence refs"
+      },
+      {
+        "name": "collector_type_not_fallback",
+        "status": "PASS",
+        "message": "collector types should match planned probes without silent perf_cpu fallback"
+      },
+      {
+        "name": "required_collector_family_has_structured_artifact",
+        "status": "PASS",
+        "message": "planned evidence families should have matching structured artifacts before scoring"
+      },
+      {
+        "name": "runtime_stack_quality_non_empty",
+        "status": "PASS",
+        "message": "runtime/deep collectors should produce non-empty stack, hotspot, or wait evidence"
+      }
+    ],
+    "summary": "10/10 checks passed"
+  }
+}

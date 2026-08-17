@@ -13,6 +13,7 @@ import time
 from server.app.ai_provider import chat_completions, get_ai_settings, is_feature_enabled
 from server.app.rca.models import (
     CauseEntry,
+    ControlledAITree,
     DiagnosisReport,
     EvidenceAttributionResult,
     EvidenceInput,
@@ -23,6 +24,51 @@ from server.app.rca.prompt import build_system_prompt, build_user_message
 
 # 最大自修复重试次数
 MAX_RETRIES = 2
+
+
+def generate_controlled_ai_tree(
+    *,
+    task_id: str,
+    evidence: EvidenceInput,
+    analyzer_result: EvidenceAttributionResult,
+    probe_manifest: dict,
+    model_name: str | None = None,
+) -> ControlledAITree | None:
+    """Ask the LLM to generate the controlled AI tree, then enforce hard boundaries."""
+    fallback_tree = analyzer_result.controlled_ai_tree
+    if fallback_tree is None:
+        return None
+    if not is_feature_enabled("rca"):
+        return fallback_tree
+
+    model_name = model_name or get_ai_settings().model
+    messages = [
+        {"role": "system", "content": _build_controlled_tree_system_prompt()},
+        {"role": "user", "content": _build_controlled_tree_user_message(
+            evidence=evidence,
+            analyzer_result=analyzer_result,
+            probe_manifest=probe_manifest,
+        )},
+    ]
+    last_error = ""
+    for attempt in range(1 + MAX_RETRIES):
+        try:
+            raw = _call_deepseek(messages, model_name)
+            proposed = ControlledAITree.model_validate(json.loads(_extract_json(raw) or "{}"))
+            merged = _merge_llm_controlled_tree(
+                llm_tree=proposed,
+                analyzer_tree=fallback_tree,
+                evidence=evidence,
+                probe_manifest=probe_manifest,
+            )
+            if merged != fallback_tree or _llm_tree_shape_is_safe(proposed, fallback_tree, evidence, probe_manifest):
+                return merged
+            last_error = "controlled_ai_tree 越过 Analyzer 边界或引用了非法证据/探针"
+        except Exception as exc:
+            last_error = str(exc)
+        if attempt < MAX_RETRIES:
+            messages.append({"role": "user", "content": f"上一次 controlled_ai_tree 无效：{last_error}。请只基于模板候选和 Probe Manifest 修正 JSON。"})
+    return fallback_tree
 
 def diagnose(
     task_id: str,
@@ -256,11 +302,18 @@ def _attach_analysis_result(report: DiagnosisReport, evidence: EvidenceInput) ->
     normalized_result["conclusion_boundary"] = boundary
 
     analysis_result_model = EvidenceAttributionResult.model_validate(normalized_result)
+    controlled_tree = _merge_llm_controlled_tree(
+        llm_tree=report.controlled_ai_tree,
+        analyzer_tree=analysis_result_model.controlled_ai_tree,
+        evidence=evidence,
+        probe_manifest=analysis_result.get("probe_registry_manifest") if isinstance(analysis_result, dict) else None,
+    )
     return report.model_copy(update={
         "analysis_result": analysis_result_model,
         "symptoms": analysis_result_model.symptoms,
         "localizations": analysis_result_model.localizations,
         "ai_tree": analysis_result_model.ai_tree,
+        "controlled_ai_tree": controlled_tree,
         "graph_entities": analysis_result_model.graph_entities,
         "graph_links": analysis_result_model.graph_links,
         "attributions": analysis_result_model.attributions,
@@ -278,6 +331,201 @@ def _attach_analysis_result(report: DiagnosisReport, evidence: EvidenceInput) ->
         "unsupported_causes": analysis_result.get("unsupported_causes", []),
         "conclusion_boundary": analysis_result_model.conclusion_boundary,
     })
+
+
+def _merge_llm_controlled_tree(
+    *,
+    llm_tree: ControlledAITree | None,
+    analyzer_tree: ControlledAITree | None,
+    evidence: EvidenceInput,
+    probe_manifest: dict | None = None,
+) -> ControlledAITree | None:
+    """Adopt LLM tree decisions only inside Analyzer and probe-registry boundaries."""
+    if analyzer_tree is None or llm_tree is None:
+        return analyzer_tree
+
+    if not _llm_tree_shape_is_safe(llm_tree, analyzer_tree, evidence, probe_manifest):
+        return analyzer_tree
+
+    return analyzer_tree.model_copy(update={
+        "layers": [layer.model_copy(update={"generated_by": "ai_guarded"}) for layer in llm_tree.layers],
+        "probe_edges": llm_tree.probe_edges,
+        "final_supported_level": analyzer_tree.final_supported_level,
+        "final_primary_causes": _group_candidate_ids(llm_tree.layers, "primary"),
+        "final_secondary_causes": _group_candidate_ids(llm_tree.layers, "secondary"),
+        "final_rejected_causes": _group_candidate_ids(llm_tree.layers, "rejected"),
+        "final_unknown_causes": _group_candidate_ids(llm_tree.layers, "unknown"),
+        "stop_reason": llm_tree.stop_reason or analyzer_tree.stop_reason,
+    })
+
+
+def _group_candidate_ids(layers, role: str) -> list[str]:
+    ids = []
+    for layer in layers:
+        for item in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]:
+            if item.role == role and item.candidate_id not in ids:
+                ids.append(item.candidate_id)
+    return ids
+
+
+def _llm_tree_shape_is_safe(
+    llm_tree: ControlledAITree,
+    analyzer_tree: ControlledAITree,
+    evidence: EvidenceInput,
+    probe_manifest: dict | None = None,
+) -> bool:
+    if llm_tree.tree_id != analyzer_tree.tree_id:
+        return False
+    if llm_tree.final_supported_level != analyzer_tree.final_supported_level:
+        return False
+    if [layer.layer_id for layer in llm_tree.layers] != [layer.layer_id for layer in analyzer_tree.layers]:
+        return False
+
+    analyzer_candidates = {
+        item.candidate_id: item
+        for layer in analyzer_tree.layers
+        for item in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    }
+    analyzer_candidate_ids = set(analyzer_candidates)
+    valid_paths = _collect_evidence_paths(evidence)
+    max_level_order = _level_order(analyzer_tree.final_supported_level)
+    llm_candidate_ids = set()
+
+    for layer in llm_tree.layers:
+        for item in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]:
+            base = analyzer_candidates.get(item.candidate_id)
+            if base is None:
+                return False
+            llm_candidate_ids.add(item.candidate_id)
+            if not _candidate_status_is_safe(base.status, item.status):
+                return False
+            if _level_order(item.supported_level) > max_level_order:
+                return False
+            if _level_order(item.supported_level) > _level_order(base.supported_level):
+                return False
+            refs = [
+                *item.evidence_refs,
+                *item.self_challenge.supporting_evidence_refs,
+                *item.self_challenge.opposing_evidence_refs,
+            ]
+            if any(not _ref_exists(ref, valid_paths) for ref in refs):
+                return False
+
+    if llm_candidate_ids != analyzer_candidate_ids:
+        return False
+
+    analyzer_layer_ids = {layer.layer_id for layer in analyzer_tree.layers}
+    allowed_requests = _manifest_allowed_probe_requests(probe_manifest, analyzer_tree)
+    for edge in llm_tree.probe_edges:
+        if edge.from_layer_id not in analyzer_layer_ids:
+            return False
+        if edge.to_layer_id is not None and edge.to_layer_id not in analyzer_layer_ids:
+            return False
+        if any(request not in allowed_requests for request in edge.probe_requests):
+            return False
+    return True
+
+
+def _candidate_status_is_safe(base_status: str, proposed_status: str) -> bool:
+    if proposed_status == base_status:
+        return True
+    allowed_downgrades = {
+        "supported": {"weakened", "missing_evidence", "unknown"},
+        "weakened": {"missing_evidence", "unknown"},
+        "missing_evidence": {"unknown"},
+        "forbidden": set(),
+        "unknown": set(),
+    }
+    return proposed_status in allowed_downgrades.get(base_status, set())
+
+
+def _manifest_allowed_probe_requests(probe_manifest: dict | None, analyzer_tree: ControlledAITree) -> set[str]:
+    allowed = {
+        request
+        for edge in analyzer_tree.probe_edges
+        for request in edge.probe_requests
+    }
+    if isinstance(probe_manifest, dict):
+        for item in probe_manifest.get("available_probes", []):
+            if isinstance(item, dict) and item.get("evidence_family"):
+                allowed.add(str(item["evidence_family"]))
+    return {item for item in allowed if item}
+
+
+def _level_order(level: str) -> int:
+    order = {
+        "resource": 0,
+        "host": 1,
+        "process": 2,
+        "thread": 3,
+        "syscall": 4,
+        "dependency": 5,
+        "service": 6,
+        "endpoint": 7,
+        "function": 8,
+        "call_path": 9,
+        "line": 10,
+    }
+    return order.get(level, 0)
+
+
+def _build_controlled_tree_system_prompt() -> str:
+    return """你是 Mini-Drop 的受控 AI 树生成器。
+
+你必须输出一个 ControlledAITree JSON 对象，不能输出 markdown。
+
+硬性规则：
+1. tree_id、schema_version、source_context_hash、final_supported_level 必须沿用 Analyzer 模板。
+2. layer_id 必须沿用 Analyzer 模板，不得新增或删除层。
+3. candidate_id 必须来自 Analyzer 模板，不得新增候选。
+4. 你可以在已有候选内重新分配 primary / secondary / rejected / unknown，但不得把证据不足或 forbidden 候选升级成 supported。
+5. supported_level 不得超过 Analyzer 给出的 final_supported_level，也不得超过候选原始 supported_level。
+6. evidence_refs 只能引用当前证据中真实存在的路径。
+7. probe_edges[].probe_requests 只能选择 Probe Manifest 中的 evidence_family，不能写 probe_id，不能写任意 shell、sysctl、修复动作。
+8. 你必须为每个候选填写 self_challenge：为什么是它、为什么不是其他、支持证据、反驳证据、缺失证据、什么会改变结论。
+9. 证据不足时要停在当前证据支持层级，并通过 probe_edges 请求最小必要补证，而不是强行给更细结论。
+"""
+
+
+def _build_controlled_tree_user_message(
+    *,
+    evidence: EvidenceInput,
+    analyzer_result: EvidenceAttributionResult,
+    probe_manifest: dict,
+) -> str:
+    payload = {
+        "current_evidence": json.loads(_serialize_evidence(evidence)),
+        "analyzer_boundaries": {
+            "facts": [item.model_dump(mode="json") for item in analyzer_result.facts],
+            "localizations": [item.model_dump(mode="json") for item in analyzer_result.localizations],
+            "attributions": [item.model_dump(mode="json") for item in analyzer_result.attributions],
+            "missing_evidence": analyzer_result.missing_evidence,
+            "blocked_upgrades": analyzer_result.blocked_upgrades,
+            "collection_gaps": analyzer_result.collection_gaps,
+            "allowed_cause_ids": analyzer_result.allowed_cause_ids,
+            "primary_cause_id": analyzer_result.primary_cause_id,
+            "conclusion_boundary": analyzer_result.conclusion_boundary.model_dump(mode="json"),
+        },
+        "controlled_tree_template": analyzer_result.controlled_ai_tree.model_dump(mode="json") if analyzer_result.controlled_ai_tree else None,
+        "probe_registry_manifest": probe_manifest,
+        "output": "只输出 ControlledAITree JSON 对象。",
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
 
 
 def _extract_json(raw: str | None) -> str | None:

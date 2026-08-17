@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 
@@ -35,3 +37,42 @@ def build_collector_invocation(
     }
     payload.update({key: value for key, value in optional.items() if value})
     return payload
+
+
+def collector_request_fingerprint(invocation: dict[str, Any], options: dict[str, Any] | None = None) -> str:
+    """Create a stable identity for one target-scoped collector request."""
+    payload = {
+        "collector_family": invocation.get("collector_family"),
+        "probe_id": invocation.get("probe_id"),
+        "target_config": invocation.get("target_config") or {},
+        "target_context": invocation.get("target_context") or {},
+        "evidence_window": _window_from_options(options or {}),
+        "source_context": _source_context_from_invocation(invocation),
+    }
+    text = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return f"sha256:{hashlib.sha256(text.encode()).hexdigest()}"
+
+
+def _source_context_from_invocation(invocation: dict[str, Any]) -> dict[str, Any]:
+    target_config = invocation.get("target_config")
+    if not isinstance(target_config, dict):
+        return {}
+    context = target_config.get("source_context")
+    return context if isinstance(context, dict) else {}
+
+
+def _window_from_options(options: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: options.get(key)
+        for key in (
+            "trigger_event_id",
+            "evidence_cohort_id",
+            "collection_mode",
+            "window_start",
+            "window_end",
+            "timing_relation",
+            "duration_sec",
+            "sample_rate",
+        )
+        if options.get(key) is not None
+    }

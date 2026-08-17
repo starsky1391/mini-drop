@@ -115,6 +115,7 @@ def _trace_endpoint_profile() -> dict[str, Any]:
             "perf_installed": bool(perf_path),
             "ebpf_profile_installed": bool(bpftrace_path),
         },
+        "effective_permissions": _deep_collection_permissions(paranoid),
     }
 
 
@@ -141,6 +142,7 @@ def _offcpu_profile() -> dict[str, Any]:
             "offcpu_profile_paths": paths,
             "fallback": "bpftrace" if bpftrace_path else "",
         },
+        "effective_permissions": _deep_collection_permissions(_read_perf_paranoid()),
     }
 
 
@@ -199,3 +201,43 @@ def _read_perf_paranoid() -> int | None:
         return int(Path("/proc/sys/kernel/perf_event_paranoid").read_text().strip())
     except (OSError, ValueError):
         return None
+
+
+def _deep_collection_permissions(perf_event_paranoid: int | None) -> dict[str, Any]:
+    cap_eff = _read_status_value("/proc/self/status", "CapEff")
+    no_new_privs = _read_status_value("/proc/self/status", "NoNewPrivs")
+    seccomp = _read_status_value("/proc/self/status", "Seccomp")
+    debugfs_ready = Path("/sys/kernel/debug").exists()
+    host_proc_ready = Path("/host/proc").exists() or Path("/proc").exists()
+    host_sys_ready = Path("/host/sys").exists() or Path("/sys").exists()
+    sysctl_blocks_perf = perf_event_paranoid is not None and perf_event_paranoid >= 3
+    return {
+        "container_permission": {
+            "cap_eff": cap_eff,
+            "no_new_privileges": no_new_privs == "1",
+            "seccomp_mode": seccomp,
+            "debugfs_ready": debugfs_ready,
+            "host_proc_ready": host_proc_ready,
+            "host_sys_ready": host_sys_ready,
+        },
+        "host_perf_event": {
+            "perf_event_paranoid": perf_event_paranoid,
+            "blocks_unprivileged_perf": sysctl_blocks_perf,
+            "manual_action": (
+                "需要运维在可信 Worker 宿主机上调整 kernel.perf_event_paranoid，Mini-Drop 不会自动修改。"
+                if sysctl_blocks_perf
+                else ""
+            ),
+        },
+        "effective_status": "blocked_by_host_sysctl" if sysctl_blocks_perf else "ready_or_container_limited",
+    }
+
+
+def _read_status_value(path: str, key: str) -> str | None:
+    try:
+        for line in Path(path).read_text(encoding="utf-8", errors="ignore").splitlines():
+            if line.startswith(f"{key}:"):
+                return line.split(":", 1)[1].strip()
+    except OSError:
+        return None
+    return None

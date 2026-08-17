@@ -709,3 +709,84 @@
 - [x] AX007 Add API, collector, RCA, Python compile, and frontend build validation for the terminal-state contract.
 
 **Outcome**: Watch incidents cannot remain indefinitely in `analyzing`; successful, evidence-insufficient, and failed analysis all have explicit persisted states, and the deployed frontend displays the same state as the API.
+
+### Task Group AY - 完整版受控 AI 树核心
+
+**Purpose**: Replace the flat legacy tree view with a controlled layered candidate convergence tree while keeping the legacy `ai_tree` follow-up contract compatible.
+
+- [x] AY001 Add controlled AI tree models for layers, candidates, self-challenge, probe edges, budget snapshots, and final stop boundary.
+- [x] AY002 Generate `controlled_ai_tree` from structured facts, candidates, localizations, evidence gaps, conflicts, and legacy next-evidence requests.
+- [x] AY003 Keep old `ai_tree.next_evidence_requests` as the compatibility source for existing follow-up scheduling.
+- [x] AY004 Add tests for layered candidates, self-challenge fields, rejected/unknown causes, and stable output across repeated runs.
+
+**Outcome**: AI tree output represents coarse-to-fine evidence convergence instead of a few static root/leaf records.
+
+### Task Group AZ - 源码上下文与行级定位契约
+
+**Purpose**: Allow precise line localization only when source context is provided and evidence supports it.
+
+- [x] AZ001 Add `source_context` to diagnosis context and service instance API models.
+- [x] AZ002 Include source context in target scope, collector invocation, trace/off-CPU options, and AI tree source-context hash.
+- [x] AZ003 Prevent line-level localization from being promoted when source context is absent.
+- [x] AZ004 Add tests proving line candidates require source context and function/call-path diagnosis still works without it.
+
+**Outcome**: Source code enables line-level diagnosis, but missing source never causes hallucinated file/line output.
+
+### Task Group BA - 探针请求 Fingerprint 与复用
+
+**Purpose**: Avoid repeated collection for the same target/window/options/source context, including stable blocked results.
+
+- [x] BA001 Add deterministic collector request fingerprint generation to the shared collector invocation contract.
+- [x] BA002 Store fingerprint in probe parameters and task options for initial and follow-up probes.
+- [x] BA003 Reuse existing completed or stable-blocked probe/task results before creating a duplicate follow-up task.
+- [x] BA004 Add tests for reuse hit, reuse miss, source-context mismatch, and permission-blocked result reuse.
+
+**Outcome**: AI tree can ask for evidence without wasting budget on identical probes.
+
+### Task Group BB - 默认少交互采集
+
+**Purpose**: Make ordinary diagnosis automatically execute all registered collectors while keeping hard safety boundaries.
+
+- [x] BB001 Change backend default `auto_execute_policy` to `all_registered`.
+- [x] BB002 Remove R2 probe count as a blocking gate for `all_registered`; keep total duration, parallelism, registration, and target scope checks.
+- [x] BB003 Keep arbitrary shell, sysctl changes, service mutations, and remediation actions as human-only suggestions.
+- [x] BB004 Add tests proving default diagnoses schedule registered R2 probes without approval and still block unsupported or over-budget probes.
+
+**Outcome**: Developer and controlled environments avoid approval dead-ends while unsafe actions remain manual.
+
+### Task Group BC - 默认深采集 Worker 部署
+
+**Purpose**: Make deployed Workers default to the permissions required by industrial stack/profile collection.
+
+- [x] BC001 Remove `no-new-privileges:true` from Worker deployment and keep `seccomp:unconfined`.
+- [x] BC002 Add host proc/sys/source mounts needed for profiler capability checks and source/symbol lookup.
+- [x] BC003 Extend CollectorProfile with effective permission state and manual host sysctl warning fields.
+- [x] BC004 Add tests or compile validation for CollectorProfile output shape.
+
+**Outcome**: Container deployment no longer blocks deep collection by default, while host sysctl remains a visible manual boundary.
+
+### Task Group BD - 前端受控 AI 树与自动采集状态
+
+**Purpose**: Show the controlled AI tree and reduce routine interaction in the diagnosis UI.
+
+- [x] BD001 Remove normal diagnosis execution-policy selection and stop sending `auto_execute_policy` from the create form.
+- [x] BD002 Replace probe approval UI with automatic collection status and human-action-only notices.
+- [x] BD003 Add optional source context inputs to the diagnosis creation form.
+- [x] BD004 Add controlled AI tree visualization with layer cards, candidate status, evidence refs, probe edges, reuse state, and self-challenge detail.
+- [x] BD005 Keep true natural-language readability rewrite as a documented follow-up, not a fake structural-only change.
+
+**Outcome**: Users see how the AI tree narrows candidates and only act when the system genuinely cannot proceed automatically.
+
+### Task Group BE - LLM 受控树生成与工具清单下探
+
+**Purpose**: Make AI generate controlled tree node conclusions and choose follow-up probes from a bounded registry manifest instead of only decorating Analyzer-generated nodes.
+
+- [x] BE001 Add `Probe Registry Manifest` serialization from registered probe definitions, including `probe_id`, `evidence_family`, purpose, answerable questions, target requirements, risk level, and output contract.
+- [x] BE002 Add deterministic `evidence_family -> probe_id` mapping and reuse it in diagnosis follow-up scheduling.
+- [x] BE003 Add LLM controlled-tree generation with Analyzer fallback, repair retry, and hard validation.
+- [x] BE004 Allow LLM to rerank candidate roles and choose manifest probe requests while preventing new candidate IDs, fake evidence refs, unregistered probes, and localization-level upgrades.
+- [x] BE005 Inject the probe manifest into RCA report analysis payloads and AI diagnosis-session analysis.
+- [x] BE006 Add tests proving valid manifest probe selection is accepted and unregistered tool requests are rejected.
+- [x] BE007 Add diagnosis-orchestrator test proving AI-selected evidence families create registered follow-up probe tasks.
+
+**Outcome**: The complete controlled AI tree now lets AI produce node conclusions and select down-probing tools, while engineering controls execution boundaries and fallback behavior.

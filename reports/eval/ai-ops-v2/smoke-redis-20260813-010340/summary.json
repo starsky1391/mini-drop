@@ -1,0 +1,21 @@
+{
+  "planned_runs": 1,
+  "completed_runs": 1,
+  "failed_runs": 0,
+  "terminal_statuses": {
+    "NEEDS_SCOPE_CONFIRMATION": 1
+  },
+  "mean_elapsed_sec": 15.38,
+  "p95_elapsed_sec": 15.38,
+  "rollback_failures": 0,
+  "final_health": {
+    "errors": [],
+    "unhealthy_services": [],
+    "frontend": {
+      "ok": true,
+      "status": 200,
+      "latency_ms": 31.0
+    }
+  },
+  "finished_at": "2026-08-12T17:04:10.318953+00:00"
+}

@@ -128,6 +128,41 @@ def test_diagnosis_audit_bundle_exports_runtime_trace_and_readiness_gate(client:
     )
 
 
+def test_ai_controlled_tree_probe_selection_creates_followup(client: TestClient, monkeypatch):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=[
+            "sys_metrics",
+            "redis_check",
+        ],
+    )
+    repo.agents["a1"].capabilities = ["sys_metrics", "redis_check"]
+
+    def fake_generate_tree(*, analyzer_result, **_kwargs):
+        tree = analyzer_result.controlled_ai_tree.model_copy(deep=True)
+        assert tree.probe_edges
+        tree.probe_edges[0] = tree.probe_edges[0].model_copy(update={
+            "probe_requests": ["redis_check"],
+            "reason": "AI 从 Probe Manifest 中选择 Redis 专项检查下探。",
+        })
+        return tree
+
+    monkeypatch.setattr(orchestrator_module, "generate_controlled_ai_tree", fake_generate_tree)
+    data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+    task_id = data["child_task_ids"][0]
+    summary = _normal_summary()
+    summary["avg_cpu_user_pct"] = 92.0
+    _finish_sys_metrics_task(task_id, summary)
+
+    detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
+
+    assert any(
+        probe["probe_id"] == "process_redis_check"
+        and (probe.get("parameters") or {}).get("evidence_gap") == "redis_check"
+        for probe in detail["probes"]
+    )
+
+
 def test_readiness_gate_fails_completed_probe_without_structured_family_artifact():
     bundle = {
         "runtime_trace": [{"stage": "evidence"}],
@@ -233,6 +268,7 @@ def test_runtime_contention_query_plans_off_cpu_and_python_runtime(client: TestC
     payload["context"]["service_id"] = "python-service"
     payload["context"]["instances"][0]["service_id"] = "python-service"
     payload["context"]["instances"][0]["instance_id"] = "python-service-1"
+    payload["auto_execute_policy"] = "safe_only"
     response = client.post("/api/v1/diagnoses", json=payload)
 
     assert response.status_code == 200
@@ -589,7 +625,9 @@ class TestDiagnosisSessionAPI:
         assert all(cmd["auto_execute"] is False for cmd in data["latest_conclusion"]["diagnostic_commands"])
 
     def test_create_schedules_only_registered_low_risk_probe(self, client: TestClient):
-        response = client.post("/api/v1/diagnoses", json=_payload())
+        payload = _payload()
+        payload["auto_execute_policy"] = "safe_only"
+        response = client.post("/api/v1/diagnoses", json=payload)
         assert response.status_code == 200
         data = response.json()["data"]
         assert data["status"] == "COLLECTING"
@@ -604,7 +642,9 @@ class TestDiagnosisSessionAPI:
         assert task.request_params["options"]["diagnosis_step_id"].startswith("step_")
 
     def test_r2_probe_requires_explicit_single_execution_approval(self, client: TestClient):
-        data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+        payload = _payload()
+        payload["auto_execute_policy"] = "safe_only"
+        data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
         r2 = next(item for item in data["probes"] if item["risk_level"] == "R2")
         approved = client.post(
             f"/api/v1/diagnoses/{data['diagnosis_id']}/approvals",
@@ -624,7 +664,9 @@ class TestDiagnosisSessionAPI:
         assert repo.tasks[approved_probe["task_id"]].collector_type == "perf_cpu"
 
     def test_bulk_approval_approves_current_waiting_registered_probe(self, client: TestClient):
-        data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+        payload = _payload()
+        payload["auto_execute_policy"] = "safe_only"
+        data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
         waiting = [
             item for item in data["probes"]
             if item["status"] == "WAITING_APPROVAL"
@@ -662,7 +704,9 @@ class TestDiagnosisSessionAPI:
         assert repo.tasks[probes["process_cpu_profile"]["task_id"]].collector_type == "perf_cpu"
 
     def test_completed_probe_produces_evidence_linked_candidate(self, client: TestClient):
-        data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+        payload = _payload()
+        payload["auto_execute_policy"] = "safe_only"
+        data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
         task_id = data["child_task_ids"][0]
         repo.transition_task(task_id, TaskStatus.RUNNING, "agent accepted", Actor.SERVER)
         repo.transition_task(task_id, TaskStatus.UPLOADING, "collected", Actor.AGENT)
@@ -709,7 +753,9 @@ class TestDiagnosisSessionAPI:
         assert any(item.get("task_id") == task_id for item in detail["probes"])
 
     def test_rejected_deep_probe_can_end_as_insufficient_evidence(self, client: TestClient):
-        data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+        payload = _payload()
+        payload["auto_execute_policy"] = "safe_only"
+        data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
         task_id = data["child_task_ids"][0]
         repo.transition_task(task_id, TaskStatus.RUNNING, "agent accepted", Actor.SERVER)
         repo.transition_task(task_id, TaskStatus.UPLOADING, "collected", Actor.AGENT)
@@ -817,6 +863,7 @@ class TestDiagnosisSessionAPI:
         )
         payload = _payload("service-a 变慢，判断是不是被同宿主其他服务影响")
         payload["budget_profile"] = "development"
+        payload["auto_execute_policy"] = "safe_only"
         payload["context"]["instances"].append({
             "service_id": "service-b",
             "instance_id": "service-b-1",
@@ -863,6 +910,7 @@ class TestDiagnosisSessionAPI:
         )
         payload = _payload("service-a 变慢，检查同宿主 I/O 争抢")
         payload["budget_profile"] = "development"
+        payload["auto_execute_policy"] = "safe_only"
         payload["context"]["instances"].append({
             "service_id": "service-b",
             "instance_id": "service-b-1",
@@ -895,6 +943,7 @@ class TestDiagnosisSessionAPI:
         )
         payload = _payload("service-a 延迟升高，逐层检查调用链真正根因")
         payload["budget_profile"] = "development"
+        payload["auto_execute_policy"] = "safe_only"
         payload["context"]["instances"].append({
             "service_id": "service-b",
             "instance_id": "service-b-1",
@@ -933,14 +982,19 @@ class TestDiagnosisSessionAPI:
 
 
 def test_ai_tree_evidence_request_maps_to_followup_probe_once(client: TestClient):
-    repo.agents["a1"].capabilities = [
-        *repo.agents["a1"].capabilities,
-        "off_cpu_wait_profile",
-        "baseline_window_profile",
-        "log_scan",
-        "dependency_check",
-        "redis_check",
-    ]
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=[
+            "sys_metrics",
+            "perf_cpu",
+            "ebpf_io",
+            "memory_smaps",
+            "baseline_window_profile",
+            "log_scan",
+            "dependency_check",
+            "redis_check",
+        ],
+    )
     data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
     diagnosis_id = data["diagnosis_id"]
     parent_task = repo.tasks[data["child_task_ids"][0]]
@@ -949,7 +1003,7 @@ def test_ai_tree_evidence_request_maps_to_followup_probe_once(client: TestClient
         ["baseline_window_profile", "off_cpu_wait_profile", "dependency_check", "log_scan", "redis_check", "unknown_request"],
         parent_task,
     )
-    assert created == 5
+    assert created == 4
     probes = diagnosis_orchestrator.store.list_probes(diagnosis_id)
     gaps = {
         (item.get("parameters") or {}).get("evidence_gap")
@@ -958,7 +1012,6 @@ def test_ai_tree_evidence_request_maps_to_followup_probe_once(client: TestClient
     }
     assert {
         "baseline_window_profile",
-        "off_cpu_wait_profile",
         "dependency_check",
         "log_scan",
         "redis_check",
@@ -1166,6 +1219,71 @@ def test_all_registered_policy_can_schedule_high_risk_followup(client: TestClien
     assert followup["requires_approval"] is False
     assert followup["parameters"]["execution_policy"] == "all_registered"
     assert followup["status"] in {"SCHEDULED", "RUNNING", "WAITING_APPROVAL", "UNAVAILABLE"}
+
+
+def test_default_policy_auto_executes_registered_r2_followup(client: TestClient):
+    data = client.post("/api/v1/diagnoses", json=_payload("服务 service-a 内存压力升高")).json()["data"]
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=["sys_metrics", "perf_cpu", "ebpf_io", "memory_smaps", "off_cpu_wait_profile"],
+    )
+    parent_task = repo.tasks[data["child_task_ids"][0]]
+
+    created = diagnosis_orchestrator._plan_followup_requests(
+        data["diagnosis_id"],
+        ["off_cpu_wait_profile"],
+        parent_task,
+    )
+
+    followup = next(
+        item for item in diagnosis_orchestrator.store.list_probes(data["diagnosis_id"])
+        if (item.get("parameters") or {}).get("evidence_gap") == "off_cpu_wait_profile"
+    )
+    assert created == 1
+    assert data["risk_budget"]["auto_execute_policy"] == "all_registered"
+    assert followup["requires_approval"] is False
+    assert followup["status"] in {"SCHEDULED", "RUNNING", "PLANNED"}
+
+
+def test_probe_fingerprint_reuses_stable_blocked_result_between_diagnoses(client: TestClient):
+    first = client.post("/api/v1/diagnoses", json=_payload("服务 service-a 内存压力升高")).json()["data"]
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=["sys_metrics", "perf_cpu", "ebpf_io", "memory_smaps", "off_cpu_wait_profile"],
+    )
+    first_parent = repo.tasks[first["child_task_ids"][0]]
+    diagnosis_orchestrator._plan_followup_requests(
+        first["diagnosis_id"],
+        ["off_cpu_wait_profile"],
+        first_parent,
+    )
+    first_probe = next(
+        item for item in diagnosis_orchestrator.store.list_probes(first["diagnosis_id"])
+        if (item.get("parameters") or {}).get("evidence_gap") == "off_cpu_wait_profile"
+    )
+    first_task = repo.tasks[first_probe["task_id"]]
+    repo.transition_task(first_task.id, TaskStatus.RUNNING, "agent accepted", Actor.SERVER)
+    repo.transition_task(first_task.id, TaskStatus.FAILED, "perf_event_paranoid=4 permission denied", Actor.AGENT)
+
+    second = client.post("/api/v1/diagnoses", json=_payload("服务 service-a 内存压力升高")).json()["data"]
+    second_parent = repo.tasks[second["child_task_ids"][0]]
+    diagnosis_orchestrator._plan_followup_requests(
+        second["diagnosis_id"],
+        ["off_cpu_wait_profile"],
+        second_parent,
+    )
+    second_probe = next(
+        item for item in diagnosis_orchestrator.store.list_probes(second["diagnosis_id"])
+        if (item.get("parameters") or {}).get("evidence_gap") == "off_cpu_wait_profile"
+    )
+
+    assert second_probe["task_id"] == first_task.id
+    assert second_probe["status"] == "FAILED"
+    assert any(
+        event["event_type"] == "probe_reused"
+        and event["payload"].get("reuse_status") == "reuse_blocked_result"
+        for event in diagnosis_orchestrator.store.get_detail(second["diagnosis_id"])["events"]
+    )
 
 
 def test_dependency_conclusion_keeps_function_depth_requests():

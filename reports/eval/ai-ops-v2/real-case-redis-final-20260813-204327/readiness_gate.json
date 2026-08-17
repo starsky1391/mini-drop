@@ -1,0 +1,67 @@
+{
+  "schema_version": "1.0",
+  "bundle_dir": "reports\\eval\\ai-ops-v2\\real-case-redis-final-20260813-204327\\bundles",
+  "bundle_count": 1,
+  "passed_count": 1,
+  "failed_count": 0,
+  "results": [
+    {
+      "file": "OB-SINGLE-REDIS-001__r01.json",
+      "diagnosis_id": "diag_session_20260813_124351_6efe1b27",
+      "status": "PASS",
+      "summary": "10/10 checks passed",
+      "checks": [
+        {
+          "name": "audit_bundle_exists",
+          "status": "PASS",
+          "message": "audit bundle was generated"
+        },
+        {
+          "name": "runtime_trace_non_empty",
+          "status": "PASS",
+          "message": "runtime trace should not be empty"
+        },
+        {
+          "name": "probes_non_empty",
+          "status": "PASS",
+          "message": "diagnosis should plan probes"
+        },
+        {
+          "name": "child_task_ids_non_empty",
+          "status": "PASS",
+          "message": "diagnosis should create child tasks"
+        },
+        {
+          "name": "artifact_count_non_zero",
+          "status": "PASS",
+          "message": "child tasks should upload artifacts"
+        },
+        {
+          "name": "structured_evidence_non_empty",
+          "status": "PASS",
+          "message": "structured evidence should exist"
+        },
+        {
+          "name": "evidence_refs_non_empty",
+          "status": "PASS",
+          "message": "conclusion should cite evidence refs"
+        },
+        {
+          "name": "collector_type_not_fallback",
+          "status": "PASS",
+          "message": "collector types should match planned probes without silent perf_cpu fallback"
+        },
+        {
+          "name": "required_collector_family_has_structured_artifact",
+          "status": "PASS",
+          "message": "planned evidence families should have matching structured artifacts before scoring"
+        },
+        {
+          "name": "runtime_stack_quality_non_empty",
+          "status": "PASS",
+          "message": "runtime/deep collectors should produce non-empty stack, hotspot, or wait evidence"
+        }
+      ]
+    }
+  ]
+}

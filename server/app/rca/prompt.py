@@ -29,6 +29,9 @@ _CORE_CONSTRAINTS = """
 12. 如果 analysis_result.conclusion_boundary 包含 timing_relation、conclusion_window、
     delayed_followup_reproduction_status 或 non_refutable_evidence_boundaries，
     必须在 summary 或 facts 中说明结论窗口；延迟补采未复现不得被描述为直接反证同窗证据。
+13. 如果输出 controlled_ai_tree，只能复用 analysis_result.controlled_ai_tree 中已有的
+    tree_id、layer_id、candidate_id、role、status、supported_level、probe_requests 和 evidence_refs。
+    你只能改写 summary、claim 和 self_challenge 的解释性文本，不得新增候选、证据引用或探针请求。
 """
 
 # ── 输出 Schema ──
@@ -52,6 +55,7 @@ _OUTPUT_SCHEMA = """
   "missing_evidence": ["缺少哪些关键证据"],
   "blocked_upgrades": ["哪些升级被阻断，以及阻断原因"],
   "collection_gaps": ["当前采集器还缺什么能力"],
+  "controlled_ai_tree": "可选；如输出，只能在 analysis_result.controlled_ai_tree 的原结构上补充解释性文本",
   "not_enough_evidence": false
 }
 """

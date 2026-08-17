@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable
 
 from server.app.rca.models import (
+    AITreeBudgetSnapshot,
+    AITreeCandidateNode,
+    AITreeLayer,
+    AITreeProbeEdge,
+    AITreeProbeResult,
+    AITreeSelfChallenge,
     AnalysisFact,
     AnalysisGraphEntity,
     AnalysisGraphLink,
@@ -13,6 +21,7 @@ from server.app.rca.models import (
     AnalysisTreeDecision,
     CandidateCause,
     ConclusionBoundary,
+    ControlledAITree,
     EvidenceAttributionResult,
     EvidenceChallenge,
     EvidenceChallengeTest,
@@ -23,12 +32,16 @@ from server.app.rca.models import (
 
 _LEVEL_ORDER = {
     "resource": 0,
-    "process": 1,
-    "thread": 2,
-    "syscall": 3,
-    "function": 4,
-    "call_path": 5,
-    "line": 6,
+    "host": 1,
+    "process": 2,
+    "thread": 3,
+    "syscall": 4,
+    "dependency": 5,
+    "service": 6,
+    "endpoint": 7,
+    "function": 8,
+    "call_path": 9,
+    "line": 10,
 }
 
 
@@ -119,6 +132,20 @@ def analyze_evidence(
         blocked_upgrades,
         collection_gaps,
     )
+    controlled_ai_tree = _derive_controlled_ai_tree(
+        evidence,
+        facts,
+        localizations,
+        attributions,
+        boundary,
+        ai_tree,
+        stability_score,
+        missing_evidence,
+        blocked_upgrades,
+        collection_gaps,
+        conflict_branch,
+        primary_cause_id,
+    )
     graph_entities, graph_links = _derive_graph_context(evidence, localizations)
     graph_extension_points = _derive_graph_extension_points(graph_entities, graph_links)
     return EvidenceAttributionResult(
@@ -126,6 +153,7 @@ def analyze_evidence(
         symptoms=symptoms,
         localizations=localizations,
         ai_tree=ai_tree,
+        controlled_ai_tree=controlled_ai_tree,
         graph_entities=graph_entities,
         graph_links=graph_links,
         attributions=attributions,
@@ -697,7 +725,9 @@ def _derive_depth_localizations(
         isinstance(context, dict)
         and any(str(context.get(key) or "").strip() for key in ("call_path", "endpoint", "trace_id", "wait_reason"))
     )
-    if isinstance(line_candidates, list):
+    source_context = evidence.source_context if isinstance(evidence.source_context, dict) else {}
+    has_source_context = _has_source_context(source_context)
+    if isinstance(line_candidates, list) and has_source_context:
         for position, item in enumerate(line_candidates[:3], start=1):
             if not isinstance(item, dict):
                 continue
@@ -746,6 +776,19 @@ def _derive_depth_localizations(
                 evidence_refs=["evidence_index.call_path_hotspots[0]"],
             ))
     return localizations
+
+
+def _has_source_context(source_context: dict[str, object]) -> bool:
+    if not isinstance(source_context, dict):
+        return False
+    source_paths = source_context.get("source_paths")
+    symbol_map_paths = source_context.get("symbol_map_paths")
+    return any([
+        isinstance(source_paths, list) and any(str(item).strip() for item in source_paths),
+        isinstance(symbol_map_paths, list) and any(str(item).strip() for item in symbol_map_paths),
+        bool(str(source_context.get("repo_revision") or "").strip()),
+        bool(str(source_context.get("build_id") or "").strip()),
+    ])
 
 
 def _guard_candidate(
@@ -1630,6 +1673,242 @@ def _derive_ai_tree(
             reason=_tree_leaf_reason(deepest, boundary, attributions, conservative, conflict_branch),
         ))
     return tree
+
+
+def _derive_controlled_ai_tree(
+    evidence: EvidenceInput,
+    facts: list[AnalysisFact],
+    localizations: list[AnalysisLocalization],
+    attributions: list[GuardedAttribution],
+    boundary: ConclusionBoundary,
+    legacy_tree: list[AnalysisTreeDecision],
+    stability_score: float,
+    missing_evidence: list[str],
+    blocked_upgrades: list[str],
+    collection_gaps: list[str],
+    conflict_branch: dict | None,
+    primary_cause_id: str | None,
+) -> ControlledAITree:
+    next_requests = _unique_strings(
+        request
+        for node in legacy_tree
+        for request in node.next_evidence_requests
+    )
+    source_context_hash = _source_context_hash(evidence.source_context)
+    primary_id = primary_cause_id if boundary.can_claim_root_cause else None
+    candidates = [
+        _controlled_candidate(
+            attribution,
+            facts,
+            primary_id,
+            missing_evidence,
+            blocked_upgrades,
+            boundary.max_supported_level,
+        )
+        for attribution in sorted(attributions, key=lambda item: item.candidate_id)
+    ]
+    if not candidates:
+        candidates.append(AITreeCandidateNode(
+            candidate_id="unknown_evidence_gap",
+            role="unknown",
+            claim="当前结构化证据不足，不能形成可验证的根因候选。",
+            supported_level=boundary.max_supported_level,
+            confidence=0.0,
+            status="unknown",
+            self_challenge=AITreeSelfChallenge(
+                missing_evidence=missing_evidence or ["缺少可区分候选原因的结构化证据。"],
+                what_would_change_my_mind="补齐同窗栈、Trace、日志或依赖检查后重新评估。",
+            ),
+        ))
+
+    layer0 = AITreeLayer(
+        layer_id="layer_0_coarse_candidates",
+        depth=0,
+        generated_by="ai_guarded",
+        summary="基于当前结构化证据形成粗候选集合，并按证据支持度分组。",
+        primary_causes=[item for item in candidates if item.role == "primary"][:1],
+        secondary_causes=[item for item in candidates if item.role == "secondary"][:3],
+        rejected_causes=[item for item in candidates if item.role == "rejected"][:4],
+        unknown_causes=[item for item in candidates if item.role == "unknown"][:4],
+    )
+    if not layer0.primary_causes and layer0.secondary_causes:
+        promoted = layer0.secondary_causes[0].model_copy(update={"role": "primary"})
+        layer0 = layer0.model_copy(update={
+            "primary_causes": [promoted],
+            "secondary_causes": layer0.secondary_causes[1:],
+        })
+
+    layers = [layer0]
+    edges: list[AITreeProbeEdge] = []
+    if next_requests:
+        layer1 = AITreeLayer(
+            layer_id="layer_1_requested_evidence_boundary",
+            depth=1,
+            generated_by="ai_guarded",
+            summary="AI 树请求最小必要补证；回流前只记录缺口和停止边界，不强行升级结论。",
+            primary_causes=[],
+            secondary_causes=[],
+            rejected_causes=[],
+            unknown_causes=[
+                AITreeCandidateNode(
+                    candidate_id=f"gap_{gap}",
+                    role="unknown",
+                    claim=f"需要补充 {gap} 后才能继续收敛候选。",
+                    supported_level=boundary.max_supported_level,
+                    confidence=max(0.0, min(0.45, stability_score)),
+                    status="missing_evidence",
+                    self_challenge=AITreeSelfChallenge(
+                        missing_evidence=[gap],
+                        what_would_change_my_mind=f"{gap} 产生同窗结构化证据并引用到 evidence_refs。",
+                    ),
+                )
+                for gap in next_requests[:3]
+            ],
+        )
+        layers.append(layer1)
+        edges.append(AITreeProbeEdge(
+            edge_id="edge_layer_0_to_layer_1",
+            from_layer_id=layer0.layer_id,
+            to_layer_id=layer1.layer_id,
+            probe_requests=next_requests[:3],
+            probe_results=[
+                AITreeProbeResult(
+                    status="not_started",
+                    evidence_refs=[],
+                    blocked_reason="等待编排器按 fingerprint 复用或创建已注册采集任务。",
+                )
+            ],
+            reuse_status="not_checked",
+            effect="pending",
+            reason="当前证据存在缺口，优先补最小必要证据而不是直接给更细结论。",
+        ))
+
+    if conflict_branch is not None:
+        conflict_layer = AITreeLayer(
+            layer_id="layer_conflict_review",
+            depth=len(layers),
+            generated_by="ai_guarded",
+            summary=str(conflict_branch.get("reason") or "检测到候选冲突，当前保持保守边界。"),
+            rejected_causes=[
+                AITreeCandidateNode(
+                    candidate_id=f"conflict_{candidate_id}",
+                    role="rejected",
+                    claim=f"候选 {candidate_id} 在当前冲突分枝中未被提升为主因。",
+                    supported_level=boundary.max_supported_level,
+                    confidence=0.2,
+                    status="weakened",
+                    evidence_refs=conflict_branch.get("evidence_refs", []),
+                    self_challenge=AITreeSelfChallenge(
+                        opposing_evidence_refs=conflict_branch.get("evidence_refs", []),
+                        why_not_other_claims="同窗或跨证据族冲突存在，不能把所有候选同时提升为主因。",
+                        what_would_change_my_mind="补齐冲突证据族并看到其中一个候选被同窗证据稳定支持。",
+                    ),
+                )
+                for candidate_id in conflict_branch.get("conflict_candidates", [])
+                if candidate_id != primary_id
+            ],
+        )
+        layers.append(conflict_layer)
+
+    final_primary = [item.candidate_id for item in layer0.primary_causes]
+    final_secondary = [item.candidate_id for item in layer0.secondary_causes]
+    final_rejected = _unique_strings(
+        item.candidate_id
+        for layer in layers
+        for item in layer.rejected_causes
+    )
+    final_unknown = _unique_strings(
+        item.candidate_id
+        for layer in layers
+        for item in layer.unknown_causes
+    )
+    return ControlledAITree(
+        tree_id=f"controlled_ai_tree_{_stable_digest([fact.fact_id for fact in facts], final_primary, next_requests)}",
+        source_context_hash=source_context_hash,
+        final_supported_level=boundary.max_supported_level,
+        stop_reason=boundary.reason,
+        budget=AITreeBudgetSnapshot(
+            used_ai_rounds=len(layers),
+            used_probe_requests=len(next_requests),
+        ),
+        layers=layers,
+        probe_edges=edges,
+        final_primary_causes=final_primary,
+        final_secondary_causes=final_secondary,
+        final_rejected_causes=final_rejected,
+        final_unknown_causes=final_unknown,
+    )
+
+
+def _controlled_candidate(
+    attribution: GuardedAttribution,
+    facts: list[AnalysisFact],
+    primary_id: str | None,
+    missing_evidence: list[str],
+    blocked_upgrades: list[str],
+    boundary_level: str,
+) -> AITreeCandidateNode:
+    fact_map = {fact.fact_id: fact for fact in facts}
+    refs = _unique_strings(
+        fact_map[fact_id].evidence_ref
+        for fact_id in attribution.supporting_fact_ids
+        if fact_id in fact_map and fact_map[fact_id].evidence_ref
+    )
+    opposing_refs = _unique_strings(
+        fact_map[fact_id].evidence_ref
+        for fact_id in attribution.opposing_fact_ids
+        if fact_id in fact_map and fact_map[fact_id].evidence_ref
+    )
+    if attribution.status == "supported" and attribution.candidate_id == primary_id:
+        role = "primary"
+        confidence = 0.82
+    elif attribution.status == "supported":
+        role = "secondary"
+        confidence = 0.64
+    elif attribution.status == "forbidden":
+        role = "rejected"
+        confidence = 0.1
+    else:
+        role = "unknown"
+        confidence = 0.35
+    missing = _unique_strings([*attribution.missing_evidence, *missing_evidence[:3], *blocked_upgrades[:2]])
+    return AITreeCandidateNode(
+        candidate_id=attribution.candidate_id,
+        role=role,
+        claim=f"{attribution.candidate_id} 当前状态为 {attribution.status}，最高支持到 {attribution.max_supported_level or boundary_level} 层。",
+        supported_level=attribution.max_supported_level or boundary_level,
+        confidence=confidence,
+        status=attribution.status,
+        evidence_refs=refs,
+        self_challenge=AITreeSelfChallenge(
+            why_this_claim="该候选只使用 supporting_fact_ids 能引用到的事实作为支撑。",
+            why_not_other_claims="其他候选需要更强同窗证据或存在反驳事实，不能无证据提升。",
+            supporting_evidence_refs=refs,
+            opposing_evidence_refs=opposing_refs,
+            missing_evidence=missing,
+            what_would_change_my_mind="新增同目标、同窗口、已结构化的反向证据，或补齐缺失探针后主证据不再成立。",
+        ),
+    )
+
+
+def _source_context_hash(source_context: dict | None) -> str | None:
+    if not isinstance(source_context, dict) or not _has_source_context(source_context):
+        return None
+    return f"sha256:{_stable_digest(source_context)}"
+
+
+def _stable_digest(*items: object) -> str:
+    payload = json.dumps(items, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def _unique_strings(items: Iterable[object]) -> list[str]:
+    result: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
 
 
 def _tree_reason(

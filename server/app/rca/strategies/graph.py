@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from server.app.ai_provider import get_ai_settings
+from server.app.diagnosis.probe_registry import build_probe_manifest
 from server.app.rca.attribution import analyze_evidence
 from server.app.rca.calibrator import calibrate, format_for_llm
 from server.app.rca.candidates import generate_candidates
@@ -80,6 +81,7 @@ class GraphCausalRCAAnalyzer:
         if context.analysis_pipeline == "evidence_to_attribution":
             analysis_result = analyze_evidence(base_evidence, candidates)
             analysis_payload = analysis_result.model_dump()
+            analysis_payload["probe_registry_manifest"] = build_probe_manifest()
             if context.structured_evidence is not None:
                 analysis_payload["structured_evidence"] = context.structured_evidence
             evidence = evidence.model_copy(update={
