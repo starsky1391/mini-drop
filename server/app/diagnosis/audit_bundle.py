@@ -41,6 +41,7 @@ def build_audit_bundle(diagnosis_id: str, orchestrator, repo) -> dict[str, Any] 
             "structured_evidence": structured_evidence,
             "evidence_refs": evidence_refs,
             "conclusion": conclusion,
+            "latest_conclusion": latest,
         }
     )
 
@@ -76,6 +77,16 @@ def build_readiness_gate(bundle: dict[str, Any]) -> dict[str, Any]:
         _check("structured_evidence_non_empty", bool(bundle.get("structured_evidence")), "structured evidence should exist"),
         _check("evidence_refs_non_empty", bool(bundle.get("evidence_refs")), "conclusion should cite evidence refs"),
         _check(
+            "controlled_ai_tree_present",
+            bool(_bundle_controlled_ai_tree(bundle)),
+            "AI Ops v2 scoring requires the controlled AI tree path, not only legacy task RCA",
+        ),
+        _check(
+            "controlled_ai_tree_ai_guarded",
+            _controlled_ai_tree_has_ai_guarded_layer(bundle),
+            "controlled AI tree should include at least one LLM-validated ai_guarded layer",
+        ),
+        _check(
             "collector_type_not_fallback",
             _collector_mapping_is_explicit(bundle),
             "collector types should match planned probes without silent perf_cpu fallback",
@@ -101,6 +112,26 @@ def build_readiness_gate(bundle: dict[str, Any]) -> dict[str, Any]:
 
 def _check(name: str, passed: bool, message: str) -> dict[str, Any]:
     return {"name": name, "status": "PASS" if passed else "FAIL", "message": message}
+
+
+def _controlled_ai_tree_has_ai_guarded_layer(bundle: dict[str, Any]) -> bool:
+    tree = _bundle_controlled_ai_tree(bundle)
+    if not isinstance(tree, dict):
+        return False
+    return any(
+        isinstance(layer, dict) and layer.get("generated_by") == "ai_guarded"
+        for layer in tree.get("layers") or []
+    )
+
+
+def _bundle_controlled_ai_tree(bundle: dict[str, Any]) -> dict[str, Any] | None:
+    latest = bundle.get("latest_conclusion") or {}
+    tree = latest.get("controlled_ai_tree") if isinstance(latest, dict) else None
+    if isinstance(tree, dict):
+        return tree
+    conclusion = bundle.get("conclusion") or {}
+    tree = conclusion.get("controlled_ai_tree") if isinstance(conclusion, dict) else None
+    return tree if isinstance(tree, dict) else None
 
 
 def _run_section(detail: dict[str, Any]) -> dict[str, Any]:
@@ -182,6 +213,7 @@ def _normalize_conclusion(latest: dict[str, Any]) -> dict[str, Any]:
         "supporting_evidence_refs": assessment.get("evidence_refs") or primary.get("evidence_refs", []),
         "missing_evidence": latest.get("missing_evidence") or assessment.get("missing_evidence", []),
         "diagnostic_commands": latest.get("diagnostic_commands", []),
+        "controlled_ai_tree": latest.get("controlled_ai_tree"),
     }
 
 

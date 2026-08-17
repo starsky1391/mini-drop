@@ -219,6 +219,8 @@ class AITreeCandidateNode(BaseModel):
     """受控 AI 树某一层里的候选结论。"""
 
     candidate_id: str
+    lineage_id: Optional[str] = None
+    parent_candidate_ids: list[str] = Field(default_factory=list)
     role: Literal["primary", "secondary", "rejected", "unknown"]
     claim: str
     supported_level: Literal["resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"] = "resource"
@@ -242,8 +244,12 @@ class AITreeProbeEdge(BaseModel):
     edge_id: str
     from_layer_id: str
     to_layer_id: Optional[str] = None
+    from_candidate_ids: list[str] = Field(default_factory=list)
+    to_candidate_ids: list[str] = Field(default_factory=list)
     probe_requests: list[str] = Field(default_factory=list)
     probe_results: list[AITreeProbeResult] = Field(default_factory=list)
+    status: Literal["completed", "blocked", "failed", "reused", "not_started", "unknown"] = "unknown"
+    evidence_refs: list[str] = Field(default_factory=list)
     reuse_status: Literal[
         "reuse_hit",
         "reuse_blocked_result",

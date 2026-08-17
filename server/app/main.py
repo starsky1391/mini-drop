@@ -26,6 +26,7 @@ import asyncio
 import json as _json
 import queue as _queue
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any, Optional
 from uuid import uuid4
@@ -49,7 +50,18 @@ from server.app.diagnosis.evidence_structurer import (
     structure_artifact_evidence,
 )
 from server.app.diagnosis.probe_registry import list_probes as list_registered_probes
-from server.app.diagnosis.schemas import ApprovalRequest, BulkApprovalRequest, CreateDiagnosisRequest
+from server.app.diagnosis.schemas import (
+    ApprovalRequest,
+    BulkApprovalRequest,
+    CreateDiagnosisRequest,
+    DependencyEdge,
+    DiagnosisBudget,
+    DiagnosisContext,
+    ServiceInstance,
+    SourceContext,
+    TERMINAL_DIAGNOSIS_STATUSES,
+    TimeRange,
+)
 from server.app.diagnosis.watch_runtime import (
     CreateWatchSubscriptionRequest,
     PersistentAgentRuntime,
@@ -135,7 +147,252 @@ def _reconcile_watch_task_terminal(
     ):
         return
 
-    _execute_watch_incident_analysis(incident.incident_id)
+    _create_watch_incident_diagnosis(incident.incident_id)
+
+
+def _create_watch_incident_diagnosis(incident_id: str) -> dict[str, Any]:
+    """Create the real AI diagnosis session for a frozen watch incident."""
+    incident = watch_registry.get_incident(incident_id)
+    if incident is None:
+        raise HTTPException(status_code=404, detail="异常窗口不存在")
+    watch = watch_registry.get(incident.watch_id)
+    if watch is None:
+        raise HTTPException(status_code=404, detail="监视订阅不存在")
+    if not incident.structured_evidence:
+        raise HTTPException(status_code=409, detail="异常窗口缺少结构化证据，无法分析")
+
+    started_at = time.time()
+    watch_registry.update_incident_analysis(
+        incident_id,
+        analysis_status="analyzing",
+        analysis_result={
+            "mode": "ai_cluster_diagnosis",
+            "incident_id": incident_id,
+            "watch_id": watch.watch_id,
+            "analysis_started_at": started_at,
+            "message": "正在创建 AI 集群诊断会话",
+        },
+    )
+    try:
+        request = _build_watch_incident_diagnosis_request(watch, incident)
+        detail = diagnosis_orchestrator.create(request, creator_id="watch_runtime")
+    except Exception as exc:
+        return _persist_watch_diagnosis_creation_failure(
+            incident,
+            error_type=type(exc).__name__,
+            detail=str(exc)[:300],
+            started_at=started_at,
+        )
+
+    diagnosis_id = str(detail.get("diagnosis_id") or "")
+    status = str(detail.get("status") or "")
+    analysis_status = _watch_analysis_status_from_diagnosis(status)
+    result = {
+        "mode": "ai_cluster_diagnosis",
+        "diagnosis_id": diagnosis_id,
+        "analysis_session_id": diagnosis_id,
+        "incident_id": incident.incident_id,
+        "watch_id": watch.watch_id,
+        "trigger_event_id": incident.trigger_event_id,
+        "evidence_cohort_id": incident.evidence_cohort_id,
+        "timing_relation": "same_window",
+        "collection_mode": "rolling_snapshot",
+        "diagnosis_status": status,
+        "created_from": "watch_incident",
+        "elapsed_sec": round(time.time() - started_at, 3),
+    }
+    updated = watch_registry.update_incident_analysis(
+        incident_id,
+        analysis_status=analysis_status,
+        analysis_session_id=diagnosis_id,
+        analysis_result=result,
+    )
+    return {
+        **result,
+        "status": status,
+        "incident": updated.model_dump(mode="json"),
+        "diagnosis": detail,
+    }
+
+
+def _build_watch_incident_diagnosis_request(watch: Any, incident: Any) -> CreateDiagnosisRequest:
+    target_config = watch.target_config if isinstance(watch.target_config, dict) else {}
+    service_id = watch.target.service_id or target_config.get("service_id") or "watch_target"
+    environment = str(target_config.get("environment") or "unknown")
+    window_start, window_end = _non_empty_watch_window(incident)
+    instance_id = (
+        watch.target.instance_id
+        or str(target_config.get("instance_id") or "")
+        or f"{watch.target.agent_id}:{watch.target.target_pid}"
+    )
+    agent = repo.agents.get(watch.target.agent_id)
+    host_id = (
+        str(target_config.get("host_id") or "")
+        or str(getattr(agent, "hostname", "") or "")
+        or str(getattr(agent, "host_id", "") or "")
+        or watch.target.agent_id
+    )
+    source_context = _source_context_from_watch_config(target_config)
+    instance = ServiceInstance(
+        service_id=service_id,
+        instance_id=instance_id,
+        host_id=host_id,
+        agent_id=watch.target.agent_id,
+        pid=watch.target.target_pid,
+        container_id=target_config.get("container_id"),
+        environment=environment,
+        source_context=source_context,
+    )
+    budget = None
+    if isinstance(target_config.get("diagnosis_budget"), dict):
+        budget = DiagnosisBudget.model_validate(target_config["diagnosis_budget"])
+    return CreateDiagnosisRequest(
+        query=(
+            f"持续监视发现 {service_id} 在 {window_start.isoformat()} 到 "
+            f"{window_end.isoformat()} 出现 {incident.trigger_type}。"
+            f"请优先复用 evidence_cohort_id={incident.evidence_cohort_id} 的同窗冻结证据，"
+            "按受控 AI 树生成候选、下探补证并给出证据支持的最细定位。"
+        ),
+        context=DiagnosisContext(
+            service_id=service_id,
+            environment=environment,
+            time_range=TimeRange(
+                start=window_start,
+                end=window_end,
+                source="request_context",
+            ),
+            instances=[instance],
+            dependencies=_dependency_edges_from_watch_config(service_id, target_config),
+            source_context=source_context,
+        ),
+        budget_profile=str(target_config.get("budget_profile") or os.getenv(
+            "MINI_DROP_WATCH_DIAGNOSIS_BUDGET_PROFILE",
+            "production_safe",
+        )),
+        auto_execute_policy=str(target_config.get("auto_execute_policy") or "all_registered"),
+        budget=budget,
+    )
+
+
+def _non_empty_watch_window(incident: Any) -> tuple[Any, Any]:
+    start = incident.window_start
+    end = incident.window_end
+    if end > start:
+        return start, end
+    return start - timedelta(seconds=1), end
+
+
+def _source_context_from_watch_config(target_config: dict[str, Any]) -> SourceContext | None:
+    source = target_config.get("source_context")
+    if not isinstance(source, dict):
+        source = {
+            key: target_config[key]
+            for key in (
+                "source_paths",
+                "repo_revision",
+                "language",
+                "symbol_map_paths",
+                "build_id",
+                "container_workdir",
+            )
+            if key in target_config
+        }
+    if not source:
+        return None
+    return SourceContext.model_validate(source)
+
+
+def _dependency_edges_from_watch_config(service_id: str, target_config: dict[str, Any]) -> list[DependencyEdge]:
+    edges: list[DependencyEdge] = []
+    raw_targets = target_config.get("dependency_targets")
+    if isinstance(raw_targets, list):
+        for index, item in enumerate(raw_targets):
+            if not isinstance(item, dict):
+                continue
+            target_service = str(
+                item.get("target_service")
+                or item.get("dependency_id")
+                or item.get("name")
+                or item.get("host")
+                or f"dependency_{index + 1}"
+            )
+            edges.append(DependencyEdge(
+                source_service=service_id,
+                target_service=target_service,
+                relation=item.get("relation") or "CALLS",
+                protocol=item.get("protocol"),
+                host=item.get("host"),
+                port=item.get("port"),
+                url=item.get("url"),
+                path=item.get("path"),
+                confidence=item.get("confidence") or "medium",
+                source=item.get("source") or "watch_target_config",
+            ))
+    redis_target = target_config.get("redis_target")
+    redis_items = redis_target if isinstance(redis_target, list) else [redis_target]
+    for item in redis_items:
+        if not item:
+            continue
+        host = item.get("host") if isinstance(item, dict) else str(item).split(":")[0]
+        port = item.get("port") if isinstance(item, dict) else None
+        if port is None and isinstance(item, str) and ":" in item:
+            _, raw_port = item.rsplit(":", 1)
+            port = int(raw_port) if raw_port.isdigit() else None
+        edges.append(DependencyEdge(
+            source_service=service_id,
+            target_service=(item.get("target_service") if isinstance(item, dict) else None) or "redis",
+            relation="READS_FROM",
+            protocol="redis",
+            host=host,
+            port=port,
+            confidence="medium",
+            source="watch_target_config",
+        ))
+    return edges
+
+
+def _watch_analysis_status_from_diagnosis(status: str) -> str:
+    if status == "FAILED":
+        return "analysis_failed"
+    if status in {"INSUFFICIENT_EVIDENCE", "BUDGET_EXHAUSTED", "TOPOLOGY_UNAVAILABLE"}:
+        return "needs_evidence"
+    if status in TERMINAL_DIAGNOSIS_STATUSES:
+        return "analyzed"
+    return "analyzing"
+
+
+def _persist_watch_diagnosis_creation_failure(
+    incident: Any,
+    *,
+    error_type: str,
+    detail: str,
+    started_at: float,
+) -> dict[str, Any]:
+    result = {
+        "mode": "ai_cluster_diagnosis",
+        "incident_id": incident.incident_id,
+        "watch_id": incident.watch_id,
+        "analysis_status": "analysis_failed",
+        "auto_analysis_error": error_type,
+        "message": "创建 AI 集群诊断会话失败，已保留冻结证据，可从异常窗口重试",
+        "detail": detail,
+        "retryable": True,
+        "elapsed_sec": round(time.time() - started_at, 3),
+        "preserved_evidence_refs": [
+            item.get("evidence_ref")
+            for item in incident.snapshot_refs
+            if item.get("evidence_ref")
+        ],
+    }
+    updated = watch_registry.update_incident_analysis(
+        incident.incident_id,
+        analysis_status="analysis_failed",
+        analysis_result=result,
+    )
+    return {
+        **result,
+        "incident": updated.model_dump(mode="json"),
+    }
 
 
 def _execute_watch_incident_analysis(
@@ -851,6 +1108,9 @@ def _ensure_task_analysis_session(task_id: str) -> dict[str, Any] | None:
     latest = _latest_task_analysis(task_id)
     if latest is not None:
         return latest
+    task = repo.tasks.get(task_id)
+    if task is not None and _is_diagnosis_child_task(task):
+        return _collection_only_task_analysis(task)
     return _run_task_analysis(
         task_id=task_id,
         selected_strategy=normalize_strategy_id(os.getenv("MINI_DROP_RCA_STRATEGY", "linear")),
@@ -869,6 +1129,8 @@ def _run_task_analysis(
     task = repo.tasks.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
+    if _is_diagnosis_child_task(task):
+        return _collection_only_task_analysis(task)
 
     artifacts = repo.artifacts.get(task_id, [])
     artifact_values = {
@@ -985,6 +1247,42 @@ def _run_task_analysis(
         "tool_results": [item.model_dump() for item in outcome.tool_results],
         "structured_evidence": report.report.structured_evidence,
         "repair_plan": repair_plan_data,
+    }
+
+
+def _is_diagnosis_child_task(task: Any) -> bool:
+    request_params = getattr(task, "request_params", {}) or {}
+    options = request_params.get("options", {}) if isinstance(request_params, dict) else {}
+    return isinstance(options, dict) and bool(options.get("diagnosis_id"))
+
+
+def _collection_only_task_analysis(task: Any) -> dict[str, Any]:
+    request_params = getattr(task, "request_params", {}) or {}
+    options = request_params.get("options", {}) if isinstance(request_params, dict) else {}
+    diagnosis_id = str(options.get("diagnosis_id") or "")
+    step_id = str(options.get("diagnosis_step_id") or "")
+    return {
+        "analysis_session_id": None,
+        "diagnosis_id": diagnosis_id,
+        "task_id": task.id,
+        "status": "SKIPPED",
+        "summary": "该任务是 AI 诊断会话的采集子任务，只产出结构化证据；最终结论请查看父级 AI 诊断会话。",
+        "validated": True,
+        "analysis_strategy": "collection_only",
+        "analysis_pipeline": "diagnosis_session_child_task",
+        "collection_mode": options.get("collection_mode") or "diagnosis_probe",
+        "not_enough_evidence": False,
+        "report": {
+            "mode": "collection_only",
+            "parent_diagnosis_id": diagnosis_id,
+            "diagnosis_step_id": step_id,
+            "collector_type": getattr(task, "collector_type", ""),
+            "artifact_count": len(repo.artifacts.get(task.id, [])),
+        },
+        "ranked_causes": [],
+        "facts": [],
+        "tool_results": [],
+        "repair_plan": None,
     }
 
 
@@ -1309,18 +1607,8 @@ def analyze_watch_incident(
     analysis_strategy: Optional[str] = None,
     analysis_pipeline: Optional[str] = None,
 ) -> APIResponse:
-    incident = watch_registry.get_incident(incident_id)
-    if incident is None:
-        raise HTTPException(status_code=404, detail="异常窗口不存在")
-    if not incident.structured_evidence:
-        raise HTTPException(status_code=409, detail="异常窗口缺少结构化证据，无法分析")
-    watch_registry.update_incident_analysis(incident_id, analysis_status="analyzing")
-    analyzed = _execute_watch_incident_analysis(
-        incident_id,
-        analysis_strategy=analysis_strategy,
-        analysis_pipeline=analysis_pipeline,
-    )
-    return APIResponse(data=analyzed.model_dump(mode="json"))
+    _ = analysis_strategy, analysis_pipeline
+    return APIResponse(data=_create_watch_incident_diagnosis(incident_id))
 
 
 @app.get("/api/v1/agents/{agent_id}/watch-leases")

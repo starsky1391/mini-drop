@@ -128,6 +128,23 @@ def test_diagnosis_audit_bundle_exports_runtime_trace_and_readiness_gate(client:
     )
 
 
+def test_diagnosis_child_task_skips_legacy_single_task_rca(client: TestClient):
+    data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+    task_id = data["child_task_ids"][0]
+    _finish_sys_metrics_task(task_id, _normal_summary())
+
+    detail = client.get(f"/api/tasks/{task_id}").json()["data"]
+    forced = client.post(f"/api/tasks/{task_id}/diagnose").json()["data"]
+    history = client.get(f"/api/tasks/{task_id}/diagnoses").json()["data"]
+
+    assert detail["latest_analysis"]["status"] == "SKIPPED"
+    assert detail["latest_analysis"]["analysis_pipeline"] == "diagnosis_session_child_task"
+    assert detail["latest_analysis"]["diagnosis_id"] == data["diagnosis_id"]
+    assert forced["status"] == "SKIPPED"
+    assert forced["report"]["mode"] == "collection_only"
+    assert history == []
+
+
 def test_ai_controlled_tree_probe_selection_creates_followup(client: TestClient, monkeypatch):
     repo.register_agent(
         "a1", "host-1", "10.0.0.1",
@@ -183,6 +200,127 @@ def test_readiness_gate_fails_completed_probe_without_structured_family_artifact
 
     assert gate["status"] == "FAIL"
     assert check["status"] == "FAIL"
+
+
+def test_readiness_gate_accepts_controlled_tree_from_normalized_conclusion():
+    bundle = {
+        "runtime_trace": [{"stage": "conclusion"}],
+        "probes": [{
+            "probe_id": "process_dependency_check",
+            "task_id": "task_dependency",
+            "status": "COMPLETED",
+        }],
+        "child_task_ids": ["task_dependency"],
+        "tasks": [{"id": "task_dependency", "collector_type": "dependency_check"}],
+        "artifacts": [{"task_id": "task_dependency", "artifact_type": "dependency_check_json"}],
+        "structured_evidence": {"version": 1},
+        "evidence_refs": ["ev_1"],
+        "conclusion": {
+            "controlled_ai_tree": {
+                "layers": [{"generated_by": "ai_guarded"}],
+                "probe_edges": [{"edge_id": "edge_1"}],
+            },
+        },
+    }
+
+    gate = build_readiness_gate(bundle)
+    checks = {item["name"]: item["status"] for item in gate["checks"]}
+
+    assert checks["controlled_ai_tree_present"] == "PASS"
+    assert checks["controlled_ai_tree_ai_guarded"] == "PASS"
+
+
+def test_session_controlled_tree_keeps_function_level_when_assessment_has_function_anchor():
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag_function_level",
+        cluster_assessment={
+            "classification": "self_code_or_process_pressure",
+            "summary": "等待栈已收敛到 runtime.futex.abi0+35。",
+            "supported_level": "function",
+            "max_supported_level": "process",
+            "confidence": 0.58,
+            "evidence_refs": ["ev_wait"],
+        },
+        candidates=[{
+            "candidate_id": "off_cpu_wait_hotspot",
+            "rank": 1,
+            "description": "Off-CPU 等待栈指向 runtime.futex.abi0+35。",
+            "confidence_level": "中",
+            "evidence_refs": ["ev_wait"],
+        }],
+        followup_requests=[],
+        probes=[{
+            "status": "COMPLETED",
+            "parameters": {"evidence_gap": "off_cpu_wait_profile"},
+            "evidence_refs": ["ev_wait"],
+        }],
+        child_trees=[{
+            "layers": [{"generated_by": "ai_guarded"}],
+        }],
+    )
+
+    assert tree is not None
+    assert tree.final_supported_level == "function"
+    assert tree.layers[1].primary_causes[0].supported_level == "function"
+
+
+def test_session_controlled_tree_contains_rejected_unknown_and_blocked_branches():
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag_branching_tree",
+        cluster_assessment={
+            "classification": "self_code_or_process_pressure",
+            "summary": "off-CPU 等待栈已把问题收敛到 runtime.futex.abi0+35。",
+            "supported_level": "function",
+            "max_supported_level": "process",
+            "confidence": 0.58,
+            "evidence_refs": ["ev_wait", "ev_sys"],
+            "primary_anchor": {
+                "supported_level": "function",
+                "anchor": "runtime.futex.abi0+35",
+                "evidence_ref": "ev_wait",
+                "blocked_upgrade_reason": "缺少锁持有者线程、业务调用栈或源码符号映射，不能直接升级到代码行。",
+            },
+            "alternative_hypotheses": [
+                {
+                    "hypothesis": "same_host_noisy_neighbor",
+                    "status": "weakened",
+                    "reason": "同宿主观测未显示更强资源压力。",
+                    "supported_level": "host",
+                    "evidence_refs": ["ev_sys"],
+                },
+                {
+                    "hypothesis": "downstream_dependency",
+                    "status": "missing_evidence",
+                    "reason": "缺少下游依赖可达性和日志证据。",
+                    "supported_level": "service",
+                    "missing_evidence": ["dependency_check", "log_scan"],
+                },
+            ],
+        },
+        candidates=[{
+            "candidate_id": "off_cpu_wait_hotspot",
+            "rank": 1,
+            "description": "Off-CPU 等待栈指向 runtime.futex.abi0+35。",
+            "confidence_level": "中",
+            "evidence_refs": ["ev_wait"],
+        }],
+        followup_requests=[],
+        probes=[{
+            "status": "COMPLETED",
+            "parameters": {"evidence_gap": "off_cpu_wait_profile"},
+            "evidence_refs": ["ev_wait"],
+        }],
+        child_trees=[{"layers": [{"generated_by": "ai_guarded"}]}],
+    )
+
+    assert tree is not None
+    layer1 = tree.layers[1]
+    assert [node.candidate_id for node in layer1.primary_causes] == ["off_cpu_wait_hotspot"]
+    assert any(node.candidate_id == "rejected_same_host_noisy_neighbor" for node in layer1.rejected_causes)
+    assert any(node.candidate_id == "unknown_downstream_dependency" for node in layer1.unknown_causes)
+    assert tree.layers[2].unknown_causes[0].candidate_id == "blocked_line_upgrade"
+    assert tree.layers[2].unknown_causes[0].status == "forbidden"
+    assert "blocked_line_upgrade" in tree.final_unknown_causes
 
 
 def test_audit_structured_evidence_merges_task_families_without_last_empty_task_erasing_signals():
@@ -388,6 +526,26 @@ def test_completed_dependency_evidence_is_not_requested_again():
     )
 
     assert filtered == ["log_scan"]
+
+
+def test_completed_depth_evidence_is_not_requested_again_even_when_low_gain():
+    filtered = orchestrator_module._filter_pending_evidence_requests(
+        "diag-1",
+        ["baseline_window_profile", "trace_endpoint_profile", "off_cpu_wait_profile"],
+        [
+            {
+                "parameters": {"evidence_gap": "baseline_window_profile"},
+                "status": "COMPLETED",
+            },
+            {
+                "parameters": {"evidence_gap": "trace_endpoint_profile"},
+                "status": "COMPLETED",
+            },
+        ],
+        task_observations=[],
+    )
+
+    assert filtered == ["off_cpu_wait_profile"]
 
 
 def test_downstream_dependency_summary_names_redis_and_anchor():
@@ -1096,6 +1254,69 @@ def test_downstream_assessment_has_minimal_industrial_adapter_evidence_plan(clie
     assert redis_probe["parameters"]["host"] == "127.0.0.1"
     assert redis_probe["parameters"]["port"] == 6379
     assert redis_probe["parameters"]["collector_invocation"]["target_config"]["redis_target"]["url"] == "redis://127.0.0.1:6379"
+
+
+def test_redis_dependency_session_tree_matches_cluster_conclusion(client: TestClient):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=["sys_metrics", "log_scan", "dependency_check", "redis_check", "perf_cpu", "off_cpu_wait_profile", "trace_endpoint_profile", "baseline_window_profile"],
+    )
+    payload = _payload("service-a 延迟升高，检查 Redis 依赖")
+    payload["budget_profile"] = "development"
+    payload["auto_execute_policy"] = "all_registered"
+    payload["context"]["dependencies"] = [{
+        "source_service": "service-a",
+        "target_service": "redis-cart",
+        "relation": "CALLS",
+        "protocol": "redis",
+        "host": "redis-cart",
+        "port": 6379,
+        "confidence": "high",
+        "source": "test_topology",
+    }]
+
+    data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+    probes = _sys_metric_probe_by_instance(data)
+    _finish_sys_metrics_task(probes["service-a-1"]["task_id"], _normal_summary())
+    first_detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
+    for probe in first_detail["probes"]:
+        task_id = probe.get("task_id")
+        gap = (probe.get("parameters") or {}).get("evidence_gap")
+        if not task_id or not gap:
+            continue
+        if gap == "dependency_check":
+            _finish_structured_task(task_id, "dependency_check_json", {
+                "summary": {"failed_dependencies": ["redis-cart"]},
+                "checks": [{"dependency_id": "redis-cart", "success": False, "error_type": "tcp_timeout"}],
+            })
+        elif gap == "redis_check":
+            _finish_structured_task(task_id, "redis_check_json", {
+                "connectivity": {"ping_ok": False, "exporter_up": False, "error_type": "redis_unreachable"},
+                "latency_summary": {"max_latency_ms": 0},
+                "slowlog_summary": {"entry_count": 0},
+            })
+        elif gap == "log_scan":
+            _finish_structured_task(task_id, "log_window_json", {
+                "summary": {"matched_records": 2, "error_cluster_count": 1},
+                "error_clusters": [{"message": "redis timeout", "count": 2}],
+            })
+        elif gap in {"cpu_profile", "off_cpu_wait_profile", "trace_endpoint_profile", "baseline_window_profile"}:
+            repo.transition_task(task_id, TaskStatus.FAILED, "perf_event_paranoid=4 permission denied", Actor.AGENT)
+
+    detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
+    conclusion = detail["latest_conclusion"]
+    tree = conclusion["controlled_ai_tree"]
+    primary_ids = tree["final_primary_causes"]
+    pending_requests = set(conclusion["next_evidence_requests"])
+
+    assert conclusion["cluster_assessment"]["classification"] == "downstream_dependency"
+    assert conclusion["cluster_assessment"]["root_entity"] == "redis-cart"
+    assert detail["status"] == "COMPLETED"
+    assert tree["final_supported_level"] == "service"
+    assert any("redis" in item for item in primary_ids)
+    assert tree["layers"][0]["primary_causes"]
+    assert "insufficient_data" not in primary_ids
+    assert pending_requests.isdisjoint({"cpu_profile", "off_cpu_wait_profile", "trace_endpoint_profile", "baseline_window_profile"})
 
 
 def test_target_scoped_redis_invocation_does_not_leak_between_diagnoses(client: TestClient):

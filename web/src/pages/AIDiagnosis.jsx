@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   Alert,
   Button,
@@ -11,7 +12,6 @@ import {
   InputNumber,
   List,
   Modal,
-  Popover,
   Row,
   Select,
   Space,
@@ -33,10 +33,12 @@ import {
 import {
   createDiagnosisSession,
   getDiagnosisSession,
+  getTask,
   listAgents,
   listDiagnosisSessions,
   runAIValidation,
 } from "../api/client";
+import ControlledAITreeGraph from "../components/diagnosis/ControlledAITreeGraph";
 
 const TERMINAL = new Set([
   "COMPLETED",
@@ -82,101 +84,10 @@ function normalizeSourceContext(value = {}) {
     : null;
 }
 
-function ControlledAITreeView({ tree, evidenceMap }) {
-  const layers = tree.layers || [];
-  const edges = tree.probe_edges || [];
-  return (
-    <Card
-      title="受控 AI 树"
-      extra={<Tag color={tree.final_supported_level === "line" ? "green" : "blue"}>停在 {tree.final_supported_level}</Tag>}
-    >
-      <Alert
-        type={tree.probe_edges?.length ? "warning" : "success"}
-        showIcon
-        message={tree.stop_reason || "AI 树已按当前证据边界停止。"}
-        description={`预算：AI rounds ${tree.budget?.used_ai_rounds || 0}/${tree.budget?.max_ai_rounds || 0}，探针请求 ${tree.budget?.used_probe_requests || 0}/${tree.budget?.max_probe_requests_per_round || 0}`}
-        style={{ marginBottom: 12 }}
-      />
-      <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-        {layers.map((layer, index) => {
-          const edge = edges.find((item) => item.from_layer_id === layer.layer_id);
-          return (
-            <Card
-              key={layer.layer_id}
-              size="small"
-              type="inner"
-              title={<Space><Tag color="geekblue">Layer {layer.depth}</Tag><Typography.Text>{layer.summary}</Typography.Text></Space>}
-            >
-              <CandidateGroup title="主因候选" color="red" items={layer.primary_causes} evidenceMap={evidenceMap} />
-              <CandidateGroup title="次因候选" color="orange" items={layer.secondary_causes} evidenceMap={evidenceMap} />
-              <CandidateGroup title="反证/降级候选" color="default" items={layer.rejected_causes} evidenceMap={evidenceMap} muted />
-              <CandidateGroup title="未知候选" color="blue" items={layer.unknown_causes} evidenceMap={evidenceMap} />
-              {edge && (
-                <div style={{ marginTop: 12, padding: 12, border: "1px dashed #91caff", borderRadius: 8, background: "#f0f7ff" }}>
-                  <Space wrap>
-                    <Tag color="blue">探针边</Tag>
-                    {(edge.probe_requests || []).map((request) => <Tag key={request}>{request}</Tag>)}
-                    <Tag color={edge.reuse_status === "reuse_hit" ? "green" : "gold"}>{edge.reuse_status}</Tag>
-                    <Tag>{edge.effect}</Tag>
-                  </Space>
-                  <Typography.Paragraph type="secondary" style={{ margin: "8px 0 0" }}>
-                    {edge.reason || `从 Layer ${index} 请求补证后进入下一层。`}
-                  </Typography.Paragraph>
-                </div>
-              )}
-            </Card>
-          );
-        })}
-      </Space>
-    </Card>
-  );
-}
-
-function CandidateGroup({ title, color, items = [], evidenceMap, muted = false }) {
-  if (!items.length) return null;
-  return (
-    <div style={{ marginBottom: 10, opacity: muted ? 0.58 : 1 }}>
-      <Typography.Text strong>{title}</Typography.Text>
-      <Space wrap style={{ marginLeft: 8 }}>
-        {items.map((item) => (
-          <Popover
-            key={item.candidate_id}
-            trigger="hover"
-            placement="topLeft"
-            content={<CandidatePopover item={item} evidenceMap={evidenceMap} />}
-          >
-            <Tag color={color} style={{ cursor: "pointer", marginBottom: 6 }}>
-              {item.candidate_id} · {item.supported_level} · {Math.round((item.confidence || 0) * 100)}%
-            </Tag>
-          </Popover>
-        ))}
-      </Space>
-    </div>
-  );
-}
-
-function CandidatePopover({ item, evidenceMap }) {
-  const challenge = item.self_challenge || {};
-  return (
-    <Space direction="vertical" size={4} style={{ maxWidth: 520 }}>
-      <Typography.Text strong>{item.claim}</Typography.Text>
-      <Typography.Text type="secondary">为什么是它：{challenge.why_this_claim || "未说明"}</Typography.Text>
-      <Typography.Text type="secondary">为什么不是其他：{challenge.why_not_other_claims || "未说明"}</Typography.Text>
-      <Typography.Text type="secondary">改变结论条件：{challenge.what_would_change_my_mind || "未说明"}</Typography.Text>
-      <Space wrap>
-        {(item.evidence_refs || []).map((ref) => (
-          <Tag key={ref} color={evidenceMap?.has(ref) ? "blue" : "gold"}>{ref}</Tag>
-        ))}
-      </Space>
-      {(challenge.missing_evidence || []).length > 0 && (
-        <Typography.Text type="warning">缺失：{challenge.missing_evidence.join("；")}</Typography.Text>
-      )}
-    </Space>
-  );
-}
-
 export default function AIDiagnosis() {
   const [form] = Form.useForm();
+  const navigate = useNavigate();
+  const { diagnosisId: routeDiagnosisId } = useParams();
   const [agents, setAgents] = useState([]);
   const [sessions, setSessions] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -214,6 +125,11 @@ export default function AIDiagnosis() {
       })
       .catch((err) => setError(err.message));
   }, [form]);
+
+  useEffect(() => {
+    if (!routeDiagnosisId) return;
+    openSession(routeDiagnosisId, false);
+  }, [routeDiagnosisId]);
 
   useEffect(() => {
     if (!selected?.diagnosis_id || TERMINAL.has(selected.status)) return undefined;
@@ -255,6 +171,7 @@ export default function AIDiagnosis() {
         budget_profile: values.budget_profile,
       });
       setSelected(detail);
+      navigate(`/ai-diagnosis/${detail.diagnosis_id}`, { replace: false });
       await refreshSessions();
       message.success("诊断会话已创建；系统会自动执行已注册采集器，无法自动完成的事项会单独提示");
     } catch (err) {
@@ -264,11 +181,12 @@ export default function AIDiagnosis() {
     }
   }
 
-  async function openSession(id) {
+  async function openSession(id, updateRoute = true) {
     setLoading(true);
     setError("");
     try {
       setSelected(await getDiagnosisSession(id));
+      if (updateRoute) navigate(`/ai-diagnosis/${id}`, { replace: false });
     } catch (err) {
       setError(err.message);
     } finally {
@@ -626,6 +544,10 @@ function DiagnosisDetail({ detail }) {
     || item.status === "REJECTED_POLICY"
     || item.status === "FAILED"
   ));
+  const treeStats = useMemo(
+    () => countControlledTreeBranches(conclusion?.controlled_ai_tree),
+    [conclusion?.controlled_ai_tree],
+  );
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
@@ -710,7 +632,26 @@ function DiagnosisDetail({ detail }) {
       )}
 
       {conclusion?.controlled_ai_tree && (
-        <ControlledAITreeView tree={conclusion.controlled_ai_tree} evidenceMap={evidenceMap} />
+        <Card
+          title="受控 AI 树（当前终态）"
+          extra={(
+            <Space wrap>
+              <Tag color="red">主因 {treeStats.primary}</Tag>
+              <Tag color="default">反证 {treeStats.rejected}</Tag>
+              <Tag color="blue">未知/阻断 {treeStats.unknown}</Tag>
+              <Tag color={conclusion.controlled_ai_tree.final_supported_level === "line" ? "green" : "blue"}>停在 {conclusion.controlled_ai_tree.final_supported_level}</Tag>
+            </Space>
+          )}
+        >
+          <Alert
+            type={conclusion.controlled_ai_tree.probe_edges?.length ? "warning" : "success"}
+            showIcon
+            message={conclusion.controlled_ai_tree.stop_reason || "AI 树已按当前证据边界停止。"}
+            description={`当前展示最新终态树；旧子任务只提供采集证据，不再生成独立结论。预算：AI rounds ${conclusion.controlled_ai_tree.budget?.used_ai_rounds || 0}/${conclusion.controlled_ai_tree.budget?.max_ai_rounds || 0}，探针请求 ${conclusion.controlled_ai_tree.budget?.used_probe_requests || 0}/${conclusion.controlled_ai_tree.budget?.max_probe_requests_per_round || 0}`}
+            style={{ marginBottom: 12 }}
+          />
+          <ControlledAITreeGraph tree={conclusion.controlled_ai_tree} evidenceMap={evidenceMap} />
+        </Card>
       )}
 
       {traceProfiles.length > 0 && (
@@ -947,6 +888,113 @@ function DiagnosisDetail({ detail }) {
           }))}
         />
       </Card>
+
+      <ChildTaskList taskIds={detail.child_task_ids || []} />
     </Space>
+  );
+}
+
+function countControlledTreeBranches(tree) {
+  const initial = { primary: 0, secondary: 0, rejected: 0, unknown: 0 };
+  if (!tree?.layers?.length) return initial;
+  return tree.layers.reduce((acc, layer) => ({
+    primary: acc.primary + (layer.primary_causes?.length || 0),
+    secondary: acc.secondary + (layer.secondary_causes?.length || 0),
+    rejected: acc.rejected + (layer.rejected_causes?.length || 0),
+    unknown: acc.unknown + (layer.unknown_causes?.length || 0),
+  }), initial);
+}
+
+function ChildTaskList({ taskIds }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!taskIds.length) {
+      setItems([]);
+      return () => { cancelled = true; };
+    }
+    setLoading(true);
+    Promise.allSettled(taskIds.map((taskId) => getTask(taskId)))
+      .then((results) => {
+        if (cancelled) return;
+        setItems(results.map((result, index) => (
+          result.status === "fulfilled"
+            ? result.value
+            : { id: taskIds[index], status: "LOAD_FAILED", load_error: result.reason?.message || "加载失败" }
+        )));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [taskIds]);
+
+  return (
+    <Card title={<Space>采集子任务 <Tag>{taskIds.length}</Tag></Space>}>
+      <Alert
+        type="info"
+        showIcon
+        message="这些旧 task 只作为采集执行与产物明细存在；AI 诊断结论以上方会话和 AI 树为准。"
+        style={{ marginBottom: 12 }}
+      />
+      <Table
+        rowKey="id"
+        loading={loading}
+        size="small"
+        pagination={{ pageSize: 6 }}
+        scroll={{ x: 900 }}
+        dataSource={items}
+        locale={{ emptyText: "当前诊断还没有创建采集子任务" }}
+        columns={[
+          {
+            title: "子任务",
+            dataIndex: "id",
+            width: 220,
+            render: (value, record) => (
+              <Space direction="vertical" size={0}>
+                <Link to={`/task/${value}`}>{record.name || value}</Link>
+                <Typography.Text copyable type="secondary" style={{ fontSize: 12 }}>
+                  {value}
+                </Typography.Text>
+              </Space>
+            ),
+          },
+          {
+            title: "采集器",
+            dataIndex: "collector_type",
+            width: 150,
+            render: (value) => value ? <Tag color="geekblue">{value}</Tag> : "-",
+          },
+          { title: "Agent", dataIndex: "agent_id", width: 160, ellipsis: true },
+          { title: "PID", dataIndex: "target_pid", width: 90 },
+          {
+            title: "状态",
+            dataIndex: "status",
+            width: 130,
+            render: (value) => <Tag color={value === "DONE" ? "green" : value === "FAILED" || value === "LOAD_FAILED" ? "red" : "blue"}>{value || "UNKNOWN"}</Tag>,
+          },
+          {
+            title: "采样时长",
+            dataIndex: "duration_sec",
+            width: 100,
+            render: (value) => value ? `${value}s` : "-",
+          },
+          {
+            title: "创建时间",
+            dataIndex: "created_at",
+            width: 170,
+            render: (value) => value ? new Date(value).toLocaleString() : "-",
+          },
+          {
+            title: "说明",
+            dataIndex: "load_error",
+            ellipsis: true,
+            render: (value, record) => value || record.error_message || record.request_params?.options?.probe_id || "-",
+          },
+        ]}
+      />
+    </Card>
   );
 }

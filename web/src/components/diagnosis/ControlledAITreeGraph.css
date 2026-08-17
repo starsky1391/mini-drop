@@ -1,0 +1,147 @@
+.ai-tree-shell {
+  border: 1px solid #dbe3ef;
+  border-radius: 14px;
+  background:
+    linear-gradient(135deg, rgba(22, 119, 255, 0.08), rgba(255, 255, 255, 0) 34%),
+    linear-gradient(180deg, #f8fbff, #eef3f9);
+  overflow: hidden;
+}
+
+.ai-tree-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #dbe3ef;
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.ai-tree-canvas {
+  width: 100%;
+  height: min(72vh, 720px);
+  min-height: 520px;
+}
+
+.ai-tree-node {
+  width: 280px;
+  min-height: 142px;
+  padding: 12px;
+  border: 1px solid #c8d3e3;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 12px 34px rgba(31, 45, 61, 0.13);
+  cursor: pointer;
+}
+
+.ai-tree-node-primary {
+  border-color: #ff7875;
+  background: linear-gradient(180deg, #fff7f6, #ffffff);
+}
+
+.ai-tree-node-secondary {
+  border-color: #ffc069;
+  background: linear-gradient(180deg, #fffaf0, #ffffff);
+}
+
+.ai-tree-node-unknown {
+  border-color: #91caff;
+  border-style: dashed;
+  background: linear-gradient(180deg, #f0f7ff, #ffffff);
+}
+
+.ai-tree-node-forbidden {
+  border-color: #ffd666;
+  background:
+    linear-gradient(180deg, rgba(255, 246, 199, 0.72), #ffffff),
+    repeating-linear-gradient(135deg, rgba(212, 136, 6, 0.08), rgba(212, 136, 6, 0.08) 8px, transparent 8px, transparent 16px);
+}
+
+.ai-tree-node-rejected,
+.ai-tree-node-muted {
+  border-color: #d9d9d9;
+  color: #7b8493;
+  background:
+    repeating-linear-gradient(135deg, rgba(140, 140, 140, 0.08), rgba(140, 140, 140, 0.08) 8px, transparent 8px, transparent 16px),
+    #fafafa;
+  opacity: 0.68;
+}
+
+.ai-tree-node-start {
+  border-color: #b37feb;
+  background: linear-gradient(180deg, #f9f0ff, #ffffff);
+}
+
+.ai-tree-node-stop {
+  border-color: #ffd666;
+  border-style: dashed;
+  background: linear-gradient(180deg, #fffbe6, #ffffff);
+}
+
+.ai-tree-node-topline,
+.ai-tree-node-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ai-tree-node-role,
+.ai-tree-node-level {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ai-tree-node-role {
+  color: #172033;
+}
+
+.ai-tree-node-level {
+  color: #5d6b82;
+}
+
+.ai-tree-node-title {
+  display: block;
+  margin-top: 8px;
+  color: #111827;
+  font-weight: 700;
+}
+
+.ai-tree-node-claim {
+  margin: 6px 0 10px;
+  min-height: 38px;
+  color: #3d4a5c;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.ai-tree-node-footer {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.ai-tree-node-badge {
+  margin-inline-end: 0;
+  font-size: 10px;
+  line-height: 18px;
+}
+
+.ai-tree-popover {
+  max-width: 520px;
+}
+
+.react-flow__edge {
+  cursor: pointer;
+}
+
+.react-flow__edge:hover path {
+  stroke-width: 3.2;
+}
+
+.react-flow__minimap {
+  border: 1px solid #dbe3ef;
+  border-radius: 10px;
+  overflow: hidden;
+}

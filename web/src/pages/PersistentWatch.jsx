@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import {
   Alert,
   Button,
@@ -261,6 +262,7 @@ function renderIncidentExpanded(record) {
 }
 
 export default function PersistentWatch() {
+  const navigate = useNavigate();
   const [form] = Form.useForm();
   const [agents, setAgents] = useState([]);
   const [watches, setWatches] = useState([]);
@@ -441,9 +443,14 @@ export default function PersistentWatch() {
   async function handleAnalyzeIncident(incident) {
     setAnalyzingIncidentId(incident.incident_id);
     try {
-      await analyzeWatchIncident(incident.incident_id);
-      message.success("AI 树分析已完成");
+      const result = await analyzeWatchIncident(incident.incident_id);
+      const diagnosisId = result?.diagnosis_id || result?.analysis_session_id;
+      if (!diagnosisId) {
+        throw new Error("后端未返回 AI 诊断会话 ID");
+      }
+      message.success("已创建 AI 集群诊断会话");
       refresh();
+      navigate(`/ai-diagnosis/${diagnosisId}`);
     } catch (err) {
       message.error(err.message);
     } finally {
@@ -609,6 +616,11 @@ export default function PersistentWatch() {
               {record.analysis_result.summary}
             </Typography.Text>
           )}
+          {record.analysis_result?.diagnosis_id && (
+            <Link to={`/ai-diagnosis/${record.analysis_result.diagnosis_id}`}>
+              查看 AI 集群诊断
+            </Link>
+          )}
           {record.analysis_result?.message && (
             <Typography.Text type="danger" style={{ fontSize: FONT_SIZES.sm }}>
               {record.analysis_result.message}
@@ -621,14 +633,14 @@ export default function PersistentWatch() {
       title: "操作",
       width: 140,
       render: (_, record) => (
-        <Tooltip title="使用这个 incident 的 same-window frozen snapshot 进入 AI 树分析">
+        <Tooltip title="基于这个 incident 的 same-window frozen snapshot 创建正式 AI 集群诊断">
           <Button
             size="small"
             loading={analyzingIncidentId === record.incident_id}
             disabled={record.analysis_status === "analyzing"}
             onClick={() => handleAnalyzeIncident(record)}
           >
-            AI 树分析
+            AI 集群诊断
           </Button>
         </Tooltip>
       ),

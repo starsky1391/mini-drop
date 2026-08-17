@@ -54,6 +54,7 @@ perf.data.*
 .ssh/
 deploy/certs/*
 !deploy/certs/.gitkeep
+docs/vm_env_backups/
 
 # NapCat QQ 机器人运行时文件（通过 setup.ps1 或 NapCatInstaller 安装）
 deploy/napcat/*.exe

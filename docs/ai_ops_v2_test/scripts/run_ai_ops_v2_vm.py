@@ -289,6 +289,13 @@ class APIError(RuntimeError):
         self.detail = detail
 
 
+class DiagnosisRunError(RuntimeError):
+    def __init__(self, message: str, *, diagnosis_id: str | None = None, detail: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.diagnosis_id = diagnosis_id
+        self.detail = detail or {}
+
+
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -512,14 +519,23 @@ def create_and_run(api: API, case_id: str, query: str, scope: dict[str, Any],
         },
         "budget_profile": budget_profile,
         "auto_execute_policy": auto_execute_policy,
-    })
+    }, timeout=90)
     diagnosis_id = started["diagnosis_id"]
     deadline = time.monotonic() + timeout_sec
     approved: set[str] = set()
     started_at = time.monotonic()
     last: dict[str, Any] = {}
+    transient_errors: list[dict[str, Any]] = []
     while time.monotonic() < deadline:
-        last = api.call(f"/api/v1/diagnoses/{diagnosis_id}")
+        try:
+            last = api.call(f"/api/v1/diagnoses/{diagnosis_id}", timeout=120)
+        except (TimeoutError, urllib.error.URLError) as exc:
+            transient_errors.append({
+                "at_elapsed_sec": round(time.monotonic() - started_at, 2),
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+            time.sleep(3)
+            continue
         for probe in last.get("probes") or []:
             step_id = probe.get("step_id")
             if probe.get("status") == "WAITING_APPROVAL" and step_id not in approved:
@@ -529,7 +545,7 @@ def create_and_run(api: API, case_id: str, query: str, scope: dict[str, Any],
                         "decision": "approve",
                         "scope": "single_execution",
                         "approver_id": "ai_ops_v2_eval_runner",
-                    })
+                    }, timeout=60)
                     approved.add(step_id)
                 except APIError as exc:
                     if exc.status_code != 409 or "并发探针预算已用尽" not in exc.detail:
@@ -538,12 +554,48 @@ def create_and_run(api: API, case_id: str, query: str, scope: dict[str, Any],
             break
         time.sleep(2)
     else:
-        raise TimeoutError(f"diagnosis {diagnosis_id} exceeded {timeout_sec}s")
+        raise DiagnosisRunError(
+            f"diagnosis {diagnosis_id} exceeded {timeout_sec}s",
+            diagnosis_id=diagnosis_id,
+            detail=last,
+        )
     last["evaluation_runtime"] = {
         "elapsed_sec": round(time.monotonic() - started_at, 2),
         "approved_probe_count": len(approved),
+        "transient_api_errors": transient_errors,
     }
     return diagnosis_id, last
+
+
+def assert_controlled_ai_tree_participated(diagnosis_id: str, detail: dict[str, Any]) -> None:
+    conclusion = detail.get("latest_conclusion") or {}
+    tree = conclusion.get("controlled_ai_tree")
+    if not isinstance(tree, dict):
+        raise DiagnosisRunError(
+            f"diagnosis {diagnosis_id} completed without controlled_ai_tree",
+            diagnosis_id=diagnosis_id,
+            detail=detail,
+        )
+    layers = tree.get("layers") if isinstance(tree.get("layers"), list) else []
+    probe_edges = tree.get("probe_edges") if isinstance(tree.get("probe_edges"), list) else []
+    if not layers:
+        raise DiagnosisRunError(
+            f"diagnosis {diagnosis_id} controlled_ai_tree has no layers",
+            diagnosis_id=diagnosis_id,
+            detail=detail,
+        )
+    if not any(isinstance(layer, dict) and layer.get("generated_by") == "ai_guarded" for layer in layers):
+        raise DiagnosisRunError(
+            f"diagnosis {diagnosis_id} controlled_ai_tree did not include an ai_guarded layer",
+            diagnosis_id=diagnosis_id,
+            detail=detail,
+        )
+    if not probe_edges:
+        raise DiagnosisRunError(
+            f"diagnosis {diagnosis_id} controlled_ai_tree has no probe_edges",
+            diagnosis_id=diagnosis_id,
+            detail=detail,
+        )
 
 
 def install_no_reuse_override(ssh: SSH) -> None:
@@ -748,6 +800,8 @@ def main() -> int:
             if baseline["errors"] or baseline["unhealthy_services"] or not baseline["frontend"]["ok"]:
                 raise RuntimeError(f"unclean baseline for {case_id}: {baseline}")
             started_at = time.monotonic()
+            diagnosis_id: str | None = None
+            detail: dict[str, Any] = {}
             try:
                 for node_name, fixture in spec.inject:
                     node = WORKERS[node_name]
@@ -765,7 +819,9 @@ def main() -> int:
                     budget_profile=args.budget_profile,
                     auto_execute_policy=args.auto_execute_policy,
                 )
-                bundle = api.call(f"/api/v1/diagnoses/{diagnosis_id}/audit-bundle")
+                record["diagnosis_id"] = diagnosis_id
+                assert_controlled_ai_tree_participated(diagnosis_id, detail)
+                bundle = api.call(f"/api/v1/diagnoses/{diagnosis_id}/audit-bundle", timeout=180)
                 bundle_path = bundle_dir / f"{case_id}__r{repetition:02d}.json"
                 bundle_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
                 record.update({
@@ -780,6 +836,16 @@ def main() -> int:
                     "diagnosis_elapsed_sec": (detail.get("evaluation_runtime") or {}).get("elapsed_sec"),
                     "bundle": str(bundle_path.relative_to(args.output_dir)),
                 })
+            except DiagnosisRunError as exc:
+                if exc.diagnosis_id:
+                    record["diagnosis_id"] = exc.diagnosis_id
+                detail = exc.detail
+                record.update({
+                    "phase": "failed",
+                    "diagnosis_status": detail.get("status"),
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+                print(f"  failed: {record['error']}", flush=True)
             except Exception as exc:
                 record.update({"phase": "failed", "error": f"{type(exc).__name__}: {exc}"})
                 print(f"  failed: {record['error']}", flush=True)

@@ -412,6 +412,8 @@ def _llm_tree_shape_is_safe(
             if base is None:
                 return False
             llm_candidate_ids.add(item.candidate_id)
+            if any(parent_id not in analyzer_candidate_ids for parent_id in item.parent_candidate_ids):
+                return False
             if not _candidate_status_is_safe(base.status, item.status):
                 return False
             if _level_order(item.supported_level) > max_level_order:
@@ -435,6 +437,10 @@ def _llm_tree_shape_is_safe(
         if edge.from_layer_id not in analyzer_layer_ids:
             return False
         if edge.to_layer_id is not None and edge.to_layer_id not in analyzer_layer_ids:
+            return False
+        if any(candidate_id not in analyzer_candidate_ids for candidate_id in edge.from_candidate_ids):
+            return False
+        if any(candidate_id not in analyzer_candidate_ids for candidate_id in edge.to_candidate_ids):
             return False
         if any(request not in allowed_requests for request in edge.probe_requests):
             return False
@@ -493,7 +499,7 @@ def _build_controlled_tree_system_prompt() -> str:
 1. tree_id、schema_version、source_context_hash、final_supported_level 必须沿用 Analyzer 模板。
 2. layer_id 必须沿用 Analyzer 模板，不得新增或删除层。
 3. candidate_id 必须来自 Analyzer 模板，不得新增候选。
-4. 你可以在已有候选内重新分配 primary / secondary / rejected / unknown，但不得把证据不足或 forbidden 候选升级成 supported。
+4. 你可以在已有候选内重新分配 primary / secondary / rejected / unknown，并填写 parent_candidate_ids / probe_edges 的 candidate 血缘，但不得引用不存在的 candidate。
 5. supported_level 不得超过 Analyzer 给出的 final_supported_level，也不得超过候选原始 supported_level。
 6. evidence_refs 只能引用当前证据中真实存在的路径。
 7. probe_edges[].probe_requests 只能选择 Probe Manifest 中的 evidence_family，不能写 probe_id，不能写任意 shell、sysctl、修复动作。

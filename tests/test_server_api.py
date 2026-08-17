@@ -348,7 +348,7 @@ class TestWatchSubscriptions:
         assert data["incident"]["status"] == "frozen"
         assert data["trigger"]["collector_tasks"] == []
 
-    def test_watch_incident_can_start_ai_tree_analysis_from_frozen_snapshot(self, client: TestClient):
+    def test_watch_incident_can_start_ai_cluster_diagnosis_from_frozen_snapshot(self, client: TestClient):
         repo.register_agent(
             "a1",
             "agent-one",
@@ -381,14 +381,24 @@ class TestWatchSubscriptions:
         resp = client.post(f"/api/v1/watch-incidents/{incident_id}/analyze")
 
         assert resp.status_code == 200
-        incident = resp.json()["data"]
-        assert incident["analysis_status"] in {"analyzed", "needs_evidence"}
-        assert incident["analysis_session_id"] == f"analysis_{incident_id}"
+        data = resp.json()["data"]
+        diagnosis_id = data["diagnosis_id"]
+        incident = data["incident"]
+        assert diagnosis_id.startswith("diag_session_")
+        assert data["mode"] == "ai_cluster_diagnosis"
+        assert incident["analysis_status"] in {"analyzing", "analyzed", "needs_evidence"}
+        assert incident["analysis_session_id"] == diagnosis_id
+        assert incident["analysis_result"]["mode"] == "ai_cluster_diagnosis"
+        assert incident["analysis_result"]["diagnosis_id"] == diagnosis_id
         assert incident["analysis_result"]["incident_id"] == incident_id
         assert incident["analysis_result"]["evidence_cohort_id"] == triggered["trigger"]["evidence_cohort_id"]
         assert incident["analysis_result"]["timing_relation"] == "same_window"
 
-    def test_watch_incident_analysis_failure_is_terminal_and_retryable(
+        session = client.get(f"/api/v1/diagnoses/{diagnosis_id}")
+        assert session.status_code == 200
+        assert session.json()["data"]["diagnosis_id"] == diagnosis_id
+
+    def test_watch_incident_diagnosis_creation_failure_is_terminal_and_retryable(
         self,
         client: TestClient,
         monkeypatch,
@@ -423,15 +433,17 @@ class TestWatchSubscriptions:
         incident_id = triggered["incident"]["incident_id"]
 
         monkeypatch.setattr(
-            "server.app.main._run_watch_incident_analysis",
-            lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("provider unavailable")),
+            "server.app.main.diagnosis_orchestrator.create",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("provider unavailable")),
         )
         response = client.post(f"/api/v1/watch-incidents/{incident_id}/analyze")
 
         assert response.status_code == 200
-        incident = response.json()["data"]
+        data = response.json()["data"]
+        incident = data["incident"]
         assert incident["analysis_status"] == "analysis_failed"
         assert incident["status"] == "analysis_failed"
+        assert incident["analysis_result"]["mode"] == "ai_cluster_diagnosis"
         assert incident["analysis_result"]["auto_analysis_error"] == "RuntimeError"
         assert incident["analysis_result"]["retryable"] is True
         assert incident["analysis_result"]["preserved_evidence_refs"]

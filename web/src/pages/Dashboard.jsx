@@ -6,7 +6,6 @@ import {
   Card,
   Col,
   Input,
-  Modal,
   notification,
   Row,
   Select,
@@ -27,17 +26,13 @@ import {
   SyncOutlined,
   ClockCircleOutlined,
   ExperimentOutlined,
-  DeleteOutlined,
   SearchOutlined,
   SortAscendingOutlined,
-  ExclamationCircleOutlined,
   ThunderboltOutlined,
   HddOutlined,
 } from "@ant-design/icons";
 import { Link, useNavigate } from "react-router-dom";
-import { healthz, listAgents, listTasks, deleteTask } from "../api/client";
-import NLPTaskInput from "../components/NLPTaskInput";
-import StatusTag from "../components/StatusTag";
+import { healthz, listAgents, listDiagnosisSessions } from "../api/client";
 import ErrorAlert from "../components/ErrorAlert";
 import usePolling from "../hooks/usePolling";
 import useSSE from "../hooks/useSSE";
@@ -47,6 +42,38 @@ import { COLORS, FONT_SIZES, SPACING } from "../theme";
 
 const RECENT_KEYS = new Set();
 const MAX_NOTIFICATIONS = 5;
+const SESSION_ACTIVE_STATUSES = new Set([
+  "UNDERSTANDING",
+  "PLANNING",
+  "COLLECTING",
+  "ANALYZING",
+  "CONCLUDING",
+  "WAITING_APPROVAL",
+  "NEEDS_SCOPE_CONFIRMATION",
+]);
+const SESSION_SUCCESS_STATUSES = new Set(["COMPLETED", "PARTIAL_COMPLETED"]);
+const SESSION_FAILED_STATUSES = new Set([
+  "FAILED",
+  "BUDGET_EXHAUSTED",
+  "TOPOLOGY_UNAVAILABLE",
+  "USER_CANCELED",
+]);
+const SESSION_STATUS_COLORS = {
+  COMPLETED: "green",
+  PARTIAL_COMPLETED: "orange",
+  INSUFFICIENT_EVIDENCE: "gold",
+  FAILED: "red",
+  BUDGET_EXHAUSTED: "red",
+  WAITING_APPROVAL: "purple",
+  COLLECTING: "blue",
+  ANALYZING: "cyan",
+  PLANNING: "geekblue",
+  UNDERSTANDING: "geekblue",
+  CONCLUDING: "cyan",
+  NEEDS_SCOPE_CONFIRMATION: "orange",
+  TOPOLOGY_UNAVAILABLE: "red",
+  USER_CANCELED: "default",
+};
 
 function showEventNotification(eventType, data) {
   const key = `${eventType}-${data.task_id || data.agent_id || Date.now()}`;
@@ -100,7 +127,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [service, setService] = useState(null);
-  const [tasks, setTasks] = useState([]);
+  const [sessions, setSessions] = useState([]);
   const [agents, setAgents] = useState([]);
   const [agentsLoaded, setAgentsLoaded] = useState(false);
 
@@ -115,25 +142,20 @@ export default function Dashboard() {
   const refresh = useCallback(async () => {
     setError("");
     try {
-      const params = {};
-      if (searchText.trim()) params.search = searchText.trim();
-      params.sort_by = sortBy;
-      params.sort_order = sortOrder;
-
-      const [healthRes, taskRes, agentRes] = await Promise.allSettled([
+      const [healthRes, diagnosisRes, agentRes] = await Promise.allSettled([
         healthz(),
-        listTasks(params),
+        listDiagnosisSessions({ limit: 100 }),
         listAgents(),
       ]);
       if (healthRes.status === "fulfilled") setService(healthRes.value);
-      if (taskRes.status === "fulfilled") setTasks(taskRes.value || []);
+      if (diagnosisRes.status === "fulfilled") setSessions(diagnosisRes.value || []);
       if (agentRes.status === "fulfilled") {
         setAgents(agentRes.value || []);
         setAgentsLoaded(true);
       } else {
         setAgentsLoaded(false);
       }
-      const failures = [taskRes, agentRes]
+      const failures = [diagnosisRes, agentRes]
         .filter((item) => item.status === "rejected")
         .map((item) => item.reason?.message || "数据加载失败");
       if (failures.length) setError([...new Set(failures)].join("；"));
@@ -142,7 +164,7 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, [searchText, sortBy, sortOrder]);
+  }, []);
 
   useEffect(() => {
     refresh();
@@ -150,44 +172,6 @@ export default function Dashboard() {
 
   // 每 10 秒自动轮询（SSE 断线时兜底）
   const { isPolling } = usePolling(refresh, { interval: 10000, enabled: !loading });
-
-  // ── 删除任务 ──────────────────────────────────────────
-
-  const [deleting, setDeleting] = useState("");
-
-  const handleDeleteTask = useCallback((task) => {
-    Modal.confirm({
-      title: "确认删除任务？",
-      icon: <ExclamationCircleOutlined />,
-      content: (
-        <div>
-          <p>将删除以下任务及其火焰图、事件、诊断结果：</p>
-          <p><strong>{task.name || task.id}</strong></p>
-          <p style={{ color: "#999", fontSize: 12 }}>
-            PID: {task.target_pid} · {task.collector_type} · {new Date(task.created_at).toLocaleString()}
-          </p>
-          <p style={{ color: "#ff4d4f", fontSize: 12 }}>
-            仅 DONE/FAILED 终态任务可删除，此操作不可撤销。
-          </p>
-        </div>
-      ),
-      okText: "确认删除",
-      okType: "danger",
-      cancelText: "取消",
-      onOk: async () => {
-        try {
-          setDeleting(task.id);
-          await deleteTask(task.id);
-          notification.success({ message: "删除成功", description: `任务 ${task.name || task.id} 已删除`, placement: "bottomRight", duration: 3 });
-          refresh();
-        } catch (err) {
-          notification.error({ message: "删除失败", description: err.message, placement: "bottomRight", duration: 5 });
-        } finally {
-          setDeleting("");
-        }
-      },
-    });
-  }, [refresh]);
 
   // ── SSE 实时事件 ──────────────────────────────────────
 
@@ -209,19 +193,17 @@ export default function Dashboard() {
   // ── 统计 ──────────────────────────────────────────────
 
   const stats = useMemo(() => {
-    const doneCount = tasks.filter((t) => t.status === "DONE").length;
-    const failedCount = tasks.filter((t) => t.status === "FAILED").length;
-    const activeCount = tasks.filter((t) =>
-      ["PENDING", "RUNNING", "UPLOADING", "ANALYZING"].includes(t.status)
-    ).length;
+    const doneCount = sessions.filter((item) => SESSION_SUCCESS_STATUSES.has(item.status)).length;
+    const failedCount = sessions.filter((item) => SESSION_FAILED_STATUSES.has(item.status)).length;
+    const activeCount = sessions.filter((item) => SESSION_ACTIVE_STATUSES.has(item.status)).length;
     const onlineCount = agents.filter((a) => a.status === "ONLINE").length;
     const offlineCount = agents.filter((a) => a.status === "OFFLINE").length;
-    const successRate = tasks.length > 0
+    const successRate = sessions.length > 0
       ? Math.round((doneCount / (doneCount + failedCount || 1)) * 100)
       : 100;
 
     return {
-      total: tasks.length,
+      total: sessions.length,
       doneCount,
       failedCount,
       activeCount,
@@ -229,69 +211,85 @@ export default function Dashboard() {
       offlineCount,
       successRate,
     };
-  }, [tasks, agents]);
+  }, [sessions, agents]);
 
-  // ── 最近成功任务 ──────────────────────────────────────
+  // ── 最新集合任务 ──────────────────────────────────────
 
   const recentDone = useMemo(
-    () => tasks.filter((t) => t.status === "DONE").slice(0, 3),
-    [tasks]
+    () => sessions.filter((item) => SESSION_SUCCESS_STATUSES.has(item.status)).slice(0, 3),
+    [sessions]
+  );
+
+  const visibleSessions = useMemo(() => {
+    const keyword = searchText.trim().toLowerCase();
+    const filtered = sessions.filter((item) => {
+      if (!keyword) return true;
+      const haystack = [
+        item.diagnosis_id,
+        item.raw_query,
+        item.target_scope?.target_service,
+        item.normalized_intent?.symptom,
+        item.status,
+      ].filter(Boolean).join(" ").toLowerCase();
+      return haystack.includes(keyword);
+    });
+    const sorted = [...filtered].sort((a, b) => {
+      const valueOf = (item) => {
+        if (sortBy === "target_service") return item.target_scope?.target_service || "";
+        if (sortBy === "status") return item.status || "";
+        if (sortBy === "updated_at") return item.updated_at || "";
+        return item.created_at || "";
+      };
+      const av = valueOf(a);
+      const bv = valueOf(b);
+      if (av === bv) return 0;
+      return sortOrder === "asc" ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
+    });
+    return sorted;
+  }, [sessions, searchText, sortBy, sortOrder]);
+
+  const totalChildTasks = useMemo(
+    () => sessions.reduce((sum, item) => sum + (item.child_task_ids?.length || 0), 0),
+    [sessions],
   );
 
   // ── 表格列 ────────────────────────────────────────────
 
-  const taskColumns = useMemo(
+  const sessionColumns = useMemo(
     () => [
       {
-        title: "任务",
-        dataIndex: "name",
+        title: "集合任务",
+        dataIndex: "raw_query",
         ellipsis: true,
         render: (value, record) => (
-          <Link to={`/task/${record.id}`}>{value || record.id}</Link>
+          <Space direction="vertical" size={2}>
+            <Space size={6} wrap>
+              <Link to={`/ai-diagnosis/${record.diagnosis_id}`}>
+                {record.target_scope?.target_service || "未绑定服务"}
+              </Link>
+              <Tag color="purple">AI树</Tag>
+            </Space>
+            <Typography.Text type="secondary" ellipsis style={{ maxWidth: 420 }}>
+              {value || record.diagnosis_id}
+            </Typography.Text>
+          </Space>
         ),
-      },
-      {
-        title: "Agent",
-        dataIndex: "agent_id",
-        width: 160,
-        ellipsis: true,
-        render: (value) => (
-          <Typography.Link
-            onClick={() => navigate(`/agent/${value}`)}
-            style={{ cursor: "pointer", fontSize: FONT_SIZES.sm }}
-          >
-            {value}
-          </Typography.Link>
-        ),
-      },
-      { title: "PID", dataIndex: "target_pid", width: 80 },
-      {
-        title: "采集器",
-        dataIndex: "collector_type",
-        width: 130,
-        render: (value) => {
-          const colors = {
-            perf_cpu: "blue",
-            ebpf_io: "green",
-            pyspy: "purple",
-            continuous_perf: "cyan",
-            java_async: "magenta",
-            go_pprof: "geekblue",
-            memory_smaps: "orange",
-            sys_metrics: "gold",
-          };
-          return (
-            <Tag color={colors[value] || "default"} style={{ fontSize: 11 }}>
-              {value}
-            </Tag>
-          );
-        },
       },
       {
         title: "状态",
         dataIndex: "status",
+        width: 140,
+        render: (value) => <Tag color={SESSION_STATUS_COLORS[value] || "default"}>{value || "UNKNOWN"}</Tag>,
+      },
+      {
+        title: "症状",
+        width: 150,
+        render: (_, record) => record.normalized_intent?.symptom || "-",
+      },
+      {
+        title: "采集子任务",
         width: 110,
-        render: (value) => <StatusTag status={value} />,
+        render: (_, record) => <Tag color="geekblue">{record.child_task_ids?.length || 0}</Tag>,
       },
       {
         title: "创建时间",
@@ -300,26 +298,13 @@ export default function Dashboard() {
         render: (v) => (v ? new Date(v).toLocaleString() : "-"),
       },
       {
-        title: "操作",
-        width: 80,
-        render: (_, record) => {
-          const isActive = ["PENDING", "RUNNING", "UPLOADING", "ANALYZING"].includes(record.status);
-          return (
-            <Button
-              type="link"
-              danger
-              size="small"
-              icon={<DeleteOutlined />}
-              loading={deleting === record.id}
-              disabled={isActive}
-              onClick={() => handleDeleteTask(record)}
-              title={isActive ? "仅终态任务（DONE/FAILED）可删除" : "删除此任务"}
-            />
-          );
-        },
+        title: "更新时间",
+        dataIndex: "updated_at",
+        width: 170,
+        render: (v) => (v ? new Date(v).toLocaleString() : "-"),
       },
     ],
-    [navigate, deleting, handleDeleteTask]
+    []
   );
 
   const agentColumns = useMemo(
@@ -423,7 +408,7 @@ export default function Dashboard() {
         <Space align="center">
           <DashboardOutlined style={{ fontSize: 20, color: COLORS.primary }} />
           <Typography.Title level={4} style={{ margin: 0 }}>
-            任务面板
+            诊断面板
           </Typography.Title>
         </Space>
         <Space size="small">
@@ -438,8 +423,16 @@ export default function Dashboard() {
         </Space>
       </div>
 
-      {/* ── NLP 输入 ──────────────────────────────────────── */}
-      <NLPTaskInput onTaskCreated={(taskId) => { refresh(); }} />
+      <Alert
+        type="info"
+        showIcon
+        message="首页现在展示最新集合诊断任务；采集子任务仍在后台执行，只在诊断详情底部作为明细查看。"
+        action={
+          <Button size="small" type="primary" onClick={() => navigate("/ai-diagnosis")}>
+            创建 AI 诊断
+          </Button>
+        }
+      />
 
       <ErrorAlert error={error} onClose={() => setError("")} />
 
@@ -504,9 +497,9 @@ export default function Dashboard() {
             <Statistic
               title={
                 <Space size={4}>
-                  <ThunderboltOutlined style={{ color: COLORS.warning, fontSize: 14 }} />
+                    <ThunderboltOutlined style={{ color: COLORS.warning, fontSize: 14 }} />
                   <Typography.Text style={{ fontSize: FONT_SIZES.sm, color: COLORS.textSecondary }}>
-                    进行中
+                    诊断中
                   </Typography.Text>
                 </Space>
               }
@@ -531,9 +524,9 @@ export default function Dashboard() {
             <Statistic
               title={
                 <Space size={4}>
-                  <CheckCircleOutlined style={{ color: COLORS.success, fontSize: 14 }} />
+                    <CheckCircleOutlined style={{ color: COLORS.success, fontSize: 14 }} />
                   <Typography.Text style={{ fontSize: FONT_SIZES.sm, color: COLORS.textSecondary }}>
-                    成功率
+                    完成率
                   </Typography.Text>
                 </Space>
               }
@@ -554,7 +547,7 @@ export default function Dashboard() {
           <Card size="small" bodyStyle={{ padding: "12px 16px" }}>
             <Space size={[8, 4]} wrap>
               <Typography.Text style={{ fontSize: FONT_SIZES.sm, color: COLORS.textSecondary }}>
-                任务分布：
+                集合任务：
               </Typography.Text>
               <Tag icon={<CheckCircleOutlined />} color="green">
                 {stats.doneCount} 完成
@@ -567,6 +560,9 @@ export default function Dashboard() {
               </Tag>
               <Tag icon={<ClockCircleOutlined />} color="default">
                 {stats.total - stats.doneCount - stats.failedCount - stats.activeCount} 其他
+              </Tag>
+              <Tag color="geekblue">
+                子任务 {totalChildTasks}
               </Tag>
             </Space>
           </Card>
@@ -587,7 +583,7 @@ export default function Dashboard() {
               )}
               {recentDone.length > 0 && (
                 <Tag icon={<ExperimentOutlined />} color="purple">
-                  最近完成: {recentDone.map((t) => t.name || t.id?.slice(0, 6)).join(", ")}
+                  最近完成: {recentDone.map((item) => item.target_scope?.target_service || item.diagnosis_id?.slice(0, 8)).join(", ")}
                 </Tag>
               )}
             </Space>
@@ -595,13 +591,13 @@ export default function Dashboard() {
         </Col>
       </Row>
 
-      {/* ── 任务列表 ──────────────────────────────────────── */}
+      {/* ── 集合任务列表 ──────────────────────────────────────── */}
       <Card
         title={
           <Space>
             <HddOutlined style={{ color: COLORS.primary }} />
-            任务列表
-            <Tag>{tasks.length}</Tag>
+            最新集合任务
+            <Tag>{visibleSessions.length}</Tag>
           </Space>
         }
         size="small"
@@ -610,7 +606,7 @@ export default function Dashboard() {
             <Input
               style={{ width: 180 }}
               size="small"
-              placeholder="搜索任务名…"
+              placeholder="搜索服务 / 诊断描述…"
               prefix={<SearchOutlined />}
               allowClear
               value={searchText}
@@ -625,11 +621,9 @@ export default function Dashboard() {
               suffixIcon={<SortAscendingOutlined />}
             >
               <Select.Option value="created_at">创建时间</Select.Option>
-              <Select.Option value="name">任务名</Select.Option>
+              <Select.Option value="updated_at">更新时间</Select.Option>
+              <Select.Option value="target_service">目标服务</Select.Option>
               <Select.Option value="status">状态</Select.Option>
-              <Select.Option value="agent_id">Agent</Select.Option>
-              <Select.Option value="collector_type">采集器</Select.Option>
-              <Select.Option value="target_pid">PID</Select.Option>
             </Select>
             <Select
               size="small"
@@ -640,20 +634,20 @@ export default function Dashboard() {
               <Select.Option value="desc">↓ 降序</Select.Option>
               <Select.Option value="asc">↑ 升序</Select.Option>
             </Select>
-            <Button size="small" type="link" onClick={() => navigate("/diagnoses")}>
-              <ExperimentOutlined /> 诊断历史
+            <Button size="small" type="link" onClick={() => navigate("/ai-diagnosis")}>
+              <ExperimentOutlined /> AI 诊断
             </Button>
           </Space>
         }
       >
         <Table
-          rowKey="id"
-          columns={taskColumns}
-          dataSource={tasks}
+          rowKey="diagnosis_id"
+          columns={sessionColumns}
+          dataSource={visibleSessions}
           pagination={{ pageSize: 8, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
           size="middle"
           scroll={{ x: 880 }}
-          locale={{ emptyText: "暂无任务，使用上方 NLP 输入或 API 创建第一个采集任务" }}
+          locale={{ emptyText: "暂无集合诊断任务，请创建一个 AI 诊断会话" }}
         />
       </Card>
 

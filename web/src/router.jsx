@@ -37,6 +37,10 @@ export default function Router() {
             element={<Lazy><AIDiagnosis /></Lazy>}
           />
           <Route
+            path="/ai-diagnosis/:diagnosisId"
+            element={<Lazy><AIDiagnosis /></Lazy>}
+          />
+          <Route
             path="/diagnoses"
             element={<Lazy><DiagnosisHistory /></Lazy>}
           />

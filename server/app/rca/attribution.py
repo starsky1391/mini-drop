@@ -1710,6 +1710,7 @@ def _derive_controlled_ai_tree(
     if not candidates:
         candidates.append(AITreeCandidateNode(
             candidate_id="unknown_evidence_gap",
+            lineage_id="unknown_evidence_gap",
             role="unknown",
             claim="当前结构化证据不足，不能形成可验证的根因候选。",
             supported_level=boundary.max_supported_level,
@@ -1724,7 +1725,7 @@ def _derive_controlled_ai_tree(
     layer0 = AITreeLayer(
         layer_id="layer_0_coarse_candidates",
         depth=0,
-        generated_by="ai_guarded",
+        generated_by="analyzer_fallback",
         summary="基于当前结构化证据形成粗候选集合，并按证据支持度分组。",
         primary_causes=[item for item in candidates if item.role == "primary"][:1],
         secondary_causes=[item for item in candidates if item.role == "secondary"][:3],
@@ -1740,11 +1741,12 @@ def _derive_controlled_ai_tree(
 
     layers = [layer0]
     edges: list[AITreeProbeEdge] = []
+    layer0_candidate_ids = _tree_layer_candidate_ids(layer0)
     if next_requests:
         layer1 = AITreeLayer(
             layer_id="layer_1_requested_evidence_boundary",
             depth=1,
-            generated_by="ai_guarded",
+            generated_by="analyzer_fallback",
             summary="AI 树请求最小必要补证；回流前只记录缺口和停止边界，不强行升级结论。",
             primary_causes=[],
             secondary_causes=[],
@@ -1752,6 +1754,8 @@ def _derive_controlled_ai_tree(
             unknown_causes=[
                 AITreeCandidateNode(
                     candidate_id=f"gap_{gap}",
+                    lineage_id=f"gap_{gap}",
+                    parent_candidate_ids=layer0_candidate_ids,
                     role="unknown",
                     claim=f"需要补充 {gap} 后才能继续收敛候选。",
                     supported_level=boundary.max_supported_level,
@@ -1770,6 +1774,8 @@ def _derive_controlled_ai_tree(
             edge_id="edge_layer_0_to_layer_1",
             from_layer_id=layer0.layer_id,
             to_layer_id=layer1.layer_id,
+            from_candidate_ids=layer0_candidate_ids,
+            to_candidate_ids=_tree_layer_candidate_ids(layer1),
             probe_requests=next_requests[:3],
             probe_results=[
                 AITreeProbeResult(
@@ -1778,6 +1784,7 @@ def _derive_controlled_ai_tree(
                     blocked_reason="等待编排器按 fingerprint 复用或创建已注册采集任务。",
                 )
             ],
+            status="not_started",
             reuse_status="not_checked",
             effect="pending",
             reason="当前证据存在缺口，优先补最小必要证据而不是直接给更细结论。",
@@ -1787,11 +1794,13 @@ def _derive_controlled_ai_tree(
         conflict_layer = AITreeLayer(
             layer_id="layer_conflict_review",
             depth=len(layers),
-            generated_by="ai_guarded",
+            generated_by="analyzer_fallback",
             summary=str(conflict_branch.get("reason") or "检测到候选冲突，当前保持保守边界。"),
             rejected_causes=[
                 AITreeCandidateNode(
                     candidate_id=f"conflict_{candidate_id}",
+                    lineage_id=f"conflict_{candidate_id}",
+                    parent_candidate_ids=[candidate_id] if candidate_id in layer0_candidate_ids else layer0_candidate_ids,
                     role="rejected",
                     claim=f"候选 {candidate_id} 在当前冲突分枝中未被提升为主因。",
                     supported_level=boundary.max_supported_level,
@@ -1874,6 +1883,7 @@ def _controlled_candidate(
     missing = _unique_strings([*attribution.missing_evidence, *missing_evidence[:3], *blocked_upgrades[:2]])
     return AITreeCandidateNode(
         candidate_id=attribution.candidate_id,
+        lineage_id=attribution.candidate_id,
         role=role,
         claim=f"{attribution.candidate_id} 当前状态为 {attribution.status}，最高支持到 {attribution.max_supported_level or boundary_level} 层。",
         supported_level=attribution.max_supported_level or boundary_level,
@@ -1888,6 +1898,18 @@ def _controlled_candidate(
             missing_evidence=missing,
             what_would_change_my_mind="新增同目标、同窗口、已结构化的反向证据，或补齐缺失探针后主证据不再成立。",
         ),
+    )
+
+
+def _tree_layer_candidate_ids(layer: AITreeLayer) -> list[str]:
+    return _unique_strings(
+        item.candidate_id
+        for item in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
     )
 
 
