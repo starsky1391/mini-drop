@@ -46,6 +46,7 @@ from server.app.rca.models import (
 )
 from server.app.diagnosis.evidence_structurer import rca_inputs_from_structured, structure_artifact_evidence
 from server.app.schemas import CreateTaskRequest, MAX_SAMPLE_RATE, MAX_TASK_DURATION_SEC, MIN_SAMPLE_RATE
+from server.app.state_machine import Actor, TaskStatus
 
 
 PLANNER_VERSION = "diagnosis-orchestrator-v1"
@@ -337,6 +338,7 @@ class DiagnosisOrchestrator:
             return
         probes = self.store.list_probes(diagnosis_id)
         child_ids = list(session.get("child_task_ids", []))
+        self._expire_stale_child_tasks(child_ids)
 
         for probe in probes:
             task_id = probe.get("task_id")
@@ -442,6 +444,28 @@ class DiagnosisOrchestrator:
                 diagnosis_id,
                 DiagnosisStatus.INSUFFICIENT_EVIDENCE,
                 "diagnosis_completed",
+            )
+
+    def _expire_stale_child_tasks(self, child_ids: list[str]) -> None:
+        grace = max(0, int(os.getenv("MINI_DROP_DIAGNOSIS_TASK_STALE_GRACE_SEC", "120")))
+        now = utcnow()
+        for task_id in child_ids:
+            task = self.repo.tasks.get(task_id)
+            if task is None or status_value(task.status) not in ACTIVE_TASK_STATUSES:
+                continue
+            anchor = task.started_at or task.created_at
+            if anchor is None:
+                continue
+            if anchor.tzinfo is None:
+                anchor = anchor.replace(tzinfo=timezone.utc)
+            timeout_sec = max(1, int(task.duration_sec or 0)) + grace
+            if (now - anchor).total_seconds() <= timeout_sec:
+                continue
+            self.repo.transition_task(
+                task_id,
+                TaskStatus.FAILED,
+                f"诊断探针超过执行窗口未回传，已自动标记失败 (timeout={timeout_sec}s)",
+                Actor.SERVER,
             )
 
     def _plan_and_schedule(

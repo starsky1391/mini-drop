@@ -1,6 +1,7 @@
 """AI 集群诊断会话、探针审批、预算和证据链测试。"""
 
 import pytest
+from datetime import timedelta
 from fastapi.testclient import TestClient
 
 from server.app.common_utils import json_safe
@@ -1566,6 +1567,21 @@ def test_deferred_followup_reloaded_before_conclusion(client: TestClient):
         for probe in detail["probes"]
         if (probe.get("parameters") or {}).get("evidence_gap")
     )
+
+
+def test_stale_running_child_task_is_failed_before_waiting(client: TestClient, monkeypatch):
+    monkeypatch.setenv("MINI_DROP_DIAGNOSIS_TASK_STALE_GRACE_SEC", "0")
+    data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    task_id = data["child_task_ids"][0]
+    repo.transition_task(task_id, TaskStatus.RUNNING, "agent accepted", Actor.SERVER)
+    repo.tasks[task_id].started_at = repo.tasks[task_id].started_at - timedelta(seconds=999)
+
+    detail = client.get(f"/api/v1/diagnoses/{diagnosis_id}").json()["data"]
+    probe = next(item for item in detail["probes"] if item.get("task_id") == task_id)
+
+    assert repo.tasks[task_id].status == TaskStatus.FAILED
+    assert probe["status"] == "FAILED"
 
 
 def test_default_policy_auto_executes_registered_r2_followup(client: TestClient):
