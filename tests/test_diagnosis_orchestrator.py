@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from server.app.database import init_db, reset_engine
-from server.app.diagnosis.audit_bundle import _structured_evidence, build_readiness_gate
+from server.app.diagnosis.audit_bundle import _json_safe, _structured_evidence, build_readiness_gate
 from server.app.diagnosis.benchmark_score import aggregate_results, score_audit_bundle
 from server.app.diagnosis import orchestrator as orchestrator_module
 from server.app.main import app, repo
@@ -36,6 +36,14 @@ def _reset_repo(monkeypatch):
 @pytest.fixture(name="client")
 def client_fixture():
     return TestClient(app)
+
+
+def test_audit_bundle_json_safe_replaces_non_finite_floats():
+    assert _json_safe({"ok": 1.0, "bad": float("nan"), "items": [float("inf")]}) == {
+        "ok": 1.0,
+        "bad": None,
+        "items": [None],
+    }
 
 
 def _payload(query: str = "服务 service-a CPU 飙高，请定位原因") -> dict:

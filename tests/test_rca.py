@@ -17,6 +17,7 @@ from server.app.rca.llm_client import (
     _attach_analysis_result,
     _collect_evidence_paths,
     _extract_json,
+    _call_deepseek,
     _ref_exists,
     _validate_and_parse,
     generate_controlled_ai_tree,
@@ -351,6 +352,26 @@ class TestControlledAITreeMerge:
                 )
 
         assert tree.probe_edges[0].probe_requests == ["redis_check"]
+
+    def test_llm_call_retries_with_openai_compatible_payload(self):
+        bad_resp = mock.MagicMock(status_code=400, text="unsupported field")
+        good_resp = mock.MagicMock(status_code=200)
+        good_resp.json.return_value = {
+            "choices": [{"message": {"content": "{\"ok\": true}"}}]
+        }
+        payloads = []
+
+        def fake_chat(payload, timeout):
+            payloads.append(payload)
+            return bad_resp if len(payloads) == 1 else good_resp
+
+        with mock.patch("server.app.rca.llm_client.chat_completions", side_effect=fake_chat):
+            assert _call_deepseek([{"role": "user", "content": "json"}], "model") == "{\"ok\": true}"
+
+        assert "thinking" in payloads[0]
+        assert "response_format" in payloads[0]
+        assert "thinking" not in payloads[1]
+        assert "response_format" not in payloads[1]
 
     def test_llm_controlled_tree_rejects_unregistered_probe_request(self):
         evidence = EvidenceInput(

@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import random
 import shlex
+import socket
 import ssl
 import statistics
 import time
@@ -25,6 +27,7 @@ from typing import Any
 
 import paramiko
 
+logging.getLogger("paramiko").setLevel(logging.CRITICAL)
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_CASES = ROOT / "benchmarks" / "ai_ops_v2" / "public" / "cases.json"
@@ -182,10 +185,33 @@ class SSH:
     def __init__(self, password: str):
         self.password = password
 
+    def connect(self, node: Node) -> paramiko.SSHClient:
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            try:
+                client.connect(
+                    node.ip,
+                    username=node.user,
+                    password=self.password,
+                    timeout=45,
+                    banner_timeout=75,
+                    auth_timeout=45,
+                    look_for_keys=False,
+                    allow_agent=False,
+                )
+                return client
+            except (paramiko.SSHException, socket.timeout, TimeoutError, OSError) as exc:
+                last_exc = exc
+                client.close()
+                if attempt < 3:
+                    time.sleep(2 * attempt)
+        assert last_exc is not None
+        raise last_exc
+
     def run(self, node: Node, command: str, *, timeout: int = 180) -> str:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(node.ip, username=node.user, password=self.password, timeout=15)
+        client = self.connect(node)
         try:
             _, stdout, stderr = client.exec_command(command, timeout=timeout)
             out = stdout.read().decode("utf-8", "replace")
@@ -226,9 +252,7 @@ class SSH:
         )
 
     def deploy_faultctl(self, node: Node) -> str:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(node.ip, username=node.user, password=self.password, timeout=15)
+        client = self.connect(node)
         repo_root = self.repo_root(node)
         remote_dir = f"{repo_root}/benchmarks/ai_ops_v2"
         remote = f"{remote_dir}/vm_faultctl.sh"
@@ -532,6 +556,35 @@ def clean_environment(ssh: SSH, remote_scripts: dict[str, str]) -> dict[str, Any
     return {"errors": errors, "unhealthy_services": unhealthy, "frontend": frontend_probe()}
 
 
+def environment_is_clean(health: dict[str, Any]) -> bool:
+    return not health["errors"] and not health["unhealthy_services"] and health["frontend"]["ok"]
+
+
+def wait_for_clean_environment(
+    ssh: SSH,
+    remote_scripts: dict[str, str],
+    *,
+    timeout_sec: int = 360,
+    interval_sec: int = 10,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_sec
+    last_health: dict[str, Any] | None = None
+    while True:
+        try:
+            last_health = clean_environment(ssh, remote_scripts)
+            if environment_is_clean(last_health):
+                return last_health
+        except Exception as exc:
+            last_health = {
+                "errors": [f"{type(exc).__name__}: {exc}"],
+                "unhealthy_services": [],
+                "frontend": frontend_probe(),
+            }
+        if time.monotonic() >= deadline:
+            return last_health
+        time.sleep(interval_sec)
+
+
 def create_and_run(api: API, case_id: str, query: str, scope: dict[str, Any],
                    repetition: int, *, budget_profile: str = "production_safe",
                    auto_execute_policy: str = "safe_only",
@@ -600,6 +653,8 @@ def create_and_run(api: API, case_id: str, query: str, scope: dict[str, Any],
 
 
 def assert_controlled_ai_tree_participated(diagnosis_id: str, detail: dict[str, Any]) -> None:
+    if detail.get("status") == "NEEDS_SCOPE_CONFIRMATION":
+        return
     conclusion = detail.get("latest_conclusion") or {}
     tree = conclusion.get("controlled_ai_tree")
     if not isinstance(tree, dict):
@@ -798,7 +853,7 @@ def main() -> int:
     ssh = SSH(password)
     remote_scripts = {node.name: ssh.deploy_faultctl(node) for node in (WORKER1, WORKER2)}
     if args.cleanup_only:
-        health = clean_environment(ssh, remote_scripts)
+        health = wait_for_clean_environment(ssh, remote_scripts)
         remove_no_reuse_override(ssh)
         print(json.dumps({"cleanup": "completed", "health": health}, ensure_ascii=False, indent=2))
         return 0 if not health["errors"] and not health["unhealthy_services"] and health["frontend"]["ok"] else 1
@@ -817,7 +872,7 @@ def main() -> int:
         install_no_reuse_override(ssh)
 
     records: list[dict[str, Any]] = list(existing_records)
-    previous_rollback = clean_environment(ssh, remote_scripts)
+    previous_rollback = wait_for_clean_environment(ssh, remote_scripts)
     try:
         for ordinal, (case_id, repetition) in enumerate(jobs, 1):
             spec = SPECS[case_id]
@@ -828,6 +883,8 @@ def main() -> int:
             }
             print(f"[{ordinal}/{len(jobs)}] {case_id} repetition={repetition}", flush=True)
             baseline = previous_rollback
+            if not environment_is_clean(baseline):
+                baseline = wait_for_clean_environment(ssh, remote_scripts)
             record["baseline"] = baseline
             if baseline["errors"] or baseline["unhealthy_services"] or not baseline["frontend"]["ok"]:
                 raise RuntimeError(f"unclean baseline for {case_id}: {baseline}")
@@ -888,7 +945,7 @@ def main() -> int:
                 record.update({"phase": "failed", "error": f"{type(exc).__name__}: {exc}"})
                 print(f"  failed: {record['error']}", flush=True)
             finally:
-                record["rollback"] = clean_environment(ssh, remote_scripts)
+                record["rollback"] = wait_for_clean_environment(ssh, remote_scripts)
                 previous_rollback = record["rollback"]
                 record["elapsed_sec"] = round(time.monotonic() - started_at, 2)
                 record["finished_at"] = utcnow()
@@ -896,7 +953,7 @@ def main() -> int:
                 append_jsonl(records_path, record)
                 print(f"  {record['phase']} status={record.get('diagnosis_status')} elapsed={record['elapsed_sec']}s", flush=True)
     finally:
-        final_health = clean_environment(ssh, remote_scripts)
+        final_health = wait_for_clean_environment(ssh, remote_scripts)
         if not args.keep_reuse_policy:
             remove_no_reuse_override(ssh)
         summary = summarize(records)

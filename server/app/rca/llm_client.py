@@ -170,17 +170,23 @@ def _call_deepseek(messages: list[dict], model: str) -> str:
     Raises:
         RuntimeError: API 返回非 200。
     """
-    resp = chat_completions(
-        {
-            "model": model,
-            "messages": messages,
-            "thinking": {"type": "disabled"},
-            "temperature": 0.1,  # 低温：归因需要确定性而非创意
-            "max_tokens": 2048,
-            "response_format": {"type": "json_object"},
-        },
-        timeout=max(10, int(os.getenv("MINI_DROP_RCA_LLM_TIMEOUT_SEC", "45"))),
-    )
+    payload = {
+        "model": model,
+        "messages": messages,
+        "thinking": {"type": "disabled"},
+        "temperature": 0.1,  # 低温：归因需要确定性而非创意
+        "max_tokens": int(os.getenv("MINI_DROP_RCA_MAX_TOKENS", "4096")),
+        "response_format": {"type": "json_object"},
+    }
+    timeout = max(10, int(os.getenv("MINI_DROP_RCA_LLM_TIMEOUT_SEC", "90")))
+    resp = chat_completions(payload, timeout=timeout)
+    if resp.status_code in (400, 422):
+        compatible_payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"thinking", "response_format"}
+        }
+        resp = chat_completions(compatible_payload, timeout=timeout)
 
     if resp.status_code != 200:
         raise RuntimeError(f"DeepSeek API 返回 {resp.status_code}: {resp.text[:300]}")
@@ -498,7 +504,7 @@ def _build_controlled_tree_system_prompt() -> str:
 硬性规则：
 1. tree_id、schema_version、source_context_hash、final_supported_level 必须沿用 Analyzer 模板。
 2. layer_id 必须沿用 Analyzer 模板，不得新增或删除层。
-3. candidate_id 必须来自 Analyzer 模板，不得新增候选。
+3. candidate_id 必须来自 Analyzer 模板，不得新增候选；模板里的所有候选必须保留且只能出现一次。
 4. 你可以在已有候选内重新分配 primary / secondary / rejected / unknown，并填写 parent_candidate_ids / probe_edges 的 candidate 血缘，但不得引用不存在的 candidate。
 5. supported_level 不得超过 Analyzer 给出的 final_supported_level，也不得超过候选原始 supported_level。
 6. evidence_refs 只能引用当前证据中真实存在的路径。
