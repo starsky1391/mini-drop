@@ -34,7 +34,7 @@ class AIProviderProfileCreate(StrictModel):
 
     @model_validator(mode="after")
     def normalize_url(self):
-        self.base_url = self.base_url.rstrip("/")
+        self.base_url = normalize_base_url(self.base_url)
         return self
 
 
@@ -49,8 +49,15 @@ class AIProviderProfileUpdate(StrictModel):
     @model_validator(mode="after")
     def normalize_url(self):
         if self.base_url is not None:
-            self.base_url = self.base_url.rstrip("/")
+            self.base_url = normalize_base_url(self.base_url)
         return self
+
+
+def normalize_base_url(value: str) -> str:
+    base_url = value.strip().rstrip("/")
+    if "://" not in base_url:
+        base_url = f"http://{base_url}"
+    return base_url
 
 
 def utcnow() -> datetime:

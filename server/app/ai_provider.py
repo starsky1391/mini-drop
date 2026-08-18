@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from server.app.common_utils import env_bool
-from server.app.ai_provider_profiles import get_active_profile_settings
+from server.app.ai_provider_profiles import get_active_profile_settings, normalize_base_url
 
 FeatureName = Literal["nlp", "rca", "summarize"]
 
@@ -37,7 +37,7 @@ def get_ai_settings() -> AISettings:
     if active_profile:
         mode = str(active_profile["enabled"]).strip().lower()
         provider = str(active_profile["provider"]).strip()
-        base_url = str(active_profile["base_url"]).strip()
+        base_url = normalize_base_url(str(active_profile["base_url"]))
         api_key = str(active_profile["api_key"]).strip()
         model = str(active_profile["model"]).strip()
         source = "profile"
@@ -45,7 +45,7 @@ def get_ai_settings() -> AISettings:
     else:
         mode = os.getenv("MINI_DROP_AI_ENABLED", "full").strip().lower()
         provider = _first_non_empty("MINI_DROP_AI_PROVIDER", "DEEPSEEK_PROVIDER", default="deepseek")
-        base_url = _first_non_empty("MINI_DROP_AI_BASE_URL", "DEEPSEEK_API_BASE", default="https://api.deepseek.com")
+        base_url = normalize_base_url(_first_non_empty("MINI_DROP_AI_BASE_URL", "DEEPSEEK_API_BASE", default="https://api.deepseek.com"))
         api_key = _first_non_empty("MINI_DROP_AI_API_KEY", "DEEPSEEK_API_KEY", default="")
         model = _first_non_empty("MINI_DROP_AI_MODEL", "DEEPSEEK_MODEL", default="deepseek-v4-flash")
         source = "env"
@@ -56,7 +56,7 @@ def get_ai_settings() -> AISettings:
     return AISettings(
         enabled=mode,
         provider=provider,
-        base_url=base_url.rstrip("/"),
+        base_url=base_url,
         api_key=api_key,
         model=model,
         source=source,
@@ -108,10 +108,10 @@ def test_openai_compatible_provider(
             },
             json={
                 "model": model,
-                "messages": [{"role": "user", "content": "Reply with exactly MINI_DROP_OK"}],
-                "temperature": 0,
-                "max_tokens": 32,
-            },
+            "messages": [{"role": "user", "content": "Reply with exactly MINI_DROP_OK"}],
+            "temperature": 0,
+            "max_tokens": 200,
+        },
             timeout=timeout,
         )
     except Exception as exc:

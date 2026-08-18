@@ -158,6 +158,22 @@ class TestAIProviderProfiles:
         assert config["model"] == "demo-model"
         assert config["has_api_key"] is True
 
+    def test_ai_provider_profile_adds_http_scheme_when_missing(self, client: TestClient):
+        created = client.post("/api/ai-provider-profiles", json={
+            "name": "docker host proxy",
+            "provider_label": "openai-compatible",
+            "base_url": "host.docker.internal:8787/v1",
+            "model": "demo-model",
+            "api_key": "secret-provider-key",
+            "enabled": "full",
+            "activate": True,
+        })
+
+        assert created.status_code == 200
+        assert created.json()["data"]["base_url"] == "http://host.docker.internal:8787/v1"
+        config = client.get("/api/ai-config").json()["data"]
+        assert config["base_url"] == "http://host.docker.internal:8787/v1"
+
     def test_updating_profile_without_key_keeps_secret(self, client: TestClient):
         profile = client.post("/api/ai-provider-profiles", json={
             "name": "provider",
