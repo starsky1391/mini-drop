@@ -518,30 +518,41 @@ def _apply_compact_guard_review(
         values = data.get(key, [])
         if values is None:
             continue
-        if not isinstance(values, list) or any(str(item) not in analyzer_candidates for item in values):
-            return None
-    for ref in data.get("supporting_evidence_refs", []) or []:
-        if not _ref_exists(str(ref), valid_paths):
-            return None
-    for ref in data.get("opposing_evidence_refs", []) or []:
-        if not _ref_exists(str(ref), valid_paths):
-            return None
-    for request in data.get("probe_requests", []) or []:
-        if str(request) not in allowed_requests:
-            return None
+        if not isinstance(values, list):
+            data[key] = []
+        else:
+            data[key] = [str(item) for item in values if str(item) in analyzer_candidates]
+    data["supporting_evidence_refs"] = [
+        str(ref) for ref in data.get("supporting_evidence_refs", []) or []
+        if _ref_exists(str(ref), valid_paths)
+    ]
+    data["opposing_evidence_refs"] = [
+        str(ref) for ref in data.get("opposing_evidence_refs", []) or []
+        if _ref_exists(str(ref), valid_paths)
+    ]
+    data["probe_requests"] = [
+        str(request) for request in data.get("probe_requests", []) or []
+        if str(request) in allowed_requests
+    ]
 
     challenges = data.get("self_challenges", {}) or {}
     if not isinstance(challenges, dict):
-        return None
+        challenges = {}
+    sanitized_challenges = {}
     for candidate_id, challenge in challenges.items():
         if str(candidate_id) not in analyzer_candidates or not isinstance(challenge, dict):
-            return None
-        for ref in challenge.get("supporting_evidence_refs", []) or []:
-            if not _ref_exists(str(ref), valid_paths):
-                return None
-        for ref in challenge.get("opposing_evidence_refs", []) or []:
-            if not _ref_exists(str(ref), valid_paths):
-                return None
+            continue
+        challenge = dict(challenge)
+        challenge["supporting_evidence_refs"] = [
+            str(ref) for ref in challenge.get("supporting_evidence_refs", []) or []
+            if _ref_exists(str(ref), valid_paths)
+        ]
+        challenge["opposing_evidence_refs"] = [
+            str(ref) for ref in challenge.get("opposing_evidence_refs", []) or []
+            if _ref_exists(str(ref), valid_paths)
+        ]
+        sanitized_challenges[str(candidate_id)] = challenge
+    challenges = sanitized_challenges
 
     role_updates: dict[str, str] = {}
     for role in ("primary", "secondary", "rejected", "unknown"):
