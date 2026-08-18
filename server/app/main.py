@@ -562,11 +562,12 @@ async def _lifespan(_app: FastAPI):
 async def _offline_sweeper() -> None:
     timeout_sec = int(os.getenv("AGENT_OFFLINE_TIMEOUT_SEC", "30"))
     interval_sec = max(1, min(timeout_sec // 2, 15))
+    diagnosis_sweep_limit = max(1, int(os.getenv("MINI_DROP_DIAGNOSIS_SWEEP_LIMIT", "10")))
     while True:
         repo.mark_offline_agents(timeout_sec=timeout_sec)
         if hasattr(repo, "persist_agent_metric_snapshots"):
             repo.persist_agent_metric_snapshots()
-        diagnosis_orchestrator.advance_active()
+        await asyncio.to_thread(diagnosis_orchestrator.advance_active, diagnosis_sweep_limit)
         await asyncio.sleep(interval_sec)
 
 
