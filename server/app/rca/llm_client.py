@@ -109,6 +109,15 @@ def generate_controlled_ai_tree(
         model=model_name,
         error=last_error[:500],
     )
+    compact_tree = _generate_compact_guard_review(
+        task_id=task_id,
+        evidence=evidence,
+        analyzer_tree=fallback_tree,
+        probe_manifest=probe_manifest,
+        model_name=model_name,
+    )
+    if compact_tree is not None:
+        return compact_tree
     return fallback_tree
 
 def diagnose(
@@ -406,6 +415,170 @@ def _merge_llm_controlled_tree(
     })
 
 
+def _generate_compact_guard_review(
+    *,
+    task_id: str,
+    evidence: EvidenceInput,
+    analyzer_tree: ControlledAITree,
+    probe_manifest: dict | None,
+    model_name: str,
+) -> ControlledAITree | None:
+    """Use a compact LLM review when full-tree JSON is too large or brittle."""
+    messages = [
+        {"role": "system", "content": _build_compact_guard_system_prompt()},
+        {"role": "user", "content": _build_compact_guard_user_message(
+            evidence=evidence,
+            analyzer_tree=analyzer_tree,
+            probe_manifest=probe_manifest,
+        )},
+    ]
+    last_error = ""
+    for attempt in range(1 + MAX_RETRIES):
+        try:
+            raw = _call_deepseek(messages, model_name)
+            tree = _apply_compact_guard_review(
+                raw=raw,
+                analyzer_tree=analyzer_tree,
+                evidence=evidence,
+                probe_manifest=probe_manifest,
+            )
+            if tree is not None:
+                log_event(
+                    "info",
+                    "controlled_ai_tree_llm_guarded_compact",
+                    task_id=task_id,
+                    attempt=attempt,
+                    model=model_name,
+                    layer_count=len(tree.layers),
+                )
+                return tree
+            last_error = "compact guard review did not pass boundary checks"
+        except Exception as exc:
+            last_error = str(exc)
+        log_event(
+            "warning",
+            "controlled_ai_tree_llm_compact_rejected",
+            task_id=task_id,
+            attempt=attempt,
+            model=model_name,
+            error=last_error[:500],
+        )
+        if attempt < MAX_RETRIES:
+            messages.append({"role": "user", "content": f"上一次 compact guard review 无效：{last_error}。请只输出符合 schema 的 JSON。"})
+    return None
+
+
+def _apply_compact_guard_review(
+    *,
+    raw: str,
+    analyzer_tree: ControlledAITree,
+    evidence: EvidenceInput,
+    probe_manifest: dict | None,
+) -> ControlledAITree | None:
+    data = json.loads(_extract_json(raw) or "{}")
+    if not isinstance(data, dict):
+        return None
+    if "layers" in data or "probe_edges" in data:
+        return None
+    if data.get("tree_id") not in {None, analyzer_tree.tree_id}:
+        return None
+
+    analyzer_candidates = {
+        item.candidate_id: item
+        for layer in analyzer_tree.layers
+        for item in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    }
+    valid_paths = _collect_evidence_paths(evidence)
+    allowed_requests = _manifest_allowed_probe_requests(probe_manifest, analyzer_tree)
+    for key in ("primary", "secondary", "rejected", "unknown"):
+        values = data.get(key, [])
+        if values is None:
+            continue
+        if not isinstance(values, list) or any(str(item) not in analyzer_candidates for item in values):
+            return None
+    for ref in data.get("supporting_evidence_refs", []) or []:
+        if not _ref_exists(str(ref), valid_paths):
+            return None
+    for ref in data.get("opposing_evidence_refs", []) or []:
+        if not _ref_exists(str(ref), valid_paths):
+            return None
+    for request in data.get("probe_requests", []) or []:
+        if str(request) not in allowed_requests:
+            return None
+
+    challenges = data.get("self_challenges", {}) or {}
+    if not isinstance(challenges, dict):
+        return None
+    for candidate_id, challenge in challenges.items():
+        if str(candidate_id) not in analyzer_candidates or not isinstance(challenge, dict):
+            return None
+        for ref in challenge.get("supporting_evidence_refs", []) or []:
+            if not _ref_exists(str(ref), valid_paths):
+                return None
+        for ref in challenge.get("opposing_evidence_refs", []) or []:
+            if not _ref_exists(str(ref), valid_paths):
+                return None
+
+    role_updates: dict[str, str] = {}
+    for role in ("primary", "secondary", "rejected", "unknown"):
+        for candidate_id in data.get(role, []) or []:
+            role_updates[str(candidate_id)] = role
+
+    layers = []
+    for layer in analyzer_tree.layers:
+        layers.append(layer.model_copy(update={
+            "generated_by": "ai_guarded",
+            "summary": str(
+                (data.get("layer_summaries") or {}).get(layer.layer_id)
+                if isinstance(data.get("layer_summaries"), dict)
+                else layer.summary
+            ) or layer.summary,
+            "primary_causes": _guarded_nodes(layer.primary_causes, role_updates, challenges, "primary"),
+            "secondary_causes": _guarded_nodes(layer.secondary_causes, role_updates, challenges, "secondary"),
+            "rejected_causes": _guarded_nodes(layer.rejected_causes, role_updates, challenges, "rejected"),
+            "unknown_causes": _guarded_nodes(layer.unknown_causes, role_updates, challenges, "unknown"),
+        }))
+
+    return analyzer_tree.model_copy(update={
+        "layers": layers,
+        "stop_reason": str(data.get("stop_reason") or analyzer_tree.stop_reason),
+    })
+
+
+def _guarded_nodes(nodes, role_updates: dict[str, str], challenges: dict, expected_role: str):
+    updated = []
+    for node in nodes:
+        suggested_role = role_updates.get(node.candidate_id, node.role)
+        challenge = challenges.get(node.candidate_id)
+        if isinstance(challenge, dict):
+            self_challenge = node.self_challenge.model_copy(update={
+                "why_this_claim": str(challenge.get("why_this_claim") or node.self_challenge.why_this_claim),
+                "why_not_other_claims": str(challenge.get("why_not_other_claims") or node.self_challenge.why_not_other_claims),
+                "supporting_evidence_refs": [str(item) for item in challenge.get("supporting_evidence_refs", node.self_challenge.supporting_evidence_refs)],
+                "opposing_evidence_refs": [str(item) for item in challenge.get("opposing_evidence_refs", node.self_challenge.opposing_evidence_refs)],
+                "missing_evidence": [str(item) for item in challenge.get("missing_evidence", node.self_challenge.missing_evidence)],
+                "what_would_change_my_mind": str(challenge.get("what_would_change_my_mind") or node.self_challenge.what_would_change_my_mind),
+            })
+        else:
+            self_challenge = node.self_challenge
+        status = node.status
+        if suggested_role == "rejected" and node.status == "supported":
+            status = "weakened"
+        elif suggested_role == "unknown" and node.status in {"supported", "weakened"}:
+            status = "missing_evidence"
+        updated.append(node.model_copy(update={
+            "role": expected_role,
+            "status": status,
+            "self_challenge": self_challenge,
+        }))
+    return updated
+
+
 def _group_candidate_ids(layers, role: str) -> list[str]:
     ids = []
     for layer in layers:
@@ -577,6 +750,74 @@ def _build_controlled_tree_user_message(
         "controlled_tree_template": analyzer_result.controlled_ai_tree.model_dump(mode="json") if analyzer_result.controlled_ai_tree else None,
         "probe_registry_manifest": probe_manifest,
         "output": "只输出 ControlledAITree JSON 对象。",
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _build_compact_guard_system_prompt() -> str:
+    return """你是 Mini-Drop 的受控 AI 树裁决器。
+
+完整树 JSON 过大时，你只输出 compact guard review JSON，不输出 markdown。
+你不能新增候选、不能新增证据、不能新增探针，只能在系统给出的候选和 Probe Manifest 内选择。
+
+JSON schema:
+{
+  "tree_id": "必须等于模板 tree_id",
+  "primary": ["保留为主因的 candidate_id"],
+  "secondary": ["次因 candidate_id"],
+  "rejected": ["被反证压低的 candidate_id"],
+  "unknown": ["证据不足不能裁决的 candidate_id"],
+  "supporting_evidence_refs": ["只能引用 current_evidence 中存在的顶层证据路径"],
+  "opposing_evidence_refs": ["只能引用 current_evidence 中存在的顶层证据路径"],
+  "probe_requests": ["只能引用 Probe Manifest 的 evidence_family"],
+  "stop_reason": "为什么停在当前层级",
+  "self_challenges": {
+    "candidate_id": {
+      "why_this_claim": "支持/保留该候选的原因",
+      "why_not_other_claims": "为什么压过或不能压过其他候选",
+      "supporting_evidence_refs": ["真实证据路径"],
+      "opposing_evidence_refs": ["真实证据路径"],
+      "missing_evidence": ["缺失证据族"],
+      "what_would_change_my_mind": "什么证据会改变结论"
+    }
+  },
+  "layer_summaries": {"layer_id": "该层的人话摘要"}
+}
+"""
+
+
+def _build_compact_guard_user_message(
+    *,
+    evidence: EvidenceInput,
+    analyzer_tree: ControlledAITree,
+    probe_manifest: dict | None,
+) -> str:
+    candidates = []
+    for layer in analyzer_tree.layers:
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]:
+            candidates.append({
+                "layer_id": layer.layer_id,
+                "candidate_id": node.candidate_id,
+                "role": node.role,
+                "status": node.status,
+                "supported_level": node.supported_level,
+                "claim": node.claim,
+                "evidence_refs": node.evidence_refs,
+                "missing_evidence": node.self_challenge.missing_evidence,
+            })
+    payload = {
+        "current_evidence": json.loads(_serialize_evidence(evidence)),
+        "tree_id": analyzer_tree.tree_id,
+        "final_supported_level": analyzer_tree.final_supported_level,
+        "candidate_template": candidates,
+        "existing_probe_edges": [edge.model_dump(mode="json") for edge in analyzer_tree.probe_edges],
+        "probe_registry_manifest": probe_manifest,
+        "output": "只输出 compact guard review JSON 对象。",
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
 

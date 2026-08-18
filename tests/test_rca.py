@@ -373,6 +373,66 @@ class TestControlledAITreeMerge:
         assert "thinking" not in payloads[1]
         assert "response_format" not in payloads[1]
 
+    def test_compact_guard_review_marks_tree_ai_guarded_after_full_tree_rejected(self):
+        evidence = EvidenceInput(
+            top_functions=[{"name": "compute_hotspot", "percent": 72.0}],
+            sys_metrics={"summary": {"avg_cpu_user_pct": 92.0, "avg_cpu_iowait_pct": 1.0}},
+        )
+        analysis = analyze_evidence(
+            evidence,
+            [CandidateCause(
+                candidate_id="cpu_hotspot_recursive",
+                description="CPU hotspot",
+                evidence_refs=["top_functions[0]"],
+                rule_score=0.8,
+            )],
+        )
+        manifest = build_probe_manifest()
+        bad_tree = analysis.controlled_ai_tree.model_copy(deep=True)
+        bad_tree.probe_edges[0] = bad_tree.probe_edges[0].model_copy(update={
+            "probe_requests": ["arbitrary_shell"],
+        })
+        compact_review = {
+            "tree_id": analysis.controlled_ai_tree.tree_id,
+            "primary": analysis.controlled_ai_tree.final_primary_causes,
+            "secondary": [],
+            "rejected": [],
+            "unknown": [],
+            "supporting_evidence_refs": ["top_functions"],
+            "opposing_evidence_refs": [],
+            "probe_requests": ["cpu_profile"],
+            "stop_reason": "AI review 确认当前只能停在函数热点候选，需要继续补 CPU profile。",
+            "self_challenges": {
+                analysis.controlled_ai_tree.final_primary_causes[0]: {
+                    "why_this_claim": "top_functions 显示 compute_hotspot 占比最高。",
+                    "why_not_other_claims": "没有同等强度的 IO 或依赖证据。",
+                    "supporting_evidence_refs": ["top_functions"],
+                    "opposing_evidence_refs": [],
+                    "missing_evidence": ["cpu_profile"],
+                    "what_would_change_my_mind": "CPU profile 不再指向该热点。",
+                },
+            },
+        }
+        responses = []
+        for payload in [bad_tree.model_dump(mode="json")] * 3 + [compact_review]:
+            resp = mock.MagicMock(status_code=200)
+            resp.json.return_value = {
+                "choices": [{"message": {"content": json.dumps(payload)}}]
+            }
+            responses.append(resp)
+
+        with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key"}):
+            with mock.patch("server.app.rca.llm_client.chat_completions", side_effect=responses):
+                tree = generate_controlled_ai_tree(
+                    task_id="t1",
+                    evidence=evidence,
+                    analyzer_result=analysis,
+                    probe_manifest=manifest,
+                )
+
+        assert any(layer.generated_by == "ai_guarded" for layer in tree.layers)
+        assert tree.stop_reason == compact_review["stop_reason"]
+
     def test_llm_controlled_tree_rejects_unregistered_probe_request(self):
         evidence = EvidenceInput(
             top_functions=[{"name": "compute_hotspot", "percent": 72.0}],

@@ -16,4 +16,4 @@ def log_event(level: str, event: str, **fields: Any) -> None:
         **fields,
     }
     stream = sys.stderr if level in {"error", "warning"} else sys.stdout
-    print(json.dumps(record, ensure_ascii=False, default=str), file=stream)
+    print(json.dumps(record, ensure_ascii=False, default=str), file=stream, flush=True)
