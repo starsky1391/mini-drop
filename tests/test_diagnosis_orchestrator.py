@@ -47,6 +47,43 @@ def test_audit_bundle_json_safe_replaces_non_finite_floats():
     }
 
 
+def test_readiness_gate_tolerates_truncated_runtime_counts():
+    bundle = {
+        "probes": [{
+            "probe_id": "process_off_cpu_profile",
+            "task_id": "task-1",
+            "status": "COMPLETED",
+        }],
+        "evidence": [{
+            "observed_value": {
+                "summary": {
+                    "evidence_index": {
+                        "off_cpu_wait": {
+                            "summary": {"sample_count": "[TRUNCATED]"},
+                            "top_wait_stacks": [],
+                        },
+                    },
+                },
+            },
+        }],
+        "latest_conclusion": {
+            "controlled_ai_tree": {
+                "layers": [{"generated_by": "ai_guarded"}],
+            },
+            "root_cause_candidates": [{"evidence_refs": ["e1"]}],
+        },
+        "child_task_ids": ["task-1"],
+        "artifacts": [{"collector_family": "off_cpu_wait_profile"}],
+        "structured_evidence": [{"artifact_type": "off_cpu_wait_json"}],
+        "runtime_trace": [{"stage": "test"}],
+    }
+
+    gate = build_readiness_gate(bundle)
+
+    assert gate["status"] == "FAIL"
+    assert any(check["name"] == "runtime_stack_quality_non_empty" for check in gate["checks"])
+
+
 def _payload(query: str = "服务 service-a CPU 飙高，请定位原因") -> dict:
     return {
         "query": query,

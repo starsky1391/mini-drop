@@ -331,11 +331,25 @@ def _unique_items(items) -> list[dict[str, Any]]:
     return result
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _stack_signal_score(value: dict[str, Any]) -> tuple[int, int, float]:
     return (
         int(bool(value.get("has_wait_reason"))),
-        int(value.get("stack_sample_count") or value.get("sample_count") or 0),
-        float(value.get("total_wait_ms") or 0.0),
+        _safe_int(value.get("stack_sample_count") or value.get("sample_count")),
+        _safe_float(value.get("total_wait_ms")),
     )
 
 
@@ -559,7 +573,7 @@ def _structured_runtime_signal_present(value: Any) -> bool:
         return True
     stack_summary = summary.get("stack_summary")
     if isinstance(stack_summary, dict):
-        if int(stack_summary.get("stack_sample_count") or stack_summary.get("sample_count") or 0) > 0:
+        if _safe_int(stack_summary.get("stack_sample_count") or stack_summary.get("sample_count")) > 0:
             return True
         if stack_summary.get("has_wait_reason"):
             return True
@@ -574,7 +588,7 @@ def _off_cpu_wait_signal_present(value: Any) -> bool:
     if not isinstance(value, dict):
         return False
     summary = value.get("summary") if isinstance(value.get("summary"), dict) else {}
-    if int(summary.get("sample_count") or 0) > 0:
+    if _safe_int(summary.get("sample_count")) > 0:
         return True
     stacks = value.get("top_wait_stacks")
     return isinstance(stacks, list) and bool(stacks)
