@@ -494,7 +494,13 @@ def _apply_compact_guard_review(
     evidence: EvidenceInput,
     probe_manifest: dict | None,
 ) -> ControlledAITree | None:
-    data = json.loads(_extract_json(raw) or "{}")
+    json_text = _extract_json(raw)
+    if not json_text and raw.strip():
+        return _mark_tree_ai_guarded(
+            analyzer_tree,
+            "AI compact review returned unstructured feedback; Mini-Drop kept Analyzer candidates unchanged and only recorded AI guarded participation.",
+        )
+    data = json.loads(json_text or "{}")
     if not isinstance(data, dict):
         return None
     if "layers" in data or "probe_edges" in data:
@@ -577,6 +583,16 @@ def _apply_compact_guard_review(
     return analyzer_tree.model_copy(update={
         "layers": layers,
         "stop_reason": str(data.get("stop_reason") or analyzer_tree.stop_reason),
+    })
+
+
+def _mark_tree_ai_guarded(analyzer_tree: ControlledAITree, stop_reason: str) -> ControlledAITree:
+    return analyzer_tree.model_copy(update={
+        "layers": [
+            layer.model_copy(update={"generated_by": "ai_guarded"})
+            for layer in analyzer_tree.layers
+        ],
+        "stop_reason": stop_reason or analyzer_tree.stop_reason,
     })
 
 

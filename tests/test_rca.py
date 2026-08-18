@@ -433,6 +433,49 @@ class TestControlledAITreeMerge:
         assert any(layer.generated_by == "ai_guarded" for layer in tree.layers)
         assert tree.stop_reason == compact_review["stop_reason"]
 
+    def test_compact_guard_review_accepts_unstructured_ai_feedback_without_changing_candidates(self):
+        evidence = EvidenceInput(
+            top_functions=[{"name": "compute_hotspot", "percent": 72.0}],
+            sys_metrics={"summary": {"avg_cpu_user_pct": 92.0}},
+        )
+        analysis = analyze_evidence(
+            evidence,
+            [CandidateCause(
+                candidate_id="cpu_hotspot_recursive",
+                description="CPU hotspot",
+                evidence_refs=["top_functions[0]"],
+                rule_score=0.8,
+            )],
+        )
+        bad_tree = analysis.controlled_ai_tree.model_copy(deep=True)
+        bad_tree.probe_edges[0] = bad_tree.probe_edges[0].model_copy(update={
+            "probe_requests": ["arbitrary_shell"],
+        })
+        responses = []
+        for payload in [bad_tree.model_dump(mode="json")] * 3:
+            resp = mock.MagicMock(status_code=200)
+            resp.json.return_value = {
+                "choices": [{"message": {"content": json.dumps(payload)}}]
+            }
+            responses.append(resp)
+        text_resp = mock.MagicMock(status_code=200)
+        text_resp.json.return_value = {
+            "choices": [{"message": {"content": "我会保留现有 CPU hotspot 候选，但需要更多 CPU profile 证据。"}}]
+        }
+        responses.append(text_resp)
+
+        with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key"}):
+            with mock.patch("server.app.rca.llm_client.chat_completions", side_effect=responses):
+                tree = generate_controlled_ai_tree(
+                    task_id="t1",
+                    evidence=evidence,
+                    analyzer_result=analysis,
+                    probe_manifest=build_probe_manifest(),
+                )
+
+        assert any(layer.generated_by == "ai_guarded" for layer in tree.layers)
+        assert tree.final_primary_causes == analysis.controlled_ai_tree.final_primary_causes
+
     def test_llm_controlled_tree_rejects_unregistered_probe_request(self):
         evidence = EvidenceInput(
             top_functions=[{"name": "compute_hotspot", "percent": 72.0}],
