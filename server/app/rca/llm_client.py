@@ -11,6 +11,7 @@ import re
 import time
 
 from server.app.ai_provider import chat_completions, get_ai_settings, is_feature_enabled
+from server.app.logging_utils import log_event
 from server.app.rca.models import (
     CauseEntry,
     ControlledAITree,
@@ -62,12 +63,35 @@ def generate_controlled_ai_tree(
                 probe_manifest=probe_manifest,
             )
             if merged != fallback_tree or _llm_tree_shape_is_safe(proposed, fallback_tree, evidence, probe_manifest):
+                log_event(
+                    "info",
+                    "controlled_ai_tree_llm_guarded",
+                    task_id=task_id,
+                    attempt=attempt,
+                    model=model_name,
+                    layer_count=len(merged.layers),
+                )
                 return merged
             last_error = "controlled_ai_tree 越过 Analyzer 边界或引用了非法证据/探针"
         except Exception as exc:
             last_error = str(exc)
+        log_event(
+            "warning",
+            "controlled_ai_tree_llm_rejected",
+            task_id=task_id,
+            attempt=attempt,
+            model=model_name,
+            error=last_error[:500],
+        )
         if attempt < MAX_RETRIES:
             messages.append({"role": "user", "content": f"上一次 controlled_ai_tree 无效：{last_error}。请只基于模板候选和 Probe Manifest 修正 JSON。"})
+    log_event(
+        "warning",
+        "controlled_ai_tree_llm_fallback",
+        task_id=task_id,
+        model=model_name,
+        error=last_error[:500],
+    )
     return fallback_tree
 
 def diagnose(
@@ -175,7 +199,7 @@ def _call_deepseek(messages: list[dict], model: str) -> str:
         "messages": messages,
         "thinking": {"type": "disabled"},
         "temperature": 0.1,  # 低温：归因需要确定性而非创意
-        "max_tokens": int(os.getenv("MINI_DROP_RCA_MAX_TOKENS", "4096")),
+        "max_tokens": int(os.getenv("MINI_DROP_RCA_MAX_TOKENS", "8192")),
         "response_format": {"type": "json_object"},
     }
     timeout = max(10, int(os.getenv("MINI_DROP_RCA_LLM_TIMEOUT_SEC", "90")))
