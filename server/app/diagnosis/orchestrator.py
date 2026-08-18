@@ -911,6 +911,11 @@ class DiagnosisOrchestrator:
                 if compact_tree is not None:
                     controlled_tree = compact_tree
                     compact_guard_succeeded = True
+                else:
+                    controlled_tree = _mark_tree_ai_guarded_without_changes(
+                        controlled_tree,
+                        "AI guard was attempted but returned no usable structured review; Analyzer candidates and probe edges were kept unchanged.",
+                    )
             self.store.record_event(
                 diagnosis_id,
                 "controlled_ai_tree_guard_result",
@@ -3100,6 +3105,21 @@ def _tree_generated_by(tree: ControlledAITree | None) -> set[str]:
         layer.generated_by
         for layer in tree.layers
     }
+
+
+def _mark_tree_ai_guarded_without_changes(
+    tree: ControlledAITree | None,
+    stop_reason: str,
+) -> ControlledAITree | None:
+    if tree is None:
+        return None
+    return tree.model_copy(update={
+        "layers": [
+            layer.model_copy(update={"generated_by": "ai_guarded"})
+            for layer in tree.layers
+        ],
+        "stop_reason": stop_reason or tree.stop_reason,
+    })
 
 
 def _blocked_upgrade_node(
