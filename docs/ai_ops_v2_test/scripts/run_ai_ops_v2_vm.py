@@ -296,6 +296,36 @@ class DiagnosisRunError(RuntimeError):
         self.detail = detail or {}
 
 
+def is_transient_api_error(exc: Exception) -> bool:
+    if isinstance(exc, APIError):
+        return exc.status_code in {502, 503, 504}
+    return isinstance(exc, (TimeoutError, urllib.error.URLError))
+
+
+def call_with_retries(
+    api: API,
+    path: str,
+    method: str = "GET",
+    body: dict[str, Any] | None = None,
+    *,
+    timeout: int = 120,
+    attempts: int = 5,
+    sleep_sec: float = 3.0,
+) -> Any:
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return api.call(path, method, body, timeout=timeout)
+        except Exception as exc:
+            if not is_transient_api_error(exc) or attempt == attempts:
+                raise
+            last_error = exc
+            time.sleep(sleep_sec)
+    if last_error:
+        raise last_error
+    raise RuntimeError(f"API {method} {path}: retry attempts exhausted")
+
+
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -529,7 +559,9 @@ def create_and_run(api: API, case_id: str, query: str, scope: dict[str, Any],
     while time.monotonic() < deadline:
         try:
             last = api.call(f"/api/v1/diagnoses/{diagnosis_id}", timeout=120)
-        except (TimeoutError, urllib.error.URLError) as exc:
+        except Exception as exc:
+            if not is_transient_api_error(exc):
+                raise
             transient_errors.append({
                 "at_elapsed_sec": round(time.monotonic() - started_at, 2),
                 "error": f"{type(exc).__name__}: {exc}",
@@ -821,7 +853,13 @@ def main() -> int:
                 )
                 record["diagnosis_id"] = diagnosis_id
                 assert_controlled_ai_tree_participated(diagnosis_id, detail)
-                bundle = api.call(f"/api/v1/diagnoses/{diagnosis_id}/audit-bundle", timeout=180)
+                bundle = call_with_retries(
+                    api,
+                    f"/api/v1/diagnoses/{diagnosis_id}/audit-bundle",
+                    timeout=180,
+                    attempts=4,
+                    sleep_sec=5,
+                )
                 bundle_path = bundle_dir / f"{case_id}__r{repetition:02d}.json"
                 bundle_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
                 record.update({
