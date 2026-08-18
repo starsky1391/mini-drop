@@ -893,6 +893,23 @@ class DiagnosisOrchestrator:
                 analyzer_result=analysis_result,
                 probe_manifest=probe_manifest,
             )
+            ai_settings = get_ai_settings()
+            self.store.record_event(
+                diagnosis_id,
+                "controlled_ai_tree_guard_result",
+                {
+                    "task_id": task.id,
+                    "ai_source": ai_settings.source,
+                    "ai_enabled": ai_settings.enabled,
+                    "rca_enabled": is_feature_enabled("rca"),
+                    "has_api_key": bool(ai_settings.api_key),
+                    "generated_by": sorted({
+                        layer.generated_by
+                        for layer in (controlled_tree.layers if controlled_tree else [])
+                    }),
+                    "layer_count": len(controlled_tree.layers) if controlled_tree else 0,
+                },
+            )
             analysis_result = analysis_result.model_copy(update={"controlled_ai_tree": controlled_tree})
             if analysis_result.controlled_ai_tree is not None:
                 controlled_ai_trees.append(analysis_result.controlled_ai_tree.model_dump(mode="json"))
