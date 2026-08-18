@@ -198,6 +198,25 @@ def diagnose(
     )
 
 
+def generate_compact_guarded_tree(
+    *,
+    task_id: str,
+    evidence: EvidenceInput,
+    analyzer_tree: ControlledAITree | None,
+    probe_manifest: dict | None,
+    model_name: str | None = None,
+) -> ControlledAITree | None:
+    if analyzer_tree is None or not is_feature_enabled("rca"):
+        return None
+    return _generate_compact_guard_review(
+        task_id=task_id,
+        evidence=evidence,
+        analyzer_tree=analyzer_tree,
+        probe_manifest=probe_manifest,
+        model_name=model_name or get_ai_settings().model,
+    )
+
+
 # ── 内部 ──
 
 

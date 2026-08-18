@@ -32,7 +32,7 @@ from server.app.rca.calibrator import calibrate
 from server.app.rca.candidates import generate_candidates
 from server.app.rca.evidence import collect_evidence
 from server.app.rca.attribution import analyze_evidence
-from server.app.rca.llm_client import generate_controlled_ai_tree
+from server.app.rca.llm_client import generate_controlled_ai_tree, generate_compact_guarded_tree
 from server.app.rca.models import (
     AITreeBudgetSnapshot,
     AITreeCandidateNode,
@@ -893,6 +893,15 @@ class DiagnosisOrchestrator:
                 analyzer_result=analysis_result,
                 probe_manifest=probe_manifest,
             )
+            if _tree_generated_by(controlled_tree) == {"analyzer_fallback"} and is_feature_enabled("rca"):
+                compact_tree = generate_compact_guarded_tree(
+                    task_id=task.id,
+                    evidence=evidence.model_copy(update={"analysis_result": analysis_payload}),
+                    analyzer_tree=analysis_result.controlled_ai_tree,
+                    probe_manifest=probe_manifest,
+                )
+                if compact_tree is not None:
+                    controlled_tree = compact_tree
             ai_settings = get_ai_settings()
             self.store.record_event(
                 diagnosis_id,
@@ -3072,6 +3081,15 @@ def _completed_session_probe_requests(probes: list[dict[str, Any]]) -> list[str]
         if gap and gap not in completed:
             completed.append(gap)
     return completed
+
+
+def _tree_generated_by(tree: ControlledAITree | None) -> set[str]:
+    if tree is None:
+        return set()
+    return {
+        layer.generated_by
+        for layer in tree.layers
+    }
 
 
 def _blocked_upgrade_node(
