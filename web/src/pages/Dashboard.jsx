@@ -34,6 +34,7 @@ import {
 import { Link, useNavigate } from "react-router-dom";
 import { healthz, listAgents, listDiagnosisSessions } from "../api/client";
 import ErrorAlert from "../components/ErrorAlert";
+import StatusTag from "../components/StatusTag";
 import usePolling from "../hooks/usePolling";
 import useSSE from "../hooks/useSSE";
 import { COLORS, FONT_SIZES, SPACING } from "../theme";

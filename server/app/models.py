@@ -300,6 +300,53 @@ class RCAFeedbackWeightModel(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False)
 
 
+# ── AI Provider Profiles ─────────────────────────────────────────
+
+
+class AIProviderProfileModel(Base):
+    """OpenAI-compatible AI provider runtime configuration."""
+
+    __tablename__ = "ai_provider_profiles"
+
+    id = Column(String(128), primary_key=True)
+    name = Column(String(128), nullable=False)
+    provider_label = Column(String(128), nullable=False)
+    base_url = Column(String(512), nullable=False)
+    model = Column(String(128), nullable=False)
+    api_key = Column(Text, nullable=False)
+    enabled = Column(String(32), nullable=False)
+    is_active = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
+
+    def to_safe_dict(self) -> dict:
+        suffix = self.api_key[-4:] if self.api_key else ""
+        return {
+            "profile_id": self.id,
+            "name": self.name,
+            "provider_label": self.provider_label,
+            "base_url": self.base_url,
+            "model": self.model,
+            "enabled": self.enabled,
+            "is_active": bool(self.is_active),
+            "has_api_key": bool(self.api_key),
+            "api_key_hint": f"****{suffix}" if suffix else "",
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    def to_settings_dict(self) -> dict:
+        return {
+            "profile_id": self.id,
+            "enabled": self.enabled,
+            "provider": self.provider_label,
+            "base_url": self.base_url,
+            "api_key": self.api_key,
+            "model": self.model,
+            "source": "profile",
+        }
+
+
 # ── Agent 指标快照 ───────────────────────────────────────────────
 
 

@@ -109,8 +109,8 @@ export default function AppLayout() {
     await saveApiKey(apiKey.trim());
     message.success(
       apiKey.trim()
-        ? "API Key 已保存 (HttpOnly Cookie + 降级)"
-        : "API Key 已清除"
+        ? "平台访问 Key 已保存 (HttpOnly Cookie + 降级)"
+        : "平台访问 Key 已清除"
     );
   }
 
@@ -274,7 +274,7 @@ export default function AppLayout() {
             </Tooltip>
 
             <Input.Password
-              placeholder="Mini-Drop API Key（必填）"
+              placeholder="平台访问 Key（启用鉴权时需要）"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               onPressEnter={handleSaveKey}

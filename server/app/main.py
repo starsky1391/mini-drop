@@ -32,7 +32,17 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from server.app.common_utils import status_value
-from server.app.ai_provider import get_ai_settings
+from server.app.ai_provider import get_ai_settings, test_openai_compatible_provider
+from server.app.ai_provider_profiles import (
+    AIProviderProfileCreate,
+    AIProviderProfileUpdate,
+    activate_profile,
+    create_profile,
+    delete_profile,
+    get_profile,
+    list_profiles,
+    update_profile,
+)
 from server.app.ai_validation import AIValidationBusy, run_ai_validation_suite
 from server.app.database import init_db, new_session
 from server.app.event_bus import BUS, notify_diagnosis_complete
@@ -802,13 +812,114 @@ def ai_config() -> APIResponse:
         "provider": settings.provider,
         "base_url": settings.base_url,
         "model": settings.model,
+        "source": settings.source,
+        "profile_id": settings.profile_id,
         "has_api_key": bool(settings.api_key),
         "features": {
             "nlp": settings.nlp_enabled,
             "rca": settings.rca_enabled,
             "summarize": settings.summarize_enabled,
         },
+        "control_api_auth": {
+            "enabled": os.getenv("MINI_DROP_API_AUTH_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"},
+        },
     })
+
+
+@app.post("/api/ai-config/test")
+def test_active_ai_config() -> APIResponse:
+    settings = get_ai_settings()
+    if not settings.api_key:
+        return APIResponse(data={
+            "passed": False,
+            "http_status": 0,
+            "provider": settings.provider,
+            "model": settings.model,
+            "base_url": settings.base_url,
+            "source": settings.source,
+            "profile_id": settings.profile_id,
+            "duration_ms": 0,
+            "content_valid": False,
+            "message": "当前 AI Provider 未配置 API Key",
+        })
+    result = test_openai_compatible_provider(
+        base_url=settings.base_url,
+        api_key=settings.api_key,
+        model=settings.model,
+    )
+    return APIResponse(data={
+        **result,
+        "provider": settings.provider,
+        "base_url": settings.base_url,
+        "source": settings.source,
+        "profile_id": settings.profile_id,
+    })
+
+
+@app.get("/api/ai-provider-profiles")
+def list_ai_provider_profiles() -> APIResponse:
+    return APIResponse(data={"items": list_profiles()})
+
+
+@app.post("/api/ai-provider-profiles")
+def create_ai_provider_profile(payload: AIProviderProfileCreate) -> APIResponse:
+    return APIResponse(data=create_profile(payload))
+
+
+@app.patch("/api/ai-provider-profiles/{profile_id}")
+def update_ai_provider_profile(profile_id: str, payload: AIProviderProfileUpdate) -> APIResponse:
+    item = update_profile(profile_id, payload)
+    if item is None:
+        raise HTTPException(status_code=404, detail="AI Provider Profile 不存在")
+    return APIResponse(data=item)
+
+
+@app.post("/api/ai-provider-profiles/{profile_id}/activate")
+def activate_ai_provider_profile(profile_id: str) -> APIResponse:
+    item = activate_profile(profile_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="AI Provider Profile 不存在")
+    return APIResponse(data=item)
+
+
+@app.delete("/api/ai-provider-profiles/{profile_id}")
+def delete_ai_provider_profile(profile_id: str) -> APIResponse:
+    if not delete_profile(profile_id):
+        raise HTTPException(status_code=404, detail="AI Provider Profile 不存在")
+    return APIResponse(data={"deleted": True, "profile_id": profile_id})
+
+
+@app.post("/api/ai-provider-profiles/test")
+def test_ai_provider_profile(payload: AIProviderProfileCreate) -> APIResponse:
+    result = test_openai_compatible_provider(
+        base_url=payload.base_url,
+        api_key=payload.api_key,
+        model=payload.model,
+    )
+    return APIResponse(data=result)
+
+
+@app.post("/api/ai-provider-profiles/{profile_id}/test")
+def test_saved_ai_provider_profile(profile_id: str) -> APIResponse:
+    item = get_profile(profile_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="AI Provider Profile 不存在")
+    settings = get_ai_settings()
+    if settings.profile_id != profile_id:
+        return APIResponse(data={
+            "passed": False,
+            "http_status": 0,
+            "model": item.get("model"),
+            "duration_ms": 0,
+            "content_valid": False,
+            "message": "只能测试当前激活的 Profile；请先激活后再测试，避免后端回显或传输已保存密钥。",
+        })
+    result = test_openai_compatible_provider(
+        base_url=settings.base_url,
+        api_key=settings.api_key,
+        model=settings.model,
+    )
+    return APIResponse(data=result)
 
 
 @app.post("/api/ai-validation/runs")

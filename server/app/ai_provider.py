@@ -8,10 +8,12 @@ API key and model through environment variables.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from server.app.common_utils import env_bool
+from server.app.ai_provider_profiles import get_active_profile_settings
 
 FeatureName = Literal["nlp", "rca", "summarize"]
 
@@ -23,17 +25,31 @@ class AISettings:
     base_url: str
     api_key: str
     model: str
+    source: str
+    profile_id: str | None
     nlp_enabled: bool
     rca_enabled: bool
     summarize_enabled: bool
 
 
 def get_ai_settings() -> AISettings:
-    mode = os.getenv("MINI_DROP_AI_ENABLED", "full").strip().lower()
-    provider = _first_non_empty("MINI_DROP_AI_PROVIDER", "DEEPSEEK_PROVIDER", default="deepseek")
-    base_url = _first_non_empty("MINI_DROP_AI_BASE_URL", "DEEPSEEK_API_BASE", default="https://api.deepseek.com")
-    api_key = _first_non_empty("MINI_DROP_AI_API_KEY", "DEEPSEEK_API_KEY", default="")
-    model = _first_non_empty("MINI_DROP_AI_MODEL", "DEEPSEEK_MODEL", default="deepseek-v4-flash")
+    active_profile = get_active_profile_settings()
+    if active_profile:
+        mode = str(active_profile["enabled"]).strip().lower()
+        provider = str(active_profile["provider"]).strip()
+        base_url = str(active_profile["base_url"]).strip()
+        api_key = str(active_profile["api_key"]).strip()
+        model = str(active_profile["model"]).strip()
+        source = "profile"
+        profile_id = str(active_profile["profile_id"])
+    else:
+        mode = os.getenv("MINI_DROP_AI_ENABLED", "full").strip().lower()
+        provider = _first_non_empty("MINI_DROP_AI_PROVIDER", "DEEPSEEK_PROVIDER", default="deepseek")
+        base_url = _first_non_empty("MINI_DROP_AI_BASE_URL", "DEEPSEEK_API_BASE", default="https://api.deepseek.com")
+        api_key = _first_non_empty("MINI_DROP_AI_API_KEY", "DEEPSEEK_API_KEY", default="")
+        model = _first_non_empty("MINI_DROP_AI_MODEL", "DEEPSEEK_MODEL", default="deepseek-v4-flash")
+        source = "env"
+        profile_id = None
 
     defaults = _mode_defaults(mode)
     feature_flags = _apply_feature_overrides(defaults)
@@ -43,6 +59,8 @@ def get_ai_settings() -> AISettings:
         base_url=base_url.rstrip("/"),
         api_key=api_key,
         model=model,
+        source=source,
+        profile_id=profile_id,
         nlp_enabled=feature_flags["nlp"],
         rca_enabled=feature_flags["rca"],
         summarize_enabled=feature_flags["summarize"],
@@ -71,6 +89,40 @@ def chat_completions(payload: dict[str, Any], timeout: int = 60):
         json=payload,
         timeout=timeout,
     )
+
+
+def test_openai_compatible_provider(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    timeout: int = 30,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    response = _post_json(
+        _chat_url(base_url.rstrip("/")),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": model,
+            "messages": [{"role": "user", "content": "Reply with exactly MINI_DROP_OK"}],
+            "temperature": 0,
+            "max_tokens": 32,
+        },
+        timeout=timeout,
+    )
+    payload = response.json() if response.status_code == 200 else {}
+    message = (payload.get("choices") or [{}])[0].get("message") or {}
+    content_valid = "MINI_DROP_OK" in str(message.get("content") or "")
+    return {
+        "passed": response.status_code == 200 and content_valid,
+        "http_status": response.status_code,
+        "model": payload.get("model") or model,
+        "duration_ms": round((time.perf_counter() - started) * 1000),
+        "content_valid": content_valid,
+    }
 
 
 def _chat_url(base_url: str) -> str:

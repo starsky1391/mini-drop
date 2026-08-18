@@ -86,8 +86,14 @@ def _check_configuration() -> tuple[bool, str, dict[str, Any]]:
         "summarize": settings.summarize_enabled,
     }
     passed = bool(settings.api_key) and settings.enabled not in {"none", "off"} and all(features.values())
-    detail = "AI Key 与 Drop 三项能力均已启用" if passed else "AI Key 或功能开关未完整启用"
-    return passed, detail, {"mode": settings.enabled, "features": features, "key_present": bool(settings.api_key)}
+    detail = "AI Provider 配置与 Drop 三项能力均已启用" if passed else "AI Provider Key 或功能开关未完整启用"
+    return passed, detail, {
+        "mode": settings.enabled,
+        "source": settings.source,
+        "profile_id": settings.profile_id,
+        "features": features,
+        "key_present": bool(settings.api_key),
+    }
 
 
 def _check_balance() -> tuple[bool, str, dict[str, Any]]:
@@ -97,6 +103,11 @@ def _check_balance() -> tuple[bool, str, dict[str, Any]]:
         headers={"Authorization": f"Bearer {settings.api_key}", "Accept": "application/json"},
         timeout=20,
     )
+    if response.status_code in {404, 405}:
+        return True, "Provider 未暴露余额接口，已按 OpenAI-compatible 可选能力跳过", {
+            "http_status": response.status_code,
+            "optional_capability": "unsupported",
+        }
     payload = response.json() if response.status_code == 200 else {}
     available = payload.get("is_available") is True
     passed = response.status_code == 200 and available
@@ -111,7 +122,7 @@ def _check_balance() -> tuple[bool, str, dict[str, Any]]:
 def _check_model_discovery() -> tuple[bool, str, dict[str, Any]]:
     settings = get_ai_settings()
     response = requests.get(
-        f"{settings.base_url}/v1/models",
+        _models_url(settings.base_url),
         headers={"Authorization": f"Bearer {settings.api_key}", "Accept": "application/json"},
         timeout=20,
     )
@@ -123,6 +134,13 @@ def _check_model_discovery() -> tuple[bool, str, dict[str, Any]]:
     passed = response.status_code == 200 and present
     detail = f"已发现配置模型 {settings.model}" if passed else f"模型不可用（HTTP {response.status_code}）"
     return passed, detail, {"http_status": response.status_code, "model_present": present}
+
+
+def _models_url(base_url: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/v1"):
+        return f"{base}/models"
+    return f"{base}/v1/models"
 
 
 def _check_chat_completion() -> tuple[bool, str, dict[str, Any]]:
@@ -261,6 +279,8 @@ def run_ai_validation_suite() -> dict[str, Any]:
             "provider": settings.provider,
             "model": settings.model,
             "base_url": settings.base_url,
+            "source": settings.source,
+            "profile_id": settings.profile_id,
             "started_at": started_at,
             "finished_at": _utcnow(),
             "duration_ms": round((time.perf_counter() - started) * 1000),

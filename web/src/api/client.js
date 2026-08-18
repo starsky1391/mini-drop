@@ -275,6 +275,38 @@ export function getAIConfig() {
   return api.get("/ai-config");
 }
 
+export function testActiveAIConfig() {
+  return api.post("/ai-config/test", {}, { timeout: 60000 });
+}
+
+export function listAIProviderProfiles() {
+  return api.get("/ai-provider-profiles").then(itemsOf);
+}
+
+export function createAIProviderProfile(payload) {
+  return api.post("/ai-provider-profiles", payload);
+}
+
+export function updateAIProviderProfile(profileId, payload) {
+  return api.patch(`/ai-provider-profiles/${profileId}`, payload);
+}
+
+export function activateAIProviderProfile(profileId) {
+  return api.post(`/ai-provider-profiles/${profileId}/activate`);
+}
+
+export function deleteAIProviderProfile(profileId) {
+  return api.delete(`/ai-provider-profiles/${profileId}`);
+}
+
+export function testAIProviderProfile(payload) {
+  return api.post("/ai-provider-profiles/test", payload, { timeout: 60000 });
+}
+
+export function testSavedAIProviderProfile(profileId) {
+  return api.post(`/ai-provider-profiles/${profileId}/test`, {}, { timeout: 60000 });
+}
+
 export function runAIValidation() {
   return api.post("/ai-validation/runs", {}, { timeout: 180000 });
 }

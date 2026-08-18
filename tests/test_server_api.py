@@ -68,6 +68,91 @@ class TestHealthz:
         assert resp.status_code == 200
         assert resp.json()["data"]["user_id"] == "demo_user"
 
+
+class TestAIProviderProfiles:
+    def test_active_ai_config_test_endpoint_reports_connection(
+        self,
+        client: TestClient,
+        monkeypatch,
+    ):
+        client.post("/api/ai-provider-profiles", json={
+            "name": "test provider",
+            "provider_label": "openai-compatible",
+            "base_url": "https://example.com/v1",
+            "model": "model-a",
+            "api_key": "secret-provider-key",
+            "enabled": "full",
+            "activate": True,
+        })
+        monkeypatch.setattr(
+            "server.app.main.test_openai_compatible_provider",
+            lambda **_kwargs: {
+                "passed": True,
+                "http_status": 200,
+                "model": "model-a",
+                "duration_ms": 12,
+                "content_valid": True,
+            },
+        )
+
+        response = client.post("/api/ai-config/test")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["passed"] is True
+        assert data["source"] == "profile"
+        assert data["provider"] == "openai-compatible"
+        assert data["model"] == "model-a"
+        assert "secret-provider-key" not in response.text
+
+    def test_ai_provider_profile_can_override_env_settings(self, client: TestClient):
+        created = client.post("/api/ai-provider-profiles", json={
+            "name": "local proxy",
+            "provider_label": "openai-compatible",
+            "base_url": "http://127.0.0.1:8787/v1/",
+            "model": "demo-model",
+            "api_key": "secret-provider-key",
+            "enabled": "full",
+            "activate": True,
+        })
+
+        assert created.status_code == 200
+        profile = created.json()["data"]
+        assert profile["is_active"] is True
+        assert profile["has_api_key"] is True
+        assert "secret-provider-key" not in created.text
+        assert profile["api_key_hint"] == "****-key"
+
+        config = client.get("/api/ai-config").json()["data"]
+        assert config["source"] == "profile"
+        assert config["profile_id"] == profile["profile_id"]
+        assert config["provider"] == "openai-compatible"
+        assert config["base_url"] == "http://127.0.0.1:8787/v1"
+        assert config["model"] == "demo-model"
+        assert config["has_api_key"] is True
+
+    def test_updating_profile_without_key_keeps_secret(self, client: TestClient):
+        profile = client.post("/api/ai-provider-profiles", json={
+            "name": "provider",
+            "provider_label": "openai-compatible",
+            "base_url": "https://example.com/v1",
+            "model": "model-a",
+            "api_key": "secret-provider-key",
+            "enabled": "full",
+            "activate": True,
+        }).json()["data"]
+
+        updated = client.patch(f"/api/ai-provider-profiles/{profile['profile_id']}", json={
+            "model": "model-b",
+        })
+
+        assert updated.status_code == 200
+        assert updated.json()["data"]["model"] == "model-b"
+        assert updated.json()["data"]["has_api_key"] is True
+        assert "secret-provider-key" not in updated.text
+        config = client.get("/api/ai-config").json()["data"]
+        assert config["model"] == "model-b"
+
     def test_ai_config_never_returns_key(self, client: TestClient, monkeypatch):
         monkeypatch.setenv("MINI_DROP_AI_API_KEY", "secret-must-not-leak")
         monkeypatch.setenv("MINI_DROP_AI_MODEL", "deepseek-v4-flash")
