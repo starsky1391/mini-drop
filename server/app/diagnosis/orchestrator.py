@@ -360,6 +360,7 @@ class DiagnosisOrchestrator:
             session = self.store.update_session(diagnosis_id, child_task_ids=child_ids)
         self._schedule_deferred_followups(diagnosis_id)
         session = self.store.get_session(diagnosis_id) or session
+        child_ids = list(session.get("child_task_ids", []))
 
         terminal_tasks = []
         active_tasks = []
@@ -401,6 +402,9 @@ class DiagnosisOrchestrator:
                     if any(status_value(task.status) == "FAILED" for task in terminal_tasks) and not nonblocking_failed_depth
                     else DiagnosisStatus.COMPLETED
                 )
+                latest_session = self.store.get_session(diagnosis_id) or session
+                if latest_session["status"] != DiagnosisStatus.ANALYZING.value:
+                    self._transition(diagnosis_id, DiagnosisStatus.ANALYZING, "evidence_analysis_started")
                 self._transition(diagnosis_id, DiagnosisStatus.CONCLUDING, "conclusion_generated")
                 self._transition(diagnosis_id, final_status, "diagnosis_completed")
                 return

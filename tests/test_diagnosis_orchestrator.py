@@ -1468,6 +1468,69 @@ def test_all_registered_policy_can_schedule_high_risk_followup(client: TestClien
     assert followup["status"] in {"SCHEDULED", "RUNNING", "WAITING_APPROVAL", "UNAVAILABLE"}
 
 
+def test_deferred_followup_reloaded_before_conclusion(client: TestClient):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=[*repo.agents["a1"].capabilities, "off_cpu_wait_profile"],
+    )
+    payload = _payload("服务 service-a 内存压力升高，请继续定位到函数")
+    payload["budget_profile"] = "development"
+    payload["auto_execute_policy"] = "all_registered"
+    payload["budget"] = {
+        "max_parallel_probes": 1,
+        "max_total_probe_cpu_seconds": 3600,
+        "follow_up_reserve_seconds": 0,
+    }
+    data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    parent_task = repo.tasks[data["child_task_ids"][0]]
+    repo.transition_task(parent_task.id, TaskStatus.RUNNING, "agent accepted", Actor.SERVER)
+
+    created = diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["off_cpu_wait_profile"],
+        parent_task,
+    )
+    planned = next(
+        probe for probe in diagnosis_orchestrator.store.list_probes(diagnosis_id)
+        if (probe.get("parameters") or {}).get("evidence_gap") == "off_cpu_wait_profile"
+    )
+    assert created == 1
+    assert planned["status"] == "PLANNED"
+
+    hot_summary = _normal_summary()
+    hot_summary.update({"avg_cpu_user_pct": 93.0, "load1m": 8.0})
+    repo.transition_task(parent_task.id, TaskStatus.UPLOADING, "collected", Actor.AGENT)
+    repo.transition_task(parent_task.id, TaskStatus.ANALYZING, "analyzing", Actor.ANALYZER)
+    repo.add_artifacts(parent_task.id, [{
+        "artifact_type": "sys_metrics",
+        "object_key": f"tasks/{parent_task.id}/sys_metrics.json",
+        "metadata": {
+            "data": {
+                "sample_count": 10,
+                "summary": hot_summary,
+            },
+        },
+    }])
+    repo.transition_task(parent_task.id, TaskStatus.DONE, "analysis complete", Actor.ANALYZER)
+
+    detail = client.get(f"/api/v1/diagnoses/{diagnosis_id}").json()["data"]
+    followup = next(
+        probe for probe in detail["probes"]
+        if (probe.get("parameters") or {}).get("evidence_gap") == "off_cpu_wait_profile"
+    )
+
+    assert detail["status"] == "COLLECTING"
+    assert followup["status"] in {"PLANNED", "SCHEDULED", "RUNNING"}
+    if followup["task_id"]:
+        assert followup["task_id"] in detail["child_task_ids"]
+    assert any(
+        probe["status"] in {"PLANNED", "SCHEDULED", "RUNNING"}
+        for probe in detail["probes"]
+        if (probe.get("parameters") or {}).get("evidence_gap")
+    )
+
+
 def test_default_policy_auto_executes_registered_r2_followup(client: TestClient):
     data = client.post("/api/v1/diagnoses", json=_payload("服务 service-a 内存压力升高")).json()["data"]
     repo.register_agent(
