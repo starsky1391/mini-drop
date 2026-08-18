@@ -1628,6 +1628,18 @@ def get_diagnosis_session(diagnosis_id: str) -> APIResponse:
     return APIResponse(data=data)
 
 
+@app.delete("/api/v1/diagnoses/{diagnosis_id}")
+def delete_diagnosis_session(diagnosis_id: str) -> APIResponse:
+    data = diagnosis_orchestrator.store.get_session(diagnosis_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="诊断会话不存在")
+    if data.get("status") not in TERMINAL_DIAGNOSIS_STATUSES:
+        raise HTTPException(status_code=400, detail="诊断仍在运行，请等待终态后再删除")
+    if not diagnosis_orchestrator.store.delete_session(diagnosis_id):
+        raise HTTPException(status_code=404, detail="诊断会话不存在")
+    return APIResponse(data={"diagnosis_id": diagnosis_id, "deleted": True})
+
+
 @app.get("/api/v1/diagnoses/{diagnosis_id}/audit-bundle")
 def get_diagnosis_audit_bundle(diagnosis_id: str) -> APIResponse:
     data = build_audit_bundle(diagnosis_id, diagnosis_orchestrator, repo)

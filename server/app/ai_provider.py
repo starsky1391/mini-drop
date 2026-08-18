@@ -99,21 +99,43 @@ def test_openai_compatible_provider(
     timeout: int = 30,
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    response = _post_json(
-        _chat_url(base_url.rstrip("/")),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
+    try:
+        response = _post_json(
+            _chat_url(base_url.rstrip("/")),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": "Reply with exactly MINI_DROP_OK"}],
+                "temperature": 0,
+                "max_tokens": 32,
+            },
+            timeout=timeout,
+        )
+    except Exception as exc:
+        return {
+            "passed": False,
+            "http_status": 0,
             "model": model,
-            "messages": [{"role": "user", "content": "Reply with exactly MINI_DROP_OK"}],
-            "temperature": 0,
-            "max_tokens": 32,
-        },
-        timeout=timeout,
-    )
-    payload = response.json() if response.status_code == 200 else {}
+            "duration_ms": round((time.perf_counter() - started) * 1000),
+            "content_valid": False,
+            "error_type": type(exc).__name__,
+            "message": f"Provider 请求失败：{type(exc).__name__}",
+        }
+    try:
+        payload = response.json() if response.status_code == 200 else {}
+    except ValueError:
+        return {
+            "passed": False,
+            "http_status": response.status_code,
+            "model": model,
+            "duration_ms": round((time.perf_counter() - started) * 1000),
+            "content_valid": False,
+            "error_type": "InvalidJSON",
+            "message": "Provider 响应不是 OpenAI-compatible JSON",
+        }
     message = (payload.get("choices") or [{}])[0].get("message") or {}
     content_valid = "MINI_DROP_OK" in str(message.get("content") or "")
     return {
@@ -122,6 +144,7 @@ def test_openai_compatible_provider(
         "model": payload.get("model") or model,
         "duration_ms": round((time.perf_counter() - started) * 1000),
         "content_valid": content_valid,
+        "message": "AI Provider 连接正常" if response.status_code == 200 and content_valid else f"Provider 响应未通过内容校验（HTTP {response.status_code}）",
     }
 
 

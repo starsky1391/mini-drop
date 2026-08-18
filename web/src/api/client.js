@@ -196,6 +196,10 @@ export function getDiagnosisSession(diagnosisId) {
   return api.get(`/v1/diagnoses/${diagnosisId}`);
 }
 
+export function deleteDiagnosisSession(diagnosisId) {
+  return api.delete(`/v1/diagnoses/${diagnosisId}`);
+}
+
 export function approveDiagnosisProbe(diagnosisId, payload) {
   return api.post(`/v1/diagnoses/${diagnosisId}/approvals`, payload);
 }

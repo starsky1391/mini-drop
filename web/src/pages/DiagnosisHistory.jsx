@@ -3,9 +3,9 @@ import {
   Button,
   Card,
   Col,
-  Empty,
   Input,
-  Progress,
+  message,
+  Popconfirm,
   Row,
   Select,
   Skeleton,
@@ -15,74 +15,73 @@ import {
   Typography,
 } from "antd";
 import {
+  DeleteOutlined,
   ExperimentOutlined,
+  FilterOutlined,
   ReloadOutlined,
   SearchOutlined,
-  FilterOutlined,
 } from "@ant-design/icons";
 import { Link } from "react-router-dom";
-import { listTasks, listTaskDiagnoses } from "../api/client";
+import { deleteDiagnosisSession, listDiagnosisSessions } from "../api/client";
 import ErrorAlert from "../components/ErrorAlert";
-import StatusTag from "../components/StatusTag";
 import { COLORS, FONT_SIZES, SPACING } from "../theme";
 
-const CONFIDENCE_COLORS = {
-  high: COLORS.success,     // ≥ 0.7
-  medium: COLORS.warning,   // ≥ 0.4
-  low: COLORS.error,        // < 0.4
+const STATUS_COLORS = {
+  COMPLETED: "green",
+  PARTIAL_COMPLETED: "orange",
+  INSUFFICIENT_EVIDENCE: "gold",
+  FAILED: "red",
+  BUDGET_EXHAUSTED: "red",
+  WAITING_APPROVAL: "purple",
+  COLLECTING: "blue",
+  ANALYZING: "cyan",
+  PLANNING: "geekblue",
+  UNDERSTANDING: "geekblue",
+  CONCLUDING: "cyan",
+  NEEDS_SCOPE_CONFIRMATION: "orange",
+  TOPOLOGY_UNAVAILABLE: "red",
+  USER_CANCELED: "default",
 };
 
-function confidenceLevel(v) {
-  if (v >= 0.7) return "high";
-  if (v >= 0.4) return "medium";
-  return "low";
+const TERMINAL = new Set([
+  "COMPLETED",
+  "PARTIAL_COMPLETED",
+  "INSUFFICIENT_EVIDENCE",
+  "FAILED",
+  "BUDGET_EXHAUSTED",
+  "TOPOLOGY_UNAVAILABLE",
+  "USER_CANCELED",
+]);
+
+function latestConclusion(item) {
+  const versions = item.conclusion_versions || [];
+  return item.latest_conclusion || versions[versions.length - 1] || {};
 }
 
-function confidenceLabel(v) {
-  if (v >= 0.7) return "高";
-  if (v >= 0.4) return "中";
-  return "低";
+function conclusionSummary(item) {
+  const conclusion = latestConclusion(item);
+  return conclusion.human_summary || conclusion.summary || item.raw_query || "-";
+}
+
+function primaryCause(item) {
+  const conclusion = latestConclusion(item);
+  const cause = conclusion.primary_cause || conclusion.ranked_causes?.[0] || {};
+  return cause.title || cause.description || cause.candidate_id || "-";
 }
 
 export default function DiagnosisHistory() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [allTasks, setAllTasks] = useState([]);
   const [diagnoses, setDiagnoses] = useState([]);
   const [search, setSearch] = useState("");
-  const [filterConfidence, setFilterConfidence] = useState("all");
-  const [filterTaskId, setFilterTaskId] = useState("");
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [filterService, setFilterService] = useState("");
 
   const load = useCallback(async () => {
     setError("");
     setLoading(true);
     try {
-      const tasks = await listTasks();
-      setAllTasks(tasks || []);
-
-      // 拉取所有任务的诊断（限制最近 50 个任务以控制请求数）
-      const recent = (tasks || []).slice(0, 50);
-      const results = await Promise.allSettled(
-        recent.map((t) => listTaskDiagnoses(t.id))
-      );
-
-      const all = [];
-      results.forEach((r, i) => {
-        if (r.status === "fulfilled" && Array.isArray(r.value)) {
-          r.value.forEach((d) => {
-            // listTaskDiagnoses returns flat keys, getDiagnosis nests under .run
-            const item = d.run ? d : { ...d, run: { task_id: d.task_id, status: d.status, model_name: d.model_name, created_at: d.created_at, summary: d.summary } };
-            all.push({ ...item, _task_name: recent[i]?.name || recent[i]?.id });
-          });
-        }
-      });
-
-      all.sort(
-        (a, b) =>
-          new Date(b.created_at || 0).getTime() -
-          new Date(a.created_at || 0).getTime()
-      );
-      setDiagnoses(all);
+      setDiagnoses(await listDiagnosisSessions({ limit: 300 }));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -94,145 +93,150 @@ export default function DiagnosisHistory() {
     load();
   }, [load]);
 
+  const handleDelete = useCallback(async (diagnosisId) => {
+    try {
+      await deleteDiagnosisSession(diagnosisId);
+      message.success("诊断记录已删除");
+      load();
+    } catch (err) {
+      message.error(err.message || "删除失败");
+    }
+  }, [load]);
+
   const filtered = useMemo(() => {
     let items = diagnoses;
     if (search.trim()) {
       const q = search.toLowerCase();
-      items = items.filter(
-        (d) =>
-          (d._task_name || "").toLowerCase().includes(q) ||
-          (d.id || "").toLowerCase().includes(q) ||
-          (d.run?.summary || "").toLowerCase().includes(q) ||
-          (d.run?.model_name || "").toLowerCase().includes(q)
-      );
+      items = items.filter((d) => [
+        d.diagnosis_id,
+        d.raw_query,
+        d.target_scope?.target_service,
+        d.normalized_intent?.symptom,
+        conclusionSummary(d),
+        primaryCause(d),
+      ].filter(Boolean).join(" ").toLowerCase().includes(q));
     }
-    if (filterConfidence !== "all") {
-      items = items.filter((d) => {
-        const c = d.report?.ranked_causes?.[0]?.confidence || 0;
-        return confidenceLevel(c) === filterConfidence;
-      });
+    if (filterStatus !== "all") {
+      items = items.filter((d) => d.status === filterStatus);
     }
-    if (filterTaskId.trim()) {
-      items = items.filter((d) =>
-        (d.run?.task_id || "").includes(filterTaskId.trim())
-      );
+    if (filterService.trim()) {
+      const q = filterService.trim().toLowerCase();
+      items = items.filter((d) => (d.target_scope?.target_service || "").toLowerCase().includes(q));
     }
     return items;
-  }, [diagnoses, search, filterConfidence, filterTaskId]);
+  }, [diagnoses, search, filterStatus, filterService]);
+
+  const statusOptions = useMemo(() => {
+    const values = Array.from(new Set(diagnoses.map((item) => item.status).filter(Boolean))).sort();
+    return [
+      { value: "all", label: "全部状态" },
+      ...values.map((value) => ({ value, label: value })),
+    ];
+  }, [diagnoses]);
 
   const columns = useMemo(
     () => [
       {
         title: "诊断 ID",
-        dataIndex: "id",
-        width: 120,
+        dataIndex: "diagnosis_id",
+        width: 180,
         ellipsis: true,
         render: (value) => (
           <Typography.Text copyable={{ text: value }} style={{ fontSize: FONT_SIZES.sm }}>
-            {value?.slice(0, 8)}…
+            {value?.slice(0, 28)}…
           </Typography.Text>
         ),
       },
       {
-        title: "关联任务",
-        key: "task",
+        title: "目标服务",
         width: 160,
         ellipsis: true,
         render: (_, record) => (
-          <Link to={`/task/${record.run?.task_id}`}>
-            {record._task_name || record.run?.task_id || "-"}
+          <Link to={`/ai-diagnosis/${record.diagnosis_id}`}>
+            {record.target_scope?.target_service || "未绑定服务"}
           </Link>
         ),
       },
       {
-        title: "摘要",
-        key: "summary",
+        title: "主因/停留层",
+        width: 260,
         ellipsis: true,
-        render: (_, record) =>
-          record.run?.summary || record.report?.report?.summary || "-",
-      },
-      {
-        title: "模型",
-        dataIndex: ["run", "model_name"],
-        width: 130,
-        render: (value) => <Tag>{value || "unknown"}</Tag>,
-      },
-      {
-        title: "状态",
-        key: "status",
-        width: 100,
-        render: (_, record) => (
-          <StatusTag status={record.run?.status === "DONE" ? "DONE" : "FAILED"} />
-        ),
-      },
-      {
-        title: "置信度",
-        key: "confidence",
-        width: 160,
         render: (_, record) => {
-          const cause = record.report?.ranked_causes?.[0];
-          const c = (cause?.confidence || 0) * 100;
-          if (!cause) return <Tag>N/A</Tag>;
+          const conclusion = latestConclusion(record);
           return (
-            <Space size={4}>
-              <Progress
-                percent={Math.round(c)}
-                size="small"
-                strokeColor={CONFIDENCE_COLORS[confidenceLevel(cause.confidence)]}
-                style={{ width: 80, margin: 0 }}
-              />
-              <Tag
-                color={confidenceLevel(cause.confidence)}
-                style={{ fontSize: 10, margin: 0, lineHeight: "16px" }}
-              >
-                {confidenceLabel(cause.confidence)}
-              </Tag>
+            <Space direction="vertical" size={2}>
+              <Typography.Text ellipsis style={{ maxWidth: 240 }}>
+                {primaryCause(record)}
+              </Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: FONT_SIZES.sm }}>
+                {conclusion.supported_level || conclusion.max_supported_level || "unknown"}
+              </Typography.Text>
             </Space>
           );
         },
       },
       {
-        title: "反馈",
-        key: "feedback",
-        width: 110,
-        render: (_, record) => {
-          const fb = record.feedback;
-          if (!fb)
-            return (
-              <Tag color="default" style={{ fontSize: 10 }}>
-                未反馈
-              </Tag>
-            );
-          const labels = { correct: ["green", "✓ 正确"], partial: ["orange", "◐ 部分"], wrong: ["red", "✗ 错误"] };
-          const [color, text] = labels[fb.feedback_label] || ["default", fb.feedback_label];
-          return (
-            <Tag color={color} style={{ fontSize: 10 }}>
-              {text}
-            </Tag>
-          );
-        },
+        title: "摘要",
+        key: "summary",
+        ellipsis: true,
+        render: (_, record) => conclusionSummary(record),
       },
       {
-        title: "时间",
-        dataIndex: ["run", "created_at"],
+        title: "状态",
+        dataIndex: "status",
+        width: 150,
+        render: (value) => <Tag color={STATUS_COLORS[value] || "default"}>{value || "UNKNOWN"}</Tag>,
+      },
+      {
+        title: "采集子任务",
+        width: 110,
+        render: (_, record) => <Tag color="geekblue">{record.child_task_ids?.length || 0}</Tag>,
+      },
+      {
+        title: "更新时间",
+        dataIndex: "updated_at",
         width: 180,
-        render: (value) =>
-          value ? new Date(value).toLocaleString() : "-",
+        render: (value) => (value ? new Date(value).toLocaleString() : "-"),
+      },
+      {
+        title: "操作",
+        width: 150,
+        fixed: "right",
+        render: (_, record) => (
+          <Space size={4}>
+            <Button size="small" type="link">
+              <Link to={`/ai-diagnosis/${record.diagnosis_id}`}>查看</Link>
+            </Button>
+            <Popconfirm
+              title="删除这个诊断记录？"
+              description="只删除 AI 树会话，不删除采集子任务。"
+              okText="删除"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+              disabled={!TERMINAL.has(record.status)}
+              onConfirm={() => handleDelete(record.diagnosis_id)}
+            >
+              <Button
+                size="small"
+                danger
+                type="text"
+                icon={<DeleteOutlined />}
+                disabled={!TERMINAL.has(record.status)}
+              />
+            </Popconfirm>
+          </Space>
+        ),
       },
     ],
-    []
+    [handleDelete]
   );
-
-  // ── 统计 ──────────────────────────────────────────────
 
   const stats = useMemo(() => {
     const total = diagnoses.length;
-    const done = diagnoses.filter((d) => d.run?.status === "DONE").length;
-    const highConf = diagnoses.filter(
-      (d) => (d.report?.ranked_causes?.[0]?.confidence || 0) >= 0.7
-    ).length;
-    const withFeedback = diagnoses.filter((d) => d.feedback).length;
-    return { total, done, highConf, withFeedback };
+    const done = diagnoses.filter((d) => d.status === "COMPLETED" || d.status === "PARTIAL_COMPLETED").length;
+    const active = diagnoses.filter((d) => !TERMINAL.has(d.status)).length;
+    const evidenceLimited = diagnoses.filter((d) => d.status === "INSUFFICIENT_EVIDENCE" || d.status === "BUDGET_EXHAUSTED").length;
+    return { total, done, active, evidenceLimited };
   }, [diagnoses]);
 
   if (loading) {
@@ -257,7 +261,6 @@ export default function DiagnosisHistory() {
 
   return (
     <Space direction="vertical" size={SPACING.lg} style={{ width: "100%" }}>
-      {/* 页头 */}
       <div
         style={{
           display: "flex",
@@ -270,7 +273,7 @@ export default function DiagnosisHistory() {
         <Space align="center">
           <ExperimentOutlined style={{ fontSize: 20, color: COLORS.primary }} />
           <Typography.Title level={4} style={{ margin: 0 }}>
-            诊断历史
+            AI 集群诊断历史
           </Typography.Title>
         </Space>
         <Button icon={<ReloadOutlined />} onClick={load}>
@@ -280,15 +283,14 @@ export default function DiagnosisHistory() {
 
       <ErrorAlert error={error} onClose={() => setError("")} />
 
-      {/* 统计卡片 */}
       <Row gutter={SPACING.lg}>
         {[
-          { label: "总诊断", value: stats.total, icon: <ExperimentOutlined />, color: COLORS.primary },
+          { label: "总会话", value: stats.total, color: COLORS.primary },
           { label: "已完成", value: stats.done, color: COLORS.success },
-          { label: "高置信", value: stats.highConf, color: COLORS.warning },
-          { label: "有反馈", value: stats.withFeedback, color: "#722ed1" },
-        ].map((s, i) => (
-          <Col xs={12} md={6} key={i}>
+          { label: "诊断中", value: stats.active, color: COLORS.warning },
+          { label: "证据受限", value: stats.evidenceLimited, color: COLORS.error },
+        ].map((s) => (
+          <Col xs={12} md={6} key={s.label}>
             <Card
               size="small"
               style={{ textAlign: "center" }}
@@ -308,33 +310,27 @@ export default function DiagnosisHistory() {
         ))}
       </Row>
 
-      {/* 搜索 + 过滤 */}
       <Card size="small" bodyStyle={{ padding: "12px 16px" }}>
         <Space wrap size="middle">
           <Input
-            placeholder="搜索任务名 / 诊断 ID / 摘要…"
+            placeholder="搜索服务 / 诊断 ID / 主因 / 摘要…"
             prefix={<SearchOutlined style={{ color: COLORS.textSecondary }} />}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             allowClear
-            style={{ width: 260 }}
+            style={{ width: 300 }}
           />
           <Select
-            value={filterConfidence}
-            onChange={setFilterConfidence}
-            style={{ width: 120 }}
-            options={[
-              { value: "all", label: "全部置信度" },
-              { value: "high", label: "高 (≥70%)" },
-              { value: "medium", label: "中 (40-70%)" },
-              { value: "low", label: "低 (<40%)" },
-            ]}
+            value={filterStatus}
+            onChange={setFilterStatus}
+            style={{ width: 170 }}
+            options={statusOptions}
           />
           <Input
-            placeholder="按 Task ID 筛选…"
+            placeholder="按服务筛选…"
             prefix={<FilterOutlined style={{ color: COLORS.textSecondary }} />}
-            value={filterTaskId}
-            onChange={(e) => setFilterTaskId(e.target.value)}
+            value={filterService}
+            onChange={(e) => setFilterService(e.target.value)}
             allowClear
             style={{ width: 220 }}
           />
@@ -342,16 +338,15 @@ export default function DiagnosisHistory() {
         </Space>
       </Card>
 
-      {/* 表格 */}
       <Card size="small">
         <Table
-          rowKey="id"
+          rowKey="diagnosis_id"
           columns={columns}
           dataSource={filtered}
           pagination={{ pageSize: 15, showSizeChanger: true, showTotal: (t) => `共 ${t} 条诊断` }}
           size="middle"
-          scroll={{ x: 1100 }}
-          locale={{ emptyText: "暂无诊断记录，请先运行采集任务并触发智能归因" }}
+          scroll={{ x: 1250 }}
+          locale={{ emptyText: "暂无 AI 集群诊断记录，请先创建一个 AI 诊断会话" }}
         />
       </Card>
     </Space>

@@ -145,6 +145,23 @@ def test_diagnosis_child_task_skips_legacy_single_task_rca(client: TestClient):
     assert history == []
 
 
+def test_diagnosis_session_can_be_deleted_without_deleting_child_task(client: TestClient):
+    data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    child_task_id = data["child_task_ids"][0]
+    diagnosis_orchestrator.store.update_session(diagnosis_id, status="FAILED")
+
+    response = client.delete(f"/api/v1/diagnoses/{diagnosis_id}")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "diagnosis_id": diagnosis_id,
+        "deleted": True,
+    }
+    assert client.get(f"/api/v1/diagnoses/{diagnosis_id}").status_code == 404
+    assert client.get(f"/api/tasks/{child_task_id}").status_code == 200
+
+
 def test_ai_controlled_tree_probe_selection_creates_followup(client: TestClient, monkeypatch):
     repo.register_agent(
         "a1", "host-1", "10.0.0.1",

@@ -6,7 +6,9 @@ import {
   Card,
   Col,
   Input,
+  message,
   notification,
+  Popconfirm,
   Row,
   Select,
   Skeleton,
@@ -25,6 +27,7 @@ import {
   CloseCircleOutlined,
   SyncOutlined,
   ClockCircleOutlined,
+  DeleteOutlined,
   ExperimentOutlined,
   SearchOutlined,
   SortAscendingOutlined,
@@ -32,7 +35,7 @@ import {
   HddOutlined,
 } from "@ant-design/icons";
 import { Link, useNavigate } from "react-router-dom";
-import { healthz, listAgents, listDiagnosisSessions } from "../api/client";
+import { deleteDiagnosisSession, healthz, listAgents, listDiagnosisSessions } from "../api/client";
 import ErrorAlert from "../components/ErrorAlert";
 import StatusTag from "../components/StatusTag";
 import usePolling from "../hooks/usePolling";
@@ -166,6 +169,16 @@ export default function Dashboard() {
       setLoading(false);
     }
   }, []);
+
+  const handleDeleteSession = useCallback(async (diagnosisId) => {
+    try {
+      await deleteDiagnosisSession(diagnosisId);
+      message.success("集合诊断记录已删除");
+      refresh();
+    } catch (err) {
+      message.error(err.message || "删除失败");
+    }
+  }, [refresh]);
 
   useEffect(() => {
     refresh();
@@ -304,8 +317,30 @@ export default function Dashboard() {
         width: 170,
         render: (v) => (v ? new Date(v).toLocaleString() : "-"),
       },
+      {
+        title: "操作",
+        width: 130,
+        fixed: "right",
+        render: (_, record) => (
+          <Space size={4}>
+            <Button size="small" type="link" onClick={() => navigate(`/ai-diagnosis/${record.diagnosis_id}`)}>
+              查看
+            </Button>
+            <Popconfirm
+              title="删除这个集合诊断记录？"
+              description="只删除 AI 树会话记录，不删除采集子任务。"
+              okText="删除"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+              onConfirm={() => handleDeleteSession(record.diagnosis_id)}
+            >
+              <Button size="small" danger type="text" icon={<DeleteOutlined />} />
+            </Popconfirm>
+          </Space>
+        ),
+      },
     ],
-    []
+    [handleDeleteSession, navigate]
   );
 
   const agentColumns = useMemo(

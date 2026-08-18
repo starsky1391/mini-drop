@@ -105,6 +105,33 @@ class TestAIProviderProfiles:
         assert data["model"] == "model-a"
         assert "secret-provider-key" not in response.text
 
+    def test_active_ai_config_test_converts_provider_exception_to_failed_result(
+        self,
+        client: TestClient,
+        monkeypatch,
+    ):
+        client.post("/api/ai-provider-profiles", json={
+            "name": "unreachable provider",
+            "provider_label": "openai-compatible",
+            "base_url": "http://127.0.0.1:9/v1",
+            "model": "model-a",
+            "api_key": "secret-provider-key",
+            "enabled": "full",
+            "activate": True,
+        })
+        monkeypatch.setattr(
+            "server.app.ai_provider._post_json",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(ConnectionError("provider unavailable")),
+        )
+
+        response = client.post("/api/ai-config/test")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["passed"] is False
+        assert data["error_type"] == "ConnectionError"
+        assert "secret-provider-key" not in response.text
+
     def test_ai_provider_profile_can_override_env_settings(self, client: TestClient):
         created = client.post("/api/ai-provider-profiles", json={
             "name": "local proxy",

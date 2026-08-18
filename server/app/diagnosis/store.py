@@ -112,6 +112,30 @@ class DiagnosisStore:
         finally:
             session.close()
 
+    def delete_session(self, diagnosis_id: str) -> bool:
+        session = new_session()
+        try:
+            model = session.get(DiagnosisSessionModel, diagnosis_id)
+            if model is None:
+                return False
+            session.query(DiagnosisEvidenceModel).filter(
+                DiagnosisEvidenceModel.diagnosis_id == diagnosis_id
+            ).delete()
+            session.query(ProbeExecutionModel).filter(
+                ProbeExecutionModel.diagnosis_id == diagnosis_id
+            ).delete()
+            session.query(DiagnosisEventModel).filter(
+                DiagnosisEventModel.diagnosis_id == diagnosis_id
+            ).delete()
+            session.delete(model)
+            session.commit()
+            return True
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
     def update_session(self, diagnosis_id: str, **fields: Any) -> dict[str, Any]:
         column_map = {
             "normalized_intent": "normalized_intent_json",
