@@ -180,7 +180,7 @@ def _call_deepseek(messages: list[dict], model: str) -> str:
     }
     timeout = max(10, int(os.getenv("MINI_DROP_RCA_LLM_TIMEOUT_SEC", "90")))
     resp = chat_completions(payload, timeout=timeout)
-    if resp.status_code in (400, 422):
+    if resp.status_code in (400, 422) or resp.status_code >= 500:
         compatible_payload = {
             key: value
             for key, value in payload.items()

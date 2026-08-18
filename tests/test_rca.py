@@ -354,7 +354,7 @@ class TestControlledAITreeMerge:
         assert tree.probe_edges[0].probe_requests == ["redis_check"]
 
     def test_llm_call_retries_with_openai_compatible_payload(self):
-        bad_resp = mock.MagicMock(status_code=400, text="unsupported field")
+        bad_resp = mock.MagicMock(status_code=502, text="proxy reset")
         good_resp = mock.MagicMock(status_code=200)
         good_resp.json.return_value = {
             "choices": [{"message": {"content": "{\"ok\": true}"}}]
