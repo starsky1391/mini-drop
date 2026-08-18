@@ -38,8 +38,25 @@ def generate_controlled_ai_tree(
     """Ask the LLM to generate the controlled AI tree, then enforce hard boundaries."""
     fallback_tree = analyzer_result.controlled_ai_tree
     if fallback_tree is None:
+        log_event(
+            "warning",
+            "controlled_ai_tree_llm_skipped",
+            task_id=task_id,
+            reason="missing_analyzer_tree",
+        )
         return None
     if not is_feature_enabled("rca"):
+        settings = get_ai_settings()
+        log_event(
+            "warning",
+            "controlled_ai_tree_llm_skipped",
+            task_id=task_id,
+            reason="rca_feature_disabled",
+            enabled=settings.enabled,
+            source=settings.source,
+            has_key=bool(settings.api_key),
+            rca_enabled=settings.rca_enabled,
+        )
         return fallback_tree
 
     model_name = model_name or get_ai_settings().model
