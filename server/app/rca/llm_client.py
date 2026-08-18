@@ -206,7 +206,7 @@ def generate_compact_guarded_tree(
     probe_manifest: dict | None,
     model_name: str | None = None,
 ) -> ControlledAITree | None:
-    if analyzer_tree is None or not is_feature_enabled("rca"):
+    if analyzer_tree is None:
         return None
     return _generate_compact_guard_review(
         task_id=task_id,

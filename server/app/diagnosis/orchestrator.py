@@ -893,7 +893,15 @@ class DiagnosisOrchestrator:
                 analyzer_result=analysis_result,
                 probe_manifest=probe_manifest,
             )
-            if _tree_generated_by(controlled_tree) == {"analyzer_fallback"} and is_feature_enabled("rca"):
+            ai_settings = get_ai_settings()
+            compact_guard_attempted = False
+            compact_guard_succeeded = False
+            if (
+                _tree_generated_by(controlled_tree) == {"analyzer_fallback"}
+                and bool(ai_settings.api_key)
+                and bool(ai_settings.rca_enabled)
+            ):
+                compact_guard_attempted = True
                 compact_tree = generate_compact_guarded_tree(
                     task_id=task.id,
                     evidence=evidence.model_copy(update={"analysis_result": analysis_payload}),
@@ -902,7 +910,7 @@ class DiagnosisOrchestrator:
                 )
                 if compact_tree is not None:
                     controlled_tree = compact_tree
-            ai_settings = get_ai_settings()
+                    compact_guard_succeeded = True
             self.store.record_event(
                 diagnosis_id,
                 "controlled_ai_tree_guard_result",
@@ -912,6 +920,8 @@ class DiagnosisOrchestrator:
                     "ai_enabled": ai_settings.enabled,
                     "rca_enabled": is_feature_enabled("rca"),
                     "has_api_key": bool(ai_settings.api_key),
+                    "compact_guard_attempted": compact_guard_attempted,
+                    "compact_guard_succeeded": compact_guard_succeeded,
                     "generated_by": sorted({
                         layer.generated_by
                         for layer in (controlled_tree.layers if controlled_tree else [])
