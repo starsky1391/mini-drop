@@ -841,7 +841,7 @@ def _build_compact_guard_user_message(
                 "missing_evidence": node.self_challenge.missing_evidence,
             })
     payload = {
-        "current_evidence": json.loads(_serialize_evidence(evidence)),
+        "current_evidence": _compact_evidence_snapshot(evidence),
         "tree_id": analyzer_tree.tree_id,
         "final_supported_level": analyzer_tree.final_supported_level,
         "candidate_template": candidates,
@@ -850,6 +850,47 @@ def _build_compact_guard_user_message(
         "output": "只输出 compact guard review JSON 对象。",
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _compact_evidence_snapshot(evidence: EvidenceInput) -> dict:
+    snapshot: dict[str, object] = {}
+    if evidence.task_metadata:
+        snapshot["task_metadata"] = {
+            key: evidence.task_metadata.get(key)
+            for key in ("task_id", "collector_type", "target_pid", "status")
+            if key in evidence.task_metadata
+        }
+    if evidence.top_functions:
+        snapshot["top_functions"] = evidence.top_functions[:5]
+    if evidence.sys_metrics:
+        summary = evidence.sys_metrics.get("summary") if isinstance(evidence.sys_metrics, dict) else None
+        snapshot["sys_metrics"] = {"summary": summary} if summary else evidence.sys_metrics
+    if evidence.ebpf_metrics:
+        snapshot["ebpf_metrics"] = evidence.ebpf_metrics
+    if evidence.off_cpu_wait_json:
+        snapshot["off_cpu_wait_json"] = evidence.off_cpu_wait_json
+    if evidence.baseline_diff:
+        snapshot["baseline_diff"] = evidence.baseline_diff
+    if evidence.tool_results:
+        snapshot["tool_results"] = [
+            {
+                "tool_name": item.get("tool_name"),
+                "status": item.get("status"),
+                "evidence_ref": item.get("evidence_ref"),
+                "error_message": item.get("error_message"),
+            }
+            for item in evidence.tool_results[:6]
+            if isinstance(item, dict)
+        ]
+    if evidence.failure_events:
+        snapshot["failure_events"] = evidence.failure_events[-5:]
+    if evidence.source_context:
+        snapshot["source_context"] = {
+            key: evidence.source_context.get(key)
+            for key in ("service_id", "instance_id", "endpoint", "call_path")
+            if key in evidence.source_context
+        }
+    return snapshot
 
 
 def _extract_json(raw: str | None) -> str | None:
