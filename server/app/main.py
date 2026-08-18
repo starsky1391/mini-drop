@@ -31,7 +31,7 @@ from types import SimpleNamespace
 from typing import Any, Optional
 from uuid import uuid4
 
-from server.app.common_utils import status_value
+from server.app.common_utils import json_safe, status_value
 from server.app.ai_provider import get_ai_settings, test_openai_compatible_provider
 from server.app.ai_provider_profiles import (
     AIProviderProfileCreate,
@@ -1612,12 +1612,12 @@ def list_diagnosis_sessions(limit: int = 100, offset: int = 0) -> APIResponse:
     limit = min(max(limit, 1), 1000)
     offset = max(offset, 0)
     items = diagnosis_orchestrator.list(limit=limit, offset=offset)
-    return APIResponse(data={
+    return APIResponse(data=json_safe({
         "items": items,
         "total": diagnosis_orchestrator.store.count_sessions(),
         "offset": offset,
         "limit": limit,
-    })
+    }))
 
 
 @app.get("/api/v1/diagnoses/{diagnosis_id}")
@@ -1625,7 +1625,7 @@ def get_diagnosis_session(diagnosis_id: str) -> APIResponse:
     data = diagnosis_orchestrator.get(diagnosis_id, advance=True)
     if data is None:
         raise HTTPException(status_code=404, detail="诊断会话不存在")
-    return APIResponse(data=data)
+    return APIResponse(data=json_safe(data))
 
 
 @app.delete("/api/v1/diagnoses/{diagnosis_id}")

@@ -7,6 +7,7 @@ Mini-Drop 公共工具函数。
 from __future__ import annotations
 
 import os
+import math
 from typing import Any
 
 
@@ -28,3 +29,15 @@ def status_value(status: Any) -> str:
     兼容 Enum（有 .value 属性）和普通字符串两种形态。
     """
     return status.value if hasattr(status, "value") else str(status)
+
+
+def json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [json_safe(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import math
 from typing import Any
+
+from server.app.common_utils import json_safe
 
 
 def build_audit_bundle(diagnosis_id: str, orchestrator, repo) -> dict[str, Any] | None:
@@ -46,7 +47,7 @@ def build_audit_bundle(diagnosis_id: str, orchestrator, repo) -> dict[str, Any] 
         }
     )
 
-    return _json_safe({
+    return json_safe({
         "schema_version": "1.0",
         "diagnosis_id": diagnosis_id,
         "run": _run_section(detail),
@@ -480,18 +481,6 @@ def _safety_section(detail: dict[str, Any]) -> dict[str, Any]:
 
 def _rollback_section(_detail: dict[str, Any]) -> dict[str, Any]:
     return {"required": False, "attempted": False, "succeeded": None}
-
-
-def _json_safe(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_json_safe(item) for item in value]
-    if isinstance(value, tuple):
-        return [_json_safe(item) for item in value]
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    return value
 
 
 def _collector_mapping_is_explicit(bundle: dict[str, Any]) -> bool:
