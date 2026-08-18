@@ -241,7 +241,7 @@ class DiagnosisStore:
             lease_until = model.lease_until
             if lease_until is not None and lease_until.tzinfo is None:
                 lease_until = lease_until.replace(tzinfo=timezone.utc)
-            if lease_until and lease_until > now and model.lease_owner != owner:
+            if lease_until and lease_until > now:
                 return False
             model.lease_owner = owner
             model.lease_until = now + timedelta(seconds=ttl_seconds)

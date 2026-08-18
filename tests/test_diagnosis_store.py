@@ -54,3 +54,25 @@ def test_resolve_evidence_ref_matches_nested_evidence_index(monkeypatch):
 
     assert matched is not None
     assert matched["evidence_id"] == "ev_nested"
+
+
+def test_active_lease_blocks_same_owner_reentry(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
+    reset_engine()
+    init_db()
+
+    store = DiagnosisStore()
+    store.create_session({
+        "diagnosis_id": "diag_lease_reentry",
+        "creator_id": "tester",
+        "raw_query": "lease reentry",
+        "status": "COLLECTING",
+        "policy_profile": "default",
+        "model_version": "v1",
+        "planner_version": "v1",
+    })
+
+    assert store.acquire_lease("diag_lease_reentry", "orchestrator", ttl_seconds=30)
+    assert not store.acquire_lease("diag_lease_reentry", "orchestrator", ttl_seconds=30)
+    store.release_lease("diag_lease_reentry", "orchestrator")
+    assert store.acquire_lease("diag_lease_reentry", "orchestrator", ttl_seconds=30)

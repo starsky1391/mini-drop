@@ -405,6 +405,8 @@ class DiagnosisOrchestrator:
                     else DiagnosisStatus.COMPLETED
                 )
                 latest_session = self.store.get_session(diagnosis_id) or session
+                if latest_session["status"] in TERMINAL_DIAGNOSIS_STATUSES:
+                    return
                 if latest_session["status"] != DiagnosisStatus.ANALYZING.value:
                     self._transition(diagnosis_id, DiagnosisStatus.ANALYZING, "evidence_analysis_started")
                 self._transition(diagnosis_id, DiagnosisStatus.CONCLUDING, "conclusion_generated")
