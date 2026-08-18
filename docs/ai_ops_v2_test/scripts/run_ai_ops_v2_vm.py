@@ -852,7 +852,6 @@ def main() -> int:
                     auto_execute_policy=args.auto_execute_policy,
                 )
                 record["diagnosis_id"] = diagnosis_id
-                assert_controlled_ai_tree_participated(diagnosis_id, detail)
                 bundle = call_with_retries(
                     api,
                     f"/api/v1/diagnoses/{diagnosis_id}/audit-bundle",
@@ -862,6 +861,8 @@ def main() -> int:
                 )
                 bundle_path = bundle_dir / f"{case_id}__r{repetition:02d}.json"
                 bundle_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
+                record["bundle"] = str(bundle_path.relative_to(args.output_dir))
+                assert_controlled_ai_tree_participated(diagnosis_id, detail)
                 record.update({
                     "phase": "completed",
                     "diagnosis_id": diagnosis_id,
@@ -872,7 +873,6 @@ def main() -> int:
                     "budget_profile": args.budget_profile,
                     "auto_execute_policy": args.auto_execute_policy,
                     "diagnosis_elapsed_sec": (detail.get("evaluation_runtime") or {}).get("elapsed_sec"),
-                    "bundle": str(bundle_path.relative_to(args.output_dir)),
                 })
             except DiagnosisRunError as exc:
                 if exc.diagnosis_id:
