@@ -33,6 +33,7 @@ from server.app.rca.candidates import generate_candidates
 from server.app.rca.evidence import collect_evidence
 from server.app.rca.attribution import analyze_evidence
 from server.app.rca.llm_client import generate_controlled_ai_tree, generate_compact_guarded_tree
+from server.app.rca.controlled_tree import classify_primitive, enforce_conclusion_eligibility
 from server.app.rca.models import (
     AITreeBudgetSnapshot,
     AITreeCandidateNode,
@@ -75,6 +76,10 @@ FUNCTION_DEPTH_EVIDENCE_GAPS = {
     "off_cpu_wait_profile",
     "trace_endpoint_profile",
     "python_runtime_profile",
+}
+EMPTY_RESULT_IS_VALID_DEPTH_GAPS = {
+    "baseline_window_profile",
+    "trace_endpoint_profile",
 }
 ALLOWED_DIAGNOSIS_TRANSITIONS = {
     "CREATED": {"UNDERSTANDING", "USER_CANCELED", "FAILED"},
@@ -1059,7 +1064,7 @@ class DiagnosisOrchestrator:
         conclusion = {
             "version": len((self.store.get_session(diagnosis_id) or {}).get("conclusion_versions", [])) + 1,
             "generated_at": utcnow().isoformat(),
-            "summary": cluster_assessment["summary"] or f"形成 {len(deduped)} 个有证据关联的根因候选；结论仍需结合反证和人工确认。",
+            "summary": cluster_assessment.get("diagnostic_claim") or cluster_assessment["summary"] or f"形成 {len(deduped)} 个有证据关联的根因候选；结论仍需结合反证和人工确认。",
             "confidence_level": cluster_assessment["confidence_level"] or (deduped[0]["confidence_level"] if deduped else "不可判断"),
             "cluster_assessment": cluster_assessment,
             "root_cause_candidates": deduped,
@@ -1497,6 +1502,15 @@ class DiagnosisOrchestrator:
             shared_iowait=shared_iowait,
             scope=scope,
         )
+        claim_metadata = _assessment_claim_metadata(
+            classification=classification,
+            session=session,
+            anchor=target_anchor,
+            evidence_refs=all_refs,
+            downstream_dependency_failure=downstream_dependency_failure,
+            shared_iowait=shared_iowait,
+            neighbor_pressure=neighbor_pressure,
+        )
 
         return {
             "classification": classification,
@@ -1509,6 +1523,7 @@ class DiagnosisOrchestrator:
             "primary_anchor": target_anchor,
             "ruled_out": ruled_out,
             "alternative_hypotheses": alternative_hypotheses,
+            **claim_metadata,
         }
 
     def _build_reviewable_commands(
@@ -2226,21 +2241,28 @@ def _specific_diagnostic_anchor(
                     or ""
                 ).strip()
                 symbolized = _is_symbolized_frame(top_frame)
+                primitive_kind = classify_primitive(top_frame)
                 return {
                     **base,
-                    "supported_level": "function" if symbolized else "process",
+                    "supported_level": "syscall" if primitive_kind else "function" if symbolized else "process",
                     "anchor_type": (
-                        "off_cpu_wait_top_frame"
-                        if symbolized
+                        "off_cpu_wait_primitive"
+                        if primitive_kind
+                        else "off_cpu_wait_top_frame" if symbolized
                         else "off_cpu_wait_unsymbolized_address"
                     ),
                     "anchor": top_frame,
+                    "primitive_kind": primitive_kind,
+                    "root_claim_allowed": bool(symbolized and not primitive_kind),
                     "wait_reason": top.get("wait_reason") or (off_cpu.get("summary") or {}).get("top_wait_reason"),
                     "samples": int(_num(top.get("samples"))),
                     "percent": _num(top.get("percent")),
                     "wait_ms": _num(top.get("wait_ms")),
                     "evidence_ref": top.get("evidence_ref") or "off_cpu_wait.top_wait_stacks[0]",
                     "blocked_upgrade_reason": (
+                        "当前仅定位到等待/调度/系统调用原语；必须取得上层业务栈、调用路径或锁持有者后才能形成根因结论。"
+                        if primitive_kind
+                        else
                         "缺少锁持有者线程、业务调用栈或源码符号映射，不能直接升级到代码行。"
                         if symbolized
                         else "当前等待栈顶部仍是未符号化地址，需补 debuginfo/符号映射后才能升级到函数。"
@@ -2268,11 +2290,14 @@ def _specific_diagnostic_anchor(
         top = top_items[0] or {}
         name = str(top.get("name") or top.get("function") or top.get("symbol") or "").strip()
         if name:
+            primitive_kind = classify_primitive(name)
             return {
                 **base,
-                "supported_level": "function",
-                "anchor_type": "top_function",
+                "supported_level": "syscall" if primitive_kind else "function",
+                "anchor_type": "top_function_primitive" if primitive_kind else "top_function",
                 "anchor": name,
+                "primitive_kind": primitive_kind,
+                "root_claim_allowed": not primitive_kind,
                 "samples": int(_num(top.get("samples"))),
                 "percent": _num(top.get("percent")),
                 "evidence_ref": top.get("evidence_ref") or "top_functions[0]",
@@ -2324,6 +2349,18 @@ def _self_pressure_summary(anchor: dict[str, Any]) -> str:
     level = anchor.get("supported_level") or "process"
     anchor_name = anchor.get("anchor") or anchor.get("anchor_type") or "unknown"
     reason = anchor.get("blocked_upgrade_reason") or "证据不足，不能继续下钻。"
+    if anchor.get("anchor_type") in {"off_cpu_wait_primitive", "top_function_primitive"}:
+        samples = int(_num(anchor.get("samples")))
+        percent = _num(anchor.get("percent"))
+        details = [f"samples={samples}"] if samples else []
+        if percent > 0:
+            details.append(f"percent={percent:.1f}%")
+        detail_text = f"（{', '.join(details)}）" if details else ""
+        return (
+            f"观察到 {instance}{pid} 主要停留在 {anchor_name}{detail_text}，它属于"
+            f"{anchor.get('primitive_kind') or 'runtime primitive'}，只能说明线程在等待或让出执行权。"
+            f"该证据不能区分主动 sleep、退避重试、锁等待或上游阻塞，因此不是根因结论；{reason}"
+        )
     if anchor.get("anchor_type") == "off_cpu_wait_top_frame":
         samples = int(_num(anchor.get("samples")))
         wait_reason = anchor.get("wait_reason") or "unknown"
@@ -2722,6 +2759,80 @@ def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str,
     return requests
 
 
+def _assessment_claim_metadata(
+    *,
+    classification: str,
+    session: dict[str, Any],
+    anchor: dict[str, Any],
+    evidence_refs: list[str],
+    downstream_dependency_failure: bool,
+    shared_iowait: bool,
+    neighbor_pressure: bool,
+) -> dict[str, Any]:
+    scope = session.get("target_scope", {}) if isinstance(session.get("target_scope"), dict) else {}
+    target_service = str(scope.get("target_service") or "目标服务")
+    anchor_target = str(anchor.get("anchor") or anchor.get("instance_id") or anchor.get("service_id") or "").strip()
+
+    if classification == "downstream_dependency" and downstream_dependency_failure:
+        dependency = _dependency_root_entity(session, prefer_redis=True) or _dependency_root_entity(session) or "下游依赖"
+        return {
+            "claim_type": "root_cause",
+            "causal_status": "supported",
+            "conclusion_eligible": bool(evidence_refs),
+            "eligibility_reason": "同窗依赖专项检查直接观测到不可达、高延迟或慢查询信号。",
+            "mechanism": "downstream_dependency_failure",
+            "claim_target": dependency,
+            "diagnostic_claim": f"{dependency} 在异常窗口内发生依赖失败或严重延迟，导致 {target_service} 的请求被阻塞或失败。",
+        }
+    if classification == "host_resource_contention" and shared_iowait:
+        host = _target_host(session) or "目标宿主机"
+        return {
+            "claim_type": "likely_root_cause",
+            "causal_status": "supported",
+            "conclusion_eligible": bool(evidence_refs),
+            "eligibility_reason": "目标实例与同宿主实例在同窗内共同出现 I/O wait，符合共享资源争抢机制。",
+            "mechanism": "shared_host_io_contention",
+            "claim_target": host,
+            "diagnostic_claim": f"{host} 的共享 I/O 资源争抢同时拖慢目标实例和同宿主实例。",
+        }
+    if classification == "same_host_noisy_neighbor" and neighbor_pressure:
+        host = _target_host(session) or "目标宿主机"
+        return {
+            "claim_type": "likely_root_cause",
+            "causal_status": "supported",
+            "conclusion_eligible": bool(evidence_refs),
+            "eligibility_reason": "同宿主其他实例压力显著强于目标实例，支持噪声邻居传播机制。",
+            "mechanism": "same_host_noisy_neighbor",
+            "claim_target": host,
+            "diagnostic_claim": f"{host} 上其他实例的资源争用通过共享宿主资源拖慢 {target_service}。",
+        }
+    if classification == "self_code_or_process_pressure":
+        primitive_kind = anchor.get("primitive_kind") or classify_primitive(anchor_target)
+        reason = (
+            "当前锚点是系统/运行时原语，只能作为等待观察，不能证明具体业务机制。"
+            if primitive_kind
+            else "当前证据定位了进程、函数或调用路径，但尚未证明该热点如何导致用户症状。"
+        )
+        return {
+            "claim_type": "observation_only" if primitive_kind else "partial_localization",
+            "causal_status": "unproven",
+            "conclusion_eligible": False,
+            "eligibility_reason": reason,
+            "mechanism": "",
+            "claim_target": anchor_target or target_service,
+            "diagnostic_claim": _self_pressure_summary(anchor),
+        }
+    return {
+        "claim_type": "abstention",
+        "causal_status": "inconclusive",
+        "conclusion_eligible": False,
+        "eligibility_reason": "现有证据无法区分候选机制。",
+        "mechanism": "",
+        "claim_target": anchor_target or target_service,
+        "diagnostic_claim": "现有证据只能描述异常现象，尚不能形成根因结论。",
+    }
+
+
 def _cluster_alternative_hypotheses(
     *,
     classification: str,
@@ -2854,6 +2965,8 @@ def _build_session_controlled_ai_tree(
         for layer in tree.get("layers", [])
         if isinstance(layer, dict)
     ) else "analyzer_fallback"
+    eligible_child_ids = _eligible_child_candidate_ids(child_trees)
+    assessment_eligible = bool(cluster_assessment.get("conclusion_eligible"))
     evidence_refs = _unique_strings(cluster_assessment.get("evidence_refs", []))
     final_level = _best_supported_level(
         cluster_assessment.get("supported_level"),
@@ -2867,15 +2980,31 @@ def _build_session_controlled_ai_tree(
 
     for item in candidates:
         candidate_id = str(item.get("candidate_id") or f"candidate_{len(primary_nodes) + len(secondary_nodes) + 1}")
-        role = "primary" if int(item.get("rank") or 999) == 1 else "secondary"
+        candidate_eligible = candidate_id in eligible_child_ids or (
+            int(item.get("rank") or 999) == 1 and assessment_eligible
+        )
+        role = "primary" if candidate_eligible and int(item.get("rank") or 999) == 1 else "secondary" if candidate_eligible else "unknown"
+        target = str(item.get("root_entity") or cluster_assessment.get("claim_target") or "").strip()
         node = AITreeCandidateNode(
             candidate_id=candidate_id,
             lineage_id=candidate_id,
             role=role,
-            claim=str(item.get("description") or cluster_assessment.get("summary") or candidate_id),
+            claim=str(
+                cluster_assessment.get("diagnostic_claim")
+                if candidate_eligible and int(item.get("rank") or 999) == 1
+                else item.get("description") or cluster_assessment.get("summary") or candidate_id
+            ),
             supported_level=str(item.get("max_supported_level") or final_level),
             confidence=_confidence_from_label(item.get("confidence_level"), cluster_assessment.get("confidence")),
             status="supported",
+            claim_type=(
+                str(cluster_assessment.get("claim_type") or "likely_root_cause")
+                if candidate_eligible else "partial_localization"
+            ),
+            causal_status="supported" if candidate_eligible else "unproven",
+            decision="conclude" if candidate_eligible else "continue_probe",
+            mechanism=str(cluster_assessment.get("mechanism") or candidate_id) if candidate_eligible else candidate_id,
+            target=target,
             evidence_refs=_unique_strings(item.get("evidence_refs", [])),
             self_challenge=AITreeSelfChallenge(
                 why_this_claim=str(cluster_assessment.get("summary") or item.get("description") or ""),
@@ -2888,19 +3017,28 @@ def _build_session_controlled_ai_tree(
         )
         if role == "primary":
             primary_nodes.append(node)
-        else:
+        elif role == "secondary":
             secondary_nodes.append(node)
+        else:
+            unknown_nodes.append(node)
 
     if not primary_nodes and cluster_assessment.get("classification"):
         candidate_id = str(cluster_assessment.get("root_entity") or cluster_assessment.get("classification"))
-        primary_nodes.append(AITreeCandidateNode(
+        fallback_role = "primary" if assessment_eligible else "unknown"
+        fallback_node = AITreeCandidateNode(
             candidate_id=candidate_id,
             lineage_id=candidate_id,
-            role="primary",
-            claim=str(cluster_assessment.get("summary") or candidate_id),
+            role=fallback_role,
+            claim=str(cluster_assessment.get("diagnostic_claim") or cluster_assessment.get("summary") or candidate_id),
             supported_level=final_level,
             confidence=_num(cluster_assessment.get("confidence")),
-            status="supported",
+            status="supported" if assessment_eligible else "missing_evidence",
+            claim_type=str(cluster_assessment.get("claim_type") or "partial_localization"),
+            causal_status=str(cluster_assessment.get("causal_status") or "unproven"),
+            decision="conclude" if assessment_eligible else "continue_probe",
+            mechanism=str(cluster_assessment.get("mechanism") or ""),
+            target=str(cluster_assessment.get("claim_target") or cluster_assessment.get("root_entity") or ""),
+            primitive_kind=(cluster_assessment.get("primary_anchor") or {}).get("primitive_kind"),
             evidence_refs=evidence_refs,
             self_challenge=AITreeSelfChallenge(
                 why_this_claim=str(cluster_assessment.get("summary") or ""),
@@ -2909,7 +3047,11 @@ def _build_session_controlled_ai_tree(
                 missing_evidence=followup_requests[:3],
                 what_would_change_my_mind="补充证据证明该依赖在异常同窗内健康，且另一个候选获得更强同窗证据。",
             ),
-        ))
+        )
+        if fallback_role == "primary":
+            primary_nodes.append(fallback_node)
+        else:
+            unknown_nodes.append(fallback_node)
 
     for item in cluster_assessment.get("ruled_out", []) or []:
         if not isinstance(item, dict):
@@ -2923,7 +3065,12 @@ def _build_session_controlled_ai_tree(
             claim=str(item.get("reason") or hypothesis),
             supported_level=final_level,
             confidence=0.2,
-            status="weakened",
+            status="contradicted",
+            claim_type="insufficient_for_root_cause",
+            causal_status="contradicted",
+            decision="reject_candidate",
+            mechanism=hypothesis,
+            target=str(cluster_assessment.get("claim_target") or ""),
             evidence_refs=_unique_strings(item.get("evidence_refs", [])),
             self_challenge=AITreeSelfChallenge(
                 why_this_claim=str(item.get("reason") or ""),
@@ -2948,6 +3095,11 @@ def _build_session_controlled_ai_tree(
             supported_level=str(item.get("supported_level") or final_level),
             confidence=0.18 if role == "rejected" else 0.25,
             status="weakened" if role == "rejected" else "missing_evidence",
+            claim_type="insufficient_for_root_cause" if role == "rejected" else "partial_localization",
+            causal_status="contradicted" if role == "rejected" else "unproven",
+            decision="reject_candidate" if role == "rejected" else "continue_probe",
+            mechanism=hypothesis,
+            target=str(cluster_assessment.get("claim_target") or ""),
             evidence_refs=_unique_strings(item.get("evidence_refs", [])),
             self_challenge=AITreeSelfChallenge(
                 why_this_claim=str(item.get("reason") or ""),
@@ -2975,7 +3127,11 @@ def _build_session_controlled_ai_tree(
         claim=str(cluster_assessment.get("summary") or cluster_assessment.get("classification") or "形成会话级粗候选。"),
         supported_level=str(cluster_assessment.get("supported_level") or "resource"),
         confidence=_num(cluster_assessment.get("confidence")),
-        status="supported" if cluster_assessment.get("classification") else "unknown",
+        status="missing_evidence" if cluster_assessment.get("classification") else "unknown",
+        claim_type="partial_localization",
+        causal_status="unproven",
+        decision="continue_probe",
+        target=str(cluster_assessment.get("claim_target") or ""),
         evidence_refs=evidence_refs,
         self_challenge=AITreeSelfChallenge(
             why_this_claim=str(cluster_assessment.get("summary") or ""),
@@ -3037,9 +3193,37 @@ def _build_session_controlled_ai_tree(
             evidence_refs=evidence_refs,
             reuse_status="not_checked",
             effect="refined",
+            transition_type="refine",
             reason="已完成的结构化证据把粗粒度候选收敛为当前会话级结论。",
         )
     ]
+    next_candidates = [*layer1.primary_causes, *layer1.secondary_causes, *layer1.unknown_causes]
+    if next_candidates:
+        next_candidate = next_candidates[0]
+        for rejected in layer1.rejected_causes:
+            requested = [
+                request for request in next_candidate.self_challenge.missing_evidence
+                if request in followup_requests
+            ][:3]
+            edges.append(AITreeProbeEdge(
+                edge_id=f"session_backtrack_{rejected.candidate_id}_to_{next_candidate.candidate_id}",
+                from_layer_id=layer1.layer_id,
+                to_layer_id=layer1.layer_id,
+                from_candidate_ids=[rejected.candidate_id],
+                to_candidate_ids=[next_candidate.candidate_id],
+                probe_requests=requested,
+                probe_results=_probe_results_for_requests(requested, probes),
+                status=_edge_status_for_requests(requested, probes) if requested else "completed",
+                evidence_refs=_unique_strings([
+                    *rejected.evidence_refs,
+                    *next_candidate.evidence_refs,
+                ]),
+                effect="rollback",
+                transition_type="backtrack",
+                reason=(
+                    f"{rejected.candidate_id} 被反证后保留为灰色分支；回退并转查 {next_candidate.candidate_id}。"
+                ),
+            ))
     blocked_upgrade_node = _blocked_upgrade_node(cluster_assessment, final_level, layer1.primary_causes)
     if followup_requests or blocked_upgrade_node is not None:
         boundary_nodes = [
@@ -3082,6 +3266,7 @@ def _build_session_controlled_ai_tree(
             evidence_refs=evidence_refs,
             reuse_status="not_checked",
             effect="pending" if followup_requests else "no_change",
+            transition_type="probe" if followup_requests else "boundary",
             reason=(
                 "当前结论已形成；这些请求只用于进一步细化或反证。"
                 if followup_requests
@@ -3096,7 +3281,7 @@ def _build_session_controlled_ai_tree(
         node.candidate_id for layer in layers for node in layer.unknown_causes
     ]
     stop_reason = _session_tree_stop_reason(cluster_assessment, followup_requests, final_level)
-    return ControlledAITree(
+    tree = ControlledAITree(
         tree_id=f"session_controlled_ai_tree_{hashlib.sha256(f'{diagnosis_id}:{final_primary}:{followup_requests}'.encode()).hexdigest()[:16]}",
         final_supported_level=final_level,
         stop_reason=stop_reason,
@@ -3111,6 +3296,7 @@ def _build_session_controlled_ai_tree(
         final_rejected_causes=final_rejected,
         final_unknown_causes=final_unknown,
     )
+    return enforce_conclusion_eligibility(tree)
 
 
 def _completed_session_probe_requests(probes: list[dict[str, Any]]) -> list[str]:
@@ -3131,6 +3317,21 @@ def _tree_generated_by(tree: ControlledAITree | None) -> set[str]:
         layer.generated_by
         for layer in tree.layers
     }
+
+
+def _eligible_child_candidate_ids(child_trees: list[dict[str, Any]]) -> set[str]:
+    result: set[str] = set()
+    for tree in child_trees:
+        for layer in tree.get("layers", []) if isinstance(tree, dict) else []:
+            if not isinstance(layer, dict):
+                continue
+            for group in ("primary_causes", "secondary_causes"):
+                for node in layer.get(group, []) or []:
+                    if isinstance(node, dict) and node.get("conclusion_eligible"):
+                        candidate_id = str(node.get("candidate_id") or "").strip()
+                        if candidate_id:
+                            result.add(candidate_id)
+    return result
 
 
 def _mark_tree_ai_guarded_without_changes(
@@ -3246,6 +3447,10 @@ def _edge_status_for_requests(requests: list[str], probes: list[dict[str, Any]])
 
 
 def _session_tree_stop_reason(assessment: dict[str, Any], followup_requests: list[str], final_level: str) -> str:
+    if not assessment.get("conclusion_eligible"):
+        if followup_requests:
+            return f"当前只有观察或局部定位，尚无候选通过根因门禁；正在转查并补充：{', '.join(followup_requests[:3])}。"
+        return f"当前只能停在 {final_level} 层的观察/局部定位，没有候选满足因果结论资格。"
     if _is_database_dependency_assessment(assessment) and not followup_requests:
         return f"下游数据库/Redis 依赖证据已支持到 {final_level} 层，继续代码级 profile 不是当前主因所必需。"
     if followup_requests:
@@ -3320,9 +3525,14 @@ def _filter_pending_evidence_requests(
     depth_completed = _completed_depth_evidence_gaps(task_observations or [])
     for request in requests:
         statuses = status_by_gap.get(request, [])
-        if statuses and any(status in terminal_success for status in statuses):
+        if request in DEPENDENCY_EVIDENCE_GAPS:
+            if statuses and any(status in terminal_success for status in statuses):
+                continue
+        elif request in EMPTY_RESULT_IS_VALID_DEPTH_GAPS and any(
+            status in terminal_success for status in statuses
+        ):
             continue
-        if request not in DEPENDENCY_EVIDENCE_GAPS and request in depth_completed:
+        elif request in depth_completed:
             continue
         if statuses and all(status in terminal_skip for status in statuses):
             continue

@@ -294,7 +294,7 @@ def test_readiness_gate_accepts_controlled_tree_from_normalized_conclusion():
     assert checks["controlled_ai_tree_ai_guarded"] == "PASS"
 
 
-def test_session_controlled_tree_keeps_function_level_when_assessment_has_function_anchor():
+def test_session_controlled_tree_keeps_unproven_function_localization_out_of_final_causes():
     tree = orchestrator_module._build_session_controlled_ai_tree(
         diagnosis_id="diag_function_level",
         cluster_assessment={
@@ -325,7 +325,13 @@ def test_session_controlled_tree_keeps_function_level_when_assessment_has_functi
 
     assert tree is not None
     assert tree.final_supported_level == "function"
-    assert tree.layers[1].primary_causes[0].supported_level == "function"
+    node = next(
+        item for item in tree.layers[1].unknown_causes
+        if item.candidate_id == "off_cpu_wait_hotspot"
+    )
+    assert node.supported_level == "function"
+    assert node.conclusion_eligible is False
+    assert tree.final_primary_causes == []
 
 
 def test_session_controlled_tree_contains_rejected_unknown_and_blocked_branches():
@@ -379,9 +385,11 @@ def test_session_controlled_tree_contains_rejected_unknown_and_blocked_branches(
 
     assert tree is not None
     layer1 = tree.layers[1]
-    assert [node.candidate_id for node in layer1.primary_causes] == ["off_cpu_wait_hotspot"]
+    assert layer1.primary_causes == []
+    assert any(node.candidate_id == "off_cpu_wait_hotspot" for node in layer1.unknown_causes)
     assert any(node.candidate_id == "rejected_same_host_noisy_neighbor" for node in layer1.rejected_causes)
     assert any(node.candidate_id == "unknown_downstream_dependency" for node in layer1.unknown_causes)
+    assert any(edge.transition_type == "backtrack" for edge in tree.probe_edges)
     assert tree.layers[2].unknown_causes[0].candidate_id == "blocked_line_upgrade"
     assert tree.layers[2].unknown_causes[0].status == "forbidden"
     assert "blocked_line_upgrade" in tree.final_unknown_causes
@@ -532,10 +540,12 @@ def test_off_cpu_wait_summary_uses_specific_function_anchor(client: TestClient):
     summary = detail["latest_conclusion"]["summary"]
 
     assert assessment["classification"] == "self_code_or_process_pressure"
-    assert assessment["supported_level"] == "function"
+    assert assessment["supported_level"] == "syscall"
+    assert assessment["claim_type"] == "observation_only"
+    assert assessment["conclusion_eligible"] is False
     assert assessment["primary_anchor"]["anchor"] == "pthread_mutex_lock"
     assert "pthread_mutex_lock" in summary
-    assert "interruptible_sleep_or_lock_wait" in summary
+    assert "不能区分主动 sleep、退避重试、锁等待或上游阻塞" in summary
     assert "证据主要集中在目标实例自身" not in summary
 
 

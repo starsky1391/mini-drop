@@ -23,6 +23,7 @@ const NODE_SIZE = {
 
 const EDGE_COLORS = {
   probe: "#1677ff",
+  backtrack: "#8c8c8c",
   boundary: "#d48806",
   lineage: "#748094",
 };
@@ -70,6 +71,7 @@ function ControlledAITreeGraphInner({ tree, evidenceMap }) {
           <Tag color="orange">次因</Tag>
           <Tag color="default">反证灰节点</Tag>
           <Tag color="blue">探针边</Tag>
+          <Tag color="default">回溯边</Tag>
           <Tag color="gold">停止边界</Tag>
         </Space>
         <Typography.Text type="secondary">
@@ -116,7 +118,7 @@ export default function ControlledAITreeGraph(props) {
 function AITreeNode({ data }) {
   const candidate = data.candidate || {};
   const challenge = candidate.self_challenge || {};
-  const isRejected = data.role === "rejected";
+  const isRejected = data.role === "rejected" || ["contradicted", "rejected"].includes(candidate.status);
   const isForbidden = candidate.status === "forbidden" || data.status === "forbidden";
   const content = (
     <Space direction="vertical" size={6} className="ai-tree-popover">
@@ -179,7 +181,7 @@ function TreeDetailDrawer({ selected, evidenceMap, onClose }) {
 
   return (
     <Drawer
-      title={selected?.type === "edge" ? "探针边详情" : "AI 树节点详情"}
+      title={selected?.type === "edge" ? (value.kind === "backtrack" ? "回溯边详情" : "探针边详情") : "AI 树节点详情"}
       open={open}
       width={520}
       onClose={onClose}
@@ -208,9 +210,19 @@ function TreeDetailDrawer({ selected, evidenceMap, onClose }) {
             <Tag>{value.level}</Tag>
             <Tag>{value.generatedBy}</Tag>
             <Tag>{candidate.status || value.status || "unknown"}</Tag>
+            <Tag>{candidate.claim_type || "partial_localization"}</Tag>
+            <Tag color={candidate.conclusion_eligible ? "green" : "default"}>
+              {candidate.conclusion_eligible ? "可进入结论" : "未过结论门禁"}
+            </Tag>
           </Space>
           <Typography.Title level={5}>{candidate.candidate_id || value.title}</Typography.Title>
           <Typography.Paragraph>{candidate.claim || value.claim}</Typography.Paragraph>
+          <Typography.Paragraph type="secondary">
+            机制：{candidate.mechanism || "未形成"}；目标：{candidate.target || "未定位"}
+          </Typography.Paragraph>
+          {!candidate.conclusion_eligible && candidate.eligibility_reason && (
+            <Typography.Paragraph type="warning">门禁原因：{candidate.eligibility_reason}</Typography.Paragraph>
+          )}
           <Typography.Text strong>节点反问</Typography.Text>
           <Typography.Paragraph>为什么是它：{challenge.why_this_claim || "未说明"}</Typography.Paragraph>
           <Typography.Paragraph>为什么不是其他：{challenge.why_not_other_claims || "未说明"}</Typography.Paragraph>
@@ -308,7 +320,7 @@ function decorateEdge(edge) {
     style: {
       stroke: failed ? "#cf1322" : EDGE_COLORS[kind] || EDGE_COLORS.lineage,
       strokeWidth: kind === "probe" ? 2.4 : 1.6,
-      strokeDasharray: failed || kind === "boundary" ? "6 5" : undefined,
+      strokeDasharray: failed || kind === "boundary" || kind === "backtrack" ? "6 5" : undefined,
     },
     labelStyle: {
       fill: EDGE_COLORS[kind] || EDGE_COLORS.lineage,

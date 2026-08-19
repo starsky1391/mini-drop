@@ -14,6 +14,7 @@ from server.app.rca.candidates import generate_candidates, load_rules
 from server.app.rca.evidence import collect_evidence, evidence_to_json
 from server.app.rca.attribution import analyze_evidence
 from server.app.rca.llm_client import (
+    _apply_compact_guard_review,
     _attach_analysis_result,
     _collect_evidence_paths,
     _extract_json,
@@ -23,7 +24,16 @@ from server.app.rca.llm_client import (
     generate_controlled_ai_tree,
 )
 from server.app.diagnosis.probe_registry import build_probe_manifest
-from server.app.rca.models import CandidateCause, CauseEntry, DiagnosisReport, EvidenceInput, FeedbackPrior
+from server.app.rca.models import (
+    AITreeCandidateNode,
+    AITreeLayer,
+    CandidateCause,
+    CauseEntry,
+    ControlledAITree,
+    DiagnosisReport,
+    EvidenceInput,
+    FeedbackPrior,
+)
 from server.app.rca.prompt import build_system_prompt, build_user_message
 from server.app.rca.report import run_diagnosis, run_diagnosis_context
 from server.app.rca.tools import run_rca_tools
@@ -229,6 +239,89 @@ class TestCalibrator:
 
 
 class TestControlledAITreeMerge:
+    def test_compact_review_moves_rejected_primary_and_promotes_next_candidate(self):
+        evidence = EvidenceInput(
+            top_functions=[{"name": "cartservice.GetCart", "percent": 72.0}],
+            sys_metrics={"summary": {"avg_cpu_user_pct": 91.0}},
+        )
+        original_primary = "lock_contention"
+        next_candidate = "retry_backoff"
+        tree = ControlledAITree(
+            tree_id="compact_backtrack_tree",
+            final_supported_level="function",
+            layers=[AITreeLayer(
+                layer_id="layer_0",
+                depth=0,
+                primary_causes=[AITreeCandidateNode(
+                    candidate_id=original_primary,
+                    role="primary",
+                    claim="锁竞争候选。",
+                    supported_level="function",
+                    status="supported",
+                    evidence_refs=["top_functions"],
+                )],
+                secondary_causes=[AITreeCandidateNode(
+                    candidate_id=next_candidate,
+                    role="secondary",
+                    claim="重试退避候选。",
+                    supported_level="function",
+                    status="supported",
+                    evidence_refs=["top_functions"],
+                )],
+            )],
+            final_primary_causes=[original_primary],
+            final_secondary_causes=[next_candidate],
+        )
+        candidate_ids = [original_primary, next_candidate]
+        review = {
+            "tree_id": tree.tree_id,
+            "primary": [next_candidate],
+            "secondary": [],
+            "rejected": [original_primary],
+            "unknown": [item for item in candidate_ids if item not in {original_primary, next_candidate}],
+            "probe_requests": ["cpu_profile"],
+            "candidate_updates": {
+                next_candidate: {
+                    "claim": "重试退避持续占用请求窗口并造成接口延迟。",
+                    "claim_type": "likely_root_cause",
+                    "causal_status": "supported",
+                    "decision": "conclude",
+                    "mechanism": "retry_backoff_loop",
+                    "target": "cartservice.GetCart",
+                },
+                original_primary: {
+                    "claim_type": "insufficient_for_root_cause",
+                    "causal_status": "contradicted",
+                    "decision": "reject_candidate",
+                },
+            },
+            "self_challenges": {
+                next_candidate: {
+                    "supporting_evidence_refs": ["top_functions"],
+                    "opposing_evidence_refs": [],
+                },
+            },
+        }
+
+        reviewed = _apply_compact_guard_review(
+            raw=json.dumps(review),
+            analyzer_tree=tree,
+            evidence=evidence,
+            probe_manifest=build_probe_manifest(),
+        )
+
+        assert reviewed.final_primary_causes == [next_candidate]
+        assert original_primary in reviewed.final_rejected_causes
+        assert any(
+            edge.transition_type == "backtrack" and edge.probe_requests == ["cpu_profile"]
+            for edge in reviewed.probe_edges
+        )
+        assert any(
+            node.candidate_id == original_primary and node.causal_status == "contradicted"
+            for layer in reviewed.layers
+            for node in layer.rejected_causes
+        )
+
     """受控 AI 树只允许 LLM 改写解释，不允许越界裁决。"""
 
     def test_llm_can_enrich_controlled_tree_explanations(self):

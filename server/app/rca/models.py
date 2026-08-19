@@ -225,7 +225,35 @@ class AITreeCandidateNode(BaseModel):
     claim: str
     supported_level: Literal["resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"] = "resource"
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    status: Literal["supported", "weakened", "missing_evidence", "forbidden", "unknown"] = "unknown"
+    status: Literal[
+        "supported",
+        "weakened",
+        "missing_evidence",
+        "forbidden",
+        "contradicted",
+        "rejected",
+        "unknown",
+    ] = "unknown"
+    claim_type: Literal[
+        "root_cause",
+        "likely_root_cause",
+        "partial_localization",
+        "observation_only",
+        "insufficient_for_root_cause",
+        "abstention",
+    ] = "partial_localization"
+    causal_status: Literal["supported", "unproven", "contradicted", "inconclusive"] = "unproven"
+    decision: Literal["continue_probe", "reject_candidate", "conclude", "abstain", "backtrack"] = "continue_probe"
+    mechanism: str = ""
+    target: str = ""
+    primitive_kind: Optional[Literal[
+        "wait_primitive",
+        "scheduler_primitive",
+        "syscall_primitive",
+        "runtime_primitive",
+    ]] = None
+    conclusion_eligible: bool = False
+    eligibility_reason: str = ""
     evidence_refs: list[str] = Field(default_factory=list)
     self_challenge: AITreeSelfChallenge = Field(default_factory=AITreeSelfChallenge)
 
@@ -259,6 +287,7 @@ class AITreeProbeEdge(BaseModel):
         "not_checked",
     ] = "not_checked"
     effect: Literal["refined", "reranked", "rejected", "added_candidate", "rollback", "no_change", "pending"] = "pending"
+    transition_type: Literal["probe", "refine", "backtrack", "boundary"] = "probe"
     reason: str = ""
 
 

@@ -1,0 +1,141 @@
+"""Hard guards shared by Analyzer, LLM review, and session AI trees."""
+
+from __future__ import annotations
+
+import re
+
+from server.app.rca.models import AITreeCandidateNode, AITreeLayer, ControlledAITree
+
+
+_PRIMITIVE_PATTERNS = (
+    ("wait_primitive", re.compile(
+        r"(?:^|[._:/])(?:clock_)?nanosleep(?:64)?(?:$|[+._:/])|"
+        r"(?:^|[._:/])(?:u?sleep)(?:$|[+._:/])|"
+        r"pthread_(?:cond_wait|mutex_lock|rwlock_[a-z_]+)(?:$|[+._:/])|"
+        r"(?:^|[._:/])futex(?:$|[+._:/])",
+        re.IGNORECASE,
+    )),
+    ("scheduler_primitive", re.compile(
+        r"(?:^|[._:/])(?:schedule|finish_task_switch|context_switch)(?:$|[+._:/])",
+        re.IGNORECASE,
+    )),
+    ("syscall_primitive", re.compile(
+        r"(?:^|[._:/])(?:epoll_wait|epoll_pwait|poll|ppoll|select|pselect|syscall)(?:$|[+._:/])|"
+        r"(?:^|[._:/])__x64_sys_[a-z0-9_]+",
+        re.IGNORECASE,
+    )),
+    ("runtime_primitive", re.compile(
+        r"(?:^|[._:/])runtime[._](?:futex|park|notesleep|notetsleepg|usleep)(?:$|[+._:/])",
+        re.IGNORECASE,
+    )),
+)
+
+
+def classify_primitive(symbol: str | None) -> str | None:
+    value = str(symbol or "").strip()
+    if not value:
+        return None
+    for kind, pattern in _PRIMITIVE_PATTERNS:
+        if pattern.search(value):
+            return kind
+    return None
+
+
+def enforce_conclusion_eligibility(tree: ControlledAITree | None) -> ControlledAITree | None:
+    if tree is None:
+        return None
+
+    layers: list[AITreeLayer] = []
+    for layer in tree.layers:
+        grouped = {"primary": [], "secondary": [], "rejected": [], "unknown": []}
+        for node in _layer_nodes(layer):
+            guarded = _guard_candidate(node)
+            role = guarded.role
+            if role in {"primary", "secondary"} and guarded.causal_status == "contradicted":
+                role = "rejected"
+                guarded = guarded.model_copy(update={"role": role})
+            grouped[role].append(guarded)
+        layers.append(layer.model_copy(update={
+            "primary_causes": grouped["primary"],
+            "secondary_causes": grouped["secondary"],
+            "rejected_causes": grouped["rejected"],
+            "unknown_causes": grouped["unknown"],
+        }))
+
+    return tree.model_copy(update={
+        "layers": layers,
+        "final_primary_causes": _final_ids(layers, "primary", eligible_only=True),
+        "final_secondary_causes": _final_ids(layers, "secondary", eligible_only=True),
+        "final_rejected_causes": _final_ids(layers, "rejected"),
+        "final_unknown_causes": _final_ids(layers, "unknown"),
+    })
+
+
+def _guard_candidate(node: AITreeCandidateNode) -> AITreeCandidateNode:
+    primitive_kind = node.primitive_kind or classify_primitive(node.target) or classify_primitive(node.mechanism)
+    refs = list(dict.fromkeys([
+        *node.evidence_refs,
+        *node.self_challenge.supporting_evidence_refs,
+    ]))
+    reason = ""
+    eligible = True
+    if node.role == "rejected" or node.status in {"forbidden", "contradicted", "rejected"}:
+        eligible = False
+        reason = "候选已经被反证或策略边界拒绝。"
+    elif node.status != "supported" or node.causal_status != "supported":
+        eligible = False
+        reason = "当前只有观察或相关性，尚未形成受支持的因果判断。"
+    elif node.claim_type not in {"root_cause", "likely_root_cause"}:
+        eligible = False
+        reason = "节点类型不是可进入最终结论的根因声明。"
+    elif not node.mechanism.strip() or not node.target.strip():
+        eligible = False
+        reason = "根因声明缺少具体机制或具体目标。"
+    elif not refs:
+        eligible = False
+        reason = "根因声明没有可回溯的支持证据。"
+    elif primitive_kind:
+        eligible = False
+        reason = "当前目标是等待、调度、系统调用或运行时原语，缺少上层业务栈，不能作为根因函数。"
+
+    decision = node.decision
+    causal_status = node.causal_status
+    claim_type = node.claim_type
+    if primitive_kind and causal_status == "supported":
+        causal_status = "unproven"
+        claim_type = "observation_only"
+        decision = "continue_probe"
+    if node.status in {"contradicted", "rejected", "forbidden"}:
+        causal_status = "contradicted"
+        decision = "reject_candidate"
+    elif eligible:
+        decision = "conclude"
+
+    return node.model_copy(update={
+        "primitive_kind": primitive_kind,
+        "claim_type": claim_type,
+        "causal_status": causal_status,
+        "decision": decision,
+        "conclusion_eligible": eligible,
+        "eligibility_reason": reason or "机制、目标、因果状态和证据引用满足结论资格门禁。",
+    })
+
+
+def _layer_nodes(layer: AITreeLayer) -> list[AITreeCandidateNode]:
+    return [
+        *layer.primary_causes,
+        *layer.secondary_causes,
+        *layer.rejected_causes,
+        *layer.unknown_causes,
+    ]
+
+
+def _final_ids(layers: list[AITreeLayer], role: str, *, eligible_only: bool = False) -> list[str]:
+    result: list[str] = []
+    for layer in layers:
+        for node in _layer_nodes(layer):
+            if node.role != role or (eligible_only and not node.conclusion_eligible):
+                continue
+            if node.candidate_id not in result:
+                result.append(node.candidate_id)
+    return result

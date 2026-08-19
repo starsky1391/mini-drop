@@ -79,6 +79,8 @@ export function buildControlledAITreeGraph(tree = {}) {
             `L${layer.depth}`,
             ROLE_LABELS[candidate.role] || candidate.role,
             candidate.supported_level,
+            candidate.claim_type,
+            candidate.conclusion_eligible ? "可进入结论" : "未过门禁",
             layer.generated_by === "ai_guarded" ? "AI" : "fallback",
           ],
         },
@@ -131,9 +133,11 @@ export function buildControlledAITreeGraph(tree = {}) {
           source: source.nodeId,
           target: target.nodeId,
           type: "smoothstep",
-          label: probeEdge.probe_requests?.join(" + ") || "探针补证",
+          label: probeEdge.transition_type === "backtrack" || probeEdge.effect === "rollback"
+            ? "回溯转查"
+            : probeEdge.probe_requests?.join(" + ") || "探针补证",
           data: {
-            kind: "probe",
+            kind: probeEdge.transition_type === "backtrack" || probeEdge.effect === "rollback" ? "backtrack" : "probe",
             edgeId: probeEdge.edge_id,
             status: probeEdge.status,
             effect: probeEdge.effect,
@@ -146,7 +150,8 @@ export function buildControlledAITreeGraph(tree = {}) {
             ],
             probeResults: probeEdge.probe_results || [],
           },
-          animated: ["pending", "not_started", "unknown"].includes(probeEdge.status || "unknown"),
+          animated: probeEdge.transition_type !== "backtrack"
+            && ["pending", "not_started", "unknown"].includes(probeEdge.status || "unknown"),
         });
       }
     }

@@ -790,3 +790,16 @@
 - [x] BE007 Add diagnosis-orchestrator test proving AI-selected evidence families create registered follow-up probe tasks.
 
 **Outcome**: The complete controlled AI tree now lets AI produce node conclusions and select down-probing tools, while engineering controls execution boundaries and fallback behavior.
+
+### Task Group BF - 候选回溯与结论资格门禁
+
+**Purpose**: Prevent evidence details from being presented as root causes, preserve rejected hypotheses, and continue investigation through explicit backtracking.
+
+- [x] BF001 Extend controlled-tree candidates with claim type, causal status, decision, primitive classification, and conclusion eligibility fields.
+- [x] BF002 Make full and compact LLM reviews produce falsifiable mechanism claims, reject primitive-only roots, and request or reuse evidence before promotion.
+- [x] BF003 Add deterministic conclusion eligibility validation and exclude rejected, contradicted, observation-only, or ineligible candidates from final causes.
+- [x] BF004 Preserve rejected candidates in the session tree and add explicit rollback edges that continue to the next viable candidate.
+- [x] BF005 Render rollback edges and rejected/contradicted nodes in the frontend while keeping hover and evidence details available.
+- [x] BF006 Add backend tests and frontend build validation for primitive-only evidence, candidate rejection, backtracking, alternate-candidate continuation, and abstention.
+
+**Outcome**: A failed hypothesis stays visible as a grey branch, the investigation returns to the nearest viable parent and evaluates another candidate, and only eligible mechanism claims can become final conclusions.

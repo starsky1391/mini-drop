@@ -92,6 +92,24 @@ Worker 部署默认按深采集可信节点配置：`privileged: true`、`pid: h
 
 真正的自然语言可读性重写、人话化解释模板、面向非专家的分层报告文案属于后续升级；本轮只实现结构化树、证据引用、候选状态、探针边和前端可视化承载。
 
+### Candidate Backtracking and Conclusion Eligibility
+
+受控 AI 树必须区分“证据观察”和“诊断结论”。采样点、系统调用、占比、样本数等原始细节只能作为候选结论的支持或反驳证据，不能直接作为根因结论。`clock_nanosleep`、`futex`、`epoll_wait`、`poll`、`select`、`pthread_cond_wait` 等等待、调度、系统调用或运行时原语，在缺少上层业务栈、调用路径或源码映射时不得升级为函数级根因。
+
+候选树按以下生命周期推进：
+
+```text
+AI 生成可证伪候选
+  -> 检查支持、反驳、缺失和时序关系
+  -> supported: 通过结论资格门禁后进入最终主因/次因
+  -> needs_more_evidence: 复用或请求最小必要探针
+  -> contradicted/rejected: 保留灰色节点和淘汰理由
+  -> backtrack: 回到父层并继续验证下一候选
+  -> 无候选通过门禁: 输出 observation/partial_localization/abstention
+```
+
+每个候选节点必须声明 `claim_type`、`decision` 和 `causal_status`。最终根因必须同时具备具体机制、具体目标、同窗支持证据、可引用证据链和候选间比较；否则只能停留在观察、局部定位或证据不足。回溯通过显式 `rollback` 探针边表示，被淘汰节点不得从树中删除，也不得继续进入 `final_primary_causes`。前端将 `rejected/contradicted` 节点保持可查询但置灰，并用回溯边展示系统转查的下一候选。
+
 ## Constitution Check
 
 The current project constitution remains the unfilled Spec Kit template and defines no enforceable project-specific gates. The implementation follows the repository instructions: preserve existing worktree changes, keep the change scoped, write tests for new processing behavior, and avoid collector or task-scheduling changes.

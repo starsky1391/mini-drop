@@ -13,6 +13,7 @@ import time
 from server.app.ai_provider import chat_completions, get_ai_settings, is_feature_enabled
 from server.app.logging_utils import log_event
 from server.app.rca.models import (
+    AITreeProbeEdge,
     CauseEntry,
     ControlledAITree,
     DiagnosisReport,
@@ -20,6 +21,7 @@ from server.app.rca.models import (
     EvidenceInput,
     ValidatedReport,
 )
+from server.app.rca.controlled_tree import enforce_conclusion_eligibility
 from server.app.rca.prompt import build_system_prompt, build_user_message
 
 
@@ -422,7 +424,7 @@ def _merge_llm_controlled_tree(
     if not _llm_tree_shape_is_safe(llm_tree, analyzer_tree, evidence, probe_manifest):
         return analyzer_tree
 
-    return analyzer_tree.model_copy(update={
+    merged = analyzer_tree.model_copy(update={
         "layers": [layer.model_copy(update={"generated_by": "ai_guarded"}) for layer in llm_tree.layers],
         "probe_edges": llm_tree.probe_edges,
         "final_supported_level": analyzer_tree.final_supported_level,
@@ -432,6 +434,7 @@ def _merge_llm_controlled_tree(
         "final_unknown_causes": _group_candidate_ids(llm_tree.layers, "unknown"),
         "stop_reason": llm_tree.stop_reason or analyzer_tree.stop_reason,
     })
+    return enforce_conclusion_eligibility(merged)
 
 
 def _generate_compact_guard_review(
@@ -560,6 +563,15 @@ def _apply_compact_guard_review(
         sanitized_challenges[str(candidate_id)] = challenge
     challenges = sanitized_challenges
 
+    candidate_updates = data.get("candidate_updates", {}) or {}
+    if not isinstance(candidate_updates, dict):
+        candidate_updates = {}
+    candidate_updates = {
+        str(candidate_id): update
+        for candidate_id, update in candidate_updates.items()
+        if str(candidate_id) in analyzer_candidates and isinstance(update, dict)
+    }
+
     role_updates: dict[str, str] = {}
     for role in ("primary", "secondary", "rejected", "unknown"):
         for candidate_id in data.get(role, []) or []:
@@ -567,6 +579,22 @@ def _apply_compact_guard_review(
 
     layers = []
     for layer in analyzer_tree.layers:
+        grouped = {"primary": [], "secondary": [], "rejected": [], "unknown": []}
+        nodes = [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+        for node in nodes:
+            role = role_updates.get(node.candidate_id, node.role)
+            guarded = _guarded_node(
+                node,
+                role,
+                challenges.get(node.candidate_id),
+                candidate_updates.get(node.candidate_id),
+            )
+            grouped[role].append(guarded)
         layers.append(layer.model_copy(update={
             "generated_by": "ai_guarded",
             "summary": str(
@@ -574,16 +602,37 @@ def _apply_compact_guard_review(
                 if isinstance(data.get("layer_summaries"), dict)
                 else layer.summary
             ) or layer.summary,
-            "primary_causes": _guarded_nodes(layer.primary_causes, role_updates, challenges, "primary"),
-            "secondary_causes": _guarded_nodes(layer.secondary_causes, role_updates, challenges, "secondary"),
-            "rejected_causes": _guarded_nodes(layer.rejected_causes, role_updates, challenges, "rejected"),
-            "unknown_causes": _guarded_nodes(layer.unknown_causes, role_updates, challenges, "unknown"),
+            "primary_causes": grouped["primary"],
+            "secondary_causes": grouped["secondary"],
+            "rejected_causes": grouped["rejected"],
+            "unknown_causes": grouped["unknown"],
         }))
 
-    return analyzer_tree.model_copy(update={
+    reviewed_edges = list(analyzer_tree.probe_edges)
+    rejected_ids = data.get("rejected", []) or []
+    next_ids = [*(data.get("primary", []) or []), *(data.get("secondary", []) or []), *(data.get("unknown", []) or [])]
+    if rejected_ids and next_ids:
+        from_layer_id = _candidate_layer_id(analyzer_tree, rejected_ids[0])
+        to_layer_id = _candidate_layer_id(analyzer_tree, next_ids[0])
+        if from_layer_id and to_layer_id:
+            reviewed_edges.append(AITreeProbeEdge(
+                edge_id=f"compact_backtrack_{rejected_ids[0]}_to_{next_ids[0]}",
+                from_layer_id=from_layer_id,
+                to_layer_id=to_layer_id,
+                from_candidate_ids=[rejected_ids[0]],
+                to_candidate_ids=[next_ids[0]],
+                probe_requests=data["probe_requests"][:3],
+                status="not_started" if data["probe_requests"] else "completed",
+                effect="rollback",
+                transition_type="backtrack",
+                reason=f"{rejected_ids[0]} 被反证，回退并转查 {next_ids[0]}。",
+            ))
+    reviewed = analyzer_tree.model_copy(update={
         "layers": layers,
+        "probe_edges": reviewed_edges,
         "stop_reason": str(data.get("stop_reason") or analyzer_tree.stop_reason),
     })
+    return enforce_conclusion_eligibility(reviewed)
 
 
 def _mark_tree_ai_guarded(analyzer_tree: ControlledAITree, stop_reason: str) -> ControlledAITree:
@@ -596,33 +645,63 @@ def _mark_tree_ai_guarded(analyzer_tree: ControlledAITree, stop_reason: str) -> 
     })
 
 
-def _guarded_nodes(nodes, role_updates: dict[str, str], challenges: dict, expected_role: str):
-    updated = []
-    for node in nodes:
-        suggested_role = role_updates.get(node.candidate_id, node.role)
-        challenge = challenges.get(node.candidate_id)
-        if isinstance(challenge, dict):
-            self_challenge = node.self_challenge.model_copy(update={
-                "why_this_claim": str(challenge.get("why_this_claim") or node.self_challenge.why_this_claim),
-                "why_not_other_claims": str(challenge.get("why_not_other_claims") or node.self_challenge.why_not_other_claims),
-                "supporting_evidence_refs": [str(item) for item in challenge.get("supporting_evidence_refs", node.self_challenge.supporting_evidence_refs)],
-                "opposing_evidence_refs": [str(item) for item in challenge.get("opposing_evidence_refs", node.self_challenge.opposing_evidence_refs)],
-                "missing_evidence": [str(item) for item in challenge.get("missing_evidence", node.self_challenge.missing_evidence)],
-                "what_would_change_my_mind": str(challenge.get("what_would_change_my_mind") or node.self_challenge.what_would_change_my_mind),
-            })
-        else:
-            self_challenge = node.self_challenge
-        status = node.status
-        if suggested_role == "rejected" and node.status == "supported":
-            status = "weakened"
-        elif suggested_role == "unknown" and node.status in {"supported", "weakened"}:
-            status = "missing_evidence"
-        updated.append(node.model_copy(update={
-            "role": expected_role,
-            "status": status,
-            "self_challenge": self_challenge,
-        }))
-    return updated
+def _candidate_layer_id(tree: ControlledAITree, candidate_id: str) -> str:
+    for layer in tree.layers:
+        if any(
+            node.candidate_id == candidate_id
+            for node in [
+                *layer.primary_causes,
+                *layer.secondary_causes,
+                *layer.rejected_causes,
+                *layer.unknown_causes,
+            ]
+        ):
+            return layer.layer_id
+    return ""
+
+
+def _guarded_node(node, suggested_role: str, challenge: dict | None, candidate_update: dict | None):
+    if isinstance(challenge, dict):
+        self_challenge = node.self_challenge.model_copy(update={
+            "why_this_claim": str(challenge.get("why_this_claim") or node.self_challenge.why_this_claim),
+            "why_not_other_claims": str(challenge.get("why_not_other_claims") or node.self_challenge.why_not_other_claims),
+            "supporting_evidence_refs": [str(item) for item in challenge.get("supporting_evidence_refs", node.self_challenge.supporting_evidence_refs)],
+            "opposing_evidence_refs": [str(item) for item in challenge.get("opposing_evidence_refs", node.self_challenge.opposing_evidence_refs)],
+            "missing_evidence": [str(item) for item in challenge.get("missing_evidence", node.self_challenge.missing_evidence)],
+            "what_would_change_my_mind": str(challenge.get("what_would_change_my_mind") or node.self_challenge.what_would_change_my_mind),
+        })
+    else:
+        self_challenge = node.self_challenge
+    status = node.status
+    if suggested_role == "rejected" and node.status == "supported":
+        status = "contradicted"
+    elif suggested_role == "unknown" and node.status in {"supported", "weakened"}:
+        status = "missing_evidence"
+    update = {
+        "role": suggested_role,
+        "status": status,
+        "self_challenge": self_challenge,
+    }
+    if isinstance(candidate_update, dict):
+        enum_fields = {
+            "claim_type": {
+                "root_cause", "likely_root_cause", "partial_localization",
+                "observation_only", "insufficient_for_root_cause", "abstention",
+            },
+            "causal_status": {"supported", "unproven", "contradicted", "inconclusive"},
+            "decision": {"continue_probe", "reject_candidate", "conclude", "abstain", "backtrack"},
+            "primitive_kind": {
+                "wait_primitive", "scheduler_primitive", "syscall_primitive", "runtime_primitive",
+            },
+        }
+        for field in ("claim", "mechanism", "target", "eligibility_reason"):
+            if isinstance(candidate_update.get(field), str):
+                update[field] = candidate_update[field].strip()
+        for field, allowed in enum_fields.items():
+            value = candidate_update.get(field)
+            if value in allowed:
+                update[field] = value
+    return node.model_copy(update=update)
 
 
 def _group_candidate_ids(layers, role: str) -> list[str]:
@@ -717,10 +796,12 @@ def _candidate_status_is_safe(base_status: str, proposed_status: str) -> bool:
     if proposed_status == base_status:
         return True
     allowed_downgrades = {
-        "supported": {"weakened", "missing_evidence", "unknown"},
-        "weakened": {"missing_evidence", "unknown"},
-        "missing_evidence": {"unknown"},
+        "supported": {"weakened", "missing_evidence", "contradicted", "rejected", "unknown"},
+        "weakened": {"missing_evidence", "contradicted", "rejected", "unknown"},
+        "missing_evidence": {"rejected", "unknown"},
         "forbidden": set(),
+        "contradicted": {"rejected"},
+        "rejected": set(),
         "unknown": set(),
     }
     return proposed_status in allowed_downgrades.get(base_status, set())
@@ -771,6 +852,10 @@ def _build_controlled_tree_system_prompt() -> str:
 7. probe_edges[].probe_requests 只能选择 Probe Manifest 中的 evidence_family，不能写 probe_id，不能写任意 shell、sysctl、修复动作。
 8. 你必须为每个候选填写 self_challenge：为什么是它、为什么不是其他、支持证据、反驳证据、缺失证据、什么会改变结论。
 9. 证据不足时要停在当前证据支持层级，并通过 probe_edges 请求最小必要补证，而不是强行给更细结论。
+10. 节点必须表达可证伪的机制判断，不得把函数名、采样占比、系统调用或等待点原样改写成根因结论。
+11. clock_nanosleep、futex、epoll_wait、poll、select、pthread_cond_wait、runtime.futex 等原语只能标记为 observation_only；缺少上层业务栈时不得作为 function 根因。
+12. 候选被反证时必须保留为 rejected/contradicted 节点，并用 effect=rollback、transition_type=backtrack 的边转向下一候选；不能删除失败候选后直接停止。
+13. 只有具备 mechanism、target、真实支持证据且 causal_status=supported 的 root_cause/likely_root_cause 才能设置 decision=conclude。
 """
 
 
@@ -827,8 +912,21 @@ JSON schema:
       "what_would_change_my_mind": "什么证据会改变结论"
     }
   },
+  "candidate_updates": {
+    "candidate_id": {
+      "claim": "可证伪的机制结论，不是证据摘要",
+      "claim_type": "root_cause | likely_root_cause | partial_localization | observation_only | insufficient_for_root_cause | abstention",
+      "causal_status": "supported | unproven | contradicted | inconclusive",
+      "decision": "continue_probe | reject_candidate | conclude | abstain | backtrack",
+      "mechanism": "导致症状的具体机制",
+      "target": "机制作用的具体服务/进程/函数/调用路径",
+      "primitive_kind": "仅当目标是等待/调度/syscall/runtime 原语时填写"
+    }
+  },
   "layer_summaries": {"layer_id": "该层的人话摘要"}
 }
+
+如果主候选不成立，把它放入 rejected，保留反证理由；随后从剩余候选中选择下一项继续补证。原语采样点只能作为 observation_only，不能作为根因函数。
 """
 
 

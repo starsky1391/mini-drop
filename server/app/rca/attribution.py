@@ -28,6 +28,7 @@ from server.app.rca.models import (
     EvidenceInput,
     GuardedAttribution,
 )
+from server.app.rca.controlled_tree import enforce_conclusion_eligibility
 
 
 _LEVEL_ORDER = {
@@ -1696,6 +1697,7 @@ def _derive_controlled_ai_tree(
     )
     source_context_hash = _source_context_hash(evidence.source_context)
     primary_id = primary_cause_id if boundary.can_claim_root_cause else None
+    candidate_target = _controlled_candidate_target(localizations, evidence)
     candidates = [
         _controlled_candidate(
             attribution,
@@ -1704,6 +1706,7 @@ def _derive_controlled_ai_tree(
             missing_evidence,
             blocked_upgrades,
             boundary.max_supported_level,
+            candidate_target,
         )
         for attribution in sorted(attributions, key=lambda item: item.candidate_id)
     ]
@@ -1831,7 +1834,7 @@ def _derive_controlled_ai_tree(
         for layer in layers
         for item in layer.unknown_causes
     )
-    return ControlledAITree(
+    tree = ControlledAITree(
         tree_id=f"controlled_ai_tree_{_stable_digest([fact.fact_id for fact in facts], final_primary, next_requests)}",
         source_context_hash=source_context_hash,
         final_supported_level=boundary.max_supported_level,
@@ -1847,6 +1850,7 @@ def _derive_controlled_ai_tree(
         final_rejected_causes=final_rejected,
         final_unknown_causes=final_unknown,
     )
+    return enforce_conclusion_eligibility(tree)
 
 
 def _controlled_candidate(
@@ -1856,6 +1860,7 @@ def _controlled_candidate(
     missing_evidence: list[str],
     blocked_upgrades: list[str],
     boundary_level: str,
+    target: str,
 ) -> AITreeCandidateNode:
     fact_map = {fact.fact_id: fact for fact in facts}
     refs = _unique_strings(
@@ -1881,14 +1886,24 @@ def _controlled_candidate(
         role = "unknown"
         confidence = 0.35
     missing = _unique_strings([*attribution.missing_evidence, *missing_evidence[:3], *blocked_upgrades[:2]])
+    is_primary = attribution.status == "supported" and attribution.candidate_id == primary_id
     return AITreeCandidateNode(
         candidate_id=attribution.candidate_id,
         lineage_id=attribution.candidate_id,
         role=role,
-        claim=f"{attribution.candidate_id} 当前状态为 {attribution.status}，最高支持到 {attribution.max_supported_level or boundary_level} 层。",
+        claim=(
+            f"候选机制 {attribution.candidate_id} 可能作用于 {target}。"
+            if target
+            else f"候选机制 {attribution.candidate_id} 尚缺少具体作用目标。"
+        ),
         supported_level=attribution.max_supported_level or boundary_level,
         confidence=confidence,
         status=attribution.status,
+        claim_type="likely_root_cause" if is_primary else "partial_localization",
+        causal_status="supported" if is_primary else "unproven",
+        decision="conclude" if is_primary else "continue_probe",
+        mechanism=attribution.candidate_id,
+        target=target,
         evidence_refs=refs,
         self_challenge=AITreeSelfChallenge(
             why_this_claim="该候选只使用 supporting_fact_ids 能引用到的事实作为支撑。",
@@ -1899,6 +1914,21 @@ def _controlled_candidate(
             what_would_change_my_mind="新增同目标、同窗口、已结构化的反向证据，或补齐缺失探针后主证据不再成立。",
         ),
     )
+
+
+def _controlled_candidate_target(
+    localizations: list[AnalysisLocalization],
+    evidence: EvidenceInput,
+) -> str:
+    localized = [item for item in localizations if str(item.target or "").strip()]
+    if localized:
+        return max(localized, key=lambda item: _LEVEL_ORDER.get(item.level, 0)).target or ""
+    metadata = evidence.task_metadata if isinstance(evidence.task_metadata, dict) else {}
+    for key in ("instance_id", "service_id", "target_pid", "pid"):
+        value = str(metadata.get(key) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _tree_layer_candidate_ids(layer: AITreeLayer) -> list[str]:
