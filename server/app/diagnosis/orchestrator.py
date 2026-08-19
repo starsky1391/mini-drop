@@ -1433,6 +1433,7 @@ class DiagnosisOrchestrator:
 
         target_hot = any(_has_self_hotspot(obs) for obs in target_obs)
         target_pressure = any(_has_pressure(obs) for obs in target_obs)
+        target_runtime_stall = any(obs["pressure"].get("runtime_stall") for obs in target_obs)
         neighbor_pressure = any(_has_pressure(obs) for obs in same_host_obs)
         downstream_pressure = any(_has_pressure(obs) for obs in downstream_obs)
         downstream_dependency_failure = any(_has_dependency_failure(obs) or _has_redis_failure(obs) for obs in observations)
@@ -1442,7 +1443,16 @@ class DiagnosisOrchestrator:
             and any(obs["pressure"].get("io_wait") for obs in same_host_obs)
         )
 
-        if downstream_dependency_failure:
+        if target_runtime_stall:
+            classification = "runtime_stall"
+            confidence = 0.98
+            summary = _runtime_stall_summary(target_anchor)
+            ruled_out.append({
+                "hypothesis": "self_code_regression",
+                "reason": "目标进程在整个采样窗口持续处于 stopped/tracing-stop 状态，不需要用代码热点解释当前无进展。",
+                "evidence_refs": all_refs,
+            })
+        elif downstream_dependency_failure:
             classification = "downstream_dependency"
             confidence = 0.82
             summary = _downstream_dependency_summary(
@@ -2158,19 +2168,20 @@ def _pressure_flags(summary: dict[str, Any], values: dict[str, Any]) -> dict[str
     cpu_iowait = _num(summary.get("avg_cpu_iowait_pct"))
     load1m = _num(summary.get("load1m"))
     rss_mb = _num(summary.get("vmrss_mb"))
-    rss_max = _num(summary.get("vmrss_mb_max"))
     fd_count = _num(summary.get("fd_count"))
-    fd_max = _num(summary.get("fd_max"))
     threads = _num(summary.get("thread_count"))
+    process_state = str(summary.get("process_state") or "")
+    stopped_ratio = _num(summary.get("stopped_sample_ratio"))
     top_items = values.get("top_functions") if isinstance(values.get("top_functions"), list) else values.get("top_json") if isinstance(values.get("top_json"), list) else []
     top_percent = _num((top_items[0] or {}).get("percent")) if top_items else 0.0
     return {
         "cpu": cpu_user + cpu_sys >= 75 or top_percent >= 45,
         "io_wait": cpu_iowait >= 20 or _has_ebpf_latency(values.get("ebpf_metrics")),
-        "memory": rss_mb >= 1024 or (rss_max > 0 and rss_mb / max(rss_max, 1.0) >= 0.9),
-        "fd": fd_count >= 1000 or (fd_max > 0 and fd_count / max(fd_max, 1.0) >= 0.9),
+        "memory": rss_mb >= 1024,
+        "fd": fd_count >= 1000 or summary.get("fd_trend") == "increasing",
         "thread": threads >= 512,
         "load": load1m >= 4,
+        "runtime_stall": process_state in {"T", "t"} and stopped_ratio >= 0.8,
     }
 
 
@@ -2268,6 +2279,22 @@ def _specific_diagnostic_anchor(
                         else "当前等待栈顶部仍是未符号化地址，需补 debuginfo/符号映射后才能升级到函数。"
                     ),
                 }
+
+    process_state = str(summary.get("process_state") or "")
+    if process_state in {"T", "t"} and _num(summary.get("stopped_sample_ratio")) >= 0.8:
+        return {
+            **base,
+            "supported_level": "process",
+            "anchor_type": "process_state_stopped",
+            "anchor": f"process_state={process_state}",
+            "process_state": process_state,
+            "process_state_name": summary.get("process_state_name") or "stopped",
+            "stopped_sample_count": int(_num(summary.get("stopped_sample_count"))),
+            "stopped_sample_ratio": _num(summary.get("stopped_sample_ratio")),
+            "root_claim_allowed": True,
+            "evidence_ref": "sys_metrics.summary",
+            "blocked_upgrade_reason": "该故障机制位于进程运行状态层，不需要伪造函数或代码行定位。",
+        }
 
     call_paths = values.get("call_path_hotspots")
     if isinstance(call_paths, list) and call_paths:
@@ -2417,6 +2444,20 @@ def _self_pressure_summary(anchor: dict[str, Any]) -> str:
     return (
         f"当前只能保守停在 {level} 层，但不是空泛排查：{instance}{pid} 的 {anchor_name} 出现异常{metric_text}。"
         f"{reason}"
+    )
+
+
+def _runtime_stall_summary(anchor: dict[str, Any]) -> str:
+    instance = anchor.get("instance_id") or anchor.get("service_id") or "目标实例"
+    pid = f"(pid={anchor.get('pid')})" if anchor.get("pid") else ""
+    state = anchor.get("process_state") or "T"
+    state_name = anchor.get("process_state_name") or "stopped"
+    count = int(_num(anchor.get("stopped_sample_count")))
+    ratio = _num(anchor.get("stopped_sample_ratio")) * 100
+    return (
+        f"{instance}{pid} 在系统指标采样窗口内持续处于进程状态 {state} ({state_name})，"
+        f"停止样本 {count} 个，占比 {ratio:.1f}%。该状态会阻止进程继续调度和处理业务，"
+        "能够直接解释进程存在但工作不再推进。"
     )
 
 
@@ -2744,6 +2785,8 @@ def _collector_invocation(
 
 def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str, Any]) -> list[str]:
     classification = assessment.get("classification")
+    if classification == "runtime_stall":
+        return []
     target_scope = session.get("target_scope", {}) if isinstance(session.get("target_scope"), dict) else {}
     requests: list[str] = []
     if classification == "downstream_dependency":
@@ -2772,6 +2815,18 @@ def _assessment_claim_metadata(
     scope = session.get("target_scope", {}) if isinstance(session.get("target_scope"), dict) else {}
     target_service = str(scope.get("target_service") or "目标服务")
     anchor_target = str(anchor.get("anchor") or anchor.get("instance_id") or anchor.get("service_id") or "").strip()
+
+    if classification == "runtime_stall":
+        instance = str(anchor.get("instance_id") or anchor.get("service_id") or target_service)
+        return {
+            "claim_type": "root_cause",
+            "causal_status": "supported",
+            "conclusion_eligible": bool(evidence_refs),
+            "eligibility_reason": "目标进程在同一采样窗口持续处于 stopped/tracing-stop 状态，可直接解释业务无进展。",
+            "mechanism": "process_suspended",
+            "claim_target": instance,
+            "diagnostic_claim": _runtime_stall_summary(anchor),
+        }
 
     if classification == "downstream_dependency" and downstream_dependency_failure:
         dependency = _dependency_root_entity(session, prefer_redis=True) or _dependency_root_entity(session) or "下游依赖"
@@ -2871,7 +2926,15 @@ def _cluster_alternative_hypotheses(
         })
 
     if classification != "self_code_or_process_pressure":
-        if target_obs and not target_hot and not target_pressure:
+        if classification == "runtime_stall":
+            add(
+                "self_code_or_process_pressure",
+                status="weakened",
+                supported_level="process",
+                reason="目标进程持续处于 stopped/tracing-stop 状态，代码热点或一般进程压力不是解释业务无进展所必需的机制。",
+                evidence_refs=all_refs,
+            )
+        elif target_obs and not target_hot and not target_pressure:
             add(
                 "self_code_or_process_pressure",
                 status="weakened",
@@ -3597,6 +3660,13 @@ def _assessment_location_fields(
     session: dict[str, Any],
 ) -> dict[str, Any]:
     classification = str(assessment.get("classification") or "")
+    if classification == "runtime_stall":
+        return {
+            "location_type": "self",
+            "domain_type": "runtime",
+            "root_entity": _target_service(session) or "target_process",
+            "max_supported_level": "process",
+        }
     if classification == "downstream_dependency":
         root_entity = _dependency_root_entity(session)
         if not root_entity and candidates:

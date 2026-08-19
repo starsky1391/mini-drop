@@ -101,6 +101,31 @@ class TestSysMetricsCollector:
                 data = json.load(fh)
             assert data["summary"]["fd_trend"] == "increasing"
 
+    def test_summary_reports_persistent_stopped_process_state(self):
+        samples = [
+            {
+                "ts": float(index),
+                "cpu": {},
+                "load": {},
+                "network": {},
+                "process": {
+                    "process_state": "T",
+                    "process_state_name": "T (stopped)",
+                    "num_threads": 4,
+                    "fd_count": 8,
+                },
+            }
+            for index in range(5)
+        ]
+
+        summary = SysMetricsCollector._compute_summary(samples)
+
+        assert summary["process_state"] == "T"
+        assert summary["process_state_name"] == "T (stopped)"
+        assert summary["process_state_counts"] == {"T": 5}
+        assert summary["stopped_sample_count"] == 5
+        assert summary["stopped_sample_ratio"] == 1.0
+
     def test_parse_stat(self):
         """Verify stat parsing logic."""
         collector = SysMetricsCollector()

@@ -4,8 +4,8 @@
 
   /proc/stat          → 系统级 CPU 利用率（user/sys/iowait 占比）
   /proc/loadavg       → 系统负载（1m/5m/15m）
-  /proc/<pid>/stat    → 进程 CPU utime/stime + 线程数
-  /proc/<pid>/status  → 线程数、自愿/非自愿上下文切换
+  /proc/<pid>/stat    → 进程状态、CPU utime/stime + 线程数
+  /proc/<pid>/status  → 状态名称、线程数、自愿/非自愿上下文切换
   /proc/<pid>/fd      → 文件描述符计数（遍历 fd 目录）
   /proc/<pid>/io      → 进程磁盘 I/O（rchar/wchar/read_bytes/write_bytes）
   /proc/net/dev       → 系统网络吞吐（rx/tx bytes）
@@ -184,6 +184,7 @@ class SysMetricsCollector:
                 fields = fh.read().split()
                 if len(fields) >= 22:
                     # fields: ...  [13]utime  [14]stime  [19]num_threads  [22]vsize  [23]rss
+                    result["process_state"] = fields[2]
                     result["utime_ticks"] = int(fields[13])
                     result["stime_ticks"] = int(fields[14])
                     result["num_threads"] = int(fields[19])
@@ -212,7 +213,11 @@ class SysMetricsCollector:
         try:
             with open(f"/proc/{pid}/status", "r") as fh:
                 for line in fh:
-                    if line.startswith("voluntary_ctxt_switches:"):
+                    if line.startswith("State:"):
+                        state_name = line.split(":", 1)[1].strip()
+                        result["process_state_name"] = state_name
+                        result["process_state"] = state_name[:1]
+                    elif line.startswith("voluntary_ctxt_switches:"):
                         result["voluntary_switches"] = int(line.split(":")[1].strip())
                     elif line.startswith("nonvoluntary_ctxt_switches:"):
                         result["nonvoluntary_switches"] = int(line.split(":")[1].strip())
@@ -260,6 +265,9 @@ class SysMetricsCollector:
         vmrss_vals = [p.get("vmrss_kb", 0) / 1024 for p in proc_samples if "vmrss_kb" in p]
         ctx_vol = [p.get("voluntary_switches", 0) for p in proc_samples if "voluntary_switches" in p]
         ctx_nvol = [p.get("nonvoluntary_switches", 0) for p in proc_samples if "nonvoluntary_switches" in p]
+        process_states = [str(p.get("process_state")) for p in proc_samples if p.get("process_state")]
+        process_state_names = [str(p.get("process_state_name")) for p in proc_samples if p.get("process_state_name")]
+        stopped_samples = sum(1 for state in process_states if state in {"T", "t"})
 
         # CPU sys% 平均值
         sys_pcts = [c.get("system", 0) for c in cpu_samples]
@@ -315,6 +323,14 @@ class SysMetricsCollector:
             "vmrss_mb_max": round(max(vmrss_vals), 1) if vmrss_vals else 0,
             "ctx_voluntary_rate": round(ctx_vol_rate, 1),
             "ctx_nonvoluntary_rate": round(ctx_nvol_rate, 1),
+            "process_state": process_states[-1] if process_states else "",
+            "process_state_name": process_state_names[-1] if process_state_names else "",
+            "process_state_counts": {
+                state: process_states.count(state)
+                for state in sorted(set(process_states))
+            },
+            "stopped_sample_count": stopped_samples,
+            "stopped_sample_ratio": round(stopped_samples / len(process_states), 3) if process_states else 0.0,
             "net_rx_kbps": round(net_rx_kbps, 1),
             "net_tx_kbps": round(net_tx_kbps, 1),
             "load1m": samples[0].get("load", {}).get("load1m", 0) if samples else 0,

@@ -258,7 +258,7 @@ def choose_probe_ids(symptom: str) -> list[str]:
         "io_degradation": ["host_process_metrics", "process_io_latency", "process_off_cpu_profile"],
         "noisy_neighbor": ["host_process_metrics", "process_io_latency"],
         "memory_pressure": ["process_memory_map", "process_log_scan", "process_baseline_window", "host_process_metrics"],
-        "runtime_contention": ["host_process_metrics", "process_off_cpu_profile", "process_python_runtime_profile", "process_trace_endpoint_profile"],
+        "runtime_contention": ["host_process_metrics", "process_log_scan", "process_off_cpu_profile", "process_python_runtime_profile", "process_trace_endpoint_profile"],
     }
     return mapping.get(symptom, ["host_process_metrics", "process_cpu_profile", "process_off_cpu_profile"])
 
@@ -269,8 +269,6 @@ def _required_target_fields(probe_id: str) -> list[str]:
         base.append("pid")
     if probe_id == "process_trace_endpoint_profile":
         base.extend(["service_id", "instance_id"])
-    if probe_id in {"process_log_scan"}:
-        base.append("container_id")
     if probe_id in {"process_dependency_check", "process_redis_check"}:
         base.append("dependency_targets")
     return list(dict.fromkeys(base))

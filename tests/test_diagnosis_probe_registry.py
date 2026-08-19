@@ -38,6 +38,6 @@ def test_choose_probe_ids_prefers_deeper_collection_for_cpu_and_latency():
     assert "process_baseline_window" in choose_probe_ids("memory_pressure")
     assert choose_probe_ids("runtime_contention")[:3] == [
         "host_process_metrics",
+        "process_log_scan",
         "process_off_cpu_profile",
-        "process_python_runtime_profile",
     ]

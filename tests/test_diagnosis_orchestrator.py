@@ -690,6 +690,73 @@ def test_readiness_gate_fails_when_runtime_stack_is_empty():
     assert check["status"] == "FAIL"
 
 
+def test_readiness_gate_accepts_persistent_stopped_process_state():
+    bundle = {
+        "runtime_trace": [{"stage": "evidence"}],
+        "probes": [{
+            "probe_id": "process_off_cpu_profile",
+            "task_id": "task_runtime",
+            "status": "COMPLETED",
+        }],
+        "child_task_ids": ["task_runtime"],
+        "tasks": [{"id": "task_runtime", "collector_type": "off_cpu_wait_profile"}],
+        "artifacts": [{"task_id": "task_runtime", "artifact_type": "off_cpu_wait_json"}],
+        "structured_evidence": {"version": 1},
+        "evidence": [{
+            "query_or_probe": "structured_evidence_json",
+            "observed_value": {
+                "summary": {
+                    "sys_metrics": {
+                        "summary": {
+                            "process_state": "T",
+                            "stopped_sample_ratio": 1.0,
+                        },
+                    },
+                },
+            },
+        }],
+        "evidence_refs": ["ev_1"],
+    }
+
+    gate = build_readiness_gate(bundle)
+    check = next(item for item in gate["checks"] if item["name"] == "runtime_stack_quality_non_empty")
+
+    assert check["status"] == "PASS"
+
+
+def test_persistent_stopped_process_becomes_runtime_stall_conclusion(client: TestClient):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=["sys_metrics"],
+    )
+    payload = _payload("服务进程存在、端口可连，但业务工作没有继续推进，进程疑似卡住。")
+    payload["budget_profile"] = "development"
+    payload["auto_execute_policy"] = "all_registered"
+    data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+    metrics_probe = next(item for item in data["probes"] if item["probe_id"] == "host_process_metrics")
+    summary = _normal_summary()
+    summary.update({
+        "process_state": "T",
+        "process_state_name": "T (stopped)",
+        "process_state_counts": {"T": 10},
+        "stopped_sample_count": 10,
+        "stopped_sample_ratio": 1.0,
+    })
+    _finish_sys_metrics_task(metrics_probe["task_id"], summary)
+
+    detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
+    conclusion = detail["latest_conclusion"]
+    assessment = conclusion["cluster_assessment"]
+
+    assert assessment["classification"] == "runtime_stall"
+    assert assessment["mechanism"] == "process_suspended"
+    assert assessment["conclusion_eligible"] is True
+    assert assessment["location_type"] == "self"
+    assert assessment["domain_type"] == "runtime"
+    assert assessment["classification"] == "runtime_stall"
+    assert "T (stopped)" in conclusion["summary"]
+
+
 def test_benchmark_score_module_scores_bundle_against_oracle(client: TestClient):
     data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
     task_id = data["child_task_ids"][0]

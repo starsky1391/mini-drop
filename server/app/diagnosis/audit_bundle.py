@@ -565,6 +565,15 @@ def _structured_runtime_signal_present(value: Any) -> bool:
     summary = value.get("summary") if isinstance(value.get("summary"), dict) else value
     if not isinstance(summary, dict):
         return False
+    sys_metrics = summary.get("sys_metrics")
+    if isinstance(sys_metrics, dict):
+        process_summary = sys_metrics.get("summary") if isinstance(sys_metrics.get("summary"), dict) else sys_metrics
+        if (
+            isinstance(process_summary, dict)
+            and str(process_summary.get("process_state") or "") in {"T", "t"}
+            and _safe_float(process_summary.get("stopped_sample_ratio")) >= 0.8
+        ):
+            return True
     top_functions = summary.get("top_functions")
     if isinstance(top_functions, list) and top_functions:
         return True
