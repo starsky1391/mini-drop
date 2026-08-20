@@ -1833,6 +1833,44 @@ def test_ai_tree_stops_creating_followups_after_five_rounds(client: TestClient):
     )
 
 
+def test_development_ai_tree_allows_mechanism_retry_beyond_five_rounds(client: TestClient):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=[*repo.agents["a1"].capabilities, "source_mechanism_query"],
+    )
+    payload = _payload("服务 service-a 内存持续增长")
+    payload["budget_profile"] = "development"
+    payload["auto_execute_policy"] = "all_registered"
+    data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    parent_task = repo.tasks[data["child_task_ids"][0]]
+    diagnosis_orchestrator.store.update_session(
+        diagnosis_id,
+        conclusion_versions=[{"version": index + 1} for index in range(6)],
+    )
+
+    created = diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["source_mechanism_query"],
+        parent_task,
+        probe_inputs={
+            "source_mechanism_query": {
+                "ai_generated_query": {
+                    "candidate_id": "ai_proposal_retention",
+                    "query_spec_hash": "sha256:new-query",
+                },
+            },
+        },
+    )
+
+    assert created == 1
+    followup = next(
+        probe for probe in diagnosis_orchestrator.store.list_probes(diagnosis_id)
+        if (probe.get("parameters") or {}).get("evidence_gap") == "source_mechanism_query"
+    )
+    assert followup["parameters"]["followup_round"] == 5
+
+
 def test_ai_tree_allows_third_followup_after_initial_analysis(client: TestClient):
     repo.register_agent(
         "a1", "host-1", "10.0.0.1",
@@ -2885,6 +2923,79 @@ def test_memory_followup_requests_optional_mechanism_then_runtime_reference():
         "probe_evidence_status": {**base["probe_evidence_status"], "source_mechanism_query": "blocked"},
     }
     assert orchestrator_module._assessment_followup_requests(assessment, blocked) == []
+    partial = {
+        **base,
+        "probe_evidence_status": {**base["probe_evidence_status"], "source_mechanism_query": "partial"},
+        "probe_attempt_counts": {"source_mechanism_query": 1},
+    }
+    assert orchestrator_module._assessment_followup_requests(assessment, partial) == ["source_mechanism_query"]
+    exhausted = {
+        **partial,
+        "probe_attempt_counts": {
+            "source_mechanism_query": orchestrator_module.MAX_SOURCE_MECHANISM_ATTEMPTS,
+        },
+    }
+    assert orchestrator_module._assessment_followup_requests(assessment, exhausted) == []
+
+
+def test_source_mechanism_partial_allows_new_query_but_not_same_query(client: TestClient):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=[*repo.agents["a1"].capabilities, "source_mechanism_query"],
+    )
+    payload = _payload("服务 service-a 内存持续增长")
+    payload["budget_profile"] = "development"
+    payload["auto_execute_policy"] = "all_registered"
+    data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    parent_task = repo.tasks[data["child_task_ids"][0]]
+    target = data["target_scope"]["instances"][0]
+    first_step = "step-codeql-first"
+    diagnosis_orchestrator.store.add_probe({
+        "step_id": first_step,
+        "diagnosis_id": diagnosis_id,
+        "probe_id": "process_source_mechanism_query",
+        "target": target,
+        "parameters": {
+            "evidence_gap": "source_mechanism_query",
+            "ai_generated_query": {"query_spec_hash": "sha256:first"},
+        },
+        "reason": "first attempt",
+        "risk_level": "R2",
+        "requires_approval": False,
+        "status": "COMPLETED",
+        "evidence_status": "partial",
+    })
+
+    duplicate = diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["source_mechanism_query"],
+        parent_task,
+        probe_inputs={
+            "source_mechanism_query": {
+                "ai_generated_query": {"query_spec_hash": "sha256:first"},
+            },
+        },
+    )
+    fresh = diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["source_mechanism_query"],
+        parent_task,
+        probe_inputs={
+            "source_mechanism_query": {
+                "ai_generated_query": {"query_spec_hash": "sha256:second"},
+            },
+        },
+    )
+
+    assert duplicate == 0
+    assert fresh == 1
+    mechanism_probes = [
+        probe for probe in diagnosis_orchestrator.store.list_probes(diagnosis_id)
+        if (probe.get("parameters") or {}).get("evidence_gap") == "source_mechanism_query"
+    ]
+    assert len(mechanism_probes) == 2
+    assert mechanism_probes[-1]["parameters"]["ai_generated_query"]["query_spec_hash"] == "sha256:second"
 
 
 def test_ordinary_verified_line_does_not_enter_optional_mechanism_branch():
@@ -2986,6 +3097,79 @@ def test_session_tree_rebuilds_supported_and_refuted_codeql_candidates():
     assert nodes["ai_proposal_defaults"].causal_status == "contradicted"
     assert any(
         edge.effect == "rollback" and "ai_proposal_defaults" in edge.from_candidate_ids
+        for edge in tree.probe_edges
+    )
+
+
+def test_partial_codeql_chain_greys_existing_candidate_and_backtracks():
+    observations = [{
+        "evidence_refs": ["ev-codeql-partial"],
+        "source_mechanism": {
+            "revision": "abc123",
+            "query": {
+                "candidate_id": "python_runtime_stack_hotspot",
+                "query_spec_hash": "sha256:partial",
+            },
+            "segment_coverage": {
+                "required_segments": 3,
+                "covered_segments": 1,
+                "complete": False,
+            },
+            "evidence_validity": {
+                "evidence_status": "partial",
+                "reason": "codeql_incomplete_segment_coverage",
+            },
+            "mechanism_paths": [{
+                "candidate_id": "python_runtime_stack_hotspot",
+                "candidate_relation": "supports",
+                "anchor_matches": [2, 3],
+                "evidence_ref": "source_mechanism.mechanism_paths[0]",
+            }],
+        },
+    }]
+    anchor = orchestrator_module._mechanism_enriched_anchor({
+        "source_context_hash": "sha256:verified",
+        "source_revision": "abc123",
+        "evidence_refs": ["ev-source"],
+    }, observations)
+    assessment = {
+        "classification": "python_memory_retention",
+        "summary": "表层内存保留位置已确认。",
+        "supported_level": "line",
+        "confidence": 0.8,
+        "evidence_refs": anchor["evidence_refs"],
+        "conclusion_eligible": False,
+        "claim_type": "direct_failure_mechanism",
+        "causal_status": "unproven",
+        "primary_anchor": anchor,
+    }
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-codeql-partial",
+        cluster_assessment=assessment,
+        candidates=[{
+            "candidate_id": "python_runtime_stack_hotspot",
+            "rank": 1,
+            "description": "运行时热点候选",
+            "evidence_refs": ["ev-source"],
+            "max_supported_level": "line",
+        }],
+        followup_requests=["source_mechanism_query"],
+        probes=[],
+        child_trees=[],
+    )
+
+    rejected = [
+        node
+        for layer in tree.layers
+        for node in layer.rejected_causes
+        if node.candidate_id == "python_runtime_stack_hotspot"
+    ]
+    assert rejected
+    assert rejected[0].status == "contradicted"
+    assert rejected[0].decision == "reject_candidate"
+    assert "python_runtime_stack_hotspot" not in tree.final_primary_causes
+    assert any(
+        edge.effect == "rollback" and "python_runtime_stack_hotspot" in edge.from_candidate_ids
         for edge in tree.probe_edges
     )
 

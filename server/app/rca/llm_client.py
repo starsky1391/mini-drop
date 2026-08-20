@@ -69,6 +69,12 @@ def generate_session_investigation_review(
         for layer in session_tree.layers
         for node in [*layer.primary_causes, *layer.secondary_causes, *layer.rejected_causes, *layer.unknown_causes]
     }
+    rejected_candidate_ids = {
+        node.candidate_id
+        for layer in session_tree.layers
+        for node in [*layer.rejected_causes, *layer.primary_causes, *layer.secondary_causes, *layer.unknown_causes]
+        if node.role == "rejected" or node.status in {"rejected", "contradicted", "forbidden"}
+    }
     valid_refs = {
         str(item.get(key) or "")
         for item in evidence_catalog
@@ -110,6 +116,9 @@ def generate_session_investigation_review(
                 "其中包含 investigation_question、candidate_id、expected_relation(supports|refutes) 和 2-6 个有序 path_anchors；"
                 "锚点必须逐字选择 source_anchor_catalog 中不同的 file/line，并按预期机制传播顺序排列；"
                 "candidate_id 必须绑定 current_tree 或本轮 candidate_proposals；"
+                "若 current_tree 已把候选标为 rejected/contradicted，禁止再次绑定该候选，也禁止重复其原 path_anchors；"
+                "此时必须回退到父层并提出不同机制的新候选。分配热点行只是表层位置，源码机制查询应优先验证"
+                "reference_origin 到 reference_step 的完整传播链；"
                 "不要编写 CodeQL 语法，系统会从锚点生成版本锁定的查询；不得引用目录外路径、shell 或修复动作。"
                 "当选择 python_heap_reference 时，必须输出 probe_inputs.python_heap_reference，包含 current_tree 或本轮候选的"
                 "candidate_id，以及 1-8 个 object_type_hints，用于限制 PyHeap 运行时引用验证目标。"
@@ -134,7 +143,8 @@ def generate_session_investigation_review(
             probe_inputs = _validate_investigation_probe_inputs(
                 data.get("probe_inputs"),
                 selected,
-                candidate_ids | {str(item.get("candidate_id") or "") for item in proposals},
+                (candidate_ids - rejected_candidate_ids)
+                | {str(item.get("candidate_id") or "") for item in proposals},
                 source_anchor_catalog,
             )
             return {
@@ -271,6 +281,30 @@ def _source_anchor_catalog(evidence_catalog: list[dict]) -> list[dict]:
                                 source_line.get("text"),
                                 "reference_step",
                             )
+            default_file = next((
+                snippet.get("file")
+                for snippet in value.get("snippets", [])
+                if isinstance(snippet, dict) and snippet.get("file")
+            ), "")
+            for path in value.get("reference_paths", []):
+                if not isinstance(path, dict):
+                    continue
+                for upstream in path.get("upstream_candidates", []):
+                    if isinstance(upstream, dict):
+                        add(
+                            default_file,
+                            upstream.get("line"),
+                            text=upstream.get("expression"),
+                            semantic_role="reference_origin",
+                        )
+                for source_line in path.get("source_lines", []):
+                    if isinstance(source_line, dict):
+                        add(
+                            default_file,
+                            source_line.get("line"),
+                            text=source_line.get("text"),
+                            semantic_role="reference_step",
+                        )
             return
         for child in value.values():
             visit(child)

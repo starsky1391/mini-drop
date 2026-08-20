@@ -63,6 +63,7 @@ from server.app.state_machine import Actor, TaskStatus
 PLANNER_VERSION = "diagnosis-orchestrator-v1"
 MAX_FOLLOWUP_ROUNDS = 5
 MAX_FOLLOWUP_REQUESTS_PER_ROUND = 3
+MAX_SOURCE_MECHANISM_ATTEMPTS = 3
 ACTIVE_TASK_STATUSES = {"PENDING", "RUNNING", "UPLOADING", "ANALYZING"}
 TERMINAL_TASK_STATUSES = {"DONE", "FAILED"}
 STRUCTURED_ARTIFACT_TYPES = {
@@ -1323,6 +1324,14 @@ class DiagnosisOrchestrator:
             str((probe.get("parameters") or {}).get("evidence_gap") or ""): str(probe.get("evidence_status") or "")
             for probe in self.store.list_probes(diagnosis_id)
         }
+        followup_session["probe_attempt_counts"] = {
+            gap: sum(
+                1
+                for probe in self.store.list_probes(diagnosis_id)
+                if str((probe.get("parameters") or {}).get("evidence_gap") or "") == gap
+            )
+            for gap in {"source_mechanism_query", "python_heap_reference"}
+        }
         assessment_followups = _assessment_followup_requests(cluster_assessment, followup_session)
         followup_requests = _merge_assessment_followups(
             followup_requests,
@@ -1550,24 +1559,19 @@ class DiagnosisOrchestrator:
         if session is None or session["status"] in TERMINAL_DIAGNOSIS_STATUSES:
             return 0
         parent_target = self._target_for_task(diagnosis_id, parent_task)
-        existing_gaps = {
-            (
-                str((probe.get("parameters") or {}).get("evidence_gap") or ""),
-                str((probe.get("target") or {}).get("instance_id") or ""),
-            )
-            for probe in self.store.list_probes(diagnosis_id)
-        }
+        existing_probes = self.store.list_probes(diagnosis_id)
         policy = str((session.get("risk_budget") or {}).get("auto_execute_policy") or "safe_only")
         collection_context = _session_collection_context(session)
         followup_round = max(0, len(session.get("conclusion_versions") or []) - 1)
         self._last_followup_scheduled = False
-        if followup_round >= MAX_FOLLOWUP_ROUNDS:
+        max_followup_rounds = _max_followup_rounds(session)
+        if followup_round >= max_followup_rounds:
             self.store.record_event(
                 diagnosis_id,
                 "followup_round_limit_reached",
                 {
                     "followup_round": followup_round,
-                    "max_followup_rounds": MAX_FOLLOWUP_ROUNDS,
+                    "max_followup_rounds": max_followup_rounds,
                     "requested_evidence_gaps": list(dict.fromkeys(request_ids))[:MAX_FOLLOWUP_REQUESTS_PER_ROUND],
                 },
             )
@@ -1586,7 +1590,13 @@ class DiagnosisOrchestrator:
             probe_id = evidence_gap_to_probe_id(evidence_gap)
             target = self._select_followup_target(session, evidence_gap, parent_target)
             target_key = str(target.get("instance_id") or "")
-            if not probe_id or (evidence_gap, target_key) in existing_gaps:
+            matching_probes = [
+                probe
+                for probe in existing_probes
+                if str((probe.get("parameters") or {}).get("evidence_gap") or "") == evidence_gap
+                and str((probe.get("target") or {}).get("instance_id") or "") == target_key
+            ]
+            if not probe_id or not _can_schedule_evidence_attempt(evidence_gap, matching_probes):
                 continue
             definition = get_probe(probe_id)
             if definition is None:
@@ -1597,7 +1607,8 @@ class DiagnosisOrchestrator:
                 requires_approval = True
             else:
                 requires_approval = False
-            key = f"{diagnosis_id}:followup:{evidence_gap}:{target_key}"
+            attempt_number = len(matching_probes) + 1
+            key = f"{diagnosis_id}:followup:{evidence_gap}:{target_key}:{attempt_number}"
             step_id = f"step_{hashlib.sha256(key.encode()).hexdigest()[:14]}"
             duration = min(definition.default_duration_seconds, definition.max_duration_seconds)
             deferred = False
@@ -1639,6 +1650,20 @@ class DiagnosisOrchestrator:
                 if isinstance((probe_inputs or {}).get(evidence_gap), dict)
                 else {}
             )
+            if evidence_gap == "source_mechanism_query" and _repeats_guarded_query(
+                guarded_probe_input,
+                matching_probes,
+            ):
+                self.store.record_event(
+                    diagnosis_id,
+                    "followup_probe_duplicate_query_skipped",
+                    {
+                        "evidence_gap": evidence_gap,
+                        "target_instance_id": target_key,
+                        "query_spec_hash": _guarded_query_spec_hash(guarded_probe_input),
+                    },
+                )
+                continue
             collector_parameters = {**collector_parameters, **guarded_probe_input}
             collector_invocation = _collector_invocation(
                 step={"diagnosis_id": diagnosis_id, "step_id": step_id},
@@ -1685,7 +1710,7 @@ class DiagnosisOrchestrator:
                 "diagnosis_id": diagnosis_id,
                 "status": "WAITING_APPROVAL" if requires_approval else "PLANNED",
             })
-            existing_gaps.add((evidence_gap, target_key))
+            existing_probes.append(self.store.get_probe(step_id) or {})
             created += 1
             if not requires_approval and not deferred:
                 self._schedule_probe(plan.step_id)
@@ -1723,14 +1748,14 @@ class DiagnosisOrchestrator:
             if any(str(probe.get("status") or "") in open_statuses for probe in matching):
                 return True
         followup_round = max(0, len(session.get("conclusion_versions") or []) - 1)
-        if followup_round >= MAX_FOLLOWUP_ROUNDS:
+        if followup_round >= _max_followup_rounds(session):
             return False
         for request in bounded_requests:
             matching = [
                 probe for probe in probes
                 if str((probe.get("parameters") or {}).get("evidence_gap") or "") == request
             ]
-            if matching:
+            if matching and not _can_schedule_evidence_attempt(request, matching):
                 continue
             probe_id = evidence_gap_to_probe_id(request)
             definition = get_probe(probe_id) if probe_id else None
@@ -3222,6 +3247,7 @@ def _mechanism_enriched_anchor(anchor: dict[str, Any], observations: list[dict[s
         return anchor
     revision = str(anchor.get("source_revision") or "")
     mechanism_paths: list[dict[str, Any]] = []
+    rejected_mechanism_paths: list[dict[str, Any]] = []
     runtime_paths: list[dict[str, Any]] = []
     evidence_refs = list(anchor.get("evidence_refs") or [])
     for observation in observations:
@@ -3234,6 +3260,30 @@ def _mechanism_enriched_anchor(anchor: dict[str, Any], observations: list[dict[s
                     if isinstance(item, dict)
                 )
                 evidence_refs.extend(observation.get("evidence_refs") or [])
+            elif validity.get("evidence_status") == "partial" and str(mechanism.get("revision") or "") == revision:
+                query = mechanism.get("query") if isinstance(mechanism.get("query"), dict) else {}
+                candidate_id = str(query.get("candidate_id") or "")
+                if candidate_id:
+                    paths = [
+                        item for item in (mechanism.get("mechanism_paths") or [])
+                        if isinstance(item, dict)
+                    ]
+                    rejected_mechanism_paths.append({
+                        **(paths[0] if paths else {}),
+                        "candidate_id": candidate_id,
+                        "candidate_relation": "refutes",
+                        "summary": (
+                            f"候选 {candidate_id} 的 CodeQL 有序锚点链未完整闭合："
+                            f"{validity.get('reason') or 'incomplete segment coverage'}。"
+                        ),
+                        "segment_coverage": mechanism.get("segment_coverage") or {},
+                        "query_spec_hash": query.get("query_spec_hash"),
+                        "evidence_ref": (
+                            paths[0].get("evidence_ref")
+                            if paths else "source_mechanism.segment_coverage"
+                        ),
+                    })
+                    evidence_refs.extend(observation.get("evidence_refs") or [])
         runtime = observation.get("python_heap_reference")
         if isinstance(runtime, dict):
             validity = runtime.get("evidence_validity") if isinstance(runtime.get("evidence_validity"), dict) else {}
@@ -3243,6 +3293,7 @@ def _mechanism_enriched_anchor(anchor: dict[str, Any], observations: list[dict[s
                     if isinstance(item, dict) and item.get("nodes")
                 )
                 evidence_refs.extend(observation.get("evidence_refs") or [])
+    mechanism_paths.extend(rejected_mechanism_paths)
     supported_paths = [
         item for item in mechanism_paths
         if item.get("candidate_relation") == "supports" and item.get("anchor_matches")
@@ -3747,6 +3798,8 @@ def _summarize_artifact_value(artifact_type: str, value: Any) -> dict[str, Any]:
             "query_pack_version": value.get("query_pack_version"),
             "cache": value.get("cache") if isinstance(value.get("cache"), dict) else {},
             "database_ref": value.get("database_ref"),
+            "query": value.get("query") if isinstance(value.get("query"), dict) else {},
+            "segment_coverage": value.get("segment_coverage") if isinstance(value.get("segment_coverage"), dict) else {},
             "mechanism_paths": [
                 {
                     "path_id": path.get("path_id"),
@@ -4071,6 +4124,7 @@ def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str,
     if is_memory:
         completed = set(session.get("completed_depth_evidence_gaps") or [])
         probe_status = session.get("probe_evidence_status") if isinstance(session.get("probe_evidence_status"), dict) else {}
+        attempt_counts = session.get("probe_attempt_counts") if isinstance(session.get("probe_attempt_counts"), dict) else {}
         if "python_heap_profile" not in completed and not probe_status.get("python_heap_profile"):
             return ["python_heap_profile"]
         if "python_runtime_profile" not in completed and not probe_status.get("python_runtime_profile"):
@@ -4084,7 +4138,14 @@ def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str,
             and anchor.get("file")
             and int(anchor.get("line") or 0) > 0
         )
-        if source_ready and "source_mechanism_query" not in completed and not probe_status.get("source_mechanism_query"):
+        mechanism_status = str(probe_status.get("source_mechanism_query") or "").lower()
+        mechanism_attempts = int(attempt_counts.get("source_mechanism_query") or 0)
+        if (
+            source_ready
+            and "source_mechanism_query" not in completed
+            and mechanism_status not in {"blocked", "failed", "unavailable", "invalid"}
+            and mechanism_attempts < MAX_SOURCE_MECHANISM_ATTEMPTS
+        ):
             return ["source_mechanism_query"]
         if (
             source_ready
@@ -4568,9 +4629,42 @@ def _build_session_controlled_ai_tree(
             continue
         candidate_id = str(path.get("candidate_id") or "").strip()
         relation = str(path.get("candidate_relation") or "unknown")
-        if not candidate_id or candidate_id in existing_node_ids or relation not in {"supports", "refutes"}:
+        if not candidate_id or relation not in {"supports", "refutes"}:
             continue
         ref = str(path.get("evidence_ref") or "")
+        if candidate_id in existing_node_ids:
+            if relation != "refutes":
+                continue
+            matched_node = None
+            for nodes in (primary_nodes, secondary_nodes, unknown_nodes):
+                for index, existing in enumerate(nodes):
+                    if existing.candidate_id == candidate_id:
+                        matched_node = nodes.pop(index)
+                        break
+                if matched_node is not None:
+                    break
+            if matched_node is not None:
+                rejected_nodes.insert(0, matched_node.model_copy(update={
+                    "role": "rejected",
+                    "claim": str(path.get("summary") or matched_node.claim),
+                    "confidence": min(matched_node.confidence, 0.2),
+                    "status": "contradicted",
+                    "claim_type": "insufficient_for_root_cause",
+                    "causal_status": "contradicted",
+                    "decision": "backtrack",
+                    "conclusion_eligible": False,
+                    "eligibility_reason": "CodeQL 有序锚点链未完整闭合，必须回退并验证其他候选。",
+                    "evidence_refs": _unique_strings([*matched_node.evidence_refs, ref]),
+                    "self_challenge": matched_node.self_challenge.model_copy(update={
+                        "opposing_evidence_refs": _unique_strings([
+                            *matched_node.self_challenge.opposing_evidence_refs,
+                            ref,
+                        ]),
+                        "missing_evidence": ["source_mechanism_query"],
+                        "what_would_change_my_mind": "新的候选使用不同锚点链取得完整 CodeQL 分段覆盖。",
+                    }),
+                }))
+            continue
         complete = bool(
             relation == "supports"
             and cluster_assessment.get("conclusion_eligible")
@@ -5129,6 +5223,40 @@ def _failed_tasks_are_only_optional_mechanism_followups(
     return all(
         gap_by_task.get(task_id) in {"source_mechanism_query", "python_heap_reference"}
         for task_id in failed_task_ids
+    )
+
+
+def _max_followup_rounds(session: dict[str, Any]) -> int:
+    return 8 if str(session.get("policy_profile") or "") == "development" else MAX_FOLLOWUP_ROUNDS
+
+
+def _can_schedule_evidence_attempt(evidence_gap: str, matching_probes: list[dict[str, Any]]) -> bool:
+    if not matching_probes:
+        return True
+    if evidence_gap != "source_mechanism_query" or len(matching_probes) >= MAX_SOURCE_MECHANISM_ATTEMPTS:
+        return False
+    terminal_statuses = {"COMPLETED", "FAILED", "UNAVAILABLE", "INVALID", "SKIPPED"}
+    if any(str(probe.get("status") or "") not in terminal_statuses for probe in matching_probes):
+        return False
+    return not any(
+        str(probe.get("status") or "") == "COMPLETED"
+        and str(probe.get("evidence_status") or "") == "valid"
+        for probe in matching_probes
+    )
+
+
+def _guarded_query_spec_hash(probe_input: dict[str, Any]) -> str:
+    query = probe_input.get("ai_generated_query") if isinstance(probe_input.get("ai_generated_query"), dict) else {}
+    return str(query.get("query_spec_hash") or "")
+
+
+def _repeats_guarded_query(probe_input: dict[str, Any], matching_probes: list[dict[str, Any]]) -> bool:
+    query_spec_hash = _guarded_query_spec_hash(probe_input)
+    if not query_spec_hash:
+        return False
+    return any(
+        _guarded_query_spec_hash(probe.get("parameters") or {}) == query_spec_hash
+        for probe in matching_probes
     )
 
 
