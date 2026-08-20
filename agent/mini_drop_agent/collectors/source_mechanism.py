@@ -23,7 +23,9 @@ class SourceMechanismCollector:
     def collect(self, task: CollectorTask) -> CollectorResult:
         output_dir = Path(self.OUTPUT_BASE) / task.id
         output_dir.mkdir(parents=True, exist_ok=True)
-        source_root = Path(str(task.options.get("source_root") or "")).resolve()
+        source_root = self._map_host_path(
+            Path(str(task.options.get("source_root") or "")).resolve()
+        )
         revision = str(task.options.get("source_revision") or task.options.get("repo_revision") or "").strip()
         anchors = self._anchors(task.options.get("line_candidates"))
         if not self._allowed(source_root, "MINI_DROP_SOURCE_ROOTS", "/host/home,/usr/src"):
@@ -305,11 +307,21 @@ class SourceMechanismCollector:
     def _git(root: Path, args: list[str]) -> str:
         try:
             result = subprocess.run(
-                ["git", "-C", str(root), *args], capture_output=True, text=True, timeout=20, check=False
+                ["git", "-c", f"safe.directory={root}", "-C", str(root), *args],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
             return ""
         return result.stdout.strip() if result.returncode == 0 else ""
+
+    @staticmethod
+    def _map_host_path(path: Path) -> Path:
+        if str(path).startswith("/home/") and Path("/host/home").is_dir():
+            return (Path("/host/home") / path.relative_to("/home")).resolve()
+        return path
 
     @staticmethod
     def _run(command: list[str], timeout: int):

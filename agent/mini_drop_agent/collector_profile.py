@@ -112,21 +112,27 @@ def _source_mechanism_profile() -> dict[str, Any]:
     suite_ready = bool(suite and Path(suite).is_file())
     cache_root = os.getenv("MINI_DROP_CODEQL_CACHE_ROOT", "/var/lib/mini-drop/codeql")
     version = os.getenv("MINI_DROP_CODEQL_QUERY_PACK_VERSION", "unversioned")
-    available = bool(codeql and suite_ready)
+    roots = [item.strip() for item in os.getenv("MINI_DROP_SOURCE_ROOTS", "/host/home,/usr/src").split(",") if item.strip()]
+    available_roots = [item for item in roots if Path(item).is_dir()]
+    available = bool(codeql and available_roots)
     reason = (
-        "CodeQL CLI and managed query suite found"
+        "CodeQL CLI ready for guarded AI query; managed query suite found"
+        if available and suite_ready
+        else "CodeQL CLI ready for guarded AI query; managed query suite is optional"
         if available
-        else "codeql command not found" if not codeql else "managed CodeQL query suite is not configured"
+        else "codeql command not found" if not codeql else "configured source roots are unavailable"
     )
     return {
         "collector_type": "source_mechanism_query",
         "status": "available" if available else "unavailable",
-        "source": "CodeQL CLI managed query suite",
+        "source": "CodeQL CLI guarded AI query or managed query suite",
         "reason": reason,
         "default_options": {
             "query_pack_version": version,
             "cache_root": cache_root,
             "managed_query_suite": suite if suite_ready else "",
+            "available_source_roots": available_roots,
+            "guarded_ai_query": True,
         },
     }
 

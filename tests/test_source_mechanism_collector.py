@@ -92,6 +92,28 @@ def test_codeql_revision_mismatch_is_structured_blocked(tmp_path, monkeypatch):
     assert payload["evidence_validity"]["reason"] == "source_revision_mismatch"
 
 
+def test_codeql_maps_host_source_root_before_policy_check(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    sarif = tmp_path / "result.sarif"
+    _sarif(sarif)
+    monkeypatch.setenv("MINI_DROP_SOURCE_ROOTS", str(tmp_path))
+    monkeypatch.setenv("MINI_DROP_CODEQL_ARTIFACT_ROOTS", str(tmp_path))
+    collector = SourceMechanismCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    monkeypatch.setattr(collector, "_map_host_path", lambda path: repo)
+
+    task = _task(repo, sarif)
+    task = task.__class__(**{
+        **task.__dict__,
+        "options": {**task.options, "source_root": "/home/worker1/cases/werkzeug"},
+    })
+    with mock.patch.object(collector, "_git", side_effect=["abc123", "abc123", "origin/repo"]):
+        result = collector.collect(task)
+
+    assert result.ok is True
+
+
 def test_codeql_cache_key_is_stable_for_same_revision(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
