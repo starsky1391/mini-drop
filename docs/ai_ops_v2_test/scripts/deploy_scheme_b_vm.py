@@ -8,6 +8,7 @@ real-case validation runs exactly the current worktree changes.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import uuid
@@ -38,12 +39,27 @@ NODES = (
 
 SCHEME_B_FILES = (
     "agent/mini_drop_agent/collector_profile.py",
+    "agent/mini_drop_agent/runtime_control.py",
+    "agent/mini_drop_agent/collectors/continuous.py",
+    "agent/mini_drop_agent/collectors/evidence_validity.py",
+    "agent/mini_drop_agent/collectors/log_scan.py",
     "agent/mini_drop_agent/collectors/trace.py",
     "agent/mini_drop_agent/collectors/off_cpu.py",
+    "agent/mini_drop_agent/collectors/perf.py",
+    "agent/mini_drop_agent/collectors/python_heap.py",
+    "agent/mini_drop_agent/collectors/pyspy.py",
+    "agent/mini_drop_agent/collectors/runtime_control.py",
+    "agent/mini_drop_agent/collectors/source_snapshot.py",
+    "agent/mini_drop_agent/collectors/sys_metrics.py",
     "agent/mini_drop_agent/config.py",
     "agent/mini_drop_agent/main.py",
     "agent/mini_drop_agent/watch_observer.py",
     "deploy/collectors/otel-collector/config.yaml",
+    "deploy/collectors/fluent-bit/fluent-bit.conf",
+    "deploy/dockerfiles/agent.Dockerfile",
+    "deploy/dockerfiles/agent.cached.Dockerfile",
+    "deploy/dockerfiles/server.cached.Dockerfile",
+    "deploy/dockerfiles/web.control.cached.Dockerfile",
     "deploy/env/control.env.example",
     "deploy/env/worker.env.example",
     "docker-compose.control.yml",
@@ -52,25 +68,47 @@ SCHEME_B_FILES = (
     "docs/ai_ops_v2_test/scripts/run_ai_ops_v2_vm.py",
     "docs/ai_ops_v2_test/scripts/test_persistent_watch_vm.py",
     "docs/evidence_to_attribution_analyzer_rewrite.md",
-    "docs/superpowers/specs/2026-08-13-industrial-collector-hardening-design.md",
+    "web/src/components/AppLayout.jsx",
+    "web/src/components/AppLayout.module.css",
+    "web/src/components/diagnosis/ControlledAITreeGraph.css",
+    "web/src/components/diagnosis/ControlledAITreeGraph.jsx",
+    "web/src/components/diagnosis/aiTreeGraphModel.js",
+    "web/src/components/diagnosis/RootCauseClusters.css",
+    "web/src/components/diagnosis/RootCauseClusters.jsx",
+    "web/src/pages/AIDiagnosis.css",
+    "web/src/pages/AIDiagnosis.jsx",
     "web/src/pages/PersistentWatch.jsx",
     "proto/compile.sh",
     "proto/watch.proto",
     "server/app/diagnosis/evidence_structurer.py",
+    "server/app/diagnosis/intent.py",
+    "server/app/diagnosis/schemas.py",
     "server/app/diagnosis/audit_bundle.py",
+    "server/app/diagnosis/benchmark_score.py",
+    "server/app/diagnosis/collector_invocation.py",
     "server/app/diagnosis/orchestrator.py",
+    "server/app/diagnosis/probe_registry.py",
+    "server/app/diagnosis/session_conclusion.py",
+    "server/app/diagnosis/store.py",
     "server/app/diagnosis/persistent_trigger.py",
     "server/app/diagnosis/rolling_buffer.py",
     "server/app/diagnosis/watch_runtime.py",
     "server/app/grpc_services/hotmethod_service.py",
+    "server/app/grpc_services/healthcheck_service.py",
     "server/app/grpc_services/watch_runtime_service.py",
-    "server/app/grpc_server.py",
+    "server/app/database.py",
     "server/app/main.py",
     "server/app/models.py",
     "server/app/sql_repository.py",
     "server/app/storage.py",
+    "server/app/schemas.py",
+    "server/app/rca/controlled_tree.py",
+    "server/app/rca/llm_client.py",
+    "server/app/rca/models.py",
     "specs/001-evidence-attribution-analyzer/tasks.md",
 )
+
+SCHEME_B_TREES = ("web/dist",)
 
 
 class SSH:
@@ -119,6 +157,17 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument(
+        "--rca-llm-timeout-sec",
+        type=int,
+        default=180,
+        help="Control 会话级 RCA LLM 读取超时，默认 180 秒",
+    )
+    parser.add_argument(
+        "--verify-ai-only",
+        action="store_true",
+        help="只验证 Control 容器当前 AI Provider，不同步或重建服务",
+    )
+    parser.add_argument(
         "--configure-perf-sysctl",
         action="store_true",
         help="在 Worker 宿主机持久化 kernel.perf_event_paranoid=1；默认只读检查",
@@ -129,23 +178,37 @@ def main() -> int:
     password = os.getenv("MINI_DROP_VM_PASSWORD", "")
     if not password:
         parser.error("MINI_DROP_VM_PASSWORD is required")
+    if not 30 <= args.rca_llm_timeout_sec <= 600:
+        parser.error("--rca-llm-timeout-sec must be between 30 and 600")
 
+    if args.verify_ai_only:
+        result = _verify_control_ai(password, args.target_root)
+        print(json.dumps(result, ensure_ascii=False), flush=True)
+        return 0
+
+    deployment_files = _deployment_files()
     missing = [item for item in SCHEME_B_FILES if not (ROOT / item).is_file()]
+    missing.extend(item for item in SCHEME_B_TREES if not (ROOT / item).is_dir())
     if missing:
         raise RuntimeError(f"local files missing: {missing}")
 
     for node in NODES:
         if args.dry_run:
             remote_root = args.target_root or f"/home/{node.user}/mini-drop-active"
-            print(f"[{node.name}] would sync {len(SCHEME_B_FILES)} files -> {remote_root}", flush=True)
+            print(f"[{node.name}] would sync {len(deployment_files)} files -> {remote_root}", flush=True)
             continue
         ssh = SSH(node, password)
         try:
             remote_root = args.target_root or _resolve_remote_root(ssh, node)
-            print(f"[{node.name}] sync {len(SCHEME_B_FILES)} files -> {remote_root}", flush=True)
-            for rel in SCHEME_B_FILES:
+            print(f"[{node.name}] sync {len(deployment_files)} files -> {remote_root}", flush=True)
+            for rel in deployment_files:
                 ssh.put(ROOT / rel, f"{remote_root}/{rel}")
             ssh.sudo(_normalize_uploaded_scripts(remote_root), timeout=30)
+            if node.role == "control":
+                ssh.sudo(
+                    _configure_control_llm_timeout(remote_root, args.rca_llm_timeout_sec),
+                    timeout=30,
+                )
             if not args.skip_build:
                 if node.role == "control":
                     ssh.sudo(_control_rebuild(remote_root), timeout=1200)
@@ -156,6 +219,48 @@ def main() -> int:
         finally:
             ssh.close()
     return 0
+
+
+def _deployment_files() -> tuple[str, ...]:
+    files = set(SCHEME_B_FILES)
+    for tree in SCHEME_B_TREES:
+        files.update(
+            path.relative_to(ROOT).as_posix()
+            for path in (ROOT / tree).rglob("*")
+            if path.is_file()
+        )
+    return tuple(sorted(files))
+
+
+def _verify_control_ai(password: str, target_root: str = "") -> dict:
+    node = next(item for item in NODES if item.role == "control")
+    ssh = SSH(node, password)
+    try:
+        remote_root = target_root or _resolve_remote_root(ssh, node)
+        command = (
+            f"cd {shlex.quote(remote_root)}; "
+            "server_container=$(docker compose --env-file deploy/env/control.env "
+            "-f docker-compose.control.yml ps -q server); "
+            "test -n \"$server_container\"; "
+            "docker exec \"$server_container\" sh -lc "
+            "'curl -fsS -X POST -H \"X-API-Key: ${MINI_DROP_API_KEY}\" "
+            "http://localhost:8191/api/ai-config/test'"
+        )
+        payload = json.loads(ssh.run(command, timeout=120))
+    finally:
+        ssh.close()
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict) or not data.get("passed"):
+        message = str((data or {}).get("message") or "AI Provider test did not pass")
+        raise RuntimeError(f"control AI connectivity check failed: {message[:300]}")
+    return {
+        "passed": True,
+        "provider": data.get("provider"),
+        "model": data.get("model"),
+        "http_status": data.get("http_status"),
+        "duration_ms": data.get("duration_ms"),
+        "content_valid": data.get("content_valid"),
+    }
 
 
 def _resolve_remote_root(ssh: SSH, node: Node) -> str:
@@ -186,20 +291,42 @@ def _resolve_remote_root(ssh: SSH, node: Node) -> str:
 
 def _control_rebuild(remote_root: str) -> str:
     return (
+        "set -e; "
         f"cd {shlex.quote(remote_root)}; "
         "bash -n proto/compile.sh; "
+        "if docker compose --env-file deploy/env/control.env "
+        "-f docker-compose.control.yml build server web; then "
         "docker compose --env-file deploy/env/control.env "
-        "-f docker-compose.control.yml up -d --build server web; "
+        "-f docker-compose.control.yml up -d --no-build server web; "
+        "else "
+        "echo 'registry build unavailable; rebuilding from cached Mini-Drop images'; "
+        "docker build -f deploy/dockerfiles/server.cached.Dockerfile "
+        "-t mini-drop-control-server .; "
+        "docker build -f deploy/dockerfiles/web.control.cached.Dockerfile "
+        "-t mini-drop-control-web web; "
+        "docker compose --env-file deploy/env/control.env "
+        "-f docker-compose.control.yml up -d --no-build --force-recreate server web; "
+        "fi; "
         "docker compose --env-file deploy/env/control.env -f docker-compose.control.yml ps"
     )
 
 
 def _worker_rebuild(remote_root: str) -> str:
     return (
+        "set -e; "
         f"cd {shlex.quote(remote_root)}; "
         "bash -n proto/compile.sh; "
+        "if docker compose --profile redis --env-file deploy/env/worker.env "
+        "-f docker-compose.worker.yml build agent; then "
         "docker compose --profile redis --env-file deploy/env/worker.env "
-        "-f docker-compose.worker.yml up -d --build agent fluent-bit blackbox-exporter otel-collector redis-exporter; "
+        "-f docker-compose.worker.yml up -d --no-build agent fluent-bit blackbox-exporter otel-collector redis-exporter; "
+        "else "
+        "echo 'registry build unavailable; rebuilding from cached Mini-Drop image'; "
+        "docker build -f deploy/dockerfiles/agent.cached.Dockerfile "
+        "-t mini-drop-worker-agent .; "
+        "docker compose --profile redis --env-file deploy/env/worker.env "
+        "-f docker-compose.worker.yml up -d --no-build --force-recreate agent fluent-bit blackbox-exporter otel-collector redis-exporter; "
+        "fi; "
         "agent_container=$(docker compose --env-file deploy/env/worker.env "
         "-f docker-compose.worker.yml ps -q agent); "
         "test -n \"$agent_container\"; "
@@ -229,6 +356,19 @@ def _normalize_uploaded_scripts(remote_root: str) -> str:
         f"cd {shlex.quote(remote_root)}; "
         "sed -i 's/\\r$//' proto/compile.sh; "
         "chmod 755 proto/compile.sh"
+    )
+
+
+def _configure_control_llm_timeout(remote_root: str, timeout_sec: int) -> str:
+    env_file = f"{remote_root}/deploy/env/control.env"
+    setting = f"MINI_DROP_RCA_LLM_TIMEOUT_SEC={int(timeout_sec)}"
+    return (
+        "set -e; "
+        f"if grep -q '^MINI_DROP_RCA_LLM_TIMEOUT_SEC=' {shlex.quote(env_file)}; then "
+        f"sed -i -E 's/^MINI_DROP_RCA_LLM_TIMEOUT_SEC=.*/{setting}/' {shlex.quote(env_file)}; "
+        "else "
+        f"printf '%s\\n' {shlex.quote(setting)} >> {shlex.quote(env_file)}; "
+        "fi"
     )
 
 

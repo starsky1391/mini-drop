@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 
@@ -507,6 +507,8 @@ class ProbeExecutionModel(Base):
     task_id = Column(String(128), ForeignKey("tasks.id"), nullable=True, index=True)
     approved_by = Column(String(128), nullable=True)
     approved_at = Column(DateTime(timezone=True), nullable=True)
+    evidence_status = Column(String(32), nullable=True)
+    evidence_reason = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False)
     updated_at = Column(DateTime(timezone=True), nullable=False)
 
@@ -524,6 +526,8 @@ class ProbeExecutionModel(Base):
             "task_id": self.task_id,
             "approved_by": self.approved_by,
             "approved_at": self.approved_at,
+            "evidence_status": self.evidence_status,
+            "evidence_reason": self.evidence_reason,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -593,6 +597,7 @@ class WatchSubscriptionModel(Base):
     retention_seconds = Column(Integer, nullable=False)
     trigger_policy = Column(String(32), nullable=False)
     trigger_action = Column(String(32), nullable=False)
+    auto_diagnosis_enabled = Column(Boolean, nullable=False, default=True)
     status = Column(String(16), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False)
     updated_at = Column(DateTime(timezone=True), nullable=False)
@@ -613,6 +618,7 @@ class WatchSubscriptionModel(Base):
             "retention_seconds": self.retention_seconds,
             "trigger_policy": self.trigger_policy,
             "trigger_action": self.trigger_action,
+            "auto_diagnosis_enabled": self.auto_diagnosis_enabled is not False,
             "status": self.status,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -646,6 +652,17 @@ class WatchIncidentModel(Base):
     analysis_session_id = Column(String(128), nullable=True)
     analysis_result_json = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False)
+    episode_id = Column(String(128), nullable=True, index=True)
+    episode_status = Column(String(32), nullable=False, default="AGGREGATING")
+    aggregation_deadline = Column(DateTime(timezone=True), nullable=True)
+    first_seen_at = Column(DateTime(timezone=True), nullable=True)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True)
+    recovery_observations = Column(Integer, nullable=False, default=0)
+    occurrence_count = Column(Integer, nullable=False, default=1)
+    diagnosis_eligible = Column(Boolean, nullable=False, default=False)
+    impact_status = Column(String(32), nullable=False, default="impact_unconfirmed")
+    anomaly_points_json = Column(JSON, default=list)
+    conclusion_revision_count = Column(Integer, nullable=False, default=0)
 
     def to_dict(self) -> dict:
         return {
@@ -666,6 +683,17 @@ class WatchIncidentModel(Base):
             "analysis_session_id": self.analysis_session_id,
             "analysis_result": self.analysis_result_json,
             "created_at": self.created_at,
+            "episode_id": self.episode_id,
+            "episode_status": self.episode_status or "AGGREGATING",
+            "aggregation_deadline": self.aggregation_deadline,
+            "first_seen_at": self.first_seen_at,
+            "last_seen_at": self.last_seen_at,
+            "recovery_observations": self.recovery_observations or 0,
+            "occurrence_count": self.occurrence_count or 1,
+            "diagnosis_eligible": bool(self.diagnosis_eligible),
+            "impact_status": self.impact_status or "impact_unconfirmed",
+            "anomaly_points": self.anomaly_points_json or [],
+            "conclusion_revision_count": self.conclusion_revision_count or 0,
         }
 
 

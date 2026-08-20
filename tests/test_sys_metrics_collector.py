@@ -126,6 +126,92 @@ class TestSysMetricsCollector:
         assert summary["stopped_sample_count"] == 5
         assert summary["stopped_sample_ratio"] == 1.0
 
+    def test_summary_keeps_process_cpu_separate_from_host_cpu(self):
+        samples = [
+            {
+                "ts": float(index),
+                "cpu": {"user": 70.0, "system": 25.0, "iowait": 0.0},
+                "load": {},
+                "network": {},
+                "process": {
+                    "cpu_user_pct": 1.5,
+                    "cpu_sys_pct": 0.5,
+                    "process_state": "S",
+                },
+            }
+            for index in range(3)
+        ]
+
+        summary = SysMetricsCollector._compute_summary(samples)
+
+        assert summary["avg_cpu_user_pct"] == 1.5
+        assert summary["avg_cpu_sys_pct"] == 0.5
+        assert summary["avg_host_cpu_user_pct"] == 70.0
+        assert summary["avg_host_cpu_sys_pct"] == 25.0
+        assert summary["process_cpu_sample_count"] == 3
+
+    def test_workload_scope_aggregates_cgroup_children(self):
+        collector = SysMetricsCollector()
+        metrics = {
+            100: {"utime_ticks": 10, "stime_ticks": 2, "num_threads": 1, "fd_count": 3, "vmrss_kb": 100},
+            101: {"utime_ticks": 80, "stime_ticks": 8, "num_threads": 2, "fd_count": 4, "vmrss_kb": 200},
+            102: {"utime_ticks": 90, "stime_ticks": 9, "num_threads": 3, "fd_count": 5, "vmrss_kb": 300},
+        }
+        with mock.patch.object(SysMetricsCollector, "_read_cgroup_path", return_value="/system.slice/noise.service"), \
+             mock.patch.object(SysMetricsCollector, "_read_cgroup_pids", return_value=[100, 101, 102]), \
+             mock.patch.object(SysMetricsCollector, "_read_process_metrics", side_effect=lambda pid: metrics[pid]), \
+             mock.patch.object(SysMetricsCollector, "_pid_exists", return_value=True):
+            workload = collector._read_workload_metrics(100, metrics[100])
+
+        assert workload["scope_source"] == "cgroup"
+        assert workload["member_pids"] == [100, 101, 102]
+        assert workload["utime_ticks"] == 180
+        assert workload["num_threads"] == 6
+        assert workload["fd_count"] == 12
+
+    def test_new_workload_member_does_not_create_lifetime_cpu_spike(self):
+        previous = {
+            "members": [
+                {"pid": 100, "utime_ticks": 100, "stime_ticks": 0},
+                {"pid": 101, "utime_ticks": 100, "stime_ticks": 0},
+            ]
+        }
+        current = {
+            "members": [
+                {"pid": 101, "utime_ticks": 150, "stime_ticks": 0},
+                {"pid": 102, "utime_ticks": 99999, "stime_ticks": 0},
+            ]
+        }
+
+        SysMetricsCollector._apply_workload_cpu_percent(current, previous, elapsed=1.0, clock_ticks=100)
+
+        assert current["cpu_total_pct"] == 50.0
+        assert next(item for item in current["members"] if item["pid"] == 102)["cpu_total_pct"] == 0.0
+
+    def test_subsecond_first_interval_is_excluded_from_cpu_summary(self):
+        current = {"members": [{"pid": 100, "utime_ticks": 50000, "stime_ticks": 0}]}
+        previous = {"members": [{"pid": 100, "utime_ticks": 100, "stime_ticks": 0}]}
+
+        SysMetricsCollector._apply_workload_cpu_percent(
+            current,
+            previous,
+            elapsed=0.001,
+            clock_ticks=100,
+            interval_valid=False,
+        )
+        summary = SysMetricsCollector._compute_summary([{
+            "ts": 1.0,
+            "cpu": {"user": 90.0, "system": 5.0, "iowait": 0.0},
+            "load": {},
+            "network": {},
+            "process": {"process_state": "S"},
+            "workload": current,
+        }])
+
+        assert current["cpu_total_pct"] == 0.0
+        assert summary["avg_cpu_user_pct"] == 0
+        assert summary["process_cpu_sample_count"] == 0
+
     def test_parse_stat(self):
         """Verify stat parsing logic."""
         collector = SysMetricsCollector()

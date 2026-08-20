@@ -18,7 +18,7 @@ let elkInstance = null;
 
 const NODE_SIZE = {
   width: 280,
-  height: 142,
+  height: 158,
 };
 
 const EDGE_COLORS = {
@@ -28,8 +28,11 @@ const EDGE_COLORS = {
   lineage: "#748094",
 };
 
-function ControlledAITreeGraphInner({ tree, evidenceMap }) {
-  const sourceGraph = useMemo(() => buildControlledAITreeGraph(tree), [tree]);
+function ControlledAITreeGraphInner({ tree, evidenceMap, highlightedCandidateIds = [] }) {
+  const sourceGraph = useMemo(
+    () => buildControlledAITreeGraph(tree, highlightedCandidateIds),
+    [tree, highlightedCandidateIds],
+  );
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -134,7 +137,7 @@ function AITreeNode({ data }) {
 
   return (
     <Popover trigger="hover" placement="right" content={content}>
-      <div className={`ai-tree-node ai-tree-node-${data.role} ${isRejected ? "ai-tree-node-muted" : ""} ${isForbidden ? "ai-tree-node-forbidden" : ""}`}>
+      <div className={`ai-tree-node ai-tree-node-${data.role} ${isRejected ? "ai-tree-node-muted" : ""} ${isForbidden ? "ai-tree-node-forbidden" : ""} ${data.outsideFinalBoundary ? "ai-tree-node-observed-only" : ""} ${data.highlighted ? "ai-tree-node-highlighted" : ""}`}>
         <Handle type="target" position={Position.Top} />
         <div className="ai-tree-node-topline">
           <span className="ai-tree-node-role">{ROLE_LABELS[data.role] || data.role}</span>
@@ -159,6 +162,7 @@ function AITreeNode({ data }) {
               <Tag key={badge} className="ai-tree-node-badge">{badge}</Tag>
             ))}
           </Space>
+          {data.outsideFinalBoundary && <span className="ai-tree-node-boundary-note">未入终态</span>}
         </div>
         <Handle type="source" position={Position.Bottom} />
       </div>

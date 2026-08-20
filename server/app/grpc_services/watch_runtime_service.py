@@ -106,6 +106,9 @@ def _metric_sample_from_proto(sample: watch_pb2.WatchMetricSample) -> MetricSamp
         iowait_percent=sample.iowait_percent if sample.has_iowait_percent else None,
         rss_mb=sample.rss_mb if sample.has_rss_mb else None,
         error_count=sample.error_count if sample.has_error_count else None,
+        process_state=sample.process_state or None,
+        throttled_percent=sample.throttled_percent if sample.has_throttled_percent else None,
+        queue_depth=sample.queue_depth if sample.has_queue_depth else None,
     )
 
 

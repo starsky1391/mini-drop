@@ -46,8 +46,14 @@ from agent.mini_drop_agent.collectors.perf import PerfCollector
 from agent.mini_drop_agent.collectors.process_inventory import ProcessInventoryCollector
 from agent.mini_drop_agent.collectors.pprof import PprofCollector
 from agent.mini_drop_agent.collectors.pyspy import PySpyCollector
+from agent.mini_drop_agent.collectors.python_heap import PythonHeapCollector
+from agent.mini_drop_agent.collectors.python_heap_reference import PythonHeapReferenceCollector
 from agent.mini_drop_agent.collectors.redis_check import RedisCheckCollector
+from agent.mini_drop_agent.collectors.runtime_control import RuntimeControlCollector
+from agent.mini_drop_agent.collectors.source_snapshot import SourceSnapshotCollector
+from agent.mini_drop_agent.collectors.source_mechanism import SourceMechanismCollector
 from agent.mini_drop_agent.collectors.sys_metrics import SysMetricsCollector
+from agent.mini_drop_agent.runtime_control import RuntimeControlObserver
 from agent.mini_drop_agent.artifact_upload import maybe_upload_artifacts
 from agent.mini_drop_agent.collector_profile import collector_profile_json
 from agent.mini_drop_agent.connection import GrpcConnection
@@ -71,6 +77,10 @@ COLLECTORS = {
     "perf_cpu": PerfCollector(),
     "ebpf_io": EBPFCollector(),
     "pyspy": PySpyCollector(),
+    "python_heap_profile": PythonHeapCollector(),
+    "python_heap_reference": PythonHeapReferenceCollector(),
+    "source_snapshot": SourceSnapshotCollector(),
+    "source_mechanism_query": SourceMechanismCollector(),
     "continuous_perf": ContinuousCollector(),
     "java_async": JavaAsyncProfilerCollector(),
     "go_pprof": PprofCollector(),
@@ -83,6 +93,7 @@ COLLECTORS = {
     "dependency_check": DependencyCheckCollector(),
     "redis_check": RedisCheckCollector(),
     "process_inventory": ProcessInventoryCollector(),
+    "runtime_control_history": RuntimeControlCollector(),
 }
 
 CAPABILITIES = sorted(COLLECTORS.keys())
@@ -233,7 +244,11 @@ def _collector_worker(work_queue, result_queue, config: AgentConfig) -> None:
             work_queue.task_done()
 
 
-def _watch_sync_loop(conn: GrpcConnection, config: AgentConfig) -> None:
+def _watch_sync_loop(
+    conn: GrpcConnection,
+    config: AgentConfig,
+    runtime_control_observer: RuntimeControlObserver | None = None,
+) -> None:
     """Keep all assigned watch leases alive without blocking task collection."""
     states: dict[str, WatchObservationState] = {}
     samplers: dict[str, ProcessDeltaSampler] = {}
@@ -284,6 +299,8 @@ def _watch_sync_loop(conn: GrpcConnection, config: AgentConfig) -> None:
             )
             returned = {lease.watch_id: lease for lease in response.lease}
             leases = returned
+            if runtime_control_observer is not None:
+                runtime_control_observer.set_targets(lease.target_pid for lease in returned.values())
             active_ids = set(returned)
             for watch_id in set(states) - active_ids:
                 states.pop(watch_id, None)
@@ -384,6 +401,8 @@ def main() -> None:
 
     # 初始化注册 + 拉取配置（带重试）
     config = _init_register_with_retry(conn, config)
+    runtime_control_observer = RuntimeControlObserver()
+    runtime_control_observer.start()
 
     work_queue = queue.Queue(maxsize=1)
     result_queue = queue.Queue()
@@ -396,7 +415,7 @@ def main() -> None:
     worker.start()
     watch_thread = threading.Thread(
         target=_watch_sync_loop,
-        args=(conn, config),
+        args=(conn, config, runtime_control_observer),
         name="watch-sync",
         daemon=True,
     )
@@ -479,6 +498,7 @@ def main() -> None:
     work_queue.put(None)
     worker.join(timeout=5)
     watch_thread.join(timeout=5)
+    runtime_control_observer.stop()
     conn.close()
 
 
@@ -508,6 +528,11 @@ _TASK_TYPE_COLLECTOR: dict[int, str] = {
     12: "redis_check",
     13: "pyspy",
     14: "process_inventory",
+    15: "runtime_control_history",
+    16: "python_heap_profile",
+    17: "source_snapshot",
+    18: "source_mechanism_query",
+    19: "python_heap_reference",
 }
 
 

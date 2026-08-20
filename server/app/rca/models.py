@@ -236,6 +236,10 @@ class AITreeCandidateNode(BaseModel):
     ] = "unknown"
     claim_type: Literal[
         "root_cause",
+        "complete_root_cause",
+        "direct_root_cause",
+        "complete_source_root_cause",
+        "direct_failure_mechanism",
         "likely_root_cause",
         "partial_localization",
         "observation_only",
@@ -332,6 +336,63 @@ class ControlledAITree(BaseModel):
     final_secondary_causes: list[str] = Field(default_factory=list)
     final_rejected_causes: list[str] = Field(default_factory=list)
     final_unknown_causes: list[str] = Field(default_factory=list)
+
+
+class CausalExplanationStep(BaseModel):
+    """One evidence-backed step from cause to observed symptom."""
+
+    step_id: str
+    statement: str
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class RootCauseRecommendation(BaseModel):
+    """A non-executing investigation or remediation suggestion."""
+
+    recommendation_type: Literal["investigation", "temporary_mitigation", "permanent_fix"]
+    action: str
+    rationale: str = ""
+
+
+class RootCauseCluster(BaseModel):
+    """One independently qualified causal mechanism in a diagnosis session."""
+
+    cluster_id: str
+    candidate_ids: list[str] = Field(default_factory=list)
+    source_tree_candidate_ids: list[str] = Field(default_factory=list)
+    role: Literal["primary", "contributing", "independent"] = "primary"
+    causal_status: Literal["primary", "contributing", "independent", "unknown"] = "unknown"
+    cause_level: Literal[
+        "observation",
+        "direct_failure_mechanism",
+        "direct_root_cause",
+        "complete_source_root_cause",
+    ] = "observation"
+    mechanism: str
+    target: str
+    claim: str
+    why_it_happened: str = ""
+    explained_symptoms: list[str] = Field(default_factory=list)
+    causal_chain: list[CausalExplanationStep] = Field(default_factory=list)
+    relation_to_primary: str = ""
+    evidence_refs: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    residual_unknowns: list[str] = Field(default_factory=list)
+    recommendations: list[RootCauseRecommendation] = Field(default_factory=list)
+    conclusion_eligible: bool = False
+
+
+class SessionConclusionReview(BaseModel):
+    """Bounded session-level LLM adjudication result."""
+
+    headline: str
+    why_it_happened: str
+    primary_cluster_id: Optional[str] = None
+    cluster_roles: dict[str, Literal["primary", "contributing", "independent"]] = Field(default_factory=dict)
+    causal_chain: list[CausalExplanationStep] = Field(default_factory=list)
+    ruled_out_summary: list[str] = Field(default_factory=list)
+    residual_unknowns: list[str] = Field(default_factory=list)
+    recommendations: dict[str, list[RootCauseRecommendation]] = Field(default_factory=dict)
 
 
 class EvidenceAttributionResult(BaseModel):

@@ -481,6 +481,41 @@ class TestHotmethodNotifyResult:
         assert task.status == TaskStatus.DONE
         assert task.status_reason == "进程清单结构化证据已生成"
 
+    @pytest.mark.parametrize(
+        ("artifact_type", "expected_reason"),
+        [
+            ("python_heap_profile_json", "Memray Python Heap 结构化证据已生成"),
+            ("source_snapshot_json", "源码快照结构化证据已生成"),
+            ("source_mechanism_json", "CodeQL 源码机制证据已生成"),
+            ("python_heap_reference_json", "PyHeap 运行时引用证据已生成"),
+        ],
+    )
+    def test_notify_python_depth_evidence_transitions_to_done(
+        self,
+        grpc_fix: GrpcFixture,
+        artifact_type: str,
+        expected_reason: str,
+    ):
+        task_id = self._create_and_start_task(grpc_fix)
+
+        grpc_fix.hotmethod_stub.NotifyResult(
+            hotmethod_pb2.TaskResult(
+                task_id=task_id,
+                error_message="",
+                artifact_metadata_json=json.dumps([{
+                    "artifact_type": artifact_type,
+                    "filename": f"{artifact_type}.json",
+                    "metadata": {"data": {"evidence_status": "valid"}},
+                }]),
+            )
+        )
+
+        task = grpc_fix.repo.tasks[task_id]
+        assert task.status == TaskStatus.DONE
+        assert task.status_reason == expected_reason
+        events = [event.to_status for event in grpc_fix.repo.events if event.task_id == task_id]
+        assert events[-2:] == [TaskStatus.ANALYZING, TaskStatus.DONE]
+
     def test_notify_failure_transitions_to_failed(self, grpc_fix: GrpcFixture):
         task_id = self._create_and_start_task(grpc_fix)
         grpc_fix.hotmethod_stub.NotifyResult(

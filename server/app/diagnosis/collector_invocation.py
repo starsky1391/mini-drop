@@ -48,6 +48,20 @@ def collector_request_fingerprint(invocation: dict[str, Any], options: dict[str,
         "target_context": invocation.get("target_context") or {},
         "evidence_window": _window_from_options(options or {}),
         "source_context": _source_context_from_invocation(invocation),
+        "investigation_scope": _investigation_scope(options or {}),
+    }
+    text = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return f"sha256:{hashlib.sha256(text.encode()).hexdigest()}"
+
+
+def collector_capability_fingerprint(invocation: dict[str, Any]) -> str:
+    """Identify a stable target/capability boundary without diagnosis window identity."""
+    payload = {
+        "collector_family": invocation.get("collector_family"),
+        "probe_id": invocation.get("probe_id"),
+        "target_config": invocation.get("target_config") or {},
+        "target_context": invocation.get("target_context") or {},
+        "source_context": _source_context_from_invocation(invocation),
     }
     text = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
     return f"sha256:{hashlib.sha256(text.encode()).hexdigest()}"
@@ -75,4 +89,21 @@ def _window_from_options(options: dict[str, Any]) -> dict[str, Any]:
             "sample_rate",
         )
         if options.get(key) is not None
+    }
+
+
+def _investigation_scope(options: dict[str, Any]) -> dict[str, Any]:
+    generated = options.get("ai_generated_query") if isinstance(options.get("ai_generated_query"), dict) else {}
+    return {
+        key: value
+        for key, value in {
+            "source_revision": options.get("source_revision") or options.get("repo_revision"),
+            "line_candidates": options.get("line_candidates"),
+            "codeql_query_hash": generated.get("query_hash"),
+            "investigation_question": generated.get("investigation_question"),
+            "object_type_hints": options.get("object_type_hints"),
+            "pyheap_dump_path": options.get("pyheap_dump_path"),
+            "codeql_sarif_path": options.get("codeql_sarif_path"),
+        }.items()
+        if value not in (None, "", [])
     }

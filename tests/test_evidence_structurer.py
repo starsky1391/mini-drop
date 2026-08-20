@@ -153,6 +153,35 @@ def test_flamegraph_json_can_produce_compact_top_functions_when_top_json_missing
     assert structured.stack_summary["dominant_hot_frame"] == "gateway"
 
 
+def test_top_functions_reject_invalid_anchors_samples_and_percentages():
+    structured = structure_artifact_evidence(
+        task_id="invalid-profile",
+        artifacts=[],
+        artifact_values={
+            "top_json": [
+                {"name": "[unknown]", "samples": 10, "percent": 10},
+                {"name": "0x7ffee", "samples": 10, "percent": 10},
+                {"name": "negative", "samples": -1, "percent": 5},
+                {"name": "overflow", "samples": 20, "percent": 1345},
+                {
+                    "name": "Rule.compile",
+                    "file": "werkzeug/routing.py",
+                    "line": 768,
+                    "samples": 21,
+                    "percent": 70,
+                    "call_path": ["Map.__init__", "Rule.bind", "Rule.compile"],
+                },
+            ],
+        },
+    )
+
+    assert len(structured.top_functions) == 1
+    assert structured.top_functions[0]["name"] == "Rule.compile"
+    assert structured.top_functions[0]["file"] == "werkzeug/routing.py"
+    assert structured.top_functions[0]["line"] == 768
+    assert structured.top_functions[0]["call_path"][-1] == "Rule.compile"
+
+
 def test_flamegraph_svg_titles_can_be_structured_when_json_is_missing():
     structured = structure_artifact_evidence(
         task_id="svg_task",

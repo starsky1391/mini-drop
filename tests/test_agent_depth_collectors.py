@@ -207,7 +207,7 @@ def test_trace_endpoint_collector_preserves_structured_blocked_profile(tmp_path)
         if item["artifact_type"] == "trace_endpoint_profile_json"
     )
     assert profile["correlation_status"]["status"] == "blocked"
-    assert profile["correlation_status"]["max_supported_level"] == "function"
+    assert profile["correlation_status"]["max_supported_level"] == "process"
     assert profile["correlation_status"]["blocked_details"]["repair_action"]
     assert "capability_check" in profile
 

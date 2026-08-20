@@ -75,7 +75,9 @@ def parse_diagnosis_intent(request: CreateDiagnosisRequest) -> NormalizedIntent:
             intent.environment = request.context.environment
         if request.context.time_range:
             intent.time_range = request.context.time_range
-        if _looks_like_runtime_contention(request.query):
+        if _has_memray_context(request):
+            intent.symptom = "memory_pressure"
+        elif _looks_like_runtime_contention(request.query):
             intent.symptom = "runtime_contention"
         return intent
     except Exception:
@@ -84,17 +86,25 @@ def parse_diagnosis_intent(request: CreateDiagnosisRequest) -> NormalizedIntent:
 
 def _fallback_intent(request: CreateDiagnosisRequest) -> NormalizedIntent:
     text = request.query.lower()
-    if any(key in text for key in ("噪声邻居", "同机", "抢占", "争抢", "noisy neighbor")):
+    if _has_memray_context(request):
+        symptom = "memory_pressure"
+    elif any(key in text for key in ("噪声邻居", "同机", "抢占", "争抢", "noisy neighbor")):
         symptom = "noisy_neighbor"
     elif any(key in text for key in (
         "锁", "阻塞", "等待", "线程很多", "线程数", "吞吐下降", "卡住", "stall",
         "lock", "mutex", "contention", "blocked", "wait", "thread",
     )):
         symptom = "runtime_contention"
-    elif any(key in text for key in ("磁盘", "io", "i/o", "读写", "存储")):
-        symptom = "io_degradation"
-    elif any(key in text for key in ("内存", "oom", "rss", "泄漏", "swap")):
+    elif any(key in text for key in (
+        "内存", "oom", "rss", "泄漏", "swap", "memray", "retained allocation",
+        "memory leak", "reference cycle",
+    )):
         symptom = "memory_pressure"
+    elif (
+        any(key in text for key in ("磁盘", "i/o", "读写", "存储"))
+        or re.search(r"\bio\b", text) is not None
+    ):
+        symptom = "io_degradation"
     elif any(key in text for key in ("cpu", "负载", "热点", "飙高")):
         symptom = "cpu_saturation"
     elif any(key in text for key in ("慢", "延迟", "超时", "latency", "timeout")):
@@ -140,6 +150,19 @@ def _looks_like_runtime_contention(text: str) -> bool:
         "锁", "阻塞", "等待", "线程很多", "线程数", "吞吐下降", "卡住", "stall",
         "lock", "mutex", "contention", "blocked", "wait", "thread",
     ))
+
+
+def _has_memray_context(request: CreateDiagnosisRequest) -> bool:
+    contexts = [request.context.source_context]
+    contexts.extend(instance.source_context for instance in request.context.instances)
+    return any(
+        context is not None and any((
+            context.memray_result_path,
+            context.memray_stats_path,
+            context.memray_leaks_path,
+        ))
+        for context in contexts
+    )
 
 
 def _extract_service(text: str) -> str | None:

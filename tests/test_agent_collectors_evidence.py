@@ -7,6 +7,7 @@ import json
 from agent.mini_drop_agent.collectors.base import CollectorTask
 from agent.mini_drop_agent.collectors.dependency import DependencyCheckCollector
 from agent.mini_drop_agent.collectors.log_scan import LogScanCollector
+from agent.mini_drop_agent.collectors.log_scan import _bounded_tail_lines
 from agent.mini_drop_agent.collectors.redis_check import RedisCheckCollector
 
 
@@ -111,6 +112,7 @@ def test_log_scan_marks_corrupt_input_as_failed_structured_artifact(tmp_path):
     payload = _artifact_json(result.artifacts[0])
     assert result.ok is False
     assert payload["adapter"]["source_status"] == "corrupt_input"
+    assert payload["adapter"]["source_status"] == "corrupt_input"
     assert payload["adapter"]["corrupt_paths"] == [str(source)]
 
 
@@ -156,7 +158,18 @@ def test_log_scan_marks_missing_source_as_structured_failure(tmp_path):
 
     payload = _artifact_json(result.artifacts[0])
     assert result.ok is False
-    assert payload["adapter"]["source_status"] == "source_missing"
+
+
+def test_log_scan_reads_only_bounded_tail_of_large_file(tmp_path):
+    path = tmp_path / "large.ndjson"
+    with path.open("wb") as fh:
+        fh.seek(4 * 1024 * 1024)
+        fh.write(b'\n{"timestamp":1787120491,"message":"tail error"}\n')
+
+    lines = _bounded_tail_lines(path, 4096, 10)
+
+    assert any("tail error" in line for line in lines)
+    assert sum(len(line) for line in lines) < 4096
 
 
 def test_dependency_check_adapter_normalizes_blackbox_exporter_metrics(tmp_path):

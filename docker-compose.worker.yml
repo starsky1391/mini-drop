@@ -27,25 +27,48 @@ services:
       MINIO_SECURE: ${MINIO_SECURE:-0}
       MINI_DROP_MANAGED_COLLECTORS: ${MINI_DROP_MANAGED_COLLECTORS:-1}
       MINI_DROP_LOG_AUTO_DISCOVER: ${MINI_DROP_LOG_AUTO_DISCOVER:-1}
-      MINI_DROP_LOG_PIPELINE_OUTPUT: ${MINI_DROP_LOG_PIPELINE_OUTPUT:-/var/lib/mini-drop/logs/logs.ndjson}
+      MINI_DROP_LOG_PIPELINE_OUTPUT: ${MINI_DROP_LOG_PIPELINE_OUTPUT:-/var/lib/mini-drop/logs}
       MINI_DROP_TRACE_PATHS: ${MINI_DROP_TRACE_PATHS:-/var/lib/mini-drop/traces}
       MINI_DROP_OFFCPU_PROFILE_PATHS: ${MINI_DROP_OFFCPU_PROFILE_PATHS:-/var/lib/mini-drop/profiles/offcpu}
       MINI_DROP_EBPF_PROFILE_ENABLED: ${MINI_DROP_EBPF_PROFILE_ENABLED:-1}
+      MINI_DROP_RUNTIME_CONTROL_STORE: ${MINI_DROP_RUNTIME_CONTROL_STORE:-/var/lib/mini-drop/runtime-control/events.ndjson}
+      MINI_DROP_RELEASE_EVENT_PATH: ${MINI_DROP_RELEASE_EVENT_PATH:-/var/lib/mini-drop/runtime-control/releases.ndjson}
+      MINI_DROP_K8S_AUDIT_PATH: ${MINI_DROP_K8S_AUDIT_PATH:-/var/lib/mini-drop/runtime-control/kubernetes-audit.ndjson}
+      MINI_DROP_CONTAINERD_SOCKET: ${MINI_DROP_CONTAINERD_SOCKET:-/var/run/docker/containerd/containerd.sock}
       MINI_DROP_BLACKBOX_URL: ${MINI_DROP_BLACKBOX_URL:-http://blackbox-exporter:9115}
       MINI_DROP_REDIS_EXPORTER_URL: ${MINI_DROP_REDIS_EXPORTER_URL:-}
+      MINI_DROP_MEMRAY_ROOTS: ${MINI_DROP_MEMRAY_ROOTS:-/var/lib/mini-drop/profiles,/tmp/mini-drop}
+      MINI_DROP_SOURCE_ROOTS: ${MINI_DROP_SOURCE_ROOTS:-/host/home,/usr/src}
+      MINI_DROP_CODEQL_QUERY_SUITE: ${MINI_DROP_CODEQL_QUERY_SUITE:-}
+      MINI_DROP_CODEQL_QUERY_PACK_VERSION: ${MINI_DROP_CODEQL_QUERY_PACK_VERSION:-unversioned}
+      MINI_DROP_CODEQL_CACHE_ROOT: ${MINI_DROP_CODEQL_CACHE_ROOT:-/var/lib/mini-drop/codeql}
+      MINI_DROP_CODEQL_ARTIFACT_ROOTS: ${MINI_DROP_CODEQL_ARTIFACT_ROOTS:-/var/lib/mini-drop/codeql,/var/lib/mini-drop/profiles,/tmp/mini-drop}
+      MINI_DROP_PYHEAP_DUMPER: ${MINI_DROP_PYHEAP_DUMPER:-pyheap_dump}
+      MINI_DROP_PYHEAP_ROOTS: ${MINI_DROP_PYHEAP_ROOTS:-/var/lib/mini-drop/profiles,/tmp/mini-drop}
+      PYHEAP_CACHE_DIR: ${PYHEAP_CACHE_DIR:-/var/lib/mini-drop/pyheap-cache}
     volumes:
       - ./deploy/certs:/certs:ro
       - collector_logs:/var/lib/mini-drop/logs:ro
       - trace_exports:/var/lib/mini-drop/traces:ro
       - profile_exports:/var/lib/mini-drop/profiles:ro
+      - runtime_control:/var/lib/mini-drop/runtime-control
+      - codeql_cache:/var/lib/mini-drop/codeql
+      - pyheap_cache:/var/lib/mini-drop/pyheap-cache
       - /var/lib/docker/containers:/host/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/docker/containerd:/var/run/docker/containerd:ro
+      - /run/log/journal:/run/log/journal:ro
+      - /var/log/journal:/var/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /sys/kernel/debug:/sys/kernel/debug
       - /lib/modules:/lib/modules:ro
       - /usr/src:/usr/src:ro
+      - /home:/host/home:ro
     privileged: true
     pid: host
+    cgroup: host
     cap_add:
       - SYS_PTRACE
       - PERFMON
@@ -64,6 +87,9 @@ services:
       - ./deploy/collectors/fluent-bit:/fluent-bit/etc:ro
       - /var/log:/host/var/log:ro
       - /var/lib/docker/containers:/host/var/lib/docker/containers:ro
+      - /run/log/journal:/run/log/journal:ro
+      - /var/log/journal:/var/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro
       - collector_logs:/buffers
     command: ["/fluent-bit/bin/fluent-bit", "-c", "/fluent-bit/etc/fluent-bit.conf"]
     restart: unless-stopped
@@ -103,3 +129,6 @@ volumes:
   collector_logs:
   trace_exports:
   profile_exports:
+  runtime_control:
+  codeql_cache:
+  pyheap_cache:

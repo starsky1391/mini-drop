@@ -39,6 +39,8 @@ import {
   runAIValidation,
 } from "../api/client";
 import ControlledAITreeGraph from "../components/diagnosis/ControlledAITreeGraph";
+import RootCauseClusters from "../components/diagnosis/RootCauseClusters";
+import "./AIDiagnosis.css";
 
 const TERMINAL = new Set([
   "COMPLETED",
@@ -267,7 +269,7 @@ export default function AIDiagnosis() {
   }
 
   return (
-    <Space direction="vertical" size="large" style={{ width: "100%" }}>
+    <Space className="ai-diagnosis-page" direction="vertical" size="large" style={{ width: "100%" }}>
       <Space>
         <RobotOutlined style={{ fontSize: 22, color: "#722ed1" }} />
         <Typography.Title level={4} style={{ margin: 0 }}>AI 集群诊断</Typography.Title>
@@ -515,6 +517,7 @@ function DiagnosisDetail({ detail }) {
   const hypotheses = detail.hypothesis_graph?.hypotheses || [];
   const probes = detail.probes || [];
   const evidence = detail.evidence || [];
+  const [highlightedTreeCandidates, setHighlightedTreeCandidates] = useState([]);
   const evidenceMap = useMemo(() => new Map(evidence.map((item) => [item.evidence_id, item])), [evidence]);
   const traceProfiles = useMemo(
     () => evidence
@@ -548,6 +551,14 @@ function DiagnosisDetail({ detail }) {
     () => countControlledTreeBranches(conclusion?.controlled_ai_tree),
     [conclusion?.controlled_ai_tree],
   );
+  const aiReviewStatus = conclusion?.ai_review_status || "fallback";
+
+  function inspectClusterInTree(candidateIds) {
+    setHighlightedTreeCandidates(candidateIds);
+    requestAnimationFrame(() => {
+      document.getElementById("controlled-ai-tree")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
@@ -571,11 +582,44 @@ function DiagnosisDetail({ detail }) {
         <Card title="最新结论">
           <Alert
             showIcon
-            type={detail.status === "INSUFFICIENT_EVIDENCE" ? "warning" : "info"}
-            message={conclusion.summary}
-            description={`置信等级：${conclusion.confidence_level}`}
+            type={detail.status === "INSUFFICIENT_EVIDENCE" || aiReviewStatus !== "succeeded" ? "warning" : "info"}
+            message={conclusion.headline || conclusion.summary}
+            description={(
+              <Space direction="vertical" size={6}>
+                <Typography.Text>{conclusion.why_it_happened || conclusion.summary}</Typography.Text>
+                <Space wrap>
+                  <Tag>置信等级 {conclusion.confidence_level}</Tag>
+                  <Tag color={aiReviewStatus === "succeeded" ? "green" : aiReviewStatus === "failed" ? "red" : "orange"}>
+                    {aiReviewStatus === "succeeded" ? "AI 会话裁决已通过" : aiReviewStatus === "failed" ? "AI 裁决失败，已回退" : "Analyzer 回退结论"}
+                  </Tag>
+                  {conclusion.ai_review_model && <Tag>{conclusion.ai_review_model}</Tag>}
+                </Space>
+              </Space>
+            )}
             style={{ marginBottom: 12 }}
           />
+          {aiReviewStatus !== "succeeded" && conclusion.ai_review_error && (
+            <Alert
+              type="warning"
+              showIcon
+              message="当前结论不是 AI 最终裁决"
+              description={conclusion.ai_review_error}
+              style={{ marginBottom: 12 }}
+            />
+          )}
+          <RootCauseClusters
+            clusters={conclusion.root_cause_clusters || []}
+            evidenceMap={evidenceMap}
+            onInspectTree={inspectClusterInTree}
+          />
+          {conclusion.residual_unknowns?.length > 0 && (
+            <Alert
+              type="warning"
+              message="仍未确认的边界"
+              description={conclusion.residual_unknowns.join("；")}
+              style={{ margin: "12px 0" }}
+            />
+          )}
           {assessment && (
             <Descriptions
               size="small"
@@ -633,13 +677,14 @@ function DiagnosisDetail({ detail }) {
 
       {conclusion?.controlled_ai_tree && (
         <Card
+          id="controlled-ai-tree"
           title="受控 AI 树（当前终态）"
           extra={(
             <Space wrap>
               <Tag color="red">主因 {treeStats.primary}</Tag>
               <Tag color="default">反证 {treeStats.rejected}</Tag>
               <Tag color="blue">未知/阻断 {treeStats.unknown}</Tag>
-              <Tag color={conclusion.controlled_ai_tree.final_supported_level === "line" ? "green" : "blue"}>停在 {conclusion.controlled_ai_tree.final_supported_level}</Tag>
+              <Tag color={conclusion.controlled_ai_tree.final_supported_level === "line" ? "green" : "blue"}>正式结论：{conclusion.controlled_ai_tree.final_supported_level}</Tag>
             </Space>
           )}
         >
@@ -647,10 +692,14 @@ function DiagnosisDetail({ detail }) {
             type={conclusion.controlled_ai_tree.probe_edges?.length ? "warning" : "success"}
             showIcon
             message={conclusion.controlled_ai_tree.stop_reason || "AI 树已按当前证据边界停止。"}
-            description={`当前展示最新终态树；旧子任务只提供采集证据，不再生成独立结论。预算：AI rounds ${conclusion.controlled_ai_tree.budget?.used_ai_rounds || 0}/${conclusion.controlled_ai_tree.budget?.max_ai_rounds || 0}，探针请求 ${conclusion.controlled_ai_tree.budget?.used_probe_requests || 0}/${conclusion.controlled_ai_tree.budget?.max_probe_requests_per_round || 0}`}
+            description={`树中会保留比正式结论更深的已观察节点，并标记为“未入终态”；这些节点不等于正式根因。预算：AI rounds ${conclusion.controlled_ai_tree.budget?.used_ai_rounds || 0}/${conclusion.controlled_ai_tree.budget?.max_ai_rounds || 0}，探针请求 ${conclusion.controlled_ai_tree.budget?.used_probe_requests || 0}/${conclusion.controlled_ai_tree.budget?.max_probe_requests_per_round || 0}`}
             style={{ marginBottom: 12 }}
           />
-          <ControlledAITreeGraph tree={conclusion.controlled_ai_tree} evidenceMap={evidenceMap} />
+          <ControlledAITreeGraph
+            tree={conclusion.controlled_ai_tree}
+            evidenceMap={evidenceMap}
+            highlightedCandidateIds={highlightedTreeCandidates}
+          />
         </Card>
       )}
 

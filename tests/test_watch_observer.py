@@ -30,6 +30,9 @@ def test_sample_roundtrip_preserves_presence_flags():
         has_cpu_percent=True,
         rss_mb=128,
         has_rss_mb=True,
+        process_state="S",
+        throttled_percent=12.5,
+        has_throttled_percent=True,
     )
 
     restored = dict_to_sample(sample_to_dict(sample))
@@ -38,6 +41,8 @@ def test_sample_roundtrip_preserves_presence_flags():
     assert restored.cpu_percent == 42.5
     assert restored.has_rss_mb is True
     assert restored.has_thread_count is False
+    assert restored.process_state == "S"
+    assert restored.throttled_percent == 12.5
 
 
 def test_process_delta_sampler_reports_short_window_cpu_delta():
@@ -63,6 +68,40 @@ def test_process_delta_sampler_reports_short_window_cpu_delta():
 
     assert "cpu_percent" not in first
     assert second["cpu_percent"] == 50.0
+
+
+def test_process_delta_sampler_uses_cgroup_counter_deltas_for_throttling():
+    sampler = ProcessDeltaSampler()
+    snapshots = [
+        {
+            "metrics": {},
+            "snapshot": type("Snapshot", (), {
+                "monotonic_ts": 10.0,
+                "cpu_seconds": 2.0,
+                "cgroup_usage_usec": 1_000,
+                "cgroup_throttled_usec": 100,
+            })(),
+            "start_ticks": 100,
+        },
+        {
+            "metrics": {},
+            "snapshot": type("Snapshot", (), {
+                "monotonic_ts": 12.0,
+                "cpu_seconds": 3.0,
+                "cgroup_usage_usec": 1_800,
+                "cgroup_throttled_usec": 300,
+            })(),
+            "start_ticks": 100,
+        },
+    ]
+    with mock.patch(
+        "agent.mini_drop_agent.watch_observer._read_pid_snapshot",
+        side_effect=snapshots,
+    ):
+        sampler.read(1234)
+        second = sampler.read(1234)
+
+    assert second["throttled_percent"] == 20.0
 
 
 def test_observe_watch_lease_uses_delta_sampler_for_cpu():

@@ -22,6 +22,7 @@ from server.app.rca.llm_client import (
     _ref_exists,
     _validate_and_parse,
     generate_controlled_ai_tree,
+    generate_session_investigation_review,
 )
 from server.app.diagnosis.probe_registry import build_probe_manifest
 from server.app.rca.models import (
@@ -36,6 +37,182 @@ from server.app.rca.models import (
 )
 from server.app.rca.prompt import build_system_prompt, build_user_message
 from server.app.rca.report import run_diagnosis, run_diagnosis_context
+
+
+def test_session_investigation_review_selects_registered_probe_and_guarded_proposal():
+    evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
+    analysis = analyze_evidence(
+        evidence,
+        [CandidateCause(candidate_id="memory_candidate", description="memory", evidence_refs=["top_functions[0]"], rule_score=0.5)],
+    )
+    parent_id = next(
+        node.candidate_id
+        for layer in analysis.controlled_ai_tree.layers
+        for node in [*layer.primary_causes, *layer.secondary_causes, *layer.unknown_causes, *layer.rejected_causes]
+    )
+    response = {
+        "selected_evidence_families": ["python_heap_profile"],
+        "candidate_proposals": [{
+            "candidate_id": "ai_proposal_retained_rule_builder",
+            "parent_candidate_ids": [parent_id],
+            "claim": "动态规则构建阶段保留分配对象，可能造成 Map 生命周期延长。",
+            "mechanism": "retained_allocation_during_rule_compilation",
+            "target": "Rule.compile",
+            "supported_level": "function",
+            "evidence_refs": ["ev_heap"],
+            "opposing_evidence_refs": [],
+            "missing_evidence": ["python_heap_profile"],
+            "what_would_change_my_mind": "Memray 未显示该调用路径存在持续或保留分配。",
+        }],
+    }
+    with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key", "MINI_DROP_AI_ENABLED": "1"}), mock.patch(
+        "server.app.rca.llm_client._call_deepseek", return_value=json.dumps(response)
+    ):
+        result = generate_session_investigation_review(
+            diagnosis_id="diag-1",
+            session_tree=analysis.controlled_ai_tree,
+            evidence_catalog=[{"evidence_id": "ev_heap", "observed_value": {"summary": "memory grows"}}],
+            probe_manifest=build_probe_manifest(),
+            allowed_evidence_families=["python_heap_profile"],
+        )
+    assert result["ai_review_status"] == "succeeded"
+    assert result["selected_evidence_families"] == ["python_heap_profile"]
+    assert result["candidate_proposals"][0]["candidate_id"].startswith("ai_proposal_")
+
+
+def test_session_investigation_review_rejects_unregistered_probe():
+    evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
+    analysis = analyze_evidence(evidence, [])
+    response = {"selected_evidence_families": ["arbitrary_shell"], "candidate_proposals": []}
+    with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key", "MINI_DROP_AI_ENABLED": "1"}), mock.patch(
+        "server.app.rca.llm_client._call_deepseek", return_value=json.dumps(response)
+    ):
+        result = generate_session_investigation_review(
+            diagnosis_id="diag-1",
+            session_tree=analysis.controlled_ai_tree,
+            evidence_catalog=[],
+            probe_manifest=build_probe_manifest(),
+            allowed_evidence_families=["python_heap_profile"],
+        )
+    assert result["ai_review_status"] == "failed"
+
+
+def test_session_investigation_review_accepts_guarded_temporary_codeql_query():
+    evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
+    analysis = analyze_evidence(evidence, [])
+    query = """/**
+ * @name Mini-Drop mechanism path
+ * @kind path-problem
+ * @id mini-drop/mechanism-path
+ */
+import python
+import semmle.python.dataflow.new.DataFlow
+from DataFlow::PathNode source, DataFlow::PathNode sink
+where source = sink
+select sink.getNode(), source, sink, "same anchored node"
+"""
+    response = {
+        "selected_evidence_families": ["source_mechanism_query"],
+        "candidate_proposals": [],
+        "probe_inputs": {
+            "source_mechanism_query": {
+                "ai_generated_query": {
+                    "investigation_question": "converter.to_url 是否经常量容器进入生成函数的 code object？",
+                    "candidate_id": next(
+                        node.candidate_id
+                        for layer in analysis.controlled_ai_tree.layers
+                        for node in [*layer.primary_causes, *layer.secondary_causes, *layer.unknown_causes, *layer.rejected_causes]
+                    ),
+                    "expected_relation": "supports",
+                    "query": query,
+                },
+            },
+        },
+    }
+    with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key", "MINI_DROP_AI_ENABLED": "1"}), mock.patch(
+        "server.app.rca.llm_client._call_deepseek", return_value=json.dumps(response)
+    ):
+        result = generate_session_investigation_review(
+            diagnosis_id="diag-codeql",
+            session_tree=analysis.controlled_ai_tree,
+            evidence_catalog=[],
+            probe_manifest=build_probe_manifest(),
+            allowed_evidence_families=["source_mechanism_query"],
+        )
+
+    assert result["ai_review_status"] == "succeeded"
+    guarded = result["probe_inputs"]["source_mechanism_query"]["ai_generated_query"]
+    assert guarded["origin"] == "ai_guarded"
+    assert guarded["query_hash"].startswith("sha256:")
+    assert guarded["query"] == query.strip()
+
+
+def test_session_investigation_review_rejects_codeql_query_path_import():
+    evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
+    analysis = analyze_evidence(evidence, [])
+    response = {
+        "selected_evidence_families": ["source_mechanism_query"],
+        "candidate_proposals": [],
+        "probe_inputs": {
+            "source_mechanism_query": {
+                "ai_generated_query": {
+                    "investigation_question": "检查机制",
+                    "candidate_id": next(
+                        node.candidate_id
+                        for layer in analysis.controlled_ai_tree.layers
+                        for node in [*layer.primary_causes, *layer.secondary_causes, *layer.unknown_causes, *layer.rejected_causes]
+                    ),
+                    "expected_relation": "supports",
+                    "query": "/** @kind path-problem */\nimport \"/tmp/arbitrary.ql\"\nselect 1",
+                },
+            },
+        },
+    }
+    with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key", "MINI_DROP_AI_ENABLED": "1"}), mock.patch(
+        "server.app.rca.llm_client._call_deepseek", return_value=json.dumps(response)
+    ):
+        result = generate_session_investigation_review(
+            diagnosis_id="diag-codeql-invalid",
+            session_tree=analysis.controlled_ai_tree,
+            evidence_catalog=[],
+            probe_manifest=build_probe_manifest(),
+            allowed_evidence_families=["source_mechanism_query"],
+        )
+
+    assert result["ai_review_status"] == "failed"
+
+
+def test_session_investigation_review_binds_pyheap_to_existing_candidate():
+    evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
+    analysis = analyze_evidence(evidence, [])
+    candidate_id = next(
+        node.candidate_id
+        for layer in analysis.controlled_ai_tree.layers
+        for node in [*layer.primary_causes, *layer.secondary_causes, *layer.unknown_causes, *layer.rejected_causes]
+    )
+    response = {
+        "selected_evidence_families": ["python_heap_reference"],
+        "candidate_proposals": [],
+        "probe_inputs": {
+            "python_heap_reference": {
+                "candidate_id": candidate_id,
+                "object_type_hints": ["function", "code", "method", "Map"],
+            },
+        },
+    }
+    with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key", "MINI_DROP_AI_ENABLED": "1"}), mock.patch(
+        "server.app.rca.llm_client._call_deepseek", return_value=json.dumps(response)
+    ):
+        result = generate_session_investigation_review(
+            diagnosis_id="diag-pyheap",
+            session_tree=analysis.controlled_ai_tree,
+            evidence_catalog=[],
+            probe_manifest=build_probe_manifest(),
+            allowed_evidence_families=["python_heap_reference"],
+        )
+
+    assert result["ai_review_status"] == "succeeded"
+    assert result["probe_inputs"]["python_heap_reference"]["candidate_id"] == candidate_id
 from server.app.rca.tools import run_rca_tools
 
 

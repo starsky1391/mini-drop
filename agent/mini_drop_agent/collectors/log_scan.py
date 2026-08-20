@@ -11,7 +11,7 @@ import json
 import os
 import re
 import time
-from collections import Counter
+from collections import Counter, deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -24,6 +24,7 @@ class LogScanCollector:
 
     OUTPUT_BASE = "/tmp/mini-drop"
     MAX_RECORDS = 10000
+    MAX_READ_BYTES = 32 * 1024 * 1024
     ERROR_PATTERN = re.compile(
         r"(error|warn|exception|timeout|deadline|refused|reset|unavailable|"
         r"oom|killed|no space|enospc|dns|lookup|redis|payment|failed)",
@@ -139,6 +140,17 @@ class LogScanCollector:
                 "dependency_error_count": sum(1 for item in matched if item.get("dependencies")),
                 "source_status": source_status,
             },
+            "evidence_validity": {
+                "execution_status": "completed",
+                "artifact_status": "produced",
+                "evidence_status": (
+                    "valid" if matched
+                    else "partial" if source_status in {"readable", "no_error", "empty_window"}
+                    else "unparseable" if source_status == "corrupt_input"
+                    else "blocked"
+                ),
+                "reason": f"log source status: {source_status}",
+            },
             "error_clusters": clusters,
             "evidence_index": {
                 "trace_ids": _unique([tid for item in matched for tid in item.get("trace_ids", [])])[:50],
@@ -209,9 +221,10 @@ def _read_json_records_with_status(path: Path, *, max_records: int) -> tuple[lis
     if max_records <= 0:
         return [], "empty"
     try:
-        text = path.read_text(encoding="utf-8")
+        lines = _bounded_tail_lines(path, LogScanCollector.MAX_READ_BYTES, max_records * 4)
     except (FileNotFoundError, PermissionError, OSError, UnicodeDecodeError):
         return [], "unreadable"
+    text = "\n".join(lines)
     if not text.strip():
         return [], "empty"
     try:
@@ -247,6 +260,22 @@ def _read_json_records_with_status(path: Path, *, max_records: int) -> tuple[lis
     if records:
         return records, "readable"
     return [], "corrupt" if invalid_lines else "empty"
+
+
+def _bounded_tail_lines(path: Path, max_bytes: int, max_lines: int) -> list[str]:
+    """Read only the bounded tail of a growing log file."""
+    if max_bytes <= 0 or max_lines <= 0:
+        return []
+    size = path.stat().st_size
+    with path.open("rb") as fh:
+        start = max(0, size - max_bytes)
+        fh.seek(start)
+        if start:
+            fh.readline()
+        lines: deque[bytes] = deque(maxlen=max_lines)
+        for line in fh:
+            lines.append(line)
+    return [line.decode("utf-8") for line in lines]
 
 
 def _normalize_log_record(record: dict[str, Any]) -> dict[str, Any]:

@@ -65,15 +65,15 @@
 /* 响应式 */
 @media (max-width: 768px) {
   .header {
-    padding: 0 12px;
+    padding: 0 8px !important;
   }
 
   .headerTitle {
-    font-size: 14px;
+    display: none;
   }
 
   .content {
-    margin: 8px;
-    padding: 12px;
+    margin: 8px !important;
+    padding: 10px !important;
   }
 }

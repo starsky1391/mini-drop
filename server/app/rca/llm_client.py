@@ -11,6 +11,7 @@ import re
 import time
 
 from server.app.ai_provider import chat_completions, get_ai_settings, is_feature_enabled
+from server.app.diagnosis.codeql_query_guard import validate_ai_generated_codeql_query
 from server.app.logging_utils import log_event
 from server.app.rca.models import (
     AITreeProbeEdge,
@@ -19,6 +20,8 @@ from server.app.rca.models import (
     DiagnosisReport,
     EvidenceAttributionResult,
     EvidenceInput,
+    RootCauseCluster,
+    SessionConclusionReview,
     ValidatedReport,
 )
 from server.app.rca.controlled_tree import enforce_conclusion_eligibility
@@ -27,6 +30,332 @@ from server.app.rca.prompt import build_system_prompt, build_user_message
 
 # 最大自修复重试次数
 MAX_RETRIES = 2
+
+
+def generate_session_investigation_review(
+    *,
+    diagnosis_id: str,
+    session_tree: ControlledAITree,
+    evidence_catalog: list[dict],
+    probe_manifest: dict,
+    allowed_evidence_families: list[str],
+    model_name: str | None = None,
+    max_attempts: int = 1,
+) -> dict:
+    """Let AI choose the next bounded evidence action before a follow-up round."""
+    settings = get_ai_settings()
+    model_name = model_name or settings.model
+    if not is_feature_enabled("rca"):
+        return {
+            "ai_review_status": "fallback",
+            "ai_review_scope": "investigation_round",
+            "ai_review_attempts": 0,
+            "ai_review_model": model_name,
+            "ai_review_error": "AI RCA is disabled or no API key is configured",
+            "selected_evidence_families": [],
+            "candidate_proposals": [],
+            "probe_inputs": {},
+        }
+    attempt_limit = max(1, min(int(max_attempts), 1 + MAX_RETRIES))
+    allowed = set(allowed_evidence_families)
+    manifest_families = {
+        str(item.get("evidence_family") or "")
+        for item in probe_manifest.get("available_probes", [])
+        if isinstance(item, dict)
+    }
+    allowed &= manifest_families
+    candidate_ids = {
+        node.candidate_id
+        for layer in session_tree.layers
+        for node in [*layer.primary_causes, *layer.secondary_causes, *layer.rejected_causes, *layer.unknown_causes]
+    }
+    valid_refs = {
+        str(item.get(key) or "")
+        for item in evidence_catalog
+        if isinstance(item, dict)
+        for key in ("evidence_id", "raw_artifact_ref", "derived_artifact_ref")
+        if item.get(key)
+    }
+    valid_refs.update(
+        ref
+        for layer in session_tree.layers
+        for node in [*layer.primary_causes, *layer.secondary_causes, *layer.rejected_causes, *layer.unknown_causes]
+        for ref in [*node.evidence_refs, *node.self_challenge.supporting_evidence_refs, *node.self_challenge.opposing_evidence_refs]
+        if ref
+    )
+    payload = {
+        "diagnosis_id": diagnosis_id,
+        "current_tree": session_tree.model_dump(mode="json"),
+        "evidence_catalog": [
+            {
+                key: item.get(key)
+                for key in ("evidence_id", "query_or_probe", "raw_artifact_ref", "derived_artifact_ref", "observed_value", "data_quality")
+                if key in item
+            }
+            for item in evidence_catalog[-30:]
+            if isinstance(item, dict)
+        ],
+        "probe_manifest": probe_manifest,
+        "eligible_this_round": sorted(allowed),
+    }
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是 Mini-Drop 会话级调查树裁决器，只输出 JSON。选择最小必要补证并形成可证伪机制候选。"
+                "selected_evidence_families 只能来自 eligible_this_round；不能输出命令、修复动作或未注册工具。"
+                "当选择 source_mechanism_query 时，必须输出 probe_inputs.source_mechanism_query.ai_generated_query，"
+                "其中包含 investigation_question、candidate_id、expected_relation(supports|refutes) 和受控 CodeQL Python path-problem query；"
+                "candidate_id 必须绑定 current_tree 或本轮 candidate_proposals；query 只能 import python 或 semmle.python.*，"
+                "不得引用本机路径、shell 或修复动作。"
+                "当选择 python_heap_reference 时，必须输出 probe_inputs.python_heap_reference，包含 current_tree 或本轮候选的"
+                "candidate_id，以及 1-8 个 object_type_hints，用于限制 PyHeap 运行时引用验证目标。"
+                "candidate_proposals 可为空；新增 candidate_id 必须以 ai_proposal_ 开头，parent_candidate_ids 必须引用 current_tree，"
+                "evidence_refs 必须真实存在，supported_level 不得超过 current_tree.final_supported_level。"
+                "每个候选必须包含 claim、mechanism、target、支持/反驳/缺失证据和 what_would_change_my_mind。"
+            ),
+        },
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)},
+    ]
+    last_error = ""
+    for attempt in range(1, attempt_limit + 1):
+        try:
+            raw = _call_deepseek(messages, model_name)
+            data = json.loads(_extract_json(raw) or "{}")
+            selected = [str(item) for item in data.get("selected_evidence_families", []) if str(item)]
+            if not selected or any(item not in allowed for item in selected) or len(selected) > 3:
+                raise ValueError("selected_evidence_families 越界或为空")
+            proposals = _validate_investigation_proposals(
+                data.get("candidate_proposals"), candidate_ids, valid_refs, session_tree.final_supported_level
+            )
+            probe_inputs = _validate_investigation_probe_inputs(
+                data.get("probe_inputs"),
+                selected,
+                candidate_ids | {str(item.get("candidate_id") or "") for item in proposals},
+            )
+            return {
+                "ai_review_status": "succeeded",
+                "ai_review_scope": "investigation_round",
+                "ai_review_attempts": attempt,
+                "ai_review_model": model_name,
+                "ai_review_error": "",
+                "selected_evidence_families": list(dict.fromkeys(selected)),
+                "candidate_proposals": proposals,
+                "probe_inputs": probe_inputs,
+            }
+        except Exception as exc:
+            last_error = str(exc)
+            if attempt < attempt_limit:
+                messages.extend([
+                    {"role": "assistant", "content": raw[:1000] if "raw" in locals() else "{}"},
+                    {"role": "user", "content": f"上一输出未通过硬校验：{last_error[:300]}。请只修正 JSON。"},
+                ])
+    return {
+        "ai_review_status": "failed",
+        "ai_review_scope": "investigation_round",
+        "ai_review_attempts": attempt_limit,
+        "ai_review_model": model_name,
+        "ai_review_error": last_error[:500],
+        "selected_evidence_families": [],
+        "candidate_proposals": [],
+        "probe_inputs": {},
+    }
+
+
+def _validate_investigation_probe_inputs(
+    value,
+    selected: list[str],
+    allowed_candidate_ids: set[str],
+) -> dict[str, dict]:
+    value = value if isinstance(value, dict) else {}
+    allowed_keys = {"source_mechanism_query", "python_heap_reference"} & set(selected)
+    if any(str(key) not in allowed_keys for key in value):
+        raise ValueError("probe_inputs 包含未选择或不允许的采集器参数")
+    result = {}
+    if "source_mechanism_query" in selected:
+        item = value.get("source_mechanism_query")
+        if not isinstance(item, dict):
+            raise ValueError("source_mechanism_query 缺少受控临时查询")
+        guarded = validate_ai_generated_codeql_query(
+            item.get("ai_generated_query"),
+            allowed_candidate_ids=allowed_candidate_ids,
+        )
+        result["source_mechanism_query"] = {"ai_generated_query": guarded}
+    if "python_heap_reference" in selected:
+        item = value.get("python_heap_reference")
+        if not isinstance(item, dict):
+            raise ValueError("python_heap_reference 缺少候选绑定参数")
+        candidate_id = str(item.get("candidate_id") or "")
+        hints = [str(hint).strip() for hint in item.get("object_type_hints", []) if str(hint).strip()]
+        if candidate_id not in allowed_candidate_ids:
+            raise ValueError("python_heap_reference 绑定了越界候选")
+        if not 1 <= len(hints) <= 8 or any(not re.fullmatch(r"[A-Za-z0-9_. -]{1,80}", hint) for hint in hints):
+            raise ValueError("python_heap_reference object_type_hints 非法")
+        result["python_heap_reference"] = {
+            "candidate_id": candidate_id,
+            "object_type_hints": list(dict.fromkeys(hints)),
+        }
+    return result
+
+
+def _validate_investigation_proposals(value, parent_ids: set[str], valid_refs: set[str], max_level: str) -> list[dict]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > 2:
+        raise ValueError("candidate_proposals 必须是最多两个候选的数组")
+    result = []
+    seen = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("candidate_proposal 不是对象")
+        candidate_id = str(item.get("candidate_id") or "")
+        parents = [str(parent) for parent in item.get("parent_candidate_ids", [])]
+        refs = [str(ref) for ref in item.get("evidence_refs", [])]
+        level = str(item.get("supported_level") or "resource")
+        if not re.fullmatch(r"ai_proposal_[a-zA-Z0-9_\-]{1,80}", candidate_id) or candidate_id in seen:
+            raise ValueError("candidate_id 非法或重复")
+        if not parents or any(parent not in parent_ids for parent in parents):
+            raise ValueError("candidate parent 越界")
+        if not refs or any(ref not in valid_refs for ref in refs):
+            raise ValueError("candidate evidence_refs 不真实")
+        if _level_order(level) > _level_order(max_level):
+            raise ValueError("candidate supported_level 越界")
+        for field in ("claim", "mechanism", "target", "what_would_change_my_mind"):
+            if not str(item.get(field) or "").strip():
+                raise ValueError(f"candidate 缺少 {field}")
+        result.append({
+            "candidate_id": candidate_id,
+            "parent_candidate_ids": parents,
+            "claim": str(item["claim"]).strip(),
+            "mechanism": str(item["mechanism"]).strip(),
+            "target": str(item["target"]).strip(),
+            "supported_level": level,
+            "evidence_refs": refs,
+            "opposing_evidence_refs": [str(ref) for ref in item.get("opposing_evidence_refs", []) if str(ref) in valid_refs],
+            "missing_evidence": [str(gap) for gap in item.get("missing_evidence", [])],
+            "what_would_change_my_mind": str(item["what_would_change_my_mind"]).strip(),
+        })
+        seen.add(candidate_id)
+    return result
+
+
+def generate_session_conclusion_review(
+    *,
+    diagnosis_id: str,
+    clusters: list[RootCauseCluster],
+    session_tree: ControlledAITree | dict | None,
+    evidence_catalog: list[dict],
+    probe_manifest: dict,
+    model_name: str | None = None,
+    max_attempts: int | None = None,
+) -> dict:
+    """Run one bounded LLM adjudication over all eligible session clusters."""
+    settings = get_ai_settings()
+    model_name = model_name or settings.model
+    if not is_feature_enabled("rca"):
+        return {
+            "ai_review_status": "fallback",
+            "ai_review_scope": "session",
+            "ai_review_attempts": 0,
+            "ai_review_model": model_name,
+            "ai_review_error": "AI RCA is disabled or no API key is configured",
+            "review": None,
+        }
+    eligible = [cluster for cluster in clusters if cluster.conclusion_eligible]
+    if not eligible:
+        return {
+            "ai_review_status": "fallback",
+            "ai_review_scope": "session",
+            "ai_review_attempts": 0,
+            "ai_review_model": model_name,
+            "ai_review_error": "no eligible root-cause clusters",
+            "review": None,
+        }
+
+    from server.app.diagnosis.session_conclusion import validate_session_review
+
+    tree_payload = session_tree.model_dump(mode="json") if isinstance(session_tree, ControlledAITree) else session_tree
+    valid_refs = {
+        str(item.get("evidence_id") or item.get("evidence_ref") or "")
+        for item in evidence_catalog
+        if isinstance(item, dict)
+    }
+    payload = _build_session_review_payload(
+        diagnosis_id=diagnosis_id,
+        eligible=eligible,
+        tree_payload=tree_payload,
+        evidence_catalog=evidence_catalog,
+        probe_manifest=probe_manifest,
+    )
+    base_messages = [
+        {"role": "system", "content": _session_review_system_prompt()},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
+    ]
+    messages = list(base_messages)
+    attempt_limit = max(1, min(int(max_attempts or (MAX_RETRIES + 1)), MAX_RETRIES + 1))
+    last_error = ""
+    for attempt in range(1, attempt_limit + 1):
+        raw = ""
+        try:
+            raw = _call_deepseek(
+                messages,
+                model_name,
+                max_tokens=int(os.getenv("MINI_DROP_SESSION_REVIEW_MAX_TOKENS", "4096")),
+            )
+            data = json.loads(_extract_json(raw) or "{}")
+            data = _normalize_session_review_shape(data)
+            review = SessionConclusionReview.model_validate(data)
+            issues = validate_session_review(review, eligible, valid_refs)
+            if not issues:
+                log_event(
+                    "info",
+                    "session_conclusion_ai_review_succeeded",
+                    diagnosis_id=diagnosis_id,
+                    attempt=attempt,
+                    model=model_name,
+                    cluster_count=len(eligible),
+                )
+                return {
+                    "ai_review_status": "succeeded",
+                    "ai_review_scope": "session",
+                    "ai_review_attempts": attempt,
+                    "ai_review_model": model_name,
+                    "ai_review_error": "",
+                    "review": review,
+                }
+            last_error = "; ".join(issues)
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        log_event(
+            "warning",
+            "session_conclusion_ai_review_rejected",
+            diagnosis_id=diagnosis_id,
+            attempt=attempt,
+            model=model_name,
+            error=last_error[:500],
+        )
+        if attempt < attempt_limit:
+            messages = [
+                *base_messages,
+                {"role": "assistant", "content": raw},
+                {
+                "role": "user",
+                "content": (
+                    f"上一份会话裁决未通过硬校验：{last_error[:500]}。"
+                    "只能使用输入中的 cluster_id 和 evidence_refs 修正 JSON。"
+                    "注意 ruled_out_summary、residual_unknowns、causal_chain 都必须是 JSON 数组，"
+                    "cluster_roles 和 recommendations 必须是 JSON 对象。"
+                ),
+                },
+            ]
+    return {
+        "ai_review_status": "failed",
+        "ai_review_scope": "session",
+        "ai_review_attempts": attempt_limit,
+        "ai_review_model": model_name,
+        "ai_review_error": last_error[:500],
+        "review": None,
+    }
 
 
 def generate_controlled_ai_tree(
@@ -228,7 +557,7 @@ def _serialize_evidence(evidence: EvidenceInput) -> str:
     return evidence_to_json(evidence)
 
 
-def _call_deepseek(messages: list[dict], model: str) -> str:
+def _call_deepseek(messages: list[dict], model: str, *, max_tokens: int | None = None) -> str:
     """调用 DeepSeek Chat API。
 
     Args:
@@ -246,7 +575,7 @@ def _call_deepseek(messages: list[dict], model: str) -> str:
         "messages": messages,
         "thinking": {"type": "disabled"},
         "temperature": 0.1,  # 低温：归因需要确定性而非创意
-        "max_tokens": int(os.getenv("MINI_DROP_RCA_MAX_TOKENS", "8192")),
+        "max_tokens": max_tokens or int(os.getenv("MINI_DROP_RCA_MAX_TOKENS", "8192")),
         "response_format": {"type": "json_object"},
     }
     timeout = max(10, int(os.getenv("MINI_DROP_RCA_LLM_TIMEOUT_SEC", "90")))
@@ -273,6 +602,211 @@ def _call_deepseek(messages: list[dict], model: str) -> str:
         return reasoning_content
 
     raise RuntimeError("DeepSeek API 返回的消息缺少可解析内容")
+
+
+def _session_review_system_prompt() -> str:
+    return """你是 Mini-Drop 的会话级受控归因裁决器。你只能在输入给出的 eligible clusters 内裁决。
+必须输出一个 JSON 对象，字段严格为：
+headline, why_it_happened, primary_cluster_id, cluster_roles, causal_chain,
+ruled_out_summary, residual_unknowns, recommendations。
+约束：
+1. 只能使用输入中已有的 cluster_id，不得新增、合并或改写 ID。
+2. 只能引用输入中已有的 evidence_refs，每个 causal_chain step 必须至少引用一条真实证据。
+3. 必须且只能选一个 primary；其余可标 contributing 或 independent。
+4. 不得提高 cause_level，不得新增探针、候选、定位层级或源代码行。
+5. why_it_happened 必须解释机制为何导致用户症状，不能只复述指标、栈或采集结果。
+6. recommendations 以 cluster_id 为键，每项包含 recommendation_type、action、rationale；只能给建议，不得声称已执行修复。
+7. 信息不足时写入 residual_unknowns，不得补造事实。
+8. 对内存保留问题，retained allocation 只能证明分配来源，不能单独证明长期持有者。必须按 reference_paths 中真实存在的 source_expression/upstream_candidates -> container -> runtime_slot -> retained_by 解释引用链；禁止把没有进入该路径的分配对象编造成被 co_consts 持有。
+字段类型必须符合下列 JSON 形状，不得把数组字段输出成字符串：
+{
+  "headline": "string",
+  "why_it_happened": "string",
+  "primary_cluster_id": "existing cluster_id",
+  "cluster_roles": {"existing cluster_id": "primary|contributing|independent"},
+  "causal_chain": [{"step_id": "string", "statement": "string", "evidence_refs": ["existing evidence_ref"]}],
+  "ruled_out_summary": ["string"],
+  "residual_unknowns": ["string"],
+  "recommendations": {
+    "existing cluster_id": [
+      {"recommendation_type": "investigation|temporary_mitigation|permanent_fix", "action": "string", "rationale": "string"}
+    ]
+  }
+}"""
+
+
+def _normalize_session_review_shape(data: object) -> object:
+    """Normalize unambiguous container mistakes without changing diagnostic semantics."""
+    if not isinstance(data, dict):
+        return data
+    normalized = dict(data)
+    for field in ("ruled_out_summary", "residual_unknowns"):
+        value = normalized.get(field)
+        if isinstance(value, str):
+            normalized[field] = [value] if value.strip() else []
+    return normalized
+
+
+def _compact_session_tree(tree: dict | None) -> dict:
+    if not isinstance(tree, dict):
+        return {}
+    layers = []
+    for layer in tree.get("layers", [])[-4:]:
+        if not isinstance(layer, dict):
+            continue
+        candidates = []
+        for key in ("primary_causes", "secondary_causes", "rejected_causes", "unknown_causes"):
+            for node in layer.get(key, [])[:6]:
+                if isinstance(node, dict):
+                    candidates.append({
+                        field: node.get(field)
+                        for field in (
+                            "candidate_id", "role", "claim", "claim_type", "causal_status",
+                            "mechanism", "target", "conclusion_eligible", "evidence_refs",
+                        )
+                    })
+        layers.append({"layer_id": layer.get("layer_id"), "depth": layer.get("depth"), "candidates": candidates})
+    return {
+        "final_supported_level": tree.get("final_supported_level"),
+        "stop_reason": tree.get("stop_reason"),
+        "layers": layers,
+    }
+
+
+def _build_session_review_payload(
+    *,
+    diagnosis_id: str,
+    eligible: list[RootCauseCluster],
+    tree_payload: dict | None,
+    evidence_catalog: list[dict],
+    probe_manifest: dict,
+) -> dict:
+    referenced_ids = {
+        ref
+        for cluster in eligible
+        for ref in cluster.evidence_refs
+    }
+    referenced_evidence = []
+    for item in evidence_catalog:
+        if not isinstance(item, dict):
+            continue
+        evidence_id = str(item.get("evidence_id") or item.get("evidence_ref") or "")
+        if evidence_id not in referenced_ids:
+            continue
+        referenced_evidence.append(_compact_evidence_item(item))
+        if len(referenced_evidence) >= 24:
+            break
+    return {
+        "diagnosis_id": diagnosis_id,
+        "clusters": [cluster.model_dump(mode="json") for cluster in eligible],
+        "session_tree": _compact_session_tree(tree_payload),
+        "evidence_catalog": referenced_evidence,
+        "probe_manifest": {"probe_ids": sorted(_probe_ids(probe_manifest))},
+    }
+
+
+def _compact_evidence_item(item: dict) -> dict:
+    if not isinstance(item, dict):
+        return {}
+    observed = item.get("observed_value")
+    if isinstance(observed, dict) and observed.get("producer") == "git+universal-ctags":
+        observed = _compact_source_snapshot(observed)
+    elif isinstance(observed, dict) and observed.get("producer") == "memray":
+        observed = {
+            key: observed.get(key)
+            for key in ("producer", "mode", "summary", "retained_allocation_hotspots", "evidence_validity")
+        }
+    else:
+        observed = _compact_json_value(observed, depth=0)
+    return {
+        "evidence_id": item.get("evidence_id") or item.get("evidence_ref"),
+        "source_type": item.get("source_type") or item.get("query_or_probe"),
+        "observed_value": observed,
+    }
+
+
+def _compact_source_snapshot(observed: dict) -> dict:
+    contexts = []
+    for context in (observed.get("enclosing_contexts") or [])[:2]:
+        if not isinstance(context, dict):
+            continue
+        source = "\n".join(
+            f"{line.get('line')}: {line.get('text') or ''}"
+            for line in (context.get("lines") or [])
+            if isinstance(line, dict)
+        )
+        contexts.append({
+            "file": context.get("file"),
+            "symbol": context.get("symbol"),
+            "kind": context.get("kind"),
+            "start_line": context.get("start_line"),
+            "end_line": context.get("end_line"),
+            "source": source[:30000],
+        })
+    return {
+        "producer": observed.get("producer"),
+        "revision": observed.get("revision"),
+        "source_context_hash": observed.get("source_context_hash"),
+        "enclosing_contexts": contexts,
+        "reference_paths": [
+            {
+                "source_expression": path.get("source_expression"),
+                "source_kind": path.get("source_kind"),
+                "upstream_candidates": (path.get("upstream_candidates") or [])[:8],
+                "stored_via": path.get("stored_via"),
+                "container": path.get("container"),
+                "sink": path.get("sink"),
+                "runtime_slot": path.get("runtime_slot"),
+                "retained_by": path.get("retained_by"),
+                "retention_chain": (path.get("retention_chain") or [])[:8],
+                "source_lines": (path.get("source_lines") or [])[:8],
+            }
+            for path in (observed.get("reference_paths") or [])[:12]
+            if isinstance(path, dict)
+        ],
+        "snippets": [
+            {
+                "file": snippet.get("file"),
+                "focus_line": snippet.get("focus_line"),
+                "symbol": snippet.get("symbol"),
+            }
+            for snippet in (observed.get("snippets") or [])[:8]
+            if isinstance(snippet, dict)
+        ],
+        "evidence_validity": observed.get("evidence_validity") or {},
+    }
+
+
+def _compact_json_value(value, *, depth: int):
+    if depth >= 3:
+        return "[nested evidence retained by reference]"
+    if isinstance(value, dict):
+        compact = {}
+        for key in list(value)[:8]:
+            compact[str(key)] = _compact_json_value(value.get(key), depth=depth + 1)
+        return compact
+    if isinstance(value, list):
+        return [_compact_json_value(item, depth=depth + 1) for item in value[:5]]
+    if isinstance(value, str):
+        return value[:240]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return str(value)[:240]
+
+
+def _probe_ids(manifest: dict) -> set[str]:
+    if not isinstance(manifest, dict):
+        return set()
+    values = manifest.get("probes") or manifest.get("items")
+    if values is None:
+        values = list(manifest.values())
+    if isinstance(values, dict):
+        values = list(values.values())
+    result = set()
+    for item in values if isinstance(values, (list, tuple, set)) else []:
+        if isinstance(item, dict) and item.get("probe_id"):
+            result.add(str(item["probe_id"]))
+    return result
 
 
 
@@ -685,7 +1219,8 @@ def _guarded_node(node, suggested_role: str, challenge: dict | None, candidate_u
     if isinstance(candidate_update, dict):
         enum_fields = {
             "claim_type": {
-                "root_cause", "likely_root_cause", "partial_localization",
+                "root_cause", "complete_root_cause", "direct_root_cause", "complete_source_root_cause",
+                "direct_failure_mechanism", "likely_root_cause", "partial_localization",
                 "observation_only", "insufficient_for_root_cause", "abstention",
             },
             "causal_status": {"supported", "unproven", "contradicted", "inconclusive"},
@@ -915,7 +1450,7 @@ JSON schema:
   "candidate_updates": {
     "candidate_id": {
       "claim": "可证伪的机制结论，不是证据摘要",
-      "claim_type": "root_cause | likely_root_cause | partial_localization | observation_only | insufficient_for_root_cause | abstention",
+      "claim_type": "root_cause | direct_root_cause | complete_source_root_cause | direct_failure_mechanism | likely_root_cause | partial_localization | observation_only | insufficient_for_root_cause | abstention",
       "causal_status": "supported | unproven | contradicted | inconclusive",
       "decision": "continue_probe | reject_candidate | conclude | abstain | backtrack",
       "mechanism": "导致症状的具体机制",

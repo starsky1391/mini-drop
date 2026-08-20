@@ -11,7 +11,7 @@ def test_dependency_success_does_not_remove_function_depth_requests():
         "diag-1",
         ["dependency_check", "cpu_profile", "off_cpu_wait_profile", "trace_endpoint_profile"],
         [
-            {"parameters": {"evidence_gap": "dependency_check"}, "status": "COMPLETED"},
+            {"parameters": {"evidence_gap": "dependency_check"}, "status": "COMPLETED", "evidence_status": "valid"},
             {"parameters": {"evidence_gap": "cpu_profile"}, "status": "COMPLETED"},
         ],
         observations,

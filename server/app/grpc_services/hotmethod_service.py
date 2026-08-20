@@ -126,6 +126,12 @@ def _has_analysis_result(artifacts: list[dict]) -> bool:
         "trace_endpoint_profile_json",
         "off_cpu_wait_json",
         "process_inventory_json",
+        "runtime_control_event_json",
+        "pyspy_status_json",
+        "python_heap_profile_json",
+        "source_snapshot_json",
+        "source_mechanism_json",
+        "python_heap_reference_json",
     } & artifact_types)
 
 
@@ -141,10 +147,20 @@ def _analysis_done_reason(artifacts: list[dict]) -> str:
         return "结构化采集证据已生成"
     if "process_inventory_json" in artifact_types:
         return "进程清单结构化证据已生成"
+    if "runtime_control_event_json" in artifact_types:
+        return "运行控制事件证据已生成"
     if "off_cpu_wait_json" in artifact_types:
         return "Off-CPU 等待栈证据已生成"
     if "trace_endpoint_profile_json" in artifact_types:
         return "Trace endpoint 结构化证据已生成"
+    if "python_heap_profile_json" in artifact_types:
+        return "Memray Python Heap 结构化证据已生成"
+    if "source_snapshot_json" in artifact_types:
+        return "源码快照结构化证据已生成"
+    if "source_mechanism_json" in artifact_types:
+        return "CodeQL 源码机制证据已生成"
+    if "python_heap_reference_json" in artifact_types:
+        return "PyHeap 运行时引用证据已生成"
     if "continuous_summary" in artifact_types:
         return "连续采样窗口分析已生成"
     if "java_flamegraph_html" in artifact_types:

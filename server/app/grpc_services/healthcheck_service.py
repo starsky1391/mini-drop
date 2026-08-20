@@ -85,6 +85,11 @@ class HealthCheckService(healthcheck_pb2_grpc.HealthCheckServicer):
             "redis_check": 12,
             "pyspy": 13,
             "process_inventory": 14,
+            "runtime_control_history": 15,
+            "python_heap_profile": 16,
+            "source_snapshot": 17,
+            "source_mechanism_query": 18,
+            "python_heap_reference": 19,
         }
         return mapping.get(collector_type, 0)
 

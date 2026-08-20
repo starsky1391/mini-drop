@@ -26,7 +26,7 @@ import asyncio
 import json as _json
 import queue as _queue
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, Optional
 from uuid import uuid4
@@ -75,9 +75,11 @@ from server.app.diagnosis.schemas import (
 from server.app.diagnosis.watch_runtime import (
     CreateWatchSubscriptionRequest,
     PersistentAgentRuntime,
+    UpdateWatchSubscriptionRequest,
     WatchEvaluationRequest,
     WatchRegistry,
 )
+from server.app.diagnosis.watch_anomaly_explainer import explain_watch_anomaly
 from server.app.rca.pipelines import normalize_pipeline_id
 from server.app.rca.report import run_diagnosis_context
 from server.app.rca.strategies import normalize_strategy_id
@@ -157,10 +159,47 @@ def _reconcile_watch_task_terminal(
     ):
         return
 
-    _create_watch_incident_diagnosis(incident.incident_id)
+    _start_watch_episode_diagnosis_if_ready(incident.incident_id)
 
 
-def _create_watch_incident_diagnosis(incident_id: str) -> dict[str, Any]:
+def _start_watch_episode_diagnosis_if_ready(
+    incident_id: str,
+    *,
+    force: bool = False,
+) -> dict[str, Any] | None:
+    incident = watch_registry.get_incident(incident_id)
+    if incident is None:
+        raise HTTPException(status_code=404, detail="异常窗口不存在")
+    watch = watch_registry.get(incident.watch_id)
+    if watch is None:
+        raise HTTPException(status_code=404, detail="监视订阅不存在")
+    if not force:
+        if not watch.auto_diagnosis_enabled or not incident.diagnosis_eligible:
+            return None
+        if incident.aggregation_deadline and incident.aggregation_deadline > datetime.now(timezone.utc):
+            return None
+        if incident.collector_tasks and not all(
+            task.status in {"DONE", "FAILED"} for task in incident.collector_tasks
+        ):
+            return None
+    claimed, acquired = watch_registry.claim_episode_diagnosis(incident_id)
+    if not acquired:
+        diagnosis_id = claimed.analysis_session_id
+        return {
+            "mode": "ai_cluster_diagnosis",
+            "diagnosis_id": diagnosis_id,
+            "analysis_session_id": diagnosis_id,
+            "incident": claimed.model_dump(mode="json"),
+            "reused": True,
+        }
+    return _create_watch_incident_diagnosis(incident_id, already_claimed=True)
+
+
+def _create_watch_incident_diagnosis(
+    incident_id: str,
+    *,
+    already_claimed: bool = False,
+) -> dict[str, Any]:
     """Create the real AI diagnosis session for a frozen watch incident."""
     incident = watch_registry.get_incident(incident_id)
     if incident is None:
@@ -172,6 +211,16 @@ def _create_watch_incident_diagnosis(incident_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="异常窗口缺少结构化证据，无法分析")
 
     started_at = time.time()
+    if not already_claimed:
+        claimed, acquired = watch_registry.claim_episode_diagnosis(incident_id)
+        if not acquired:
+            return {
+                "mode": "ai_cluster_diagnosis",
+                "diagnosis_id": claimed.analysis_session_id,
+                "analysis_session_id": claimed.analysis_session_id,
+                "incident": claimed.model_dump(mode="json"),
+                "reused": True,
+            }
     watch_registry.update_incident_analysis(
         incident_id,
         analysis_status="analyzing",
@@ -546,17 +595,45 @@ async def _lifespan(_app: FastAPI):
         on_task_terminal=_on_task_terminal,
     )
     _offline_task = asyncio.create_task(_offline_sweeper())
+    _watch_episode_task = asyncio.create_task(_watch_episode_sweeper())
     try:
         yield
     finally:
         _offline_task.cancel()
+        _watch_episode_task.cancel()
         try:
             await _offline_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await _watch_episode_task
         except asyncio.CancelledError:
             pass
         _grpc.stop(grace=None).wait(timeout=5)
         watch_reconcile_executor.shutdown(wait=False, cancel_futures=True)
         watch_analysis_executor.shutdown(wait=False, cancel_futures=True)
+
+
+async def _watch_episode_sweeper() -> None:
+    while True:
+        await asyncio.sleep(5)
+        for incident in watch_registry.ready_auto_diagnosis_episodes():
+            watch_reconcile_executor.submit(
+                _auto_start_watch_episode,
+                incident.incident_id,
+            )
+
+
+def _auto_start_watch_episode(incident_id: str) -> None:
+    try:
+        _start_watch_episode_diagnosis_if_ready(incident_id)
+    except Exception as exc:
+        log_event(
+            "warning",
+            "watch_episode_auto_diagnosis_failed",
+            incident_id=incident_id,
+            error=type(exc).__name__,
+        )
 
 
 async def _offline_sweeper() -> None:
@@ -1717,6 +1794,20 @@ def disable_watch_subscription(watch_id: str) -> APIResponse:
     return APIResponse(data=watch.model_dump(mode="json"))
 
 
+@app.patch("/api/v1/watches/{watch_id}")
+def update_watch_subscription(
+    watch_id: str,
+    payload: UpdateWatchSubscriptionRequest,
+) -> APIResponse:
+    watch = watch_registry.update_auto_diagnosis(
+        watch_id,
+        payload.auto_diagnosis_enabled,
+    )
+    if watch is None:
+        raise HTTPException(status_code=404, detail="监视订阅不存在")
+    return APIResponse(data=watch.model_dump(mode="json"))
+
+
 @app.get("/api/v1/watches/{watch_id}/incidents")
 def list_watch_incidents(watch_id: str) -> APIResponse:
     if watch_registry.get(watch_id) is None:
@@ -1732,7 +1823,46 @@ def analyze_watch_incident(
     analysis_pipeline: Optional[str] = None,
 ) -> APIResponse:
     _ = analysis_strategy, analysis_pipeline
-    return APIResponse(data=_create_watch_incident_diagnosis(incident_id))
+    return APIResponse(data=_start_watch_episode_diagnosis_if_ready(incident_id, force=True))
+
+
+@app.post("/api/v1/watch-incidents/{incident_id}/anomalies/{anomaly_point_id}/explain")
+def explain_watch_anomaly_point(
+    incident_id: str,
+    anomaly_point_id: str,
+) -> APIResponse:
+    incident = watch_registry.get_incident(incident_id)
+    if incident is None:
+        raise HTTPException(status_code=404, detail="异常 Episode 不存在")
+    watch = watch_registry.get(incident.watch_id)
+    if watch is None:
+        raise HTTPException(status_code=404, detail="监视订阅不存在")
+    point = next(
+        (
+            item for item in incident.anomaly_points
+            if item.get("anomaly_point_id") == anomaly_point_id
+        ),
+        None,
+    )
+    if point is None:
+        raise HTTPException(status_code=404, detail="异常点不存在")
+    cached = point.get("explanation")
+    if isinstance(cached, dict) and cached.get("fingerprint") == point.get("fingerprint"):
+        return APIResponse(data={**cached, "cached": True})
+    try:
+        explanation = explain_watch_anomaly(
+            watch=watch,
+            incident=incident,
+            anomaly_point=point,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    watch_registry.update_anomaly_explanation(
+        incident_id,
+        anomaly_point_id,
+        explanation,
+    )
+    return APIResponse(data=explanation)
 
 
 @app.get("/api/v1/agents/{agent_id}/watch-leases")

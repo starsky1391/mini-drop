@@ -85,7 +85,13 @@ def _guard_candidate(node: AITreeCandidateNode) -> AITreeCandidateNode:
     elif node.status != "supported" or node.causal_status != "supported":
         eligible = False
         reason = "当前只有观察或相关性，尚未形成受支持的因果判断。"
-    elif node.claim_type not in {"root_cause", "likely_root_cause"}:
+    elif node.claim_type not in {
+        "root_cause",
+        "complete_root_cause",
+        "direct_root_cause",
+        "complete_source_root_cause",
+        "likely_root_cause",
+    }:
         eligible = False
         reason = "节点类型不是可进入最终结论的根因声明。"
     elif not node.mechanism.strip() or not node.target.strip():

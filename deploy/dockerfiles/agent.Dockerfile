@@ -6,13 +6,38 @@
 # 生产环境应评估是否可使用 ambient capabilities 替代 root。
 FROM python:3.11-slim
 
+ARG CODEQL_VERSION=2.26.3
+ARG PYHEAP_VERSION=0.7.0
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     bpftrace \
+    containerd \
     curl \
+    gdb \
+    git \
     linux-perf \
     perl \
+    systemd \
+    unzip \
+    universal-ctags \
     && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL "https://github.com/github/codeql-cli-binaries/releases/download/v${CODEQL_VERSION}/codeql-linux64.zip" \
+      -o /tmp/codeql.zip \
+    && unzip -q /tmp/codeql.zip -d /opt \
+    && ln -s /opt/codeql/codeql /usr/local/bin/codeql \
+    && rm -f /tmp/codeql.zip
+
+RUN curl -fsSL "https://github.com/ivanyu/pyheap/archive/refs/tags/v${PYHEAP_VERSION}.tar.gz" \
+      -o /tmp/pyheap.tar.gz \
+    && mkdir -p /opt/pyheap \
+    && tar -xzf /tmp/pyheap.tar.gz --strip-components=1 -C /opt/pyheap \
+    && pip install --no-cache-dir /opt/pyheap/pyheap-ui "pyelftools>=0.30" \
+    && rm -f /tmp/pyheap.tar.gz
+
+COPY deploy/collectors/pyheap/pyheap_dump /usr/local/bin/pyheap_dump
+RUN chmod 0755 /usr/local/bin/pyheap_dump
 
 WORKDIR /app
 COPY pyproject.toml README.md ./

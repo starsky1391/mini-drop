@@ -1,0 +1,26 @@
+.ai-diagnosis-page,
+.ai-diagnosis-page > .ant-space-item,
+.ai-diagnosis-page .ant-spin-nested-loading,
+.ai-diagnosis-page .ant-spin-container {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ai-diagnosis-page .ant-table-wrapper {
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.ai-diagnosis-page .ant-table-content {
+  overflow-x: auto;
+}
+
+@media (max-width: 760px) {
+  .ai-diagnosis-page .ant-card-body {
+    padding: 12px;
+  }
+
+  .ai-diagnosis-page .ant-descriptions-view {
+    overflow-x: auto;
+  }
+}

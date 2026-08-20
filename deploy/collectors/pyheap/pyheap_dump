@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+
+exec python /opt/pyheap/pyheap/src/pyheap_dump.py "$@"

@@ -15,6 +15,7 @@ import {
   Select,
   Space,
   Statistic,
+  Switch,
   Table,
   Tag,
   Tooltip,
@@ -34,12 +35,14 @@ import {
   createWatchSubscription,
   disableWatchSubscription,
   evaluateWatchSubscription,
+  explainWatchAnomalyPoint,
   listAgentProcesses,
   listAgentWatchLeases,
   listAgents,
   listWatchIncidents,
   listWatchSubscriptions,
   refreshAgentProcessInventory,
+  updateWatchSubscription,
 } from "../api/client";
 import ErrorAlert from "../components/ErrorAlert";
 import usePolling from "../hooks/usePolling";
@@ -51,6 +54,7 @@ const DEFAULT_FORM = {
   retention_seconds: 120,
   enabled_collectors: ["sys_metrics", "light_stack", "trace_window"],
   target_config_json: "",
+  auto_diagnosis_enabled: true,
 };
 
 function buildCpuShiftPayload() {
@@ -205,10 +209,74 @@ function renderAnalysisDetail(record) {
   );
 }
 
-function renderIncidentExpanded(record) {
+function renderAnomalyPoints(record, onExplain, explainingPointId) {
+  const points = record.anomaly_points || [];
+  if (!points.length) {
+    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无结构化异常点" />;
+  }
+  const columns = [
+    {
+      title: "异常点",
+      render: (_, point) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong>{point.trigger_type}</Typography.Text>
+          <Typography.Text type="secondary">{point.metric} · {point.occurrences || 1} 次</Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: "变化",
+      render: (_, point) => (
+        <Typography.Text>
+          {point.baseline_value} → {point.latest_value}（峰值 {point.peak_value}）
+        </Typography.Text>
+      ),
+    },
+    {
+      title: "影响判定",
+      dataIndex: "impact_status",
+      width: 150,
+      render: (value) => (
+        <Tag color={value === "hard_state" ? "red" : value === "impact_confirmed" ? "orange" : "default"}>
+          {value}
+        </Tag>
+      ),
+    },
+    {
+      title: "操作",
+      width: 100,
+      render: (_, point) => (
+        <Tooltip title="只解释该异常点为什么触发，不启动 AI 树、不发探针、不判断根因">
+          <Button
+            size="small"
+            loading={explainingPointId === point.anomaly_point_id}
+            onClick={() => onExplain(record, point)}
+          >
+            分析
+          </Button>
+        </Tooltip>
+      ),
+    },
+  ];
+  return (
+    <Table
+      rowKey="anomaly_point_id"
+      size="small"
+      pagination={false}
+      columns={columns}
+      dataSource={points}
+      scroll={{ x: 720 }}
+    />
+  );
+}
+
+function renderIncidentExpanded(record, onExplain, explainingPointId) {
   const delayed = evidenceIndexOf(record).delayed_followups || [];
   return (
     <Space direction="vertical" size={SPACING.md} style={{ width: "100%" }}>
+      <Card size="small" title="异常点">
+        {renderAnomalyPoints(record, onExplain, explainingPointId)}
+      </Card>
       <Row gutter={[SPACING.md, SPACING.md]}>
         <Col xs={24} md={8}>
           <Card size="small" title="证据族">
@@ -273,6 +341,9 @@ export default function PersistentWatch() {
   const [submitting, setSubmitting] = useState(false);
   const [testingWatchId, setTestingWatchId] = useState("");
   const [analyzingIncidentId, setAnalyzingIncidentId] = useState("");
+  const [updatingWatchId, setUpdatingWatchId] = useState("");
+  const [explainingPointId, setExplainingPointId] = useState("");
+  const [anomalyExplanation, setAnomalyExplanation] = useState(null);
   const [processOptions, setProcessOptions] = useState([]);
   const [processLoading, setProcessLoading] = useState(false);
   const [error, setError] = useState("");
@@ -363,7 +434,8 @@ export default function PersistentWatch() {
         enabled_collectors: values.enabled_collectors,
         retention_seconds: values.retention_seconds,
         trigger_action: values.trigger_action,
-        trigger_policy: "relative_shift_only",
+        trigger_policy: "multi_signal_v1",
+        auto_diagnosis_enabled: values.auto_diagnosis_enabled !== false,
       });
       message.success("监视订阅已创建");
       form.resetFields();
@@ -458,10 +530,37 @@ export default function PersistentWatch() {
     }
   }
 
+  async function handleToggleAutoDiagnosis(watch, enabled) {
+    setUpdatingWatchId(watch.watch_id);
+    try {
+      await updateWatchSubscription(watch.watch_id, { auto_diagnosis_enabled: enabled });
+      message.success(enabled ? "已开启异常后自动诊断" : "已关闭自动诊断，异常仍会冻结并保存");
+      refresh();
+    } catch (err) {
+      message.error(err.message);
+    } finally {
+      setUpdatingWatchId("");
+    }
+  }
+
+  async function handleExplainAnomaly(incident, point) {
+    setExplainingPointId(point.anomaly_point_id);
+    try {
+      const result = await explainWatchAnomalyPoint(incident.incident_id, point.anomaly_point_id);
+      setAnomalyExplanation({ ...result, point, incident });
+      refresh();
+    } catch (err) {
+      message.error(err.message);
+    } finally {
+      setExplainingPointId("");
+    }
+  }
+
   const watchColumns = [
     {
       title: "监视对象",
       dataIndex: "name",
+      width: 220,
       render: (value, record) => (
         <Space direction="vertical" size={0}>
           <Typography.Text strong>{value}</Typography.Text>
@@ -516,6 +615,20 @@ export default function PersistentWatch() {
       ),
     },
     {
+      title: "异常后自动诊断",
+      width: 150,
+      render: (_, record) => (
+        <Switch
+          checkedChildren="开启"
+          unCheckedChildren="关闭"
+          checked={record.auto_diagnosis_enabled !== false}
+          loading={updatingWatchId === record.watch_id}
+          disabled={record.status !== "active"}
+          onChange={(checked) => handleToggleAutoDiagnosis(record, checked)}
+        />
+      ),
+    },
+    {
       title: "状态",
       dataIndex: "status",
       width: 100,
@@ -549,13 +662,14 @@ export default function PersistentWatch() {
 
   const incidentColumns = [
     {
-      title: "异常窗口",
+      title: "异常 Episode",
       dataIndex: "incident_id",
+      width: 300,
       render: (value, record) => (
         <Space direction="vertical" size={0}>
           <Typography.Text code>{value}</Typography.Text>
           <Typography.Text type="secondary" style={{ fontSize: FONT_SIZES.sm }}>
-            {record.trigger_type} · {new Date(record.trigger_observed_at).toLocaleString()}
+            {record.trigger_type} · {record.occurrence_count || 1} 次 · {new Date(record.trigger_observed_at).toLocaleString()}
           </Typography.Text>
         </Space>
       ),
@@ -606,6 +720,7 @@ export default function PersistentWatch() {
       render: (_, record) => (
         <Space direction="vertical" size={2}>
           <Space size={4}>
+            <Tag color={record.episode_status === "CLOSED" ? "default" : "blue"}>{record.episode_status}</Tag>
             <Tag color={record.status === "collecting" ? "processing" : "gold"}>{record.status}</Tag>
             <Tag color={record.analysis_status === "analyzed" ? "green" : record.analysis_status === "needs_evidence" ? "orange" : record.analysis_status === "analysis_failed" ? "red" : "default"}>
               {record.analysis_status}
@@ -757,7 +872,7 @@ export default function PersistentWatch() {
                   filterOption={false}
                   onSearch={(value) => loadProcesses(form.getFieldValue("agent_id"), value)}
                   onChange={handleSelectProcess}
-                  dropdownRender={(menu) => (
+                  popupRender={(menu) => (
                     <Space direction="vertical" style={{ width: "100%" }}>
                       <Button
                         block
@@ -795,6 +910,16 @@ export default function PersistentWatch() {
                   <Select.Option value="auto_all_registered">自动执行全部已注册采集</Select.Option>
                   <Select.Option value="manual_approval">冻结后人工确认</Select.Option>
                 </Select>
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8}>
+              <Form.Item
+                name="auto_diagnosis_enabled"
+                label="异常后自动诊断"
+                valuePropName="checked"
+                extra="只对硬状态或已确认影响的异常自动创建 AI 集群诊断。"
+              >
+                <Switch checkedChildren="开启" unCheckedChildren="关闭" />
               </Form.Item>
             </Col>
             <Col xs={24}>
@@ -861,7 +986,7 @@ export default function PersistentWatch() {
           dataSource={watches}
           loading={loading}
           pagination={{ pageSize: 6 }}
-          scroll={{ x: 980 }}
+          scroll={{ x: 1280 }}
           expandable={{
             expandedRowRender: (record) => (
               <Table
@@ -870,9 +995,13 @@ export default function PersistentWatch() {
                 dataSource={incidentsByWatch[record.watch_id] || []}
                 pagination={false}
                 size="small"
-                scroll={{ x: 980 }}
+                scroll={{ x: 1380 }}
                 expandable={{
-                  expandedRowRender: renderIncidentExpanded,
+                  expandedRowRender: (incident) => renderIncidentExpanded(
+                    incident,
+                    handleExplainAnomaly,
+                    explainingPointId,
+                  ),
                   rowExpandable: () => true,
                 }}
                 locale={{ emptyText: <Empty description="这个监视对象还没有冻结异常窗口" /> }}
@@ -912,6 +1041,45 @@ export default function PersistentWatch() {
           locale={{ emptyText: <Empty description="该 agent 当前没有 active watch lease" /> }}
         />
       </Card>
+
+      <Modal
+        open={Boolean(anomalyExplanation)}
+        title="异常点分析"
+        footer={<Button onClick={() => setAnomalyExplanation(null)}>关闭</Button>}
+        onCancel={() => setAnomalyExplanation(null)}
+        width={680}
+      >
+        {anomalyExplanation && (
+          <Space direction="vertical" size={12} style={{ width: "100%" }}>
+            <Alert
+              type="info"
+              showIcon
+              message={anomalyExplanation.summary}
+              description="这是单个异常点的轻量解释，不是根因结论，也不会触发探针或 AI 树。"
+            />
+            <Typography.Paragraph style={{ marginBottom: 0 }}>
+              <Typography.Text strong>为什么触发：</Typography.Text>
+              {anomalyExplanation.why_triggered}
+            </Typography.Paragraph>
+            <Typography.Paragraph style={{ marginBottom: 0 }}>
+              <Typography.Text strong>观测变化：</Typography.Text>
+              {anomalyExplanation.observed_change}
+            </Typography.Paragraph>
+            <Typography.Paragraph style={{ marginBottom: 0 }}>
+              <Typography.Text strong>数据质量：</Typography.Text>
+              {anomalyExplanation.data_quality}
+            </Typography.Paragraph>
+            <Space size={[4, 4]} wrap>
+              <Tag color="blue">{anomalyExplanation.classification}</Tag>
+              {anomalyExplanation.cached && <Tag>已复用缓存</Tag>}
+              {(anomalyExplanation.same_window_context || []).map((item) => (
+                <Tag key={item}>{item}</Tag>
+              ))}
+            </Space>
+            <Typography.Text type="secondary">{anomalyExplanation.boundary_notice}</Typography.Text>
+          </Space>
+        )}
+      </Modal>
     </Space>
   );
 }

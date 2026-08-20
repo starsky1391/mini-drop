@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
@@ -16,6 +18,10 @@ def build_collector_profile(capabilities: list[str]) -> dict[str, Any]:
         _tool_profile("ebpf_io", "bpftrace", "bpftrace eBPF IO latency"),
         _always_available("sys_metrics", "procfs system and process metrics"),
         _tool_profile("pyspy", "py-spy", "Python stack sampling"),
+        _tool_profile("python_heap_profile", "memray", "Memray Python allocation and leak profiling"),
+        _source_snapshot_profile(),
+        _source_mechanism_profile(),
+        _python_heap_reference_profile(),
         _offcpu_profile(),
         _trace_endpoint_profile(),
         _log_scan_profile(),
@@ -82,6 +88,81 @@ def _log_scan_profile() -> dict[str, Any]:
         "source": "Fluent Bit or OpenTelemetry filelog output",
         "reason": reason,
         "default_options": {"source_paths": paths},
+    }
+
+
+def _source_snapshot_profile() -> dict[str, Any]:
+    git_path = shutil.which("git")
+    ctags_path = shutil.which("ctags")
+    roots = [item.strip() for item in os.getenv("MINI_DROP_SOURCE_ROOTS", "/host/home,/usr/src").split(",") if item.strip()]
+    available_roots = [item for item in roots if Path(item).is_dir()]
+    available = bool(git_path and ctags_path and available_roots)
+    return {
+        "collector_type": "source_snapshot",
+        "status": "available" if available else "degraded" if git_path and ctags_path else "unavailable",
+        "source": "Git revision verification and universal-ctags",
+        "reason": "source tools and read-only roots found" if available else "Git, universal-ctags, or source roots are unavailable",
+        "default_options": {"source_roots": roots, "available_source_roots": available_roots},
+    }
+
+
+def _source_mechanism_profile() -> dict[str, Any]:
+    codeql = shutil.which("codeql")
+    suite = os.getenv("MINI_DROP_CODEQL_QUERY_SUITE", "").strip()
+    suite_ready = bool(suite and Path(suite).is_file())
+    cache_root = os.getenv("MINI_DROP_CODEQL_CACHE_ROOT", "/var/lib/mini-drop/codeql")
+    version = os.getenv("MINI_DROP_CODEQL_QUERY_PACK_VERSION", "unversioned")
+    available = bool(codeql and suite_ready)
+    reason = (
+        "CodeQL CLI and managed query suite found"
+        if available
+        else "codeql command not found" if not codeql else "managed CodeQL query suite is not configured"
+    )
+    return {
+        "collector_type": "source_mechanism_query",
+        "status": "available" if available else "unavailable",
+        "source": "CodeQL CLI managed query suite",
+        "reason": reason,
+        "default_options": {
+            "query_pack_version": version,
+            "cache_root": cache_root,
+            "managed_query_suite": suite if suite_ready else "",
+        },
+    }
+
+
+def _python_heap_reference_profile() -> dict[str, Any]:
+    gdb = shutil.which("gdb")
+    dumper = os.getenv("MINI_DROP_PYHEAP_DUMPER", "pyheap_dump").strip() or "pyheap_dump"
+    dumper_ready = Path(dumper).is_file() if os.path.sep in dumper else bool(shutil.which(dumper))
+    analyzer_ready = importlib.util.find_spec("pyheap_ui") is not None
+    linux = sys.platform == "linux"
+    ptrace_scope = _read_int("/proc/sys/kernel/yama/ptrace_scope")
+    ptrace_ready = linux and (ptrace_scope in {None, 0} or (hasattr(os, "geteuid") and os.geteuid() == 0))
+    available = bool(linux and gdb and dumper_ready and analyzer_ready and ptrace_ready)
+    missing = []
+    if not linux:
+        missing.append("Linux")
+    if not gdb:
+        missing.append("gdb")
+    if not dumper_ready:
+        missing.append("PyHeap dumper")
+    if not analyzer_ready:
+        missing.append("PyHeap analyzer")
+    if not ptrace_ready:
+        missing.append("ptrace permission")
+    return {
+        "collector_type": "python_heap_reference",
+        "status": "available" if available else "unavailable",
+        "source": "PyHeap v0.7 compatible dumper and analyzer",
+        "reason": "PyHeap runtime reference analysis ready" if available else f"missing: {', '.join(missing)}",
+        "default_options": {
+            "dumper": dumper if dumper_ready else "",
+            "analyzer_available": analyzer_ready,
+            "gdb_available": bool(gdb),
+            "ptrace_scope": ptrace_scope,
+            "cpython_versions": "3.8-3.12",
+        },
     }
 
 
@@ -199,6 +280,13 @@ def _env_bool(name: str, default: bool = False) -> bool:
 def _read_perf_paranoid() -> int | None:
     try:
         return int(Path("/proc/sys/kernel/perf_event_paranoid").read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _read_int(path: str) -> int | None:
+    try:
+        return int(Path(path).read_text().strip())
     except (OSError, ValueError):
         return None
 

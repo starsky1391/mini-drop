@@ -1,0 +1,59 @@
+{
+  "source_mechanism": {
+    "producer": "codeql",
+    "revision": "a220671d66755a94630a212378754bb432811158",
+    "source_context_hash": "sha256:werkzeug-1521",
+    "evidence_validity": {
+      "evidence_status": "valid"
+    },
+    "mechanism_paths": [
+      {
+        "path_id": "bound_method_to_code_constants",
+        "candidate_id": "ai_proposal_bound_method_code_constant",
+        "candidate_relation": "supports",
+        "anchor_matches": [0],
+        "summary": "converter.to_url flows through BuilderCompiler.get_const and self.consts into CodeType.co_consts",
+        "nodes": [
+          {"file": "src/werkzeug/routing.py", "line": 827, "symbol": "converter.to_url"},
+          {"file": "src/werkzeug/routing.py", "line": 853, "symbol": "BuilderCompiler.get_const"},
+          {"file": "src/werkzeug/routing.py", "line": 862, "symbol": "self.consts.append"},
+          {"file": "src/werkzeug/routing.py", "line": 951, "symbol": "types.CodeType"}
+        ],
+        "evidence_ref": "source_mechanism.mechanism_paths[0]"
+      },
+      {
+        "path_id": "defaults_candidate",
+        "candidate_id": "ai_proposal_defaults",
+        "candidate_relation": "refutes",
+        "anchor_matches": [0],
+        "summary": "self.defaults does not flow to the generated CodeType.co_consts sink",
+        "nodes": [
+          {"file": "src/werkzeug/routing.py", "line": 844, "symbol": "self.defaults"}
+        ],
+        "evidence_ref": "source_mechanism.mechanism_paths[1]"
+      }
+    ]
+  },
+  "python_heap_reference": {
+    "producer": "pyheap",
+    "candidate_id": "ai_proposal_bound_method_code_constant",
+    "evidence_validity": {
+      "evidence_status": "valid"
+    },
+    "reference_paths": [
+      {
+        "path_id": "function_to_map",
+        "candidate_id": "ai_proposal_bound_method_code_constant",
+        "nodes": [
+          {"type": "function"},
+          {"type": "code"},
+          {"type": "tuple"},
+          {"type": "method"},
+          {"type": "converter"},
+          {"type": "Map"}
+        ],
+        "evidence_ref": "python_heap_reference.reference_paths[0]"
+      }
+    ]
+  }
+}

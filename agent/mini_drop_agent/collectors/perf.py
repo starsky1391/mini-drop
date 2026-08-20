@@ -2,11 +2,12 @@
 
 执行流程：
   1. 检查 perf 命令是否可用
-  2. 检查 /proc/sys/kernel/perf_event_paranoid 权限水位
+  2. 读取 /proc/sys/kernel/perf_event_paranoid 作为诊断上下文
   3. 验证目标 PID 存在
-  4. 在独立进程组中执行 perf record -F {hz} -g -p {pid} -- sleep {duration}
-  5. 超时时 kill 进程组，防止僵尸
-  6. 返回采样的 perf.data 产物元数据
+  4. 实际执行 perf record，由内核裁决当前容器能力是否足够
+  5. 失败时返回 perf 错误与 paranoid 水位，但不自动修改宿主机配置
+  6. 超时时 kill 进程组，防止僵尸
+  7. 返回采样的 perf.data 产物元数据
 """
 
 from __future__ import annotations
@@ -36,13 +37,6 @@ class PerfCollector:
                 reason="perf 命令不可用，请确认已安装 linux-tools",
             )
 
-        if not self._check_perf_paranoid():
-            return CollectorResult(
-                ok=False,
-                reason="perf_event_paranoid 权限不足。"
-                       "请执行 'echo 1 > /proc/sys/kernel/perf_event_paranoid' 或使用 root 运行 Agent",
-            )
-
         if not self._pid_exists(task.target_pid):
             return CollectorResult(
                 ok=False,
@@ -58,6 +52,8 @@ class PerfCollector:
         all_user = task.options.get("all_user", True)
         hz = task.sample_rate
         duration = task.duration_sec
+        paranoid = self._read_paranoid()
+        paranoid_context = "unknown" if paranoid is None else str(paranoid)
 
         cmd = [
             perf_path, "record",
@@ -89,7 +85,12 @@ class PerfCollector:
                 err_msg = stderr.decode("utf-8", errors="replace").strip()
                 return CollectorResult(
                     ok=False,
-                    reason=f"perf record 执行失败 (exit={proc.returncode}): {err_msg[:200]}",
+                    reason=(
+                        f"perf record 执行失败 (exit={proc.returncode}, "
+                        f"perf_event_paranoid={paranoid_context}): {err_msg[:200]}. "
+                        "请检查 Worker 容器的 privileged/PERFMON/SYS_ADMIN/SYS_PTRACE 能力和 seccomp 配置；"
+                        "Mini-Drop 不会自动修改宿主机 sysctl"
+                    ),
                 )
 
             # 再次确认 PID 在采集期间未退出
@@ -112,6 +113,7 @@ class PerfCollector:
             analysis_artifacts, analysis_reason = self._analyze_perf_data(task, perf_data, output_dir)
             artifacts.extend(analysis_artifacts)
             reason = "perf record 采集完成"
+            reason += f" (perf_event_paranoid={paranoid_context}, 实际执行已允许)"
             if analysis_artifacts:
                 reason += "，Analyzer 已生成火焰图与 TopN"
             elif analysis_reason:
@@ -167,17 +169,6 @@ class PerfCollector:
                 return int(fh.read().strip())
         except (FileNotFoundError, ValueError):
             return None
-
-    def _check_perf_paranoid(self) -> bool:
-        """检查 perf_event_paranoid 是否允许采样。
-
-        paranoid ≤ 1: 允许（-1 无限制, 0 允许 trace, 1 允许用户采样）
-        paranoid ≥ 2: 普通用户无法采样，返回 False
-        """
-        val = self._read_paranoid()
-        if val is None:
-            return True  # 无法读取时不阻断，让 perf 自身报错
-        return val <= 1
 
     @staticmethod
     def _analyze_perf_data(task: CollectorTask, perf_data: str, output_root: str) -> tuple[list[dict], str]:

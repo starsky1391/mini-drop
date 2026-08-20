@@ -1,5 +1,8 @@
 """AI 集群诊断会话、探针审批、预算和证据链测试。"""
 
+import json
+from pathlib import Path
+
 import pytest
 from datetime import timedelta
 from fastapi.testclient import TestClient
@@ -12,6 +15,7 @@ from server.app.diagnosis import orchestrator as orchestrator_module
 from server.app.main import app, repo
 from server.app.main import diagnosis_orchestrator
 from server.app.models import Base
+from server.app.rca.models import RootCauseCluster
 from server.app.state_machine import Actor, TaskStatus
 
 
@@ -85,6 +89,55 @@ def test_readiness_gate_tolerates_truncated_runtime_counts():
     assert any(check["name"] == "runtime_stack_quality_non_empty" for check in gate["checks"])
 
 
+def test_source_snapshot_prefers_agent_visible_host_source_path():
+    source_context = {
+        "source_paths": [
+            "/case/src",
+            "/home/worker1/mini-drop-real-cases/werkzeug-1521/src",
+        ],
+        "container_workdir": "/case",
+        "repo_revision": "a220671d",
+    }
+
+    options = diagnosis_orchestrator._collector_probe_parameters(
+        "process_source_snapshot",
+        {"source_context": source_context},
+        {"pid": 1234, "service_id": "werkzeug-routing", "instance_id": "vulnerable"},
+    )
+
+    assert options["source_root"] == "/home/worker1/mini-drop-real-cases/werkzeug-1521/src"
+    assert options["source_revision"] == "a220671d"
+
+
+def test_python_heap_official_report_paths_are_forwarded_from_source_context():
+    source_context = {
+        "source_paths": ["/home/worker1/mini-drop-real-cases/werkzeug-1521/src"],
+        "memray_result_path": "/var/lib/mini-drop/profiles/werkzeug.bin",
+        "memray_stats_path": "/var/lib/mini-drop/profiles/werkzeug-stats.json",
+        "memray_leaks_path": "/var/lib/mini-drop/profiles/werkzeug-leaks.csv",
+    }
+
+    options = diagnosis_orchestrator._collector_probe_parameters(
+        "process_python_heap_profile",
+        {"source_context": source_context},
+        {"pid": 1234, "service_id": "werkzeug-routing", "instance_id": "vulnerable"},
+    )
+
+    assert options["instrumented_result"].endswith("werkzeug.bin")
+    assert options["memray_stats_path"].endswith("werkzeug-stats.json")
+    assert options["memray_leaks_path"].endswith("werkzeug-leaks.csv")
+
+
+def test_memory_followup_sequence_overrides_generic_trace_requests():
+    requests = orchestrator_module._merge_assessment_followups(
+        ["off_cpu_wait_profile", "trace_endpoint_profile"],
+        ["python_heap_profile"],
+        sufficient_dependency=False,
+    )
+
+    assert requests == ["python_heap_profile"]
+
+
 def _payload(query: str = "服务 service-a CPU 飙高，请定位原因") -> dict:
     return {
         "query": query,
@@ -125,7 +178,42 @@ def test_remote_artifact_falls_back_to_object_storage_when_agent_path_is_missing
     assert value == {"avg_cpu_user_pct": 88.0}
 
 
-def test_existing_structured_evidence_uses_legal_transition_and_completes(client: TestClient):
+def test_truncated_metadata_falls_back_to_raw_artifact_content(tmp_path, monkeypatch):
+    monkeypatch.setenv("MINI_DROP_ARTIFACT_ROOT", str(tmp_path))
+    raw = {
+        "events": [{
+            "action": {"operation": "signal", "signal": "SIGSTOP"},
+            "target": {"pid": 1234},
+            "effect": {"expected_state": "T"},
+        }],
+        "evidence_validity": {"evidence_status": "valid"},
+    }
+    monkeypatch.setattr(
+        orchestrator_module.storage,
+        "read_object_bytes",
+        lambda bucket, key: json.dumps(raw).encode("utf-8"),
+    )
+
+    value = diagnosis_orchestrator._read_artifact_json({
+        "artifact_type": "runtime_control_event_json",
+        "bucket": "mini-drop",
+        "object_key": "tasks/task/runtime_control_events.json",
+        "local_path": str(tmp_path / "missing" / "runtime_control_events.json"),
+        "metadata": {
+            "data": {
+                "events": [{
+                    "action": {"signal": "[TRUNCATED]"},
+                    "target": {"pid": "[TRUNCATED]"},
+                    "effect": {"expected_state": "[TRUNCATED]"},
+                }],
+            },
+        },
+    })
+
+    assert value == raw
+
+
+def test_existing_evidence_without_cohort_is_not_reused(client: TestClient):
     task_id = client.post("/api/tasks", json={
         "name": "reusable-sys-metrics",
         "agent_id": "a1",
@@ -142,12 +230,10 @@ def test_existing_structured_evidence_uses_legal_transition_and_completes(client
     assert response.status_code == 200
     detail = response.json()["data"]
     assert detail["status"] in {"COLLECTING", "WAITING_APPROVAL"}
-    transitions = [(event["from_status"], event["to_status"]) for event in detail["events"]]
-    assert ("ANALYZING_EXISTING_DATA", "ANALYZING") in transitions
-    assert (
-        ("ANALYZING", "COLLECTING") in transitions
-        or ("ANALYZING", "WAITING_APPROVAL") in transitions
-        or ("ANALYZING", "CONCLUDING") in transitions
+    assert task_id not in detail["child_task_ids"]
+    assert all(
+        repo.tasks[child_id].request_params["options"].get("evidence_cohort_id") == detail["diagnosis_id"]
+        for child_id in detail["child_task_ids"]
     )
 
 
@@ -168,11 +254,31 @@ def test_diagnosis_audit_bundle_exports_runtime_trace_and_readiness_gate(client:
     assert bundle["probes"]
     assert bundle["child_task_ids"] == detail["child_task_ids"]
     assert bundle["readiness_gate"]["status"] in {"PASS", "FAIL"}
+    assert "scope" in {item["stage"] for item in bundle["runtime_trace"]}
     assert any(check["name"] == "structured_evidence_non_empty" for check in bundle["readiness_gate"]["checks"])
     assert any(
         check["name"] == "required_collector_family_has_structured_artifact"
         for check in bundle["readiness_gate"]["checks"]
     )
+
+
+def test_repeated_analysis_records_one_guard_event_per_child_task(client: TestClient):
+    data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+    task_id = data["child_task_ids"][0]
+    _finish_sys_metrics_task(task_id, _normal_summary())
+
+    task = repo.tasks[task_id]
+    diagnosis_orchestrator._analyze_tasks(data["diagnosis_id"], [task])
+    diagnosis_orchestrator._analyze_tasks(data["diagnosis_id"], [task])
+    detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
+    guard_events = [
+        event
+        for event in detail["events"]
+        if event["event_type"] == "controlled_ai_tree_guard_result"
+        and event["payload"].get("task_id") == task_id
+    ]
+
+    assert len(guard_events) == 1
 
 
 def test_diagnosis_child_task_skips_legacy_single_task_rca(client: TestClient):
@@ -209,7 +315,7 @@ def test_diagnosis_session_can_be_deleted_without_deleting_child_task(client: Te
     assert client.get(f"/api/tasks/{child_task_id}").status_code == 200
 
 
-def test_ai_controlled_tree_probe_selection_creates_followup(client: TestClient, monkeypatch):
+def test_child_task_tree_remains_fallback_when_session_ai_does_not_succeed(client: TestClient, monkeypatch):
     repo.register_agent(
         "a1", "host-1", "10.0.0.1",
         capabilities=[
@@ -219,16 +325,14 @@ def test_ai_controlled_tree_probe_selection_creates_followup(client: TestClient,
     )
     repo.agents["a1"].capabilities = ["sys_metrics", "redis_check"]
 
-    def fake_generate_tree(*, analyzer_result, **_kwargs):
-        tree = analyzer_result.controlled_ai_tree.model_copy(deep=True)
-        assert tree.probe_edges
-        tree.probe_edges[0] = tree.probe_edges[0].model_copy(update={
-            "probe_requests": ["redis_check"],
-            "reason": "AI 从 Probe Manifest 中选择 Redis 专项检查下探。",
-        })
-        return tree
-
-    monkeypatch.setattr(orchestrator_module, "generate_controlled_ai_tree", fake_generate_tree)
+    monkeypatch.setattr(orchestrator_module, "generate_session_conclusion_review", lambda **kwargs: {
+        "ai_review_status": "failed",
+        "ai_review_scope": "session",
+        "ai_review_attempts": 3,
+        "ai_review_model": "test-model",
+        "ai_review_error": "invalid structured response",
+        "review": None,
+    })
     data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
     task_id = data["child_task_ids"][0]
     summary = _normal_summary()
@@ -237,10 +341,12 @@ def test_ai_controlled_tree_probe_selection_creates_followup(client: TestClient,
 
     detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
 
-    assert any(
-        probe["probe_id"] == "process_redis_check"
-        and (probe.get("parameters") or {}).get("evidence_gap") == "redis_check"
-        for probe in detail["probes"]
+    conclusion = detail["latest_conclusion"]
+    assert conclusion["ai_review_status"] == "failed"
+    assert detail["budget_used"]["model_calls"] == 3
+    assert all(
+        layer["generated_by"] == "analyzer_fallback"
+        for layer in conclusion["controlled_ai_tree"]["layers"]
     )
 
 
@@ -280,6 +386,8 @@ def test_readiness_gate_accepts_controlled_tree_from_normalized_conclusion():
         "structured_evidence": {"version": 1},
         "evidence_refs": ["ev_1"],
         "conclusion": {
+            "ai_review_status": "succeeded",
+            "ai_review_scope": "session",
             "controlled_ai_tree": {
                 "layers": [{"generated_by": "ai_guarded"}],
                 "probe_edges": [{"edge_id": "edge_1"}],
@@ -292,6 +400,163 @@ def test_readiness_gate_accepts_controlled_tree_from_normalized_conclusion():
 
     assert checks["controlled_ai_tree_present"] == "PASS"
     assert checks["controlled_ai_tree_ai_guarded"] == "PASS"
+
+
+def test_readiness_gate_rejects_ai_guarded_label_when_session_review_failed():
+    bundle = {
+        "latest_conclusion": {
+            "ai_review_status": "failed",
+            "ai_review_scope": "session",
+            "controlled_ai_tree": {"layers": [{"generated_by": "ai_guarded"}]},
+        },
+    }
+
+    gate = build_readiness_gate(bundle)
+    checks = {item["name"]: item["status"] for item in gate["checks"]}
+
+    assert checks["controlled_ai_tree_ai_guarded"] == "FAIL"
+
+
+def test_compound_readiness_rejects_clusters_without_independent_evidence():
+    bundle = {
+        "latest_conclusion": {
+            "ai_review_status": "succeeded",
+            "ai_review_scope": "session",
+            "ai_review_attempts": 1,
+            "cluster_assessment": {"classification": "compound_incident"},
+            "root_cause_clusters": [
+                {
+                    "mechanism": "downstream_dependency_failure",
+                    "target": "paymentservice",
+                    "conclusion_eligible": True,
+                    "evidence_refs": ["ev-shared"],
+                },
+                {
+                    "mechanism": "same_host_cpu_contention",
+                    "target": "noise-generator",
+                    "conclusion_eligible": True,
+                    "evidence_refs": ["ev-shared"],
+                },
+            ],
+            "controlled_ai_tree": {"layers": [{"generated_by": "ai_guarded"}]},
+        },
+    }
+
+    gate = build_readiness_gate(bundle)
+    checks = {item["name"]: item["status"] for item in gate["checks"]}
+
+    assert checks["session_ai_review_succeeded"] == "PASS"
+    assert checks["compound_clusters_evidence_backed"] == "FAIL"
+
+
+def test_compound_readiness_uses_evidence_even_when_prediction_is_single_cause():
+    bundle = {
+        "artifacts": [
+            {
+                "artifact_type": "sys_metrics",
+                "metadata": {
+                    "avg_cpu_user_pct": 96.0,
+                    "avg_cpu_sys_pct": 1.0,
+                    "avg_host_cpu_busy_pct": 99.0,
+                },
+            },
+            {
+                "artifact_type": "dependency_check_json",
+                "metadata": {"failed_dependencies": ["paymentservice"]},
+            },
+        ],
+        "latest_conclusion": {
+            "classification": "downstream_dependency",
+            "root_cause_clusters": [{
+                "mechanism": "downstream_dependency_failure",
+                "target": "paymentservice",
+                "conclusion_eligible": True,
+                "evidence_refs": ["ev-dependency"],
+            }],
+        },
+    }
+
+    gate = build_readiness_gate(bundle)
+    checks = {item["name"]: item["status"] for item in gate["checks"]}
+
+    assert checks["compound_clusters_evidence_backed"] == "FAIL"
+
+
+def test_compound_scoring_requires_two_independently_evidenced_clusters():
+    conclusion = {
+        "classification": "compound_incident",
+        "location_type": ["downstream", "same_host"],
+        "domain_type": ["network", "cpu"],
+        "ai_review_status": "succeeded",
+        "ai_review_scope": "session",
+        "root_cause_clusters": [{
+            "mechanism": "downstream_dependency_failure",
+            "target": "paymentservice",
+            "conclusion_eligible": True,
+            "explained_symptoms": ["checkout failed"],
+            "evidence_refs": ["ev-shared"],
+        }, {
+            "mechanism": "same_host_cpu_contention",
+            "target": "noise-generator",
+            "conclusion_eligible": True,
+            "explained_symptoms": ["checkout slow"],
+            "evidence_refs": ["ev-shared"],
+        }],
+    }
+    result = score_audit_bundle(
+        {"diagnosis_id": "diag-compound", "conclusion": conclusion},
+        {"case_id": "compound", "expected": {
+            "classification": "compound_incident",
+            "location_type": ["downstream", "same_host"],
+            "domain_type": ["network", "cpu"],
+        }},
+    )
+
+    assert result["dimensions"]["root_cause"]["exact_root_match"] is True
+    assert result["dimensions"]["root_cause_clusters"]["compound_cluster_match"] is False
+    assert result["exact_root_match"] is False
+
+
+def test_compound_scoring_requires_all_expected_location_and_domain_values():
+    result = score_audit_bundle(
+        {"diagnosis_id": "diag-partial-compound", "conclusion": {
+            "classification": "compound_incident",
+            "location_type": ["same_host"],
+            "domain_type": ["cpu"],
+        }},
+        {"case_id": "compound", "expected": {
+            "classification": "compound_incident",
+            "location_type": ["downstream", "same_host"],
+            "domain_type": ["network", "cpu"],
+        }},
+    )
+
+    root = result["dimensions"]["root_cause"]
+    assert root["location_type"]["matched"] is False
+    assert root["domain_type"]["matched"] is False
+    assert root["exact_root_match"] is False
+
+
+def test_downstream_runtime_control_keeps_downstream_location_and_network_impact():
+    cluster = RootCauseCluster(
+        cluster_id="runtime-downstream",
+        mechanism="process_suspended",
+        target="paymentservice",
+        claim="paymentservice was paused",
+        conclusion_eligible=True,
+    )
+    session = {"target_scope": {
+        "downstream_service_ids": ["paymentservice"],
+        "downstream_instance_ids": ["paymentservice-1"],
+    }}
+
+    fields = orchestrator_module._compound_location_fields([cluster], session)
+    candidates = orchestrator_module._root_cause_cluster_candidates([cluster], session)
+
+    assert fields["location_type"] == ["downstream"]
+    assert fields["domain_type"] == ["runtime", "network"]
+    assert candidates[0]["location_type"] == "downstream"
+    assert candidates[0]["domain_type"] == "runtime"
 
 
 def test_session_controlled_tree_keeps_unproven_function_localization_out_of_final_causes():
@@ -469,7 +734,7 @@ def test_audit_structured_evidence_merges_task_families_without_last_empty_task_
     assert merged["evidence_index"]["log_scan"]["summary"]["matched_records"] == 35
 
 
-def test_runtime_contention_query_plans_off_cpu_and_python_runtime(client: TestClient):
+def test_runtime_contention_query_starts_with_low_cost_control_history(client: TestClient):
     repo.register_agent(
         "a1", "host-1", "10.0.0.1",
         capabilities=["sys_metrics", "off_cpu_wait_profile", "pyspy"],
@@ -485,7 +750,9 @@ def test_runtime_contention_query_plans_off_cpu_and_python_runtime(client: TestC
     detail = response.json()["data"]
     assert detail["normalized_intent"]["symptom"] == "runtime_contention"
     probe_ids = [probe["probe_id"] for probe in detail["probes"]]
-    assert "process_off_cpu_profile" in probe_ids
+    assert "process_runtime_control_history" in probe_ids
+    assert "process_log_scan" in probe_ids
+    assert "process_off_cpu_profile" not in probe_ids
     assert "process_python_runtime_profile" not in probe_ids
     assert "process_io_latency" not in probe_ids
 
@@ -502,10 +769,11 @@ def test_off_cpu_wait_summary_uses_specific_function_anchor(client: TestClient):
     payload["budget_profile"] = "development"
     payload["auto_execute_policy"] = "all_registered"
     data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
-    off_cpu_probe = next(item for item in data["probes"] if item["probe_id"] == "process_off_cpu_profile")
-    task_id = off_cpu_probe["task_id"]
     metrics_probe = next(item for item in data["probes"] if item["probe_id"] == "host_process_metrics")
     _finish_sys_metrics_task(metrics_probe["task_id"], _normal_summary())
+    detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
+    off_cpu_probe = next(item for item in detail["probes"] if item["probe_id"] == "process_off_cpu_profile")
+    task_id = off_cpu_probe["task_id"]
 
     repo.transition_task(task_id, TaskStatus.RUNNING, "agent accepted", Actor.SERVER)
     repo.transition_task(task_id, TaskStatus.UPLOADING, "collected", Actor.AGENT)
@@ -587,10 +855,12 @@ def test_completed_dependency_evidence_is_not_requested_again():
             {
                 "parameters": {"evidence_gap": "dependency_check"},
                 "status": "COMPLETED",
+                "evidence_status": "valid",
             },
             {
                 "parameters": {"evidence_gap": "redis_check"},
                 "status": "COMPLETED",
+                "evidence_status": "valid",
             },
             {
                 "parameters": {"evidence_gap": "log_scan"},
@@ -602,7 +872,7 @@ def test_completed_dependency_evidence_is_not_requested_again():
     assert filtered == ["log_scan"]
 
 
-def test_completed_depth_evidence_is_not_requested_again_even_when_low_gain():
+def test_completed_empty_depth_evidence_remains_pending():
     filtered = orchestrator_module._filter_pending_evidence_requests(
         "diag-1",
         ["baseline_window_profile", "trace_endpoint_profile", "off_cpu_wait_profile"],
@@ -610,16 +880,18 @@ def test_completed_depth_evidence_is_not_requested_again_even_when_low_gain():
             {
                 "parameters": {"evidence_gap": "baseline_window_profile"},
                 "status": "COMPLETED",
+                "evidence_status": "empty_window",
             },
             {
                 "parameters": {"evidence_gap": "trace_endpoint_profile"},
                 "status": "COMPLETED",
+                "evidence_status": "empty_window",
             },
         ],
         task_observations=[],
     )
 
-    assert filtered == ["off_cpu_wait_profile"]
+    assert filtered == ["baseline_window_profile", "trace_endpoint_profile", "off_cpu_wait_profile"]
 
 
 def test_downstream_dependency_summary_names_redis_and_anchor():
@@ -690,7 +962,31 @@ def test_readiness_gate_fails_when_runtime_stack_is_empty():
     assert check["status"] == "FAIL"
 
 
-def test_readiness_gate_accepts_persistent_stopped_process_state():
+def test_readiness_accepts_explicit_optional_runtime_empty_window():
+    bundle = {
+        "runtime_trace": [{"stage": "evidence"}],
+        "probes": [{
+            "probe_id": "process_trace_endpoint_profile",
+            "task_id": "task_runtime",
+            "status": "COMPLETED",
+            "evidence_status": "empty_window",
+        }],
+        "child_task_ids": ["task_runtime"],
+        "tasks": [{"id": "task_runtime", "collector_type": "trace_endpoint_profile"}],
+        "artifacts": [{"task_id": "task_runtime", "artifact_type": "trace_endpoint_profile_json"}],
+        "structured_evidence": {"version": 1},
+        "evidence": [],
+        "evidence_refs": ["ev_dependency"],
+    }
+
+    gate = build_readiness_gate(bundle)
+    checks = {item["name"]: item["status"] for item in gate["checks"]}
+
+    assert checks["runtime_stack_quality_non_empty"] == "PASS"
+    assert checks["completed_probe_evidence_valid"] == "PASS"
+
+
+def test_readiness_gate_rejects_stopped_state_as_stack_evidence():
     bundle = {
         "runtime_trace": [{"stage": "evidence"}],
         "probes": [{
@@ -721,7 +1017,7 @@ def test_readiness_gate_accepts_persistent_stopped_process_state():
     gate = build_readiness_gate(bundle)
     check = next(item for item in gate["checks"] if item["name"] == "runtime_stack_quality_non_empty")
 
-    assert check["status"] == "PASS"
+    assert check["status"] == "FAIL"
 
 
 def test_persistent_stopped_process_becomes_runtime_stall_conclusion(client: TestClient):
@@ -750,11 +1046,135 @@ def test_persistent_stopped_process_becomes_runtime_stall_conclusion(client: Tes
 
     assert assessment["classification"] == "runtime_stall"
     assert assessment["mechanism"] == "process_suspended"
-    assert assessment["conclusion_eligible"] is True
+    assert assessment["claim_type"] == "direct_failure_mechanism"
+    assert assessment["conclusion_eligible"] is False
     assert assessment["location_type"] == "self"
     assert assessment["domain_type"] == "runtime"
     assert assessment["classification"] == "runtime_stall"
     assert "T (stopped)" in conclusion["summary"]
+    assert "无法确认是谁" in conclusion["summary"]
+    assert conclusion["abstained"] is True
+    assert conclusion["root_cause_candidates"] == []
+    assert conclusion["controlled_ai_tree"]["final_primary_causes"] == []
+
+
+def test_runtime_stall_with_same_window_signal_becomes_direct_root_cause(client: TestClient):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=["sys_metrics", "log_scan", "runtime_control_history"],
+    )
+    payload = _payload("服务进程存在、端口可连，但业务工作没有继续推进，进程疑似卡住。")
+    payload["budget_profile"] = "development"
+    payload["auto_execute_policy"] = "all_registered"
+    data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+    probes = {item["probe_id"]: item for item in data["probes"]}
+    summary = _normal_summary()
+    summary.update({
+        "process_state": "T",
+        "process_state_name": "T (stopped)",
+        "process_state_counts": {"T": 10},
+        "stopped_sample_count": 10,
+        "stopped_sample_ratio": 1.0,
+    })
+    _finish_sys_metrics_task(probes["host_process_metrics"]["task_id"], summary)
+    _finish_structured_task(probes["process_log_scan"]["task_id"], "log_window_json", {
+        "summary": {"source_status": "no_error", "matched_records": 0},
+        "error_clusters": [],
+        "evidence_validity": {
+            "execution_status": "completed",
+            "artifact_status": "produced",
+            "evidence_status": "partial",
+            "reason": "no errors in bounded window",
+        },
+    })
+    _finish_structured_task(probes["process_runtime_control_history"]["task_id"], "runtime_control_event_json", {
+        "target_pid": 1234,
+        "events": [{
+            "event_type": "signal_sent",
+            "observed_at": "2026-08-19T06:21:31Z",
+            "actor": {"pid": 4321, "comm": "bash", "uid": 1000},
+            "action": {"operation": "signal", "signal": "SIGSTOP"},
+            "target": {"pid": 1234, "comm": "python-service"},
+            "effect": {"expected_state": "T"},
+            "evidence_ref": "runtime_control.events[0]",
+        }],
+        "causal_edges": [
+            {"source": "bash", "relation": "ISSUED", "target": "SIGSTOP"},
+            {"source": "SIGSTOP", "relation": "TARGETED", "target": "1234"},
+        ],
+        "summary": {"event_count": 1, "has_control_actor": True, "has_direct_control_chain": True},
+        "evidence_validity": {
+            "execution_status": "completed",
+            "artifact_status": "produced",
+            "evidence_status": "valid",
+            "reason": "matching runtime control event found",
+        },
+    })
+
+    detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
+    conclusion = detail["latest_conclusion"]
+    assessment = conclusion["cluster_assessment"]
+
+    assert assessment["claim_type"] == "direct_root_cause"
+    assert assessment["conclusion_eligible"] is True
+    assert assessment["origin_unknown"] is True
+    assert assessment["runtime_control_event"]["actor"]["comm"] == "bash"
+    assert "上游来源证据" in conclusion["summary"]
+    assert conclusion["abstained"] is False
+    assert conclusion["root_cause_candidates"][0]["candidate_id"] == "runtime_control_process_suspended"
+    assert conclusion["controlled_ai_tree"]["final_primary_causes"] == ["runtime_control_process_suspended"]
+
+
+def test_runtime_stall_with_source_provenance_becomes_complete_source_root_cause(client: TestClient):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=["sys_metrics", "log_scan", "runtime_control_history"],
+    )
+    payload = _payload("服务进程存在、端口可连，但业务工作没有继续推进，进程疑似卡住。")
+    payload["budget_profile"] = "development"
+    payload["auto_execute_policy"] = "all_registered"
+    data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+    probes = {item["probe_id"]: item for item in data["probes"]}
+    summary = _normal_summary()
+    summary.update({
+        "process_state": "T",
+        "process_state_name": "T (stopped)",
+        "process_state_counts": {"T": 10},
+        "stopped_sample_count": 10,
+        "stopped_sample_ratio": 1.0,
+    })
+    _finish_sys_metrics_task(probes["host_process_metrics"]["task_id"], summary)
+    _finish_structured_task(probes["process_log_scan"]["task_id"], "log_window_json", {
+        "summary": {"source_status": "no_error", "matched_records": 0},
+        "error_clusters": [],
+        "evidence_validity": {"execution_status": "completed", "artifact_status": "produced", "evidence_status": "partial"},
+    })
+    _finish_structured_task(probes["process_runtime_control_history"]["task_id"], "runtime_control_event_json", {
+        "target_pid": 1234,
+        "events": [{
+            "event_type": "signal_sent",
+            "observed_at": "2026-08-19T06:21:31Z",
+            "actor": {"pid": 4321, "comm": "bash", "uid": 1000},
+            "action": {"operation": "signal", "signal": "SIGSTOP"},
+            "target": {"pid": 1234, "comm": "python-service"},
+            "effect": {"expected_state": "T"},
+            "source_provenance": {
+                "controller": "fault-runner",
+                "redacted_command_source": "scenario:runtime-stall",
+                "initiated_at": "2026-08-19T06:21:30Z",
+            },
+            "evidence_ref": "runtime_control.events[0]",
+        }],
+        "summary": {"event_count": 1, "has_direct_control_chain": True, "has_complete_source_chain": True},
+        "evidence_validity": {"execution_status": "completed", "artifact_status": "produced", "evidence_status": "valid"},
+    })
+
+    detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
+    assessment = detail["latest_conclusion"]["cluster_assessment"]
+
+    assert assessment["claim_type"] == "complete_source_root_cause"
+    assert assessment["origin_unknown"] is False
+    assert assessment["source_provenance"]["controller"] == "fault-runner"
 
 
 def test_benchmark_score_module_scores_bundle_against_oracle(client: TestClient):
@@ -783,7 +1203,7 @@ def test_benchmark_score_module_scores_bundle_against_oracle(client: TestClient)
     assert aggregate["run_count"] == 1
 
 
-def test_continuous_baseline_artifacts_are_structured_for_diagnosis(client: TestClient):
+def test_unscoped_continuous_baseline_is_not_reused_for_diagnosis(client: TestClient):
     task_id = client.post("/api/tasks", json={
         "name": "baseline-window",
         "agent_id": "a1",
@@ -811,8 +1231,8 @@ def test_continuous_baseline_artifacts_are_structured_for_diagnosis(client: Test
     detail = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
     bundle = client.get(f"/api/v1/diagnoses/{detail['diagnosis_id']}/audit-bundle").json()["data"]
 
-    assert bundle["structured_evidence"]
-    assert "service.hot_loop" in str(bundle["structured_evidence"])
+    assert task_id not in detail["child_task_ids"]
+    assert bundle["structured_evidence"] == {}
 
 
 def _finish_sys_metrics_task(task_id: str, summary: dict):
@@ -1099,6 +1519,7 @@ class TestDiagnosisSessionAPI:
         }
         detail = client.post("/api/v1/diagnoses", json=payload).json()["data"]
         assert detail["resource_budget"]["max_hosts"] == 5
+        assert detail["resource_budget"]["max_topology_hops"] == 2
         assert detail["resource_budget"]["max_parallel_probes"] == 3
         assert detail["resource_budget"]["max_medium_risk_probes"] == 1
 
@@ -1109,6 +1530,54 @@ class TestDiagnosisSessionAPI:
         assert detail["resource_budget"]["follow_up_reserve_seconds"] == 60
         assert diagnosis_orchestrator._duration_limit(detail, "initial") == 120
         assert diagnosis_orchestrator._duration_limit(detail, "followup") == 180
+
+    def test_diagnosis_collection_context_uses_evidence_window_contract(self, client: TestClient):
+        payload = _payload()
+        payload["context"]["time_range"] = {
+            "start": "2026-08-19T00:00:00Z",
+            "end": "2026-08-19T00:15:00Z",
+            "source": "request_context",
+        }
+        detail = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+        probe = next(item for item in detail["probes"] if item["probe_id"] == "host_process_metrics")
+        options = repo.tasks[probe["task_id"]].request_params["options"]
+
+        assert options["collection_mode"] == "delayed_followup"
+        assert isinstance(options["window_start"], str)
+        assert isinstance(options["window_end"], str)
+        assert options["evidence_cohort_id"] == detail["diagnosis_id"]
+        assert options["window_start"] != detail["requested_time_range"]["start"]
+        assert options["timing_relation"] == "delayed_followup"
+
+    def test_target_scope_stops_at_two_topology_hops(self, client: TestClient):
+        for index in range(2, 5):
+            repo.register_agent(
+                f"a{index}", f"host-{index}", f"10.0.0.{index}",
+                capabilities=["sys_metrics", "trace_endpoint_profile"],
+            )
+        payload = _payload("service-a 延迟升高，沿调用链下探")
+        payload["budget_profile"] = "development"
+        payload["budget"] = {"max_topology_hops": 3}
+        payload["context"]["instances"].extend([
+            {"service_id": "service-b", "instance_id": "service-b-1", "host_id": "host-2", "agent_id": "a2", "pid": 2002, "environment": "production"},
+            {"service_id": "service-c", "instance_id": "service-c-1", "host_id": "host-3", "agent_id": "a3", "pid": 2003, "environment": "production"},
+            {"service_id": "service-d", "instance_id": "service-d-1", "host_id": "host-4", "agent_id": "a4", "pid": 2004, "environment": "production"},
+        ])
+        payload["context"]["dependencies"] = [
+            {"source_service": "service-a", "target_service": "service-b", "relation": "CALLS", "confidence": "high", "source": "test"},
+            {"source_service": "service-b", "target_service": "service-c", "relation": "CALLS", "confidence": "high", "source": "test"},
+            {"source_service": "service-c", "target_service": "service-d", "relation": "CALLS", "confidence": "high", "source": "test"},
+        ]
+
+        detail = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+
+        instances = {item["instance_id"]: item for item in detail["target_scope"]["instances"]}
+        assert detail["resource_budget"]["max_topology_hops"] == 2
+        assert instances["service-a-1"]["topology_hop"] == 0
+        assert instances["service-b-1"]["topology_hop"] == 1
+        assert instances["service-c-1"]["topology_hop"] == 2
+        assert "service-d-1" not in instances
+        assert all(probe["target"]["instance_id"] != "service-d-1" for probe in detail["probes"])
 
     def test_requested_followup_reserve_is_capped_with_total_budget(self, client: TestClient):
         payload = _payload()
@@ -1302,25 +1771,111 @@ def test_ai_tree_evidence_request_maps_to_followup_probe_once(client: TestClient
         ["baseline_window_profile", "off_cpu_wait_profile", "dependency_check", "log_scan", "redis_check", "unknown_request"],
         parent_task,
     )
-    assert created == 4
+    assert 1 <= created <= 3
     probes = diagnosis_orchestrator.store.list_probes(diagnosis_id)
     gaps = {
         (item.get("parameters") or {}).get("evidence_gap")
         for item in probes
         if (item.get("parameters") or {}).get("evidence_gap")
     }
-    assert {
-        "baseline_window_profile",
-        "dependency_check",
-        "log_scan",
-        "redis_check",
-    }.issubset(gaps)
+    assert "baseline_window_profile" in gaps
 
-    assert diagnosis_orchestrator._plan_followup_requests(
+    second_created = diagnosis_orchestrator._plan_followup_requests(
         diagnosis_id,
         ["off_cpu_wait_profile", "baseline_window_profile", "dependency_check", "log_scan", "redis_check"],
         parent_task,
-    ) == 0
+    )
+    followups = [
+        item for item in diagnosis_orchestrator.store.list_probes(diagnosis_id)
+        if (item.get("parameters") or {}).get("budget_phase") == "followup"
+    ]
+    assert created + second_created <= 3
+    assert len(followups) <= 3
+
+
+def test_ai_tree_stops_creating_followups_after_five_rounds(client: TestClient):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=[
+            "sys_metrics",
+            "perf_cpu",
+            "ebpf_io",
+            "memory_smaps",
+            "baseline_window_profile",
+        ],
+    )
+    data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    parent_task = repo.tasks[data["child_task_ids"][0]]
+    diagnosis_orchestrator.store.update_session(
+        diagnosis_id,
+        conclusion_versions=[{"version": index + 1} for index in range(6)],
+    )
+
+    created = diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["baseline_window_profile"],
+        parent_task,
+    )
+    schedulable = diagnosis_orchestrator._has_schedulable_followup_work(
+        diagnosis_id,
+        ["baseline_window_profile"],
+        diagnosis_orchestrator.store.list_probes(diagnosis_id),
+        parent_task,
+    )
+
+    assert created == 0
+    assert schedulable is False
+    assert any(
+        event["event_type"] == "followup_round_limit_reached"
+        and event["payload"]["max_followup_rounds"] == 5
+        for event in diagnosis_orchestrator.store.get_detail(diagnosis_id)["events"]
+    )
+
+
+def test_ai_tree_allows_third_followup_after_initial_analysis(client: TestClient):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=[
+            "sys_metrics",
+            "perf_cpu",
+            "memory_smaps",
+            "baseline_window_profile",
+            "source_snapshot",
+        ],
+    )
+    data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    parent_task = repo.tasks[data["child_task_ids"][0]]
+    diagnosis_orchestrator.store.update_session(
+        diagnosis_id,
+        conclusion_versions=[{"version": index + 1} for index in range(3)],
+    )
+
+    created = diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["source_snapshot"],
+        parent_task,
+    )
+
+    assert created == 1
+    followup = next(
+        item
+        for item in diagnosis_orchestrator.store.list_probes(diagnosis_id)
+        if (item.get("parameters") or {}).get("evidence_gap") == "source_snapshot"
+    )
+    assert followup["parameters"]["followup_round"] == 2
+
+
+def test_memory_investigation_does_not_fall_through_to_wait_or_network_probes():
+    requests = orchestrator_module._merge_assessment_followups(
+        ["off_cpu_wait_profile", "trace_endpoint_profile"],
+        [],
+        sufficient_dependency=False,
+        memory_only=True,
+    )
+
+    assert requests == []
 
 
 def test_downstream_assessment_has_minimal_industrial_adapter_evidence_plan(client: TestClient):
@@ -1395,6 +1950,118 @@ def test_downstream_assessment_has_minimal_industrial_adapter_evidence_plan(clie
     assert redis_probe["parameters"]["host"] == "127.0.0.1"
     assert redis_probe["parameters"]["port"] == 6379
     assert redis_probe["parameters"]["collector_invocation"]["target_config"]["redis_target"]["url"] == "redis://127.0.0.1:6379"
+
+
+def test_downstream_container_initial_plan_includes_runtime_control_history(client: TestClient):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=["sys_metrics", "log_scan", "dependency_check", "runtime_control_history"],
+    )
+    repo.register_agent(
+        "a2", "host-2", "10.0.0.2",
+        capabilities=["sys_metrics", "log_scan", "dependency_check", "runtime_control_history"],
+    )
+    payload = _payload("service-a 延迟升高，逐层检查调用链真正根因")
+    payload["budget_profile"] = "development"
+    payload["auto_execute_policy"] = "all_registered"
+    payload["budget"] = {
+        "max_hosts": 5,
+        "max_service_instances": 10,
+        "max_topology_hops": 1,
+        "max_duration_minutes": 10,
+        "max_parallel_probes": 10,
+        "max_artifact_size_mb": 500,
+        "max_model_calls": 6,
+        "max_medium_risk_probes": 5,
+        "max_total_probe_cpu_seconds": 600,
+        "follow_up_reserve_seconds": 0,
+    }
+    payload["context"]["instances"].append({
+        "service_id": "paymentservice",
+        "instance_id": "payment-1",
+        "host_id": "host-2",
+        "agent_id": "a2",
+        "pid": 52544,
+        "container_id": "payment-container-123",
+        "environment": "production",
+    })
+    payload["context"]["dependencies"] = [{
+        "source_service": "service-a",
+        "target_service": "paymentservice",
+        "relation": "CALLS",
+        "protocol": "grpc",
+        "host": "paymentservice",
+        "port": 50051,
+        "confidence": "high",
+        "source": "test_topology",
+    }]
+
+    response = client.post("/api/v1/diagnoses", json=payload)
+
+    assert response.status_code == 200
+    detail = response.json()["data"]
+    runtime_probes = [
+        probe for probe in detail["probes"]
+        if probe["probe_id"] == "process_runtime_control_history"
+    ]
+    assert len(runtime_probes) == 1
+    assert runtime_probes[0]["target"]["instance_id"] == "payment-1"
+    invocation = runtime_probes[0]["parameters"]["collector_invocation"]
+    assert invocation["target_config"]["container_id"] == "payment-container-123"
+
+
+def test_downstream_process_without_runtime_identity_does_not_plan_control_history(client: TestClient):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=["sys_metrics", "log_scan", "dependency_check", "runtime_control_history"],
+    )
+    repo.register_agent(
+        "a2", "host-2", "10.0.0.2",
+        capabilities=["sys_metrics", "log_scan", "dependency_check", "runtime_control_history"],
+    )
+    payload = _payload("service-a 延迟升高，逐层检查调用链真正根因")
+    payload["budget_profile"] = "development"
+    payload["auto_execute_policy"] = "all_registered"
+    payload["budget"] = {
+        "max_hosts": 5,
+        "max_service_instances": 10,
+        "max_topology_hops": 1,
+        "max_duration_minutes": 10,
+        "max_parallel_probes": 10,
+        "max_artifact_size_mb": 500,
+        "max_model_calls": 6,
+        "max_medium_risk_probes": 5,
+        "max_total_probe_cpu_seconds": 600,
+        "follow_up_reserve_seconds": 0,
+    }
+    payload["context"]["instances"].append({
+        "service_id": "paymentservice",
+        "instance_id": "payment-1",
+        "host_id": "host-2",
+        "agent_id": "a2",
+        "pid": 52544,
+        "environment": "production",
+    })
+    payload["context"]["dependencies"] = [{
+        "source_service": "service-a",
+        "target_service": "paymentservice",
+        "relation": "CALLS",
+        "protocol": "grpc",
+        "host": "paymentservice",
+        "port": 50051,
+        "confidence": "high",
+        "source": "test_topology",
+    }]
+
+    response = client.post("/api/v1/diagnoses", json=payload)
+
+    assert response.status_code == 200
+    detail = response.json()["data"]
+    assert not any(
+        probe["probe_id"] == "process_runtime_control_history"
+        and probe["target"]["instance_id"] == "payment-1"
+        for probe in detail["probes"]
+    )
 
 
 def test_redis_dependency_session_tree_matches_cluster_conclusion(client: TestClient):
@@ -1726,6 +2393,21 @@ def test_probe_fingerprint_reuses_stable_blocked_result_between_diagnoses(client
     )
 
 
+def test_completed_probe_is_not_reused_across_diagnosis_cohorts(client: TestClient):
+    first = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+    first_probe = next(probe for probe in first["probes"] if probe["probe_id"] == "host_process_metrics")
+    _finish_sys_metrics_task(first_probe["task_id"], _normal_summary())
+
+    second = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+    second_probe = next(probe for probe in second["probes"] if probe["probe_id"] == "host_process_metrics")
+
+    assert second["target_scope"]["evidence_cohort_id"] == second["diagnosis_id"]
+    assert first_probe["task_id"] != second_probe["task_id"]
+    first_options = repo.tasks[first_probe["task_id"]].request_params["options"]
+    second_options = repo.tasks[second_probe["task_id"]].request_params["options"]
+    assert first_options["evidence_cohort_id"] != second_options["evidence_cohort_id"]
+
+
 def test_dependency_conclusion_keeps_function_depth_requests():
     assessment = {
         "classification": "downstream_dependency",
@@ -1747,6 +2429,614 @@ def test_dependency_conclusion_keeps_function_depth_requests():
 
     assert {"dependency_check", "log_scan", "redis_check"} <= set(requests)
     assert {"cpu_profile", "off_cpu_wait_profile", "trace_endpoint_profile"} <= set(requests)
+
+
+def test_memory_followup_is_sequential_heap_runtime_then_source():
+    assessment = {"classification": "self_code_or_process_pressure", "primary_anchor": {"supported_level": "process"}}
+    base = {"normalized_intent": {"symptom": "memory_pressure"}, "target_scope": {}}
+
+    assert orchestrator_module._assessment_followup_requests(assessment, base) == ["python_heap_profile"]
+    heap_done = {
+        **base,
+        "completed_depth_evidence_gaps": ["python_heap_profile"],
+        "probe_evidence_status": {"python_heap_profile": "valid"},
+    }
+    assert orchestrator_module._assessment_followup_requests(assessment, heap_done) == ["python_runtime_profile"]
+    runtime_done = {
+        **heap_done,
+        "completed_depth_evidence_gaps": ["python_heap_profile", "python_runtime_profile"],
+        "probe_evidence_status": {"python_heap_profile": "valid", "python_runtime_profile": "valid"},
+    }
+    assert orchestrator_module._assessment_followup_requests(assessment, runtime_done) == ["source_snapshot"]
+
+
+def test_session_tree_preserves_single_source_hash_and_rejects_revision_conflict():
+    kwargs = {
+        "diagnosis_id": "diag-source",
+        "cluster_assessment": {
+            "classification": "self_code_or_process_pressure",
+            "summary": "Rule.compile 行候选需要源码验证。",
+            "supported_level": "line",
+            "max_supported_level": "line",
+            "confidence": 0.6,
+            "evidence_refs": ["ev-line"],
+        },
+        "candidates": [{
+            "candidate_id": "rule_compile",
+            "rank": 1,
+            "description": "Rule.compile retained allocation",
+            "confidence_level": "中",
+            "evidence_refs": ["ev-line"],
+        }],
+        "followup_requests": [],
+        "probes": [],
+    }
+    single = orchestrator_module._build_session_controlled_ai_tree(
+        **kwargs,
+        child_trees=[{"source_context_hash": "sha256:analyzer", "layers": []}],
+        source_snapshot_hashes=["sha256:one"],
+    )
+    conflict = orchestrator_module._build_session_controlled_ai_tree(
+        **kwargs,
+        child_trees=[{"source_context_hash": "sha256:analyzer", "layers": []}],
+        source_snapshot_hashes=["sha256:one", "sha256:two"],
+    )
+
+    assert single.source_context_hash == "sha256:one"
+    assert conflict.source_context_hash is None
+    assert conflict.final_supported_level == "function"
+    assert "revision" in conflict.stop_reason
+
+
+def test_session_tree_ignores_non_source_analyzer_hashes_for_line_boundary():
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-source-hash-kind",
+        cluster_assessment={
+            "classification": "python_memory_retention",
+            "summary": "源码和内存证据已定位到代码行。",
+            "supported_level": "line",
+            "confidence": 0.9,
+            "evidence_refs": ["ev-source"],
+            "conclusion_eligible": True,
+            "claim_type": "direct_root_cause",
+            "causal_status": "supported",
+            "mechanism": "python_code_constant_retention",
+            "claim_target": "routing.py:988",
+        },
+        candidates=[],
+        followup_requests=[],
+        probes=[],
+        child_trees=[
+            {"source_context_hash": "sha256:generic-analyzer", "layers": []},
+            {"source_context_hash": "sha256:verified-source", "layers": []},
+        ],
+        source_snapshot_hashes=["sha256:verified-source"],
+    )
+
+    assert tree.source_context_hash == "sha256:verified-source"
+    assert tree.final_supported_level == "line"
+    assert "冲突" not in tree.stop_reason
+
+
+def test_source_snapshot_hashes_only_include_valid_source_artifacts():
+    hashes = orchestrator_module._source_snapshot_hashes([
+        {"source_snapshot": {
+            "source_context_hash": "sha256:one",
+            "evidence_validity": {"evidence_status": "valid"},
+        }},
+        {"source_snapshot": {
+            "source_context_hash": "sha256:blocked",
+            "evidence_validity": {"evidence_status": "blocked"},
+        }},
+        {"source_snapshot": {"source_context_hash": "sha256:one"}},
+    ])
+
+    assert hashes == ["sha256:one"]
+
+
+def test_source_snapshot_upgrades_matching_call_path_anchor_to_line_only():
+    anchor = {
+        "supported_level": "call_path",
+        "anchor": "Map.__init__ -> Rule.compile",
+        "function": "Rule.compile",
+        "file": "werkzeug/routing.py",
+        "line": 768,
+    }
+    observations = [{
+        "source_snapshot": {
+            "source_context_hash": "sha256:verified",
+            "revision": "abc123",
+            "snippets": [{
+                "file": "werkzeug/routing.py",
+                "focus_line": 768,
+                "lines": [{"line": 768, "text": "def compile(self):"}],
+            }],
+        },
+    }]
+
+    upgraded = orchestrator_module._verified_source_anchor(anchor, observations)
+    mismatched = orchestrator_module._verified_source_anchor({**anchor, "line": 999}, observations)
+
+    assert upgraded["supported_level"] == "line"
+    assert upgraded["source_context_hash"] == "sha256:verified"
+    assert mismatched["supported_level"] == "call_path"
+
+
+def test_source_snapshot_task_options_keep_session_line_candidates(monkeypatch):
+    candidate = {"file": "/case/src/werkzeug/routing.py", "line": 1120, "symbol": "compile"}
+    monkeypatch.setattr(
+        diagnosis_orchestrator,
+        "_session_line_candidates",
+        lambda diagnosis_id: [candidate] if diagnosis_id == "diag-source" else [],
+    )
+    definition = orchestrator_module.get_probe("process_source_snapshot")
+    step = {
+        "diagnosis_id": "diag-source",
+        "step_id": "step-source",
+        "parameters": {"duration_sec": 10, "sample_rate": 1},
+    }
+    source_context = {
+        "source_paths": ["/home/worker1/mini-drop-real-cases/werkzeug-1521"],
+        "repo_revision": "a220671d",
+    }
+    target = {
+        "pid": 1234,
+        "agent_id": "a1",
+        "host_id": "host-1",
+        "service_id": "werkzeug-routing",
+        "instance_id": "werkzeug-vulnerable",
+        "source_context": source_context,
+    }
+
+    options = diagnosis_orchestrator._task_options_for_probe(
+        step,
+        definition,
+        {"source_context": source_context},
+        target,
+    )
+
+    assert options["line_candidates"] == [candidate]
+
+
+def test_development_budget_accepts_requested_model_calls():
+    requested = orchestrator_module.DiagnosisBudget(max_model_calls=12)
+
+    budget = diagnosis_orchestrator._effective_budget("development", requested)
+
+    assert budget.max_model_calls == 12
+
+
+def test_memray_backed_python_memory_scope_starts_with_metrics_only():
+    scope = {
+        "source_context": {
+            "language": "python",
+            "memray_result_path": "/profiles/capture.bin",
+        },
+        "instances": [],
+        "dependency_targets": [],
+    }
+
+    assert orchestrator_module._scope_probe_ids("memory_pressure", scope) == ["host_process_metrics"]
+
+
+def test_memory_retention_anchor_prefers_memray_bytes_and_verified_source():
+    observations = [
+        {
+            "collector_type": "python_heap_profile",
+            "target": {"service_id": "werkzeug-routing", "instance_id": "vulnerable", "pid": 1234},
+            "evidence_refs": ["ev-heap"],
+            "python_heap_profile": {
+                "evidence_validity": {"evidence_status": "valid"},
+                "retained_allocation_hotspots": [{
+                    "function": "compile",
+                    "file": "/case/src/werkzeug/routing.py",
+                    "line": 1120,
+                    "size_bytes": 8_574_832,
+                    "allocation_count": 63_992,
+                    "call_path": ["compile", "_compile_builder", "bind", "Map.__init__"],
+                }],
+            },
+        },
+        {
+            "collector_type": "source_snapshot",
+            "target": {"service_id": "werkzeug-routing", "instance_id": "vulnerable", "pid": 1234},
+            "evidence_refs": ["ev-source"],
+            "source_snapshot": {
+                "revision": "a220671d",
+                "source_context_hash": "sha256:verified",
+                "snippets": [{
+                    "file": "src/werkzeug/routing.py",
+                    "focus_line": 1120,
+                    "lines": [{"line": 1120, "text": "co = types.CodeType(*code_args)"}],
+                }],
+            },
+        },
+    ]
+
+    anchor = orchestrator_module._verified_source_anchor(
+        orchestrator_module._memory_retention_anchor(observations),
+        observations,
+    )
+
+    assert anchor["anchor_type"] == "verified_source_line"
+    assert anchor["supported_level"] == "line"
+    assert anchor["line"] == 1120
+    assert anchor["size_bytes"] == 8_574_832
+    assert anchor["evidence_refs"] == ["ev-heap", "ev-source"]
+
+
+def test_ai_evidence_summary_keeps_memray_hotspot_and_source_text():
+    heap = orchestrator_module._summarize_artifact_value("python_heap_profile_json", {
+        "producer": "memray",
+        "retained_allocation_hotspots": [{
+            "function": "compile",
+            "file": "/case/src/werkzeug/routing.py",
+            "line": 1120,
+            "size_bytes": 1024,
+            "allocation_count": 8,
+            "call_path": ["compile", "_compile_builder"],
+        }],
+    })
+    source = orchestrator_module._summarize_artifact_value("source_snapshot_json", {
+        "revision": "a220671d",
+        "source_context_hash": "sha256:verified",
+        "snippets": [{
+            "file": "src/werkzeug/routing.py",
+            "focus_line": 1120,
+            "symbol": "compile",
+            "lines": [{"line": 1120, "text": "co = types.CodeType(*code_args)"}],
+        }],
+    })
+
+    assert heap["retained_allocation_hotspots"][0]["size_bytes"] == 1024
+    assert source["snippets"][0]["lines"][0]["text"] == "co = types.CodeType(*code_args)"
+
+
+def test_memory_retention_allocation_line_alone_is_not_root_cause_eligible():
+    metadata = orchestrator_module._assessment_claim_metadata(
+        classification="python_memory_retention",
+        session={"target_scope": {"target_service": "werkzeug-routing"}},
+        anchor={
+            "anchor": "src/werkzeug/routing.py:844 __init__",
+            "source_context_hash": "sha256:verified",
+            "file": "src/werkzeug/routing.py",
+            "line": 844,
+            "function": "__init__",
+            "size_bytes": 1024,
+            "allocation_count": 8,
+        },
+        evidence_refs=["ev-heap", "ev-source"],
+        downstream_dependency_failure=False,
+        shared_iowait=False,
+        neighbor_pressure=False,
+        runtime_control=None,
+    )
+
+    assert metadata["conclusion_eligible"] is False
+    assert metadata["claim_type"] == "direct_failure_mechanism"
+    assert metadata["causal_status"] == "unproven"
+
+
+def test_source_snapshot_ast_reference_hint_is_not_root_cause_eligible():
+    metadata = orchestrator_module._assessment_claim_metadata(
+        classification="python_memory_retention",
+        session={"target_scope": {"target_service": "werkzeug-routing"}},
+        anchor={
+            "anchor": "src/werkzeug/routing.py:844 __init__",
+            "source_context_hash": "sha256:verified",
+            "file": "src/werkzeug/routing.py",
+            "line": 844,
+            "function": "__init__",
+            "size_bytes": 1024,
+            "allocation_count": 8,
+            "reference_paths": [{
+                "source_expression": "operation",
+                "upstream_candidates": [{"expression": "self.converter.to_url"}],
+                "container": "self.consts",
+                "runtime_slot": "CodeType.co_consts",
+                "retained_by": "types.FunctionType(code, {})",
+            }],
+        },
+        evidence_refs=["ev-heap", "ev-source"],
+        downstream_dependency_failure=False,
+        shared_iowait=False,
+        neighbor_pressure=False,
+        runtime_control=None,
+    )
+
+    assert metadata["conclusion_eligible"] is False
+    assert metadata["claim_type"] == "direct_failure_mechanism"
+    assert metadata["mechanism"] == "python_memory_retention"
+
+
+def test_codeql_and_pyheap_reference_chain_is_root_cause_eligible():
+    metadata = orchestrator_module._assessment_claim_metadata(
+        classification="python_memory_retention",
+        session={"target_scope": {"target_service": "werkzeug-routing"}},
+        anchor={
+            "anchor": "src/werkzeug/routing.py:844 __init__",
+            "source_context_hash": "sha256:verified",
+            "source_revision": "a220671d",
+            "file": "src/werkzeug/routing.py",
+            "line": 844,
+            "function": "__init__",
+            "size_bytes": 1024,
+            "allocation_count": 8,
+            "mechanism_paths": [{
+                "path_id": "bound-method-code-const",
+                "candidate_id": "ai_proposal_bound_method",
+                "candidate_relation": "supports",
+                "anchor_matches": [0],
+                "evidence_ref": "source_mechanism.mechanism_paths[0]",
+            }],
+            "runtime_reference_paths": [{
+                "path_id": "function-to-map",
+                "candidate_id": "ai_proposal_bound_method",
+                "nodes": [{"type": "function"}, {"type": "Map"}],
+                "evidence_ref": "python_heap_reference.reference_paths[0]",
+            }],
+        },
+        evidence_refs=["ev-heap", "ev-codeql", "ev-pyheap"],
+        downstream_dependency_failure=False,
+        shared_iowait=False,
+        neighbor_pressure=False,
+        runtime_control=None,
+    )
+
+    assert metadata["conclusion_eligible"] is True
+    assert metadata["claim_type"] == "direct_root_cause"
+    assert metadata["mechanism"] == "python_code_constant_retention"
+
+
+def test_memory_followup_requests_optional_mechanism_then_runtime_reference():
+    assessment = {
+        "classification": "python_memory_retention",
+        "mechanism": "python_memory_retention",
+        "primary_anchor": {
+            "supported_level": "line",
+            "file": "src/werkzeug/routing.py",
+            "line": 844,
+            "source_context_hash": "sha256:verified",
+            "source_revision": "a220671d",
+        },
+    }
+    base = {
+        "normalized_intent": {"symptom": "memory_pressure"},
+        "completed_depth_evidence_gaps": ["python_heap_profile", "python_runtime_profile", "source_snapshot"],
+        "probe_evidence_status": {
+            "python_heap_profile": "valid",
+            "python_runtime_profile": "valid",
+            "source_snapshot": "valid",
+        },
+    }
+
+    assert orchestrator_module._assessment_followup_requests(assessment, base) == ["source_mechanism_query"]
+    mechanism_done = {
+        **base,
+        "completed_depth_evidence_gaps": [*base["completed_depth_evidence_gaps"], "source_mechanism_query"],
+        "probe_evidence_status": {**base["probe_evidence_status"], "source_mechanism_query": "valid"},
+    }
+    assert orchestrator_module._assessment_followup_requests(assessment, mechanism_done) == ["python_heap_reference"]
+    blocked = {
+        **base,
+        "probe_evidence_status": {**base["probe_evidence_status"], "source_mechanism_query": "blocked"},
+    }
+    assert orchestrator_module._assessment_followup_requests(assessment, blocked) == []
+
+
+def test_ordinary_verified_line_does_not_enter_optional_mechanism_branch():
+    assessment = {
+        "classification": "self_code_or_process_pressure",
+        "primary_anchor": {
+            "supported_level": "line",
+            "file": "src/service.py",
+            "line": 42,
+            "source_context_hash": "sha256:verified",
+            "source_revision": "abc123",
+        },
+    }
+    session = {
+        "normalized_intent": {"symptom": "cpu_saturation"},
+        "completed_depth_evidence_gaps": ["cpu_profile", "source_snapshot"],
+        "probe_evidence_status": {"cpu_profile": "valid", "source_snapshot": "valid"},
+    }
+
+    requests = orchestrator_module._assessment_followup_requests(assessment, session)
+
+    assert "source_mechanism_query" not in requests
+    assert "python_heap_reference" not in requests
+
+
+def test_optional_mechanism_probe_failure_is_nonblocking():
+    failed = type("Task", (), {"id": "task-codeql", "status": "FAILED"})()
+    probes = [{
+        "diagnosis_id": "diag-mechanism",
+        "task_id": "task-codeql",
+        "parameters": {"evidence_gap": "source_mechanism_query"},
+    }]
+
+    assert orchestrator_module._failed_tasks_are_only_optional_mechanism_followups(
+        "diag-mechanism", [failed], probes
+    ) is True
+
+    initial_failure = type("Task", (), {"id": "task-metrics", "status": "FAILED"})()
+    assert orchestrator_module._failed_tasks_are_only_optional_mechanism_followups(
+        "diag-mechanism",
+        [initial_failure],
+        [{
+            "diagnosis_id": "diag-mechanism",
+            "task_id": "task-metrics",
+            "parameters": {"evidence_gap": "host_process_metrics"},
+        }],
+    ) is False
+
+
+def test_session_tree_rebuilds_supported_and_refuted_codeql_candidates():
+    assessment = {
+        "classification": "python_memory_retention",
+        "summary": "Memray 已定位表层分配行，CodeQL 正在区分持有机制。",
+        "supported_level": "line",
+        "confidence": 0.8,
+        "evidence_refs": ["ev-heap", "ev-codeql"],
+        "conclusion_eligible": False,
+        "claim_type": "direct_failure_mechanism",
+        "causal_status": "supported",
+        "claim_target": "src/werkzeug/routing.py:844",
+        "primary_anchor": {
+            "mechanism_paths": [
+                {
+                    "candidate_id": "ai_proposal_bound_method",
+                    "candidate_relation": "supports",
+                    "anchor_matches": [0],
+                    "summary": "converter.to_url reaches generated code constants",
+                    "evidence_ref": "source_mechanism.mechanism_paths[0]",
+                },
+                {
+                    "candidate_id": "ai_proposal_defaults",
+                    "candidate_relation": "refutes",
+                    "anchor_matches": [0],
+                    "summary": "defaults does not reach the generated code constant sink",
+                    "evidence_ref": "source_mechanism.mechanism_paths[1]",
+                },
+            ],
+            "runtime_reference_paths": [],
+        },
+    }
+
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-werkzeug-mechanism",
+        cluster_assessment=assessment,
+        candidates=[],
+        followup_requests=["python_heap_reference"],
+        probes=[],
+        child_trees=[],
+    )
+
+    nodes = {
+        node.candidate_id: node
+        for layer in tree.layers
+        for node in [*layer.primary_causes, *layer.secondary_causes, *layer.rejected_causes, *layer.unknown_causes]
+    }
+    assert nodes["ai_proposal_bound_method"].role == "unknown"
+    assert nodes["ai_proposal_bound_method"].self_challenge.missing_evidence == ["python_heap_reference"]
+    assert nodes["ai_proposal_defaults"].role == "rejected"
+    assert nodes["ai_proposal_defaults"].causal_status == "contradicted"
+    assert any(
+        edge.effect == "rollback" and "ai_proposal_defaults" in edge.from_candidate_ids
+        for edge in tree.probe_edges
+    )
+
+
+def test_mechanism_anchor_only_closes_same_candidate_codeql_and_pyheap_paths():
+    anchor = {
+        "source_context_hash": "sha256:verified",
+        "source_revision": "abc123",
+        "evidence_refs": ["ev-source"],
+    }
+    observations = [
+        {
+            "evidence_refs": ["ev-codeql"],
+            "source_mechanism": {
+                "revision": "abc123",
+                "evidence_validity": {"evidence_status": "valid"},
+                "mechanism_paths": [{
+                    "candidate_id": "ai_proposal_bound_method",
+                    "candidate_relation": "supports",
+                    "anchor_matches": [0],
+                    "evidence_ref": "source_mechanism.mechanism_paths[0]",
+                }],
+            },
+        },
+        {
+            "evidence_refs": ["ev-pyheap"],
+            "python_heap_reference": {
+                "evidence_validity": {"evidence_status": "valid"},
+                "reference_paths": [{
+                    "candidate_id": "ai_proposal_defaults",
+                    "nodes": [{"type": "function"}, {"type": "Map"}],
+                }],
+            },
+        },
+    ]
+
+    mismatched = orchestrator_module._mechanism_enriched_anchor(anchor, observations)
+    observations[1]["python_heap_reference"]["reference_paths"][0]["candidate_id"] = "ai_proposal_bound_method"
+    matched = orchestrator_module._mechanism_enriched_anchor(anchor, observations)
+
+    assert mismatched["root_claim_allowed"] is False
+    assert mismatched["runtime_reference_paths"] == []
+    assert matched["root_claim_allowed"] is True
+    assert matched["runtime_reference_paths"][0]["candidate_id"] == "ai_proposal_bound_method"
+
+
+def test_werkzeug_1521_fixture_closes_bound_method_branch_and_greys_defaults():
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "werkzeug_1521_mechanism_evidence.json").read_text(encoding="utf-8")
+    )
+    anchor = orchestrator_module._mechanism_enriched_anchor(
+        {
+            "anchor": "src/werkzeug/routing.py:844 BuilderCompiler.__init__",
+            "file": "src/werkzeug/routing.py",
+            "line": 844,
+            "function": "BuilderCompiler.__init__",
+            "source_context_hash": "sha256:werkzeug-1521",
+            "source_revision": "a220671d66755a94630a212378754bb432811158",
+            "size_bytes": 8_574_832,
+            "allocation_count": 63_992,
+            "evidence_refs": ["ev-memray", "ev-source"],
+        },
+        [
+            {"source_mechanism": fixture["source_mechanism"], "evidence_refs": ["ev-codeql"]},
+            {"python_heap_reference": fixture["python_heap_reference"], "evidence_refs": ["ev-pyheap"]},
+        ],
+    )
+    metadata = orchestrator_module._assessment_claim_metadata(
+        classification="python_memory_retention",
+        session={"target_scope": {"target_service": "werkzeug-routing"}},
+        anchor=anchor,
+        evidence_refs=anchor["evidence_refs"],
+        downstream_dependency_failure=False,
+        shared_iowait=False,
+        neighbor_pressure=False,
+        runtime_control=None,
+    )
+    assessment = {
+        "classification": "python_memory_retention",
+        "summary": metadata["diagnostic_claim"],
+        "supported_level": "line",
+        "confidence": 0.93,
+        "evidence_refs": anchor["evidence_refs"],
+        "primary_anchor": anchor,
+        **metadata,
+    }
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-werkzeug-1521-fixture",
+        cluster_assessment=assessment,
+        candidates=[],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+        source_snapshot_hashes=["sha256:werkzeug-1521"],
+    )
+    nodes = {
+        node.candidate_id: node
+        for layer in tree.layers
+        for node in [*layer.primary_causes, *layer.secondary_causes, *layer.rejected_causes, *layer.unknown_causes]
+    }
+
+    source_symbols = [node["symbol"] for node in anchor["mechanism_paths"][0]["nodes"]]
+    runtime_types = [node["type"] for node in anchor["runtime_reference_paths"][0]["nodes"]]
+    assert source_symbols == [
+        "converter.to_url",
+        "BuilderCompiler.get_const",
+        "self.consts.append",
+        "types.CodeType",
+    ]
+    assert runtime_types == ["function", "code", "tuple", "method", "converter", "Map"]
+    assert metadata["conclusion_eligible"] is True
+    assert nodes["ai_proposal_bound_method_code_constant"].conclusion_eligible is True
+    assert nodes["ai_proposal_defaults"].role == "rejected"
+    assert nodes["ai_proposal_defaults"].status == "contradicted"
 
 
 def test_all_registered_dependency_followup_schedules_function_depth_probes(client: TestClient):

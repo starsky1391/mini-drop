@@ -32,6 +32,8 @@ class WatchObservationState:
 class _PidSnapshot:
     monotonic_ts: float
     cpu_seconds: float
+    cgroup_usage_usec: int | None = None
+    cgroup_throttled_usec: int | None = None
 
 
 class ProcessDeltaSampler:
@@ -55,6 +57,22 @@ class ProcessDeltaSampler:
             elapsed = max(snapshot.monotonic_ts - previous.monotonic_ts, 0.001)
             cpu_delta = max(snapshot.cpu_seconds - previous.cpu_seconds, 0.0)
             metrics["cpu_percent"] = cpu_delta / elapsed * 100.0
+            current_usage = getattr(snapshot, "cgroup_usage_usec", None)
+            current_throttled = getattr(snapshot, "cgroup_throttled_usec", None)
+            previous_usage = getattr(previous, "cgroup_usage_usec", None)
+            previous_throttled = getattr(previous, "cgroup_throttled_usec", None)
+            if (
+                current_usage is not None
+                and current_throttled is not None
+                and previous_usage is not None
+                and previous_throttled is not None
+            ):
+                usage_delta = max(current_usage - previous_usage, 0)
+                throttled_delta = max(current_throttled - previous_throttled, 0)
+                total = usage_delta + throttled_delta
+                metrics["throttled_percent"] = (
+                    throttled_delta / total * 100.0 if total > 0 else 0.0
+                )
         return metrics
 
 
@@ -78,6 +96,8 @@ def observe_watch_lease(
     _set_metric(sample, "thread_count", metrics.get("thread_count"))
     _set_metric(sample, "rss_mb", metrics.get("rss_mb"))
     _set_metric(sample, "iowait_percent", _read_system_iowait())
+    sample.process_state = str(metrics.get("process_state") or "")
+    _set_metric(sample, "throttled_percent", metrics.get("throttled_percent"))
     return sample, True, "ok"
 
 
@@ -92,9 +112,13 @@ def sample_to_dict(sample: watch_pb2.WatchMetricSample) -> dict[str, Any]:
         ("iowait_percent", sample.has_iowait_percent),
         ("rss_mb", sample.has_rss_mb),
         ("error_count", sample.has_error_count),
+        ("throttled_percent", sample.has_throttled_percent),
+        ("queue_depth", sample.has_queue_depth),
     ):
         if present:
             values[field] = getattr(sample, field)
+    if sample.process_state:
+        values["process_state"] = sample.process_state
     return values
 
 
@@ -107,9 +131,12 @@ def dict_to_sample(values: dict[str, Any]) -> watch_pb2.WatchMetricSample:
         "iowait_percent",
         "rss_mb",
         "error_count",
+        "throttled_percent",
+        "queue_depth",
     ):
         if field in values and values[field] is not None:
             _set_metric(sample, field, values[field])
+    sample.process_state = str(values.get("process_state") or "")
     return sample
 
 
@@ -149,13 +176,17 @@ def _read_pid_snapshot(pid: int, clock_ticks: int, page_size: int) -> dict[str, 
         if len(fields) >= 24:
             rss_pages = int(fields[21])
             result["rss_mb"] = rss_pages * page_size / 1024 / 1024
+        result["process_state"] = fields[0]
     except (OSError, ValueError, IndexError):
         return None
+    cgroup_usage_usec, cgroup_throttled_usec = _read_cgroup_cpu_stat(pid)
     return {
         "metrics": result,
         "snapshot": _PidSnapshot(
             monotonic_ts=time.monotonic(),
             cpu_seconds=(utime + stime) / max(clock_ticks, 1),
+            cgroup_usage_usec=cgroup_usage_usec,
+            cgroup_throttled_usec=cgroup_throttled_usec,
         ),
         "start_ticks": start_ticks,
     }
@@ -185,3 +216,22 @@ def _read_system_iowait() -> float | None:
         return fields[4] / total * 100.0 if total else 0.0
     except (OSError, ValueError, IndexError, StopIteration):
         return None
+
+
+def _read_cgroup_cpu_stat(pid: int) -> tuple[int | None, int | None]:
+    try:
+        with open(f"/proc/{pid}/cgroup", "r", encoding="utf-8") as fh:
+            unified = next(
+                line.strip().split("::", 1)[1]
+                for line in fh
+                if "::" in line
+            )
+        cpu_stat = os.path.join("/sys/fs/cgroup", unified.lstrip("/"), "cpu.stat")
+        values: dict[str, int] = {}
+        with open(cpu_stat, "r", encoding="utf-8") as fh:
+            for line in fh:
+                key, value = line.split()[:2]
+                values[key] = int(value)
+        return values.get("usage_usec"), values.get("throttled_usec")
+    except (OSError, ValueError, IndexError, StopIteration):
+        return None, None

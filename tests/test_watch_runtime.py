@@ -163,7 +163,7 @@ def test_watch_target_config_flows_into_triggered_collector_invocation():
     assert result.incident.collector_tasks[0].collector_invocation == invocation
 
 
-def test_watch_evaluation_appends_multiple_incidents_without_overwriting_history():
+def test_watch_evaluation_merges_repeated_trigger_into_one_episode():
     repo = InMemoryRepository()
     repo.register_agent(
         "agent_1",
@@ -186,18 +186,111 @@ def test_watch_evaluation_appends_multiple_incidents_without_overwriting_history
     second = runtime.evaluate(
         watch.watch_id,
         WatchEvaluationRequest(
-            baseline_window=_window(now + timedelta(minutes=10), cpu_percent=30.0),
-            trigger_window=_window(now + timedelta(minutes=15), cpu_percent=70.0),
+            baseline_window=_window(now + timedelta(seconds=30), cpu_percent=30.0),
+            trigger_window=_window(now + timedelta(minutes=6), cpu_percent=70.0),
         ),
     )
 
     incidents = registry.list_incidents(watch.watch_id)
-    assert len(incidents) == 2
-    assert {item.incident_id for item in incidents} == {
-        first.incident.incident_id,
-        second.incident.incident_id,
-    }
-    assert registry.get(watch.watch_id).incidents_count == 2
+    assert len(incidents) == 1
+    assert second.incident.incident_id == first.incident.incident_id
+    assert second.incident.occurrence_count == 2
+    assert second.incident.anomaly_points[0]["occurrences"] == 2
+    assert second.trigger.collector_tasks == []
+    assert second.trigger.skipped_probe_ids == ["merged_into_active_episode"]
+    assert registry.get(watch.watch_id).incidents_count == 1
+
+
+def test_recovered_episode_closes_and_later_trigger_creates_new_episode():
+    repo = InMemoryRepository()
+    repo.register_agent("agent_1", "host-1", "10.0.0.1", capabilities=["sys_metrics"])
+    registry = WatchRegistry()
+    runtime = PersistentAgentRuntime(registry, repo)
+    watch = registry.create(_watch_payload_with_action("freeze_only"))
+    now = datetime(2026, 8, 11, 10, 0, tzinfo=timezone.utc)
+    first = runtime.evaluate(
+        watch.watch_id,
+        WatchEvaluationRequest(
+            baseline_window=_window(now, cpu_percent=20.0),
+            trigger_window=_window(now + timedelta(minutes=5), cpu_percent=55.0),
+        ),
+    )
+
+    for offset in range(3):
+        recovered = runtime.evaluate(
+            watch.watch_id,
+            WatchEvaluationRequest(
+                baseline_window=_window(now + timedelta(minutes=10 + offset), cpu_percent=20.0),
+                trigger_window=_window(now + timedelta(minutes=11 + offset), cpu_percent=20.0),
+            ),
+        )
+    assert recovered.incident.episode_status == "CLOSED"
+
+    later = runtime.evaluate(
+        watch.watch_id,
+        WatchEvaluationRequest(
+            baseline_window=_window(now + timedelta(minutes=20), cpu_percent=20.0),
+            trigger_window=_window(now + timedelta(minutes=25), cpu_percent=60.0),
+        ),
+    )
+    assert later.incident.incident_id != first.incident.incident_id
+    assert len(registry.list_incidents(watch.watch_id)) == 2
+
+
+def test_resource_shift_without_impact_is_not_auto_diagnosis_eligible():
+    repo = InMemoryRepository()
+    repo.register_agent("agent_1", "host-1", "10.0.0.1", capabilities=["sys_metrics"])
+    registry = WatchRegistry()
+    runtime = PersistentAgentRuntime(registry, repo)
+    watch = registry.create(_watch_payload_with_action("freeze_only"))
+    now = datetime(2026, 8, 11, 10, 0, tzinfo=timezone.utc)
+
+    result = runtime.evaluate(
+        watch.watch_id,
+        WatchEvaluationRequest(
+            baseline_window=_window(now, cpu_percent=20.0),
+            trigger_window=_window(now + timedelta(minutes=5), cpu_percent=80.0),
+        ),
+    )
+
+    assert result.incident.impact_status == "impact_unconfirmed"
+    assert result.incident.diagnosis_eligible is False
+    assert registry.ready_auto_diagnosis_episodes(now + timedelta(minutes=1)) == []
+
+
+def test_hard_process_state_is_immediately_auto_diagnosis_eligible():
+    repo = InMemoryRepository()
+    repo.register_agent("agent_1", "host-1", "10.0.0.1", capabilities=["sys_metrics"])
+    registry = WatchRegistry()
+    runtime = PersistentAgentRuntime(registry, repo)
+    watch = registry.create(_watch_payload_with_action("freeze_only"))
+    now = datetime(2026, 8, 11, 10, 0, tzinfo=timezone.utc)
+    baseline = MetricWindow(
+        start=now,
+        end=now + timedelta(seconds=30),
+        samples=[MetricSample(process_state="S") for _ in range(3)],
+    )
+    trigger = MetricWindow(
+        start=now + timedelta(minutes=1),
+        end=now + timedelta(minutes=1, seconds=30),
+        samples=[MetricSample(process_state="T") for _ in range(3)],
+    )
+
+    result = runtime.evaluate(
+        watch.watch_id,
+        WatchEvaluationRequest(baseline_window=baseline, trigger_window=trigger),
+    )
+
+    assert result.incident.impact_status == "hard_state"
+    assert result.incident.diagnosis_eligible is True
+    assert result.incident.aggregation_deadline <= result.incident.created_at
+    assert registry.ready_auto_diagnosis_episodes(result.incident.created_at)
+
+    first_claim, acquired = registry.claim_episode_diagnosis(result.incident.incident_id)
+    second_claim, acquired_again = registry.claim_episode_diagnosis(result.incident.incident_id)
+    assert acquired is True
+    assert acquired_again is False
+    assert first_claim.incident_id == second_claim.incident_id
 
 
 def test_freeze_only_watch_creates_incident_without_collector_tasks():

@@ -9,9 +9,11 @@ import shutil
 import signal
 import subprocess
 from collections import defaultdict
+from datetime import datetime
 from typing import Any
 
 from agent.mini_drop_agent.collectors.base import CollectorResult, CollectorTask
+from agent.mini_drop_agent.collectors.evidence_validity import off_cpu_evidence_state
 from agent.mini_drop_agent.collectors.trace import (
     _correlate as _correlate_trace,
     _load_trace_source,
@@ -212,7 +214,7 @@ class OffCPUCollector:
         parser_status: str,
         capability_check: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return {
+        payload = {
             "schema_version": "1.0",
             "task_id": task.id,
             "collector_type": "off_cpu_wait_profile",
@@ -261,6 +263,8 @@ class OffCPUCollector:
             "thread_wait_summary": [],
             "syscall_wait_summary": {},
         }
+        payload["evidence_validity"] = off_cpu_evidence_state(payload)
+        return payload
 
     def _payload_from_parsed(
         self,
@@ -302,7 +306,7 @@ class OffCPUCollector:
             collector_status = "partial"
         else:
             collector_status = "completed"
-        return {
+        payload = {
             "schema_version": "1.0",
             "task_id": task.id,
             "collector_type": "off_cpu_wait_profile",
@@ -335,7 +339,7 @@ class OffCPUCollector:
             },
             "cause_summary": {
                 "cause_counts": parsed["cause_counts"],
-                "top_cause": parsed["top_cause"],
+                "top_cause": parsed["top_cause"] if parsed["observed_wait_events"] > 0 else "",
                 "source": parsed["cause_source"],
             },
             "stack_quality": {
@@ -362,6 +366,8 @@ class OffCPUCollector:
             "thread_wait_summary": thread_wait_summary,
             "syscall_wait_summary": parsed["syscall_wait_summary"],
         }
+        payload["evidence_validity"] = off_cpu_evidence_state(payload)
+        return payload
 
     @staticmethod
     def _artifact(
@@ -950,8 +956,8 @@ def _stack_list(value: Any) -> list[str]:
 
 
 def _offcpu_record_in_window(record: dict[str, Any], task: CollectorTask) -> bool:
-    start = _safe_int(task.options.get("window_start"), 0)
-    end = _safe_int(task.options.get("window_end"), 0)
+    start = _window_epoch(task.options.get("window_start"))
+    end = _window_epoch(task.options.get("window_end"))
     if start <= 0 or end <= 0:
         return True
     record_start = _safe_int(record.get("start_ns"), 0)
@@ -960,6 +966,15 @@ def _offcpu_record_in_window(record: dict[str, Any], task: CollectorTask) -> boo
         start *= 1_000_000_000
         end *= 1_000_000_000
     return (record_end or record_start) >= start and record_start <= end
+
+
+def _window_epoch(value: Any) -> int:
+    if isinstance(value, str) and value.strip():
+        try:
+            return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            pass
+    return _safe_int(value, 0)
 
 
 def _parse_json_events(text: str) -> list[dict[str, Any]]:

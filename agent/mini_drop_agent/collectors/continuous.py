@@ -168,15 +168,21 @@ class ContinuousCollector:
         ok_count = sum(1 for w in windows if w.ok)
         raw_count = sum(1 for w in windows if w.artifacts)
         summary_path = os.path.join(task_base, "windows.json")
+        summary_payload = {
+            "windows": summary_windows,
+            "structured_window_count": ok_count,
+            "raw_window_count": raw_count,
+            "has_structured_stack": ok_count > 0,
+            "quality": {
+                "structured_window_count": ok_count,
+                "raw_window_count": raw_count,
+                "has_structured_stack": ok_count > 0,
+            },
+        }
+        from agent.mini_drop_agent.collectors.evidence_validity import baseline_evidence_state
+        summary_payload["evidence_validity"] = baseline_evidence_state(summary_payload)
         with open(summary_path, "w", encoding="utf-8") as fh:
-            json.dump({
-                "windows": summary_windows,
-                "quality": {
-                    "structured_window_count": ok_count,
-                    "raw_window_count": raw_count,
-                    "has_structured_stack": ok_count > 0,
-                },
-            }, fh, indent=2)
+            json.dump(summary_payload, fh, indent=2)
 
         return CollectorResult(
             ok=raw_count > 0,
@@ -187,12 +193,7 @@ class ContinuousCollector:
                 "local_path": summary_path,
                 "content_type": "application/json",
                 "size_bytes": os.path.getsize(summary_path),
-                "metadata": {
-                    "windows": summary_windows,
-                    "structured_window_count": ok_count,
-                    "raw_window_count": raw_count,
-                    "has_structured_stack": ok_count > 0,
-                },
+                "metadata": {**summary_payload, "data": summary_payload},
             }],
         )
 

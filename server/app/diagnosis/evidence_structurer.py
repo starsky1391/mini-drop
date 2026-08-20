@@ -67,6 +67,11 @@ class StructuredEvidence(BaseModel):
     dependency_check_json: dict[str, Any] | None = None
     redis_check_json: dict[str, Any] | None = None
     trace_endpoint_profile_json: dict[str, Any] | None = None
+    runtime_control_event_json: dict[str, Any] | None = None
+    pyspy_status_json: dict[str, Any] | None = None
+    python_stack_samples_json: dict[str, Any] | None = None
+    python_heap_profile_json: dict[str, Any] | None = None
+    source_snapshot_json: dict[str, Any] | None = None
 
 
 def structure_artifact_evidence(
@@ -118,6 +123,9 @@ def structure_artifact_evidence(
         dependency_check=values.get("dependency_check_json"),
         redis_check=values.get("redis_check_json"),
         trace_profile=trace_profile,
+        runtime_control=values.get("runtime_control_event_json"),
+        pyspy_status=values.get("pyspy_status_json"),
+        baseline=values.get("continuous_summary"),
     )
     confidence_inputs["evidence_window"] = window_json
     evidence_index = _build_evidence_index(
@@ -131,6 +139,7 @@ def structure_artifact_evidence(
         dependency_check=values.get("dependency_check_json"),
         redis_check=values.get("redis_check_json"),
         trace_profile=trace_profile,
+        runtime_control=values.get("runtime_control_event_json"),
     )
     evidence_index["evidence_window"] = window_json
     return StructuredEvidence(
@@ -156,6 +165,11 @@ def structure_artifact_evidence(
         dependency_check_json=values.get("dependency_check_json") if isinstance(values.get("dependency_check_json"), dict) else None,
         redis_check_json=values.get("redis_check_json") if isinstance(values.get("redis_check_json"), dict) else None,
         trace_endpoint_profile_json=trace_profile if isinstance(trace_profile, dict) else None,
+        runtime_control_event_json=values.get("runtime_control_event_json") if isinstance(values.get("runtime_control_event_json"), dict) else None,
+        pyspy_status_json=values.get("pyspy_status_json") if isinstance(values.get("pyspy_status_json"), dict) else None,
+        python_stack_samples_json=values.get("python_stack_samples_json") if isinstance(values.get("python_stack_samples_json"), dict) else None,
+        python_heap_profile_json=values.get("python_heap_profile_json") if isinstance(values.get("python_heap_profile_json"), dict) else None,
+        source_snapshot_json=values.get("source_snapshot_json") if isinstance(values.get("source_snapshot_json"), dict) else None,
     )
 
 
@@ -166,6 +180,7 @@ def rca_inputs_from_structured(structured: StructuredEvidence) -> dict[str, Any]
         "sys_metrics": structured.sys_metrics,
         "ebpf_metrics": structured.ebpf_metrics,
         "off_cpu_wait_json": structured.off_cpu_wait_json,
+        "runtime_control_event_json": structured.runtime_control_event_json,
         "evidence_index": structured.evidence_index,
     }
 
@@ -186,6 +201,7 @@ def _artifact_value_window(values: dict[str, Any]) -> dict[str, Any]:
         "off_cpu_wait_json",
         "depth_evidence_json",
         "continuous_summary",
+        "runtime_control_event_json",
     ):
         value = values.get(key)
         if isinstance(value, dict) and isinstance(value.get("evidence_window"), dict):
@@ -235,14 +251,25 @@ def _normalize_top_functions(value: Any) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or item.get("function") or item.get("symbol") or "").strip()
-        if not name:
+        if _invalid_function_anchor(name):
             continue
-        samples = _safe_int(item.get("samples") or item.get("sample_count") or item.get("value"))
+        raw_samples = item.get("samples", item.get("sample_count", item.get("value")))
+        samples = 0 if raw_samples is None else _strict_nonnegative_int(raw_samples)
         percent = _safe_float(item.get("percent"))
+        if samples is None or not 0.0 <= percent <= 100.0:
+            continue
+        call_path = item.get("call_path")
+        if isinstance(call_path, str):
+            call_path = [part for part in call_path.split(";") if part]
+        if not isinstance(call_path, list):
+            call_path = []
         items.append({
             "name": name,
             "samples": samples,
             "percent": round(percent, 2),
+            "file": str(item.get("file") or ""),
+            "line": max(0, _safe_int(item.get("line"))),
+            "call_path": [str(part) for part in call_path if str(part).strip()],
         })
     items.sort(key=lambda item: (-float(item.get("percent") or 0.0), -int(item.get("samples") or 0), item["name"]))
     result = []
@@ -265,12 +292,16 @@ def _top_from_off_cpu_wait(value: Any) -> list[dict[str, Any]]:
         name = str(item.get("top_frame") or "").strip()
         if not name and isinstance(stack, list) and stack:
             name = str(stack[0]).strip()
-        if not name:
+        if _invalid_function_anchor(name):
+            continue
+        samples = 0 if item.get("samples") is None else _strict_nonnegative_int(item.get("samples"))
+        percent = _safe_float(item.get("percent"))
+        if samples is None or not 0.0 <= percent <= 100.0:
             continue
         items.append({
             "name": name,
-            "samples": _safe_int(item.get("samples")),
-            "percent": round(_safe_float(item.get("percent")), 2),
+            "samples": samples,
+            "percent": round(percent, 2),
             "wait_reason": str(item.get("wait_reason") or ""),
             "source": "off_cpu_wait",
         })
@@ -293,7 +324,7 @@ def _top_from_flamegraph_tree(value: Any) -> list[dict[str, Any]]:
     def walk(node: dict[str, Any], is_root: bool = False) -> None:
         name = str(node.get("name") or "").strip()
         samples = _safe_int(node.get("value"))
-        if name and not is_root:
+        if name and not is_root and not _invalid_function_anchor(name) and samples >= 0:
             counter[name] = max(counter.get(name, 0), samples)
         for child in node.get("children", []) if isinstance(node.get("children"), list) else []:
             if isinstance(child, dict):
@@ -321,11 +352,11 @@ def _top_from_flamegraph_svg(value: Any) -> list[dict[str, Any]]:
         if not title:
             continue
         name = _function_name_from_svg_title(title)
-        if not name or name.lower() in {"all", "root"}:
+        if _invalid_function_anchor(name):
             continue
         percent = _percent_from_text(title)
         samples = _samples_from_text(title)
-        if percent <= 0.0 and samples <= 0:
+        if not 0.0 <= percent <= 100.0 or samples < 0 or (percent <= 0.0 and samples <= 0):
             continue
         current = counter.get(name)
         if current is None or percent > float(current["percent"]) or samples > int(current["samples"]):
@@ -369,6 +400,25 @@ def _samples_from_text(text: str) -> int:
     if not match:
         return 0
     return _safe_int(match.group(1).replace(",", ""))
+
+
+def _invalid_function_anchor(name: str) -> bool:
+    normalized = name.strip().lower()
+    return (
+        not normalized
+        or normalized in {"[unknown]", "unknown", "all", "root"}
+        or bool(re.fullmatch(r"(?:0x)?[0-9a-f]+", normalized))
+    )
+
+
+def _strict_nonnegative_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
 
 
 def _build_stack_summary(
@@ -433,9 +483,16 @@ def _build_call_path_hotspots(
             "service_id": str(item.get("service_id") or context.get("service_id") or context.get("service") or ""),
             "instance_id": str(item.get("instance_id") or context.get("instance_id") or context.get("instance") or ""),
             "context_id": str(item.get("context_id") or context.get("context_id") or ""),
+            "file": str(item.get("file") or ""),
+            "line": _line_from_hint(item.get("line_hint")) or _safe_int(item.get("line")),
             "evidence_ref": f"structured_evidence.call_path_hotspots[{index}]",
         })
     return hotspots
+
+
+def _line_from_hint(value: Any) -> int:
+    match = re.search(r":(\d+)$", str(value or ""))
+    return int(match.group(1)) if match else 0
 
 
 def _build_confidence_inputs(
@@ -451,10 +508,28 @@ def _build_confidence_inputs(
     dependency_check: Any,
     redis_check: Any,
     trace_profile: Any,
+    runtime_control: Any,
+    pyspy_status: Any,
+    baseline: Any,
 ) -> dict[str, Any]:
     first_top = top_functions[0] if top_functions else {}
     context_completeness = "high" if call_path_hotspots else "medium" if stack_summary.get("has_call_path") else "low"
     artifact_types = [item["artifact_type"] for item in artifact_refs]
+    validity_by_family = {
+        family: _evidence_status(value)
+        for family, value in (
+            ("off_cpu_wait_profile", off_cpu_wait),
+            ("trace_endpoint_profile", trace_profile),
+            ("log_scan", log_window),
+            ("dependency_check", dependency_check),
+            ("redis_check", redis_check),
+            ("runtime_control_history", runtime_control),
+            ("python_runtime_profile", pyspy_status),
+            ("baseline_window_profile", baseline),
+        )
+        if isinstance(value, dict) and _evidence_status(value)
+    }
+    runtime_summary = runtime_control.get("summary") if isinstance(runtime_control, dict) and isinstance(runtime_control.get("summary"), dict) else {}
     return {
         "sample_count": _safe_int(stack_summary.get("sample_count") or first_top.get("samples")),
         "dominant_percent": round(_safe_float(stack_summary.get("dominant_percent") or first_top.get("percent")), 2),
@@ -476,6 +551,10 @@ def _build_confidence_inputs(
         "stack_source_status": _trace_profile_status(trace_profile, "stack_source"),
         "trace_correlation_status": _trace_profile_status(trace_profile, "correlation_status"),
         "trace_max_supported_level": _trace_profile_status(trace_profile, "correlation_status", "max_supported_level"),
+        "evidence_validity_by_family": validity_by_family,
+        "runtime_control_evidence_status": validity_by_family.get("runtime_control_history", ""),
+        "has_complete_control_chain": bool(runtime_summary.get("has_complete_control_chain")),
+        "control_event_count": _safe_int(runtime_summary.get("event_count")),
     }
 
 
@@ -491,6 +570,7 @@ def _build_evidence_index(
     dependency_check: Any,
     redis_check: Any,
     trace_profile: Any,
+    runtime_control: Any,
 ) -> dict[str, Any]:
     index = dict(depth) if isinstance(depth, dict) else {}
     index["artifact_refs"] = artifact_refs
@@ -507,6 +587,8 @@ def _build_evidence_index(
         index["redis_check"] = _compact_redis_check(redis_check)
     if isinstance(trace_profile, dict):
         index["trace_endpoint_profile"] = _compact_trace_profile(trace_profile)
+    if isinstance(runtime_control, dict):
+        index["runtime_control"] = _compact_runtime_control(runtime_control)
     return index
 
 
@@ -577,6 +659,11 @@ def _collector_families(artifact_types: list[str]) -> list[str]:
         "sys_metrics": "sys_metrics",
         "memory_json": "memory_profile",
         "trace_endpoint_profile_json": "trace_endpoint_profile",
+        "runtime_control_event_json": "runtime_control_history",
+        "pyspy_status_json": "python_runtime_profile",
+        "python_stack_samples_json": "python_runtime_profile",
+        "python_heap_profile_json": "python_heap_profile",
+        "source_snapshot_json": "source_snapshot",
     }
     return list(dict.fromkeys(mapping.get(item, item) for item in artifact_types))
 
@@ -624,7 +711,26 @@ def _compact_off_cpu_wait(value: dict[str, Any]) -> dict[str, Any]:
         "endpoint_bindings": (value.get("endpoint_bindings") or [])[:5],
         "call_path_hotspots": (value.get("call_path_hotspots") or [])[:5],
         "capability_check": value.get("capability_check", {}),
+        "evidence_validity": value.get("evidence_validity", {}),
     }
+
+
+def _compact_runtime_control(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "target_pid": value.get("target_pid"),
+        "evidence_window": value.get("evidence_window", {}),
+        "summary": value.get("summary", {}),
+        "events": (value.get("events") or [])[:20],
+        "causal_edges": (value.get("causal_edges") or [])[:60],
+        "evidence_validity": value.get("evidence_validity", {}),
+    }
+
+
+def _evidence_status(value: dict[str, Any]) -> str:
+    validity = value.get("evidence_validity")
+    if not isinstance(validity, dict):
+        return ""
+    return str(validity.get("evidence_status") or "")
 
 
 def _has_wait_or_io_signal(ebpf_metrics: Any, off_cpu_wait: Any) -> bool:

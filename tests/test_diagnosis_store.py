@@ -74,5 +74,7 @@ def test_active_lease_blocks_same_owner_reentry(monkeypatch):
 
     assert store.acquire_lease("diag_lease_reentry", "orchestrator", ttl_seconds=30)
     assert not store.acquire_lease("diag_lease_reentry", "orchestrator", ttl_seconds=30)
+    assert not store.renew_lease("diag_lease_reentry", "other", ttl_seconds=60)
+    assert store.renew_lease("diag_lease_reentry", "orchestrator", ttl_seconds=60)
     store.release_lease("diag_lease_reentry", "orchestrator")
     assert store.acquire_lease("diag_lease_reentry", "orchestrator", ttl_seconds=30)

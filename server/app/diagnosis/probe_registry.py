@@ -54,6 +54,66 @@ _PROBES = {
         estimated_overhead={"cpu_percent": "1-5", "disk_mb": "10-100"},
         applicable_hypotheses=["LOCK_CONTENTION", "SELF_CODE_REGRESSION"],
     ),
+    "process_python_heap_profile": ProbeDefinition(
+        probe_id="process_python_heap_profile",
+        name="Python Heap Profile",
+        purpose="使用 Memray 官方 Producer 采集分配热点、保留分配和源码行栈",
+        runner_task_kind="python_heap_profile",
+        supported_platforms=["linux"],
+        required_capabilities=["python_heap_profile"],
+        risk_level="R2",
+        requires_approval=True,
+        default_duration_seconds=30,
+        max_duration_seconds=180,
+        default_sample_rate=1,
+        estimated_overhead={"cpu_percent": "2-10", "disk_mb": "20-500"},
+        applicable_hypotheses=["MEMORY_LEAK", "HOST_MEMORY_PRESSURE", "SELF_CODE_REGRESSION"],
+    ),
+    "process_source_snapshot": ProbeDefinition(
+        probe_id="process_source_snapshot",
+        name="源码上下文快照",
+        purpose="验证 Git revision 并有界提取行候选附近源码和符号上下文",
+        runner_task_kind="source_snapshot",
+        supported_platforms=["linux"],
+        required_capabilities=["source_snapshot"],
+        risk_level="R1",
+        requires_approval=False,
+        default_duration_seconds=10,
+        max_duration_seconds=30,
+        default_sample_rate=1,
+        estimated_overhead={"cpu_percent": "<2", "disk_mb": "<10"},
+        applicable_hypotheses=["MEMORY_LEAK", "SELF_CODE_REGRESSION", "LOCK_CONTENTION"],
+    ),
+    "process_source_mechanism_query": ProbeDefinition(
+        probe_id="process_source_mechanism_query",
+        name="源码机制查询",
+        purpose="使用 CodeQL 在已验证 revision 和行锚点上查询跨函数调用与数据流机制",
+        runner_task_kind="source_mechanism_query",
+        supported_platforms=["linux"],
+        required_capabilities=["source_mechanism_query"],
+        risk_level="R2",
+        requires_approval=True,
+        default_duration_seconds=30,
+        max_duration_seconds=180,
+        default_sample_rate=1,
+        estimated_overhead={"cpu_percent": "5-40", "disk_mb": "100-5000"},
+        applicable_hypotheses=["MEMORY_LEAK", "SELF_CODE_REGRESSION", "LOCK_CONTENTION"],
+    ),
+    "process_python_heap_reference": ProbeDefinition(
+        probe_id="process_python_heap_reference",
+        name="Python 运行时引用链",
+        purpose="使用 PyHeap dump 验证保留对象的有限入向引用路径",
+        runner_task_kind="python_heap_reference",
+        supported_platforms=["linux"],
+        required_capabilities=["python_heap_reference"],
+        risk_level="R2",
+        requires_approval=True,
+        default_duration_seconds=30,
+        max_duration_seconds=180,
+        default_sample_rate=1,
+        estimated_overhead={"cpu_percent": "5-30", "disk_mb": "100-4096"},
+        applicable_hypotheses=["MEMORY_LEAK"],
+    ),
     "process_off_cpu_profile": ProbeDefinition(
         probe_id="process_off_cpu_profile",
         name="进程 Off-CPU Wait Profile",
@@ -174,6 +234,21 @@ _PROBES = {
         estimated_overhead={"cpu_percent": "<2", "disk_mb": "<20"},
         applicable_hypotheses=["HOST_MEMORY_PRESSURE", "MEMORY_LEAK"],
     ),
+    "process_runtime_control_history": ProbeDefinition(
+        probe_id="process_runtime_control_history",
+        name="运行控制历史",
+        purpose="查询同窗信号、systemd、容器运行时、cgroup、发布和 Kubernetes 控制事件",
+        runner_task_kind="runtime_control_history",
+        supported_platforms=["linux"],
+        required_capabilities=["runtime_control_history"],
+        risk_level="R1",
+        requires_approval=False,
+        default_duration_seconds=10,
+        max_duration_seconds=30,
+        default_sample_rate=1,
+        estimated_overhead={"cpu_percent": "<1", "disk_mb": "<10"},
+        applicable_hypotheses=["LOCK_CONTENTION", "SELF_CODE_REGRESSION"],
+    ),
 }
 
 
@@ -195,11 +270,16 @@ def evidence_gap_to_probe_id(evidence_gap: str) -> str | None:
         "trace_endpoint_profile": "process_trace_endpoint_profile",
         "baseline_window_profile": "process_baseline_window",
         "python_runtime_profile": "process_python_runtime_profile",
+        "python_heap_profile": "process_python_heap_profile",
+        "source_snapshot": "process_source_snapshot",
+        "source_mechanism_query": "process_source_mechanism_query",
+        "python_heap_reference": "process_python_heap_reference",
         "log_scan": "process_log_scan",
         "dependency_check": "process_dependency_check",
         "redis_check": "process_redis_check",
         "io_latency": "process_io_latency",
         "memory_map": "process_memory_map",
+        "runtime_control_history": "process_runtime_control_history",
     }.get(evidence_gap)
 
 
@@ -210,11 +290,16 @@ def probe_id_to_evidence_gap(probe_id: str) -> str:
         "process_trace_endpoint_profile": "trace_endpoint_profile",
         "process_baseline_window": "baseline_window_profile",
         "process_python_runtime_profile": "python_runtime_profile",
+        "process_python_heap_profile": "python_heap_profile",
+        "process_source_snapshot": "source_snapshot",
+        "process_source_mechanism_query": "source_mechanism_query",
+        "process_python_heap_reference": "python_heap_reference",
         "process_log_scan": "log_scan",
         "process_dependency_check": "dependency_check",
         "process_redis_check": "redis_check",
         "process_io_latency": "io_latency",
         "process_memory_map": "memory_map",
+        "process_runtime_control_history": "runtime_control_history",
     }.get(probe_id, "")
 
 
@@ -234,7 +319,7 @@ def build_probe_manifest() -> dict:
             "risk_level": definition.risk_level,
             "auto_executable_when_policy_all_registered": definition.risk_level in {"R0", "R1", "R2"},
             "max_duration_seconds": definition.max_duration_seconds,
-            "output_contract": f"{definition.runner_task_kind}_json",
+            "output_contract": _output_contract(definition.runner_task_kind),
         })
     return {
         "schema_version": "1.0",
@@ -258,9 +343,18 @@ def choose_probe_ids(symptom: str) -> list[str]:
         "io_degradation": ["host_process_metrics", "process_io_latency", "process_off_cpu_profile"],
         "noisy_neighbor": ["host_process_metrics", "process_io_latency"],
         "memory_pressure": ["process_memory_map", "process_log_scan", "process_baseline_window", "host_process_metrics"],
-        "runtime_contention": ["host_process_metrics", "process_log_scan", "process_off_cpu_profile", "process_python_runtime_profile", "process_trace_endpoint_profile"],
+        "runtime_contention": ["host_process_metrics", "process_log_scan", "process_runtime_control_history"],
     }
     return mapping.get(symptom, ["host_process_metrics", "process_cpu_profile", "process_off_cpu_profile"])
+
+
+def _output_contract(runner_task_kind: str) -> str:
+    return {
+        "source_mechanism_query": "source_mechanism_json",
+        "python_heap_reference": "python_heap_reference_json",
+        "python_heap_profile": "python_heap_profile_json",
+        "source_snapshot": "source_snapshot_json",
+    }.get(runner_task_kind, f"{runner_task_kind}_json")
 
 
 def _required_target_fields(probe_id: str) -> list[str]:
@@ -269,6 +363,8 @@ def _required_target_fields(probe_id: str) -> list[str]:
         base.append("pid")
     if probe_id == "process_trace_endpoint_profile":
         base.extend(["service_id", "instance_id"])
+    if probe_id in {"process_source_mechanism_query", "process_source_snapshot"}:
+        base.extend(["source_root", "repo_revision"])
     if probe_id in {"process_dependency_check", "process_redis_check"}:
         base.append("dependency_targets")
     return list(dict.fromkeys(base))
@@ -287,6 +383,22 @@ def _probe_questions(probe_id: str) -> list[str]:
         "process_python_runtime_profile": [
             "Python 线程是否存在用户态热点、锁等待或运行时阻塞",
             "Python 栈是否能解释当前热点",
+        ],
+        "process_python_heap_profile": [
+            "Memray 是否观测到持续分配或保留分配热点",
+            "分配栈能否定位到 Python 函数和源码行",
+        ],
+        "process_source_snapshot": [
+            "采样行是否属于已验证的源码 revision",
+            "候选行附近源码能否支持或反驳当前机制假设",
+        ],
+        "process_source_mechanism_query": [
+            "已验证源码行如何经跨函数调用、容器写入或代码生成形成故障机制",
+            "当前机制候选被 CodeQL path 支持、反驳还是仍未知",
+        ],
+        "process_python_heap_reference": [
+            "运行时对象由哪些 root、function、code object 或 container 实际持有",
+            "源码机制候选是否与真实入向引用链一致",
         ],
         "process_off_cpu_profile": [
             "是否存在 futex、锁、I/O、socket、syscall 或调度等待",
@@ -319,5 +431,9 @@ def _probe_questions(probe_id: str) -> list[str]:
         "process_memory_map": [
             "目标进程 RSS/PSS/Swap 是否异常",
             "内存压力是否支持 memory 类候选",
+        ],
+        "process_runtime_control_history": [
+            "目标停止、终止、暂停或资源限制变化是否由同窗控制动作触发",
+            "谁在何时通过信号、systemd、容器运行时、cgroup 或控制平面作用于目标",
         ],
     }.get(probe_id, ["补充该注册采集器对应的结构化证据"])

@@ -1,4 +1,4 @@
-"""py-spy 用户态采集器：对 Python 进程进行采样并输出火焰图 SVG。
+"""py-spy user-space collector with structured raw stack output.
 
 py-spy 通过读取目标进程内存直接获取 Python 调用栈，
 无需修改目标代码或重启进程。
@@ -6,7 +6,6 @@ py-spy 通过读取目标进程内存直接获取 Python 调用栈，
 
 from __future__ import annotations
 
-import html
 import json
 import os
 import re
@@ -35,17 +34,53 @@ class PySpyCollector:
                 reason=f"目标 PID {task.target_pid} 不存在",
             )
 
+        process_state = self._process_state(task.target_pid)
+        if process_state in {"T", "t"}:
+            output_dir = os.path.join(self.OUTPUT_BASE, task.id)
+            os.makedirs(output_dir, exist_ok=True)
+            status_path = os.path.join(output_dir, "pyspy_status.json")
+            payload = {
+                "schema_version": "1.0",
+                "collector_family": "python_runtime_profile",
+                "target_pid": task.target_pid,
+                "process_state": process_state,
+                "evidence_validity": {
+                    "execution_status": "completed",
+                    "artifact_status": "produced",
+                    "evidence_status": "blocked",
+                    "reason": "blocked_by_target_state",
+                },
+            }
+            with open(status_path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, ensure_ascii=False, indent=2)
+            return CollectorResult(
+                ok=False,
+                reason=f"blocked_by_target_state: PID {task.target_pid} state={process_state}",
+                artifacts=[{
+                    "artifact_type": "pyspy_status_json",
+                    "filename": "pyspy_status.json",
+                    "local_path": status_path,
+                    "content_type": "application/json",
+                    "size_bytes": os.path.getsize(status_path),
+                    "collector_family": "python_runtime_profile",
+                    "metadata": {"data": payload},
+                }],
+            )
+
         output_dir = os.path.join(self.OUTPUT_BASE, task.id)
         os.makedirs(output_dir, exist_ok=True)
-        svg_path = os.path.join(output_dir, "pyspy.svg")
+        raw_path = os.path.join(output_dir, "pyspy.raw")
         top_path = os.path.join(output_dir, "top.json")
+        stacks_path = os.path.join(output_dir, "stack_samples.json")
 
         base_cmd = [
             pyspy, "record",
             "-p", str(task.target_pid),
             "-d", str(task.duration_sec),
             "-r", str(task.sample_rate),
-            "-o", svg_path,
+            "--full-filenames",
+            "--format", "raw",
+            "-o", raw_path,
         ]
         cmd = base_cmd + ["--native"]  # 同时显示 C 扩展调用帧
 
@@ -93,27 +128,32 @@ class PySpyCollector:
                 reason=f"py-spy 执行失败 (exit={proc.returncode}): {err[:200]}",
             )
 
-        if not os.path.isfile(svg_path) or os.path.getsize(svg_path) == 0:
+        if not os.path.isfile(raw_path) or os.path.getsize(raw_path) == 0:
             return CollectorResult(
                 ok=False,
-                reason="py-spy 未产出 SVG 文件",
+                reason="py-spy 未产出 raw 折叠栈文件",
             )
 
-        top_functions = self._extract_top_functions(svg_path)
+        with open(raw_path, "r", encoding="utf-8", errors="replace") as fh:
+            structured = self._parse_raw_text(fh.read())
+        top_functions = structured["top_functions"]
+        if not top_functions:
+            return CollectorResult(ok=False, reason="py-spy raw 产物没有有效 Python 栈")
         with open(top_path, "w", encoding="utf-8") as fh:
             json.dump(top_functions, fh, ensure_ascii=False, indent=2)
+        with open(stacks_path, "w", encoding="utf-8") as fh:
+            json.dump(structured, fh, ensure_ascii=False, indent=2)
 
-        size = os.path.getsize(svg_path)
         return CollectorResult(
             ok=True,
-            reason="py-spy 采集完成",
+            reason="py-spy raw 栈采集与结构化完成",
             artifacts=[
                 {
-                    "artifact_type": "flamegraph_svg",
-                    "filename": "pyspy.svg",
-                    "local_path": svg_path,
-                    "content_type": "image/svg+xml",
-                    "size_bytes": size,
+                    "artifact_type": "pyspy_raw",
+                    "filename": "pyspy.raw",
+                    "local_path": raw_path,
+                    "content_type": "text/plain",
+                    "size_bytes": os.path.getsize(raw_path),
                 },
                 {
                     "artifact_type": "top_json",
@@ -121,13 +161,32 @@ class PySpyCollector:
                     "local_path": top_path,
                     "content_type": "application/json",
                     "size_bytes": os.path.getsize(top_path),
-                }
+                    "metadata": {"data": top_functions},
+                },
+                {
+                    "artifact_type": "python_stack_samples_json",
+                    "filename": "stack_samples.json",
+                    "local_path": stacks_path,
+                    "content_type": "application/json",
+                    "size_bytes": os.path.getsize(stacks_path),
+                    "collector_family": "python_runtime_profile",
+                    "metadata": {"data": structured},
+                },
             ],
         )
 
     @staticmethod
     def _pid_exists(pid: int) -> bool:
         return os.path.isdir(f"/proc/{pid}")
+
+    @staticmethod
+    def _process_state(pid: int) -> str:
+        try:
+            text = open(f"/proc/{pid}/stat", "r", encoding="utf-8").read()
+        except OSError:
+            return ""
+        tail = text[text.rfind(")") + 1 :].strip().split()
+        return tail[0] if tail else ""
 
     @staticmethod
     def _should_retry_without_native(stderr: bytes) -> bool:
@@ -137,40 +196,99 @@ class PySpyCollector:
             or "UNW_EINVAL" in text
             or "bad register number" in text
             or "unsupported operation or bad value" in text
+            or "failed to get os threadid" in text.lower()
         )
 
     @staticmethod
-    def _extract_top_functions(svg_path: str, limit: int = 20) -> list[dict]:
-        try:
-            with open(svg_path, "r", encoding="utf-8", errors="replace") as fh:
-                text = fh.read()
-        except OSError:
-            return []
-        counter: dict[str, dict[str, float | int | str]] = {}
-        for raw_title in re.findall(r"<title[^>]*>(.*?)</title>", text, flags=re.IGNORECASE | re.DOTALL):
-            title = html.unescape(re.sub(r"<[^>]+>", "", raw_title)).strip()
-            if not title:
-                continue
-            name = title.split(" (", 1)[0].strip()
-            if not name or name.lower() in {"all", "root"}:
-                continue
-            samples = PySpyCollector._extract_number(title, (r"(\d+)\s+samples?", r"samples:\s*(\d+)"))
-            percent = PySpyCollector._extract_number(title, (r"\(([\d.]+)%\)", r"([\d.]+)%"))
-            item = counter.setdefault(name, {"name": name, "samples": 0, "percent": 0.0})
-            item["samples"] = max(int(item["samples"]), int(samples))
-            item["percent"] = max(float(item["percent"]), float(percent))
-        items = list(counter.values())
-        items.sort(key=lambda item: (-float(item.get("percent") or 0.0), -int(item.get("samples") or 0), str(item["name"])))
-        return items[:limit]
-
-    @staticmethod
-    def _extract_number(text: str, patterns: tuple[str, ...]) -> float:
-        for pattern in patterns:
-            match = re.search(pattern, text, flags=re.IGNORECASE)
+    def _parse_raw_text(text: str, limit: int = 20) -> dict:
+        stacks: list[dict] = []
+        leaf_counts: dict[tuple[str, str, int], int] = {}
+        leaf_paths: dict[tuple[str, str, int], list[str]] = {}
+        total_samples = 0
+        for raw_line in text.splitlines():
+            match = re.match(r"^(.*)\s+(-?\d+)\s*$", raw_line.strip())
             if not match:
                 continue
-            try:
-                return float(match.group(1))
-            except ValueError:
+            count = int(match.group(2))
+            if count <= 0:
                 continue
-        return 0.0
+            frames = [PySpyCollector._parse_frame(item) for item in match.group(1).split(";")]
+            frames = [frame for frame in frames if frame is not None]
+            if not frames:
+                continue
+            leaf = frames[-1]
+            if PySpyCollector._invalid_anchor(leaf["name"]):
+                continue
+            total_samples += count
+            names = [frame["name"] for frame in frames]
+            key = (leaf["name"], leaf["file"], leaf["line"])
+            leaf_counts[key] = leaf_counts.get(key, 0) + count
+            leaf_paths.setdefault(key, names)
+            stacks.append({
+                "frames": frames,
+                "call_path": names,
+                "hot_frame": leaf["name"],
+                "file": leaf["file"],
+                "line": leaf["line"],
+                "sample_count": count,
+            })
+
+        for item in stacks:
+            item["percent"] = round(item["sample_count"] / total_samples * 100.0, 2) if total_samples else 0.0
+        top_functions = []
+        for (name, file_name, line), count in leaf_counts.items():
+            top_functions.append({
+                "name": name,
+                "file": file_name,
+                "line": line,
+                "samples": count,
+                "percent": round(count / total_samples * 100.0, 2) if total_samples else 0.0,
+                "call_path": leaf_paths[(name, file_name, line)],
+            })
+        top_functions.sort(key=lambda item: (-item["samples"], item["name"], item["file"], item["line"]))
+        top_functions = top_functions[:limit]
+        line_candidates = [
+            {
+                "symbol": item["name"],
+                "file": item["file"],
+                "line": item["line"],
+                "samples": item["samples"],
+                "percent": item["percent"],
+                "call_path": item["call_path"],
+            }
+            for item in top_functions
+            if item["file"] and item["line"] > 0
+        ]
+        return {
+            "schema_version": "1.0",
+            "producer": "py-spy",
+            "format": "raw_collapsed",
+            "total_samples": total_samples,
+            "stack_samples": stacks,
+            "top_functions": top_functions,
+            "call_path_hotspots": stacks[:limit],
+            "line_candidates": line_candidates,
+            "evidence_validity": {
+                "execution_status": "completed",
+                "artifact_status": "produced",
+                "evidence_status": "valid" if top_functions else "insufficient",
+                "reason": "structured_raw_stacks" if top_functions else "no_valid_stack_anchor",
+            },
+        }
+
+    @staticmethod
+    def _parse_frame(value: str) -> dict | None:
+        value = value.strip()
+        if not value:
+            return None
+        match = re.match(r"^(.*?)\s+\((.*):(\d+)\)$", value)
+        if not match:
+            return {"name": value, "file": "", "line": 0}
+        return {"name": match.group(1).strip(), "file": match.group(2).strip(), "line": int(match.group(3))}
+
+    @staticmethod
+    def _invalid_anchor(name: str) -> bool:
+        normalized = name.strip().lower()
+        return not normalized or normalized in {"[unknown]", "unknown", "all", "root"} or bool(
+            re.fullmatch(r"(?:0x)?[0-9a-f]+", normalized)
+        )

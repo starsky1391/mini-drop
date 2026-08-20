@@ -42,6 +42,11 @@ message WatchMetricSample {
   bool has_iowait_percent = 11;
   bool has_rss_mb = 12;
   bool has_error_count = 13;
+  string process_state = 14;
+  double throttled_percent = 15;
+  double queue_depth = 16;
+  bool has_throttled_percent = 17;
+  bool has_queue_depth = 18;
 }
 
 message WatchSyncResponse {

@@ -662,6 +662,7 @@ class SqlRepository:
                 "retention_seconds": int(watch["retention_seconds"]),
                 "trigger_policy": watch["trigger_policy"],
                 "trigger_action": watch["trigger_action"],
+                "auto_diagnosis_enabled": bool(watch.get("auto_diagnosis_enabled", True)),
                 "status": watch["status"],
                 "created_at": _parse_datetime(watch["created_at"]),
                 "updated_at": _parse_datetime(watch["updated_at"]),
@@ -725,6 +726,20 @@ class SqlRepository:
                 "analysis_result_json": _json_safe(incident["analysis_result"])
                 if incident.get("analysis_result") is not None else None,
                 "created_at": _parse_datetime(incident["created_at"]),
+                "episode_id": incident.get("episode_id"),
+                "episode_status": incident.get("episode_status") or "AGGREGATING",
+                "aggregation_deadline": _parse_datetime(incident["aggregation_deadline"])
+                if incident.get("aggregation_deadline") else None,
+                "first_seen_at": _parse_datetime(incident["first_seen_at"])
+                if incident.get("first_seen_at") else None,
+                "last_seen_at": _parse_datetime(incident["last_seen_at"])
+                if incident.get("last_seen_at") else None,
+                "recovery_observations": int(incident.get("recovery_observations", 0)),
+                "occurrence_count": int(incident.get("occurrence_count", 1)),
+                "diagnosis_eligible": bool(incident.get("diagnosis_eligible", False)),
+                "impact_status": incident.get("impact_status") or "impact_unconfirmed",
+                "anomaly_points_json": _json_safe(incident.get("anomaly_points", [])),
+                "conclusion_revision_count": int(incident.get("conclusion_revision_count", 0)),
             }
             if row is None:
                 row = WatchIncidentModel(id=incident["incident_id"], **values)

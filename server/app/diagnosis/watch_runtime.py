@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import hashlib
+import threading
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -44,6 +46,8 @@ IncidentStatus = Literal[
     "analysis_failed",
     "stale",
 ]
+EpisodeStatus = Literal["AGGREGATING", "DIAGNOSING", "ACTIVE", "RECOVERING", "CLOSED"]
+ImpactStatus = Literal["hard_state", "impact_confirmed", "impact_unconfirmed"]
 
 
 _FOLLOWUP_PROBES = {
@@ -76,8 +80,13 @@ class CreateWatchSubscriptionRequest(StrictModel):
         max_length=16,
     )
     retention_seconds: int = Field(default=120, ge=30, le=1800)
-    trigger_policy: Literal["relative_shift_only"] = "relative_shift_only"
+    trigger_policy: Literal["relative_shift_only", "multi_signal_v1"] = "multi_signal_v1"
     trigger_action: TriggerAction = "freeze_and_safe_probe"
+    auto_diagnosis_enabled: bool = True
+
+
+class UpdateWatchSubscriptionRequest(StrictModel):
+    auto_diagnosis_enabled: bool
 
 
 class WatchSubscription(StrictModel):
@@ -88,8 +97,9 @@ class WatchSubscription(StrictModel):
     watch_profile: WatchProfile
     enabled_collectors: list[str]
     retention_seconds: int
-    trigger_policy: Literal["relative_shift_only"]
+    trigger_policy: Literal["relative_shift_only", "multi_signal_v1"]
     trigger_action: TriggerAction
+    auto_diagnosis_enabled: bool = True
     status: WatchStatus
     created_at: datetime
     updated_at: datetime
@@ -147,6 +157,17 @@ class WatchIncident(StrictModel):
     analysis_session_id: str | None = None
     analysis_result: dict[str, Any] | None = None
     created_at: datetime
+    episode_id: str | None = None
+    episode_status: EpisodeStatus = "AGGREGATING"
+    aggregation_deadline: datetime | None = None
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    recovery_observations: int = 0
+    occurrence_count: int = 1
+    diagnosis_eligible: bool = False
+    impact_status: ImpactStatus = "impact_unconfirmed"
+    anomaly_points: list[dict[str, Any]] = Field(default_factory=list)
+    conclusion_revision_count: int = 0
 
 
 class WatchRegistry:
@@ -157,6 +178,7 @@ class WatchRegistry:
         self._items: dict[str, WatchSubscription] = {}
         self._incidents: dict[str, list[WatchIncident]] = {}
         self._loaded = False
+        self._lock = threading.RLock()
 
     def load_persisted(self) -> None:
         if self._loaded:
@@ -194,6 +216,7 @@ class WatchRegistry:
             retention_seconds=payload.retention_seconds,
             trigger_policy=payload.trigger_policy,
             trigger_action=payload.trigger_action,
+            auto_diagnosis_enabled=payload.auto_diagnosis_enabled,
             status="active",
             created_at=now,
             updated_at=now,
@@ -229,6 +252,20 @@ class WatchRegistry:
         self._items[watch_id] = updated
         self._persist_watch(updated)
         return updated
+
+    def update_auto_diagnosis(self, watch_id: str, enabled: bool) -> WatchSubscription | None:
+        self.load_persisted()
+        with self._lock:
+            watch = self._items.get(watch_id)
+            if watch is None:
+                return None
+            updated = watch.model_copy(update={
+                "auto_diagnosis_enabled": enabled,
+                "updated_at": _now_utc(),
+            })
+            self._items[watch_id] = updated
+            self._persist_watch(updated)
+            return updated
 
     def update_after_evaluation(
         self,
@@ -270,6 +307,77 @@ class WatchRegistry:
                     return incident
         return None
 
+    def get_active_episode(self, watch_id: str) -> WatchIncident | None:
+        for incident in self.list_incidents(watch_id):
+            if incident.episode_status != "CLOSED":
+                return incident
+        return None
+
+    def replace_incident(self, incident: WatchIncident) -> WatchIncident:
+        self.load_persisted()
+        with self._lock:
+            incidents = self._incidents.get(incident.watch_id, [])
+            for index, current in enumerate(incidents):
+                if current.incident_id == incident.incident_id:
+                    incidents[index] = incident
+                    self._persist_incident(incident)
+                    return incident
+        raise KeyError(incident.incident_id)
+
+    def claim_episode_diagnosis(self, incident_id: str) -> tuple[WatchIncident, bool]:
+        self.load_persisted()
+        with self._lock:
+            incident = self.get_incident(incident_id)
+            if incident is None:
+                raise KeyError(incident_id)
+            if incident.analysis_session_id or incident.analysis_status in {"analyzing", "analyzed"}:
+                return incident, False
+            updated = incident.model_copy(update={
+                "analysis_status": "analyzing",
+                "episode_status": "DIAGNOSING",
+            })
+            return self.replace_incident(updated), True
+
+    def ready_auto_diagnosis_episodes(self, now: datetime | None = None) -> list[WatchIncident]:
+        now = now or _now_utc()
+        ready: list[WatchIncident] = []
+        for watch in self.list(include_disabled=False):
+            if not watch.auto_diagnosis_enabled:
+                continue
+            episode = self.get_active_episode(watch.watch_id)
+            if episode is None or not episode.diagnosis_eligible:
+                continue
+            if episode.analysis_status != "not_started":
+                continue
+            if (
+                episode.aggregation_deadline
+                and _as_utc(episode.aggregation_deadline) > _as_utc(now)
+            ):
+                continue
+            if episode.collector_tasks and not all(
+                task.status in {"DONE", "FAILED"} for task in episode.collector_tasks
+            ):
+                continue
+            ready.append(episode)
+        return ready
+
+    def update_anomaly_explanation(
+        self,
+        incident_id: str,
+        anomaly_point_id: str,
+        explanation: dict[str, Any],
+    ) -> WatchIncident:
+        with self._lock:
+            incident = self.get_incident(incident_id)
+            if incident is None:
+                raise KeyError(incident_id)
+            points = [dict(item) for item in incident.anomaly_points]
+            for index, point in enumerate(points):
+                if point.get("anomaly_point_id") == anomaly_point_id:
+                    points[index] = {**point, "explanation": explanation}
+                    return self.replace_incident(incident.model_copy(update={"anomaly_points": points}))
+        raise ValueError(anomaly_point_id)
+
     def update_incident_analysis(
         self,
         incident_id: str,
@@ -292,6 +400,10 @@ class WatchRegistry:
                 update: dict[str, Any] = {
                     "analysis_status": analysis_status,
                 }
+                if analysis_status == "analyzing":
+                    update["episode_status"] = "DIAGNOSING"
+                elif analysis_status in {"analyzed", "needs_evidence", "analysis_failed"}:
+                    update["episode_status"] = "ACTIVE"
                 if analysis_session_id is not None:
                     update["analysis_session_id"] = analysis_session_id
                 if analysis_result is not None:
@@ -344,7 +456,6 @@ class PersistentAgentRuntime:
         self.registry = registry
         self.repo = repo
         self.rolling_buffer = rolling_buffer or RollingEvidenceBuffer()
-        self._active_trigger_types: dict[str, str] = {}
 
     def list_leases(self, agent_id: str) -> list[WatchLease]:
         leases: list[WatchLease] = []
@@ -385,23 +496,36 @@ class PersistentAgentRuntime:
             scope_source="watch_subscription",
             watch_id=watch.watch_id,
         )
-        active_trigger_type = self._active_trigger_types.get(watch_id)
-        if suppress_repeated_trigger and active_trigger_type:
-            probe_result = evaluate_persistent_trigger(
-                request,
-                self.repo,
-                create_collector_tasks=False,
+        active_episode = self.registry.get_active_episode(watch_id)
+        probe_result = evaluate_persistent_trigger(
+            request,
+            self.repo,
+            create_collector_tasks=False,
+        )
+        if probe_result.trigger_event is None:
+            updated_episode = self._record_recovery(active_episode)
+            updated_watch = self.registry.update_after_evaluation(watch_id, probe_result)
+            return WatchEvaluationResult(
+                watch=updated_watch,
+                trigger=probe_result,
+                incident=updated_episode,
             )
-            if probe_result.trigger_event is None:
-                self._active_trigger_types.pop(watch_id, None)
-            elif probe_result.trigger_event.trigger_type == active_trigger_type:
+        if active_episode is not None:
+            observed_at = probe_result.trigger_event.observed_at
+            last_seen_at = active_episode.last_seen_at or active_episode.trigger_observed_at
+            if _as_utc(observed_at) - _as_utc(last_seen_at) <= timedelta(seconds=120):
+                updated_episode = self._merge_episode_trigger(active_episode, probe_result, payload)
+                updated_watch = self.registry.update_after_evaluation(watch_id, probe_result)
                 return WatchEvaluationResult(
-                    watch=watch,
-                    trigger=TriggerEvaluationResult(
-                        skipped_probe_ids=["suppressed_repeated_trigger"],
-                    ),
-                    incident=None,
+                    watch=updated_watch,
+                    trigger=probe_result.model_copy(update={
+                        "skipped_probe_ids": ["merged_into_active_episode"],
+                    }),
+                    incident=updated_episode,
                 )
+            self.registry.replace_incident(active_episode.model_copy(update={
+                "episode_status": "CLOSED",
+            }))
 
         trigger_result = evaluate_persistent_trigger(
             request,
@@ -409,11 +533,6 @@ class PersistentAgentRuntime:
             create_collector_tasks=watch.trigger_action in {"freeze_and_safe_probe", "auto_all_registered"},
             max_probe_risk_level="R1" if watch.trigger_action == "freeze_and_safe_probe" else None,
         )
-        if suppress_repeated_trigger:
-            if trigger_result.trigger_event is None:
-                self._active_trigger_types.pop(watch_id, None)
-            else:
-                self._active_trigger_types[watch_id] = trigger_result.trigger_event.trigger_type
         incident = None
         if trigger_result.trigger_event is not None and trigger_result.evidence_cohort_id is not None:
             snapshot = self._freeze_snapshot_from_window(watch, payload, trigger_result)
@@ -421,6 +540,46 @@ class PersistentAgentRuntime:
             incident, snapshot = self._persist_snapshot(watch, incident, snapshot)
         updated = self.registry.update_after_evaluation(watch_id, trigger_result, incident)
         return WatchEvaluationResult(watch=updated, trigger=trigger_result, incident=incident)
+
+    def _merge_episode_trigger(
+        self,
+        episode: WatchIncident,
+        result: TriggerEvaluationResult,
+        payload: WatchEvaluationRequest,
+    ) -> WatchIncident:
+        points = list(episode.anomaly_points)
+        for signal in result.detected_signals:
+            points = _merge_anomaly_point(
+                points,
+                episode.watch_id,
+                signal,
+                result.trigger_event.observed_at,
+            )
+        impact_status, eligible = _classify_episode_impact(result.detected_signals)
+        updated = episode.model_copy(update={
+            "episode_status": "DIAGNOSING" if episode.analysis_status == "analyzing" else "ACTIVE",
+            "last_seen_at": result.trigger_event.observed_at,
+            "window_end": max(
+                _as_utc(episode.window_end),
+                _as_utc(payload.trigger_window.end),
+            ),
+            "recovery_observations": 0,
+            "occurrence_count": episode.occurrence_count + 1,
+            "diagnosis_eligible": episode.diagnosis_eligible or eligible,
+            "impact_status": _stronger_impact(episode.impact_status, impact_status),
+            "anomaly_points": points,
+        })
+        return self.registry.replace_incident(updated)
+
+    def _record_recovery(self, episode: WatchIncident | None) -> WatchIncident | None:
+        if episode is None:
+            return None
+        recovery = episode.recovery_observations + 1
+        status: EpisodeStatus = "CLOSED" if recovery >= 3 else "RECOVERING"
+        return self.registry.replace_incident(episode.model_copy(update={
+            "episode_status": status,
+            "recovery_observations": recovery,
+        }))
 
     def _persist_snapshot(
         self,
@@ -717,6 +876,12 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _target_key(target: WatchTarget) -> str:
     return f"{target.agent_id}:{target.target_pid}"
 
@@ -741,6 +906,17 @@ def _build_incident(
         f"watch:{watch.watch_id}:snapshot:{snapshot.metadata.snapshot_id}",
         snapshot,
     )
+    points: list[dict[str, Any]] = []
+    for signal in trigger_result.detected_signals:
+        points = _merge_anomaly_point(
+            points,
+            watch.watch_id,
+            signal,
+            trigger_event.observed_at,
+        )
+    impact_status, eligible = _classify_episode_impact(trigger_result.detected_signals)
+    aggregation_seconds = 0 if impact_status == "hard_state" else 30
+    created_at = _now_utc()
     return WatchIncident(
         incident_id=f"inc_{uuid4().hex[:12]}",
         watch_id=watch.watch_id,
@@ -755,8 +931,82 @@ def _build_incident(
         snapshot_refs=snapshot.metadata.artifact_refs,
         structured_evidence=structured.model_dump(mode="json"),
         collector_tasks=trigger_result.collector_tasks,
-        created_at=_now_utc(),
+        created_at=created_at,
+        episode_id=f"episode_{uuid4().hex[:12]}",
+        episode_status="AGGREGATING",
+        aggregation_deadline=created_at + timedelta(seconds=aggregation_seconds),
+        first_seen_at=trigger_event.observed_at,
+        last_seen_at=trigger_event.observed_at,
+        diagnosis_eligible=eligible,
+        impact_status=impact_status,
+        anomaly_points=points,
     )
+
+
+def _merge_anomaly_point(
+    points: list[dict[str, Any]],
+    watch_id: str,
+    signal: Any,
+    observed_at: datetime,
+) -> list[dict[str, Any]]:
+    fingerprint = hashlib.sha256(
+        f"{watch_id}|{signal.trigger_type}|{signal.metric}".encode("utf-8")
+    ).hexdigest()[:20]
+    result = [dict(item) for item in points]
+    for index, item in enumerate(result):
+        if item.get("fingerprint") != fingerprint:
+            continue
+        result[index] = {
+            **item,
+            "last_seen_at": observed_at.isoformat(),
+            "latest_value": signal.current_value,
+            "peak_value": max(
+                float(item.get("peak_value") or signal.current_value),
+                signal.current_value,
+            ),
+            "occurrences": int(item.get("occurrences") or 1) + 1,
+            "relative_shift": signal.relative_shift,
+            "absolute_delta": signal.absolute_delta,
+        }
+        return result
+    impact_status, _ = _classify_episode_impact([signal])
+    result.append({
+        "anomaly_point_id": f"ap_{uuid4().hex[:12]}",
+        "fingerprint": fingerprint,
+        "trigger_type": signal.trigger_type,
+        "metric": signal.metric,
+        "baseline_value": signal.baseline_value,
+        "latest_value": signal.current_value,
+        "peak_value": signal.current_value,
+        "absolute_delta": signal.absolute_delta,
+        "relative_shift": signal.relative_shift,
+        "threshold": signal.threshold,
+        "robust_score": signal.robust_score,
+        "detection_method": signal.detection_method,
+        "first_seen_at": observed_at.isoformat(),
+        "last_seen_at": observed_at.isoformat(),
+        "occurrences": 1,
+        "impact_status": impact_status,
+        "explanation": None,
+    })
+    return result
+
+
+def _classify_episode_impact(signals: list[Any]) -> tuple[ImpactStatus, bool]:
+    types = {signal.trigger_type for signal in signals}
+    metrics = {signal.metric for signal in signals}
+    if "process_suspended" in types:
+        return "hard_state", True
+    if types.intersection({"latency_shift", "error_burst"}):
+        return "impact_confirmed", True
+    if metrics.intersection({"throttled_percent", "queue_depth"}):
+        return "impact_confirmed", True
+    return "impact_unconfirmed", False
+
+
+def _stronger_impact(left: ImpactStatus, right: ImpactStatus) -> ImpactStatus:
+    rank = {"impact_unconfirmed": 0, "impact_confirmed": 1, "hard_state": 2}
+    return left if rank[left] >= rank[right] else right
 
 
 def _merge_collector_evidence(

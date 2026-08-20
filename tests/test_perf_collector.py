@@ -43,7 +43,7 @@ def _mock_popen_complete(returncode=0, stdout=b"", stderr=b"", *, pid=9999, side
 
 
 class TestPerfAvailabilityChecks:
-    """perf 命令可用性和权限检查。"""
+    """perf 命令可用性和目标检查。"""
 
     def test_perf_not_installed_returns_failure(self, collector: PerfCollector, task: CollectorTask):
         with mock.patch("shutil.which", return_value=None):
@@ -51,16 +51,8 @@ class TestPerfAvailabilityChecks:
         assert result.ok is False
         assert "perf 命令不可用" in result.reason
 
-    def test_paranoid_too_high_returns_failure(self, collector: PerfCollector, task: CollectorTask):
-        with mock.patch("shutil.which", return_value="/usr/bin/perf"), \
-             mock.patch.object(collector, "_check_perf_paranoid", return_value=False):
-            result = collector.collect(task)
-        assert result.ok is False
-        assert "perf_event_paranoid" in result.reason
-
     def test_pid_not_exists_returns_failure(self, collector: PerfCollector, task: CollectorTask):
         with mock.patch("shutil.which", return_value="/usr/bin/perf"), \
-             mock.patch.object(collector, "_check_perf_paranoid", return_value=True), \
              mock.patch.object(collector, "_pid_exists", return_value=False):
             result = collector.collect(task)
         assert result.ok is False
@@ -80,7 +72,7 @@ class TestPerfExecution:
         mock_proc = _mock_popen_complete()
 
         with mock.patch("shutil.which", return_value="/usr/bin/perf"), \
-             mock.patch.object(collector, "_check_perf_paranoid", return_value=True), \
+             mock.patch.object(collector, "_read_paranoid", return_value=4), \
              mock.patch.object(collector, "_pid_exists", return_value=True), \
              mock.patch("subprocess.Popen", return_value=mock_proc), \
              mock.patch.object(collector, "_analyze_perf_data", return_value=([], "")), \
@@ -88,6 +80,7 @@ class TestPerfExecution:
             result = collector.collect(task)
 
         assert result.ok is True
+        assert "perf_event_paranoid=4" in result.reason
         assert result.artifacts[0]["artifact_type"] == "raw"
         assert result.artifacts[0]["size_bytes"] > 0
 
@@ -107,7 +100,6 @@ class TestPerfExecution:
         mock_proc = _mock_popen_complete()
 
         with mock.patch("shutil.which", return_value="/usr/bin/perf"), \
-             mock.patch.object(collector, "_check_perf_paranoid", return_value=True), \
              mock.patch.object(collector, "_pid_exists", return_value=True), \
              mock.patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
              mock.patch.object(collector, "_analyze_perf_data", return_value=([], "")):
@@ -134,7 +126,6 @@ class TestPerfExecution:
         mock_proc = _mock_popen_complete()
 
         with mock.patch("shutil.which", return_value="/usr/bin/perf"), \
-             mock.patch.object(collector, "_check_perf_paranoid", return_value=True), \
              mock.patch.object(collector, "_pid_exists", return_value=True), \
              mock.patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
              mock.patch.object(collector, "_analyze_perf_data", return_value=([], "")):
@@ -157,7 +148,6 @@ class TestPerfExecution:
         ]
 
         with mock.patch("shutil.which", return_value="/usr/bin/perf"), \
-             mock.patch.object(collector, "_check_perf_paranoid", return_value=True), \
              mock.patch.object(collector, "_pid_exists", return_value=True), \
              mock.patch("subprocess.Popen", return_value=mock_proc), \
              mock.patch.object(collector, "_analyze_perf_data", return_value=(analysis, "")), \
@@ -181,7 +171,6 @@ class TestPerfExecution:
         mock_run = mock.MagicMock(return_value=mock.MagicMock(returncode=0, stdout=b"", stderr=b""))
 
         with mock.patch("shutil.which", return_value="/usr/bin/perf"), \
-             mock.patch.object(collector, "_check_perf_paranoid", return_value=True), \
              mock.patch.object(collector, "_pid_exists", return_value=True), \
              mock.patch("subprocess.Popen", return_value=mock_proc), \
              mock.patch("subprocess.run", mock_run), \
@@ -196,13 +185,13 @@ class TestPerfExecution:
         assert data["context"]["context_id"]
         assert data["line_candidates"] == []
 
-    def test_perf_nonzero_exit_returns_failure(self, collector: PerfCollector, task: CollectorTask, tmp_path):
+    def test_perf_permission_failure_includes_runtime_diagnostics(self, collector: PerfCollector, task: CollectorTask, tmp_path):
         collector.OUTPUT_BASE = str(tmp_path)
 
-        mock_proc = _mock_popen_complete(returncode=1, stderr=b"perf: target PID does not exist")
+        mock_proc = _mock_popen_complete(returncode=255, stderr=b"perf_event_open: Operation not permitted")
 
         with mock.patch("shutil.which", return_value="/usr/bin/perf"), \
-             mock.patch.object(collector, "_check_perf_paranoid", return_value=True), \
+             mock.patch.object(collector, "_read_paranoid", return_value=4), \
              mock.patch.object(collector, "_pid_exists", return_value=True), \
              mock.patch("subprocess.Popen", return_value=mock_proc), \
              mock.patch("os.setpgrp", create=True):
@@ -210,6 +199,9 @@ class TestPerfExecution:
 
         assert result.ok is False
         assert "perf record 执行失败" in result.reason
+        assert "perf_event_paranoid=4" in result.reason
+        assert "Operation not permitted" in result.reason
+        assert "PERFMON" in result.reason
 
     def test_perf_timeout_kills_process_group(self, collector: PerfCollector, task: CollectorTask, tmp_path):
         collector.OUTPUT_BASE = str(tmp_path)
@@ -220,7 +212,6 @@ class TestPerfExecution:
         )
 
         with mock.patch("shutil.which", return_value="/usr/bin/perf"), \
-             mock.patch.object(collector, "_check_perf_paranoid", return_value=True), \
              mock.patch.object(collector, "_pid_exists", return_value=True), \
              mock.patch("subprocess.Popen", return_value=mock_proc), \
              mock.patch("os.setpgrp", create=True), \
@@ -246,19 +237,19 @@ class TestPidCheck:
             assert collector._pid_exists(99999) is False
 
 
-class TestParanoidCheck:
-    """perf_event_paranoid 检查。"""
+class TestParanoidRead:
+    """perf_event_paranoid 只作为诊断上下文读取。"""
 
     def test_paranoid_enabled(self, collector: PerfCollector):
         mock_open = mock.mock_open(read_data="1\n")
         with mock.patch("builtins.open", mock_open):
-            assert collector._check_perf_paranoid() is True
+            assert collector._read_paranoid() == 1
 
     def test_paranoid_disabled(self, collector: PerfCollector):
         mock_open = mock.mock_open(read_data="3\n")
         with mock.patch("builtins.open", mock_open):
-            assert collector._check_perf_paranoid() is False
+            assert collector._read_paranoid() == 3
 
     def test_paranoid_file_missing(self, collector: PerfCollector):
         with mock.patch("builtins.open", side_effect=FileNotFoundError):
-            assert collector._check_perf_paranoid() is True
+            assert collector._read_paranoid() is None

@@ -1,0 +1,12 @@
+FROM python:3.7-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gdb \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir "memray==1.10.0"
+
+WORKDIR /case
+ENV PYTHONPATH=/case/src
+
+ENTRYPOINT ["memray", "run", "--force", "--aggregate", "--trace-python-allocators", "-o", "/profiles/werkzeug-1521-vulnerable.bin"]

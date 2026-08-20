@@ -19,13 +19,16 @@ export const ROLE_LABELS = {
   unknown: "未知",
 };
 
-export function buildControlledAITreeGraph(tree = {}) {
+export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = []) {
   const layers = tree.layers || [];
+  const highlighted = new Set(highlightedCandidateIds);
   const graphNodes = [];
   const graphEdges = [];
   const candidateIndex = new Map();
   const layerIndex = new Map();
   const edgeKeys = new Set();
+  const finalLevel = tree.final_supported_level || "resource";
+  const observedLevels = [];
 
   const pushEdge = (edge) => {
     if (!edge.source || !edge.target || edge.source === edge.target) return;
@@ -53,6 +56,8 @@ export function buildControlledAITreeGraph(tree = {}) {
     const candidates = flattenLayerCandidates(layer);
     layerIndex.set(layer.layer_id, candidates);
     for (const candidate of candidates) {
+      observedLevels.push(candidate.supported_level);
+      const outsideFinalBoundary = isDeeperLevel(candidate.supported_level, finalLevel);
       const nodeId = nodeIdFor(layer.layer_id, candidate.candidate_id);
       candidateIndex.set(candidate.candidate_id, {
         nodeId,
@@ -75,12 +80,15 @@ export function buildControlledAITreeGraph(tree = {}) {
           level: candidate.supported_level,
           confidence: candidate.confidence || 0,
           status: candidate.status,
+          outsideFinalBoundary,
+          highlighted: highlighted.has(candidate.candidate_id),
           badges: [
             `L${layer.depth}`,
             ROLE_LABELS[candidate.role] || candidate.role,
             candidate.supported_level,
             candidate.claim_type,
             candidate.conclusion_eligible ? "可进入结论" : "未过门禁",
+            outsideFinalBoundary ? "已观察/未入终态" : "终态边界内",
             layer.generated_by === "ai_guarded" ? "AI" : "fallback",
           ],
         },
@@ -177,11 +185,11 @@ export function buildControlledAITreeGraph(tree = {}) {
     data: {
       nodeKind: "stop",
       role: "stop",
-      title: `停在 ${tree.final_supported_level || "resource"}`,
-      claim: tree.stop_reason || "当前证据边界不支持继续下钻。",
-      level: tree.final_supported_level || "resource",
-      confidence: levelProgress(tree.final_supported_level),
-      badges: ["stop", tree.final_supported_level || "resource"],
+      title: `正式结论停在 ${finalLevel}`,
+      claim: boundaryClaim(tree.stop_reason, deepestLevel(observedLevels), finalLevel),
+      level: finalLevel,
+      confidence: levelProgress(finalLevel),
+      badges: ["stop", finalLevel],
     },
   });
   for (const source of fallbackFinalSources) {
@@ -214,6 +222,25 @@ export function flattenLayerCandidates(layer = {}) {
 export function levelProgress(level) {
   const index = LEVEL_ORDER.indexOf(level);
   return index < 0 ? 0 : index / (LEVEL_ORDER.length - 1);
+}
+
+export function isDeeperLevel(level, boundary) {
+  const levelIndex = LEVEL_ORDER.indexOf(level);
+  const boundaryIndex = LEVEL_ORDER.indexOf(boundary);
+  return levelIndex >= 0 && boundaryIndex >= 0 && levelIndex > boundaryIndex;
+}
+
+export function deepestLevel(levels = []) {
+  return levels.reduce(
+    (deepest, level) => (isDeeperLevel(level, deepest) ? level : deepest),
+    "resource",
+  );
+}
+
+function boundaryClaim(reason, observedLevel, finalLevel) {
+  const detail = reason || "当前证据边界不支持继续下钻。";
+  if (!isDeeperLevel(observedLevel, finalLevel)) return detail;
+  return `${detail} 已观察到的 ${observedLevel} 节点仍保留在树中，但未进入正式结论。`;
 }
 
 function nodeIdFor(layerId, candidateId) {

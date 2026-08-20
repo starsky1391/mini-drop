@@ -103,7 +103,15 @@ def test_watch_service_allows_new_trigger_after_recovery_window():
     )
 
     service.Sync(watch_pb2.WatchSyncRequest(agent_id="agent-1", ip_addr="10.0.0.1", observations=[high]), None)
-    service.Sync(watch_pb2.WatchSyncRequest(agent_id="agent-1", ip_addr="10.0.0.1", observations=[normal]), None)
+    for _ in range(3):
+        service.Sync(
+            watch_pb2.WatchSyncRequest(
+                agent_id="agent-1",
+                ip_addr="10.0.0.1",
+                observations=[normal],
+            ),
+            None,
+        )
     service.Sync(watch_pb2.WatchSyncRequest(agent_id="agent-1", ip_addr="10.0.0.1", observations=[high]), None)
 
     assert len(registry.list_incidents(watch.watch_id)) == 2

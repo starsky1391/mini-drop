@@ -67,6 +67,9 @@ class SourceContext(StrictModel):
     symbol_map_paths: list[str] = Field(default_factory=list, max_length=20)
     build_id: Optional[str] = Field(default=None, max_length=256)
     container_workdir: Optional[str] = Field(default=None, max_length=512)
+    memray_result_path: Optional[str] = Field(default=None, max_length=1024)
+    memray_stats_path: Optional[str] = Field(default=None, max_length=1024)
+    memray_leaks_path: Optional[str] = Field(default=None, max_length=1024)
 
 
 class ServiceInstance(StrictModel):
@@ -76,6 +79,7 @@ class ServiceInstance(StrictModel):
     agent_id: str = Field(min_length=1, max_length=128)
     pid: int = Field(gt=0, le=4194304)
     container_id: Optional[str] = Field(default=None, max_length=128)
+    systemd_unit: Optional[str] = Field(default=None, max_length=128)
     environment: str = Field(default="unknown", min_length=1, max_length=64)
     source_context: Optional[SourceContext] = None
 
@@ -110,7 +114,7 @@ class DiagnosisContext(StrictModel):
 class DiagnosisBudget(StrictModel):
     max_hosts: int = Field(default=5, ge=1, le=20)
     max_service_instances: int = Field(default=10, ge=1, le=100)
-    max_topology_hops: int = Field(default=1, ge=0, le=3)
+    max_topology_hops: int = Field(default=2, ge=0, le=3)
     max_duration_minutes: int = Field(default=10, ge=1, le=60)
     max_parallel_probes: int = Field(default=3, ge=1, le=10)
     max_artifact_size_mb: int = Field(default=500, ge=1, le=4096)

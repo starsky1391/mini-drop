@@ -18,6 +18,7 @@ from server.app.database import init_db, reset_engine
 from server.app.main import _ensure_minio_bucket_with_retry, app, repo, watch_registry
 from server.app.models import Base
 from server.app.prometheus_metrics import REGISTRY
+from server.app.schemas import CreateTaskRequest
 from server.app.state_machine import Actor, TaskStatus
 
 
@@ -67,6 +68,17 @@ class TestHealthz:
         resp = client.get("/api/me")
         assert resp.status_code == 200
         assert resp.json()["data"]["user_id"] == "demo_user"
+
+
+def test_registered_python_depth_collectors_are_valid_task_types():
+    for collector_type in ("python_heap_profile", "source_snapshot"):
+        request = CreateTaskRequest(
+            name=f"test-{collector_type}",
+            agent_id="a1",
+            target_pid=1234,
+            collector_type=collector_type,
+        )
+        assert request.collector_type == collector_type
 
 
 class TestAIProviderProfiles:
@@ -391,6 +403,82 @@ class TestWatchSubscriptions:
         assert leases[0]["target"]["target_pid"] == 4242
         assert leases[0]["target_config"]["redis_target"]["url"] == "redis://order-redis.local:6379"
 
+    def test_watch_auto_diagnosis_toggle_is_persisted(self, client: TestClient):
+        watch = client.post("/api/v1/watches", json={
+            "name": "toggle watch",
+            "target": {"agent_id": "a1", "target_pid": 4242},
+        }).json()["data"]
+        assert watch["auto_diagnosis_enabled"] is True
+
+        updated = client.patch(
+            f"/api/v1/watches/{watch['watch_id']}",
+            json={"auto_diagnosis_enabled": False},
+        )
+
+        assert updated.status_code == 200
+        assert updated.json()["data"]["auto_diagnosis_enabled"] is False
+        detail = client.get(f"/api/v1/watches/{watch['watch_id']}").json()["data"]
+        assert detail["auto_diagnosis_enabled"] is False
+
+    def test_watch_anomaly_explanation_is_cached_by_fingerprint(
+        self,
+        client: TestClient,
+        monkeypatch,
+    ):
+        watch = client.post("/api/v1/watches", json={
+            "name": "explain watch",
+            "target": {"agent_id": "a1", "target_pid": 4242},
+            "trigger_action": "freeze_only",
+        }).json()["data"]
+        triggered = client.post(f"/api/v1/watches/{watch['watch_id']}/evaluate", json={
+            "baseline_window": {
+                "start": "2026-08-11T10:00:00Z",
+                "end": "2026-08-11T10:00:30Z",
+                "samples": [{"cpu_percent": 20.0}, {"cpu_percent": 20.0}],
+            },
+            "trigger_window": {
+                "start": "2026-08-11T10:05:00Z",
+                "end": "2026-08-11T10:05:30Z",
+                "samples": [{"cpu_percent": 60.0}, {"cpu_percent": 60.0}],
+            },
+        }).json()["data"]["incident"]
+        point = triggered["anomaly_points"][0]
+        calls = []
+
+        def fake_explain_watch_anomaly(**kwargs):
+            calls.append(kwargs["anomaly_point"]["anomaly_point_id"])
+            return {
+                "summary": "目标 CPU 相对自身历史窗口发生明显偏移",
+                "why_triggered": "当前中心值超过历史中心和变化门限。",
+                "classification": "resource_shift",
+                "observed_change": "CPU 从 20 上升到 60。",
+                "same_window_context": [],
+                "data_quality": "窗口包含两个有效样本。",
+                "boundary_notice": "该解释不构成根因结论。",
+                "model": "test-model",
+                "provider": "test",
+                "fingerprint": kwargs["anomaly_point"]["fingerprint"],
+                "cached": False,
+            }
+
+        monkeypatch.setattr(
+            "server.app.main.explain_watch_anomaly",
+            fake_explain_watch_anomaly,
+        )
+        path = (
+            f"/api/v1/watch-incidents/{triggered['incident_id']}"
+            f"/anomalies/{point['anomaly_point_id']}/explain"
+        )
+
+        first = client.post(path)
+        second = client.post(path)
+
+        assert first.status_code == 200
+        assert first.json()["data"]["cached"] is False
+        assert second.status_code == 200
+        assert second.json()["data"]["cached"] is True
+        assert calls == [point["anomaly_point_id"]]
+
     def test_watch_evaluate_creates_triggered_collector_tasks(self, client: TestClient):
         repo.register_agent(
             "a1",
@@ -525,6 +613,11 @@ class TestWatchSubscriptions:
         session = client.get(f"/api/v1/diagnoses/{diagnosis_id}")
         assert session.status_code == 200
         assert session.json()["data"]["diagnosis_id"] == diagnosis_id
+
+        repeated = client.post(f"/api/v1/watch-incidents/{incident_id}/analyze")
+        assert repeated.status_code == 200
+        assert repeated.json()["data"]["diagnosis_id"] == diagnosis_id
+        assert repeated.json()["data"]["reused"] is True
 
     def test_watch_incident_diagnosis_creation_failure_is_terminal_and_retryable(
         self,

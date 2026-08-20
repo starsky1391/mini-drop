@@ -89,6 +89,16 @@ def build_readiness_gate(bundle: dict[str, Any]) -> dict[str, Any]:
             "controlled AI tree should include at least one LLM-validated ai_guarded layer",
         ),
         _check(
+            "session_ai_review_succeeded",
+            _session_ai_review_succeeded(bundle),
+            "final readiness requires one valid session-scoped AI adjudication",
+        ),
+        _check(
+            "compound_clusters_evidence_backed",
+            _compound_clusters_are_ready(bundle),
+            "compound incidents require at least two eligible clusters with independently attributable evidence",
+        ),
+        _check(
             "collector_type_not_fallback",
             _collector_mapping_is_explicit(bundle),
             "collector types should match planned probes without silent perf_cpu fallback",
@@ -102,6 +112,11 @@ def build_readiness_gate(bundle: dict[str, Any]) -> dict[str, Any]:
             "runtime_stack_quality_non_empty",
             _runtime_stack_quality_non_empty(bundle),
             "runtime/deep collectors should produce non-empty stack, hotspot, or wait evidence",
+        ),
+        _check(
+            "completed_probe_evidence_valid",
+            _completed_probes_have_valid_evidence(bundle),
+            "completed probes must expose valid or partial structured evidence, not only a DONE task state",
         ),
     ]
     status = "PASS" if all(item["status"] == "PASS" for item in checks) else "FAIL"
@@ -117,6 +132,11 @@ def _check(name: str, passed: bool, message: str) -> dict[str, Any]:
 
 
 def _controlled_ai_tree_has_ai_guarded_layer(bundle: dict[str, Any]) -> bool:
+    latest = bundle.get("latest_conclusion") or bundle.get("conclusion") or {}
+    if not isinstance(latest, dict):
+        return False
+    if latest.get("ai_review_status") != "succeeded" or latest.get("ai_review_scope") != "session":
+        return False
     tree = _bundle_controlled_ai_tree(bundle)
     if not isinstance(tree, dict):
         return False
@@ -124,6 +144,62 @@ def _controlled_ai_tree_has_ai_guarded_layer(bundle: dict[str, Any]) -> bool:
         isinstance(layer, dict) and layer.get("generated_by") == "ai_guarded"
         for layer in tree.get("layers") or []
     )
+
+
+def _session_ai_review_succeeded(bundle: dict[str, Any]) -> bool:
+    latest = bundle.get("latest_conclusion") or bundle.get("conclusion") or {}
+    return bool(
+        isinstance(latest, dict)
+        and latest.get("ai_review_status") == "succeeded"
+        and latest.get("ai_review_scope") == "session"
+        and int(latest.get("ai_review_attempts") or 0) > 0
+    )
+
+
+def _compound_clusters_are_ready(bundle: dict[str, Any]) -> bool:
+    latest = bundle.get("latest_conclusion") or bundle.get("conclusion") or {}
+    if not isinstance(latest, dict):
+        return False
+    if not _compound_evidence_present(bundle, latest):
+        return True
+    clusters = [
+        item for item in latest.get("root_cause_clusters", [])
+        if isinstance(item, dict) and item.get("conclusion_eligible")
+    ]
+    if len({(item.get("mechanism"), item.get("target")) for item in clusters}) < 2:
+        return False
+    ref_sets = [set(item.get("evidence_refs") or []) for item in clusters]
+    if any(not refs for refs in ref_sets):
+        return False
+    return all(
+        refs - set().union(*(other for other_index, other in enumerate(ref_sets) if other_index != index))
+        for index, refs in enumerate(ref_sets)
+    )
+
+
+def _compound_evidence_present(bundle: dict[str, Any], latest: dict[str, Any]) -> bool:
+    eligible = {
+        (item.get("mechanism"), item.get("target"))
+        for item in latest.get("root_cause_clusters", [])
+        if isinstance(item, dict) and item.get("conclusion_eligible")
+    }
+    if len(eligible) >= 2:
+        return True
+    has_cpu_cluster = False
+    has_dependency_failure = False
+    for artifact in bundle.get("artifacts", []):
+        if not isinstance(artifact, dict):
+            continue
+        metadata = artifact.get("metadata") if isinstance(artifact.get("metadata"), dict) else {}
+        artifact_type = str(artifact.get("artifact_type") or "")
+        if artifact_type == "sys_metrics":
+            workload_cpu = float(metadata.get("avg_cpu_user_pct") or 0) + float(metadata.get("avg_cpu_sys_pct") or 0)
+            host_busy = float(metadata.get("avg_host_cpu_busy_pct") or 0)
+            has_cpu_cluster = has_cpu_cluster or (workload_cpu >= 70 and host_busy >= 85)
+        if artifact_type in {"dependency_check_json", "redis_check_json"}:
+            failed = metadata.get("failed_dependencies")
+            has_dependency_failure = has_dependency_failure or bool(failed) or metadata.get("ping_ok") is False
+    return has_cpu_cluster and has_dependency_failure
 
 
 def _bundle_controlled_ai_tree(bundle: dict[str, Any]) -> dict[str, Any] | None:
@@ -205,6 +281,18 @@ def _normalize_conclusion(latest: dict[str, Any]) -> dict[str, Any]:
     primary = candidates[0] if candidates else {}
     return {
         "summary": latest.get("summary", ""),
+        "headline": latest.get("headline", ""),
+        "why_it_happened": latest.get("why_it_happened", ""),
+        "causal_chain": latest.get("causal_chain", []),
+        "root_cause_clusters": latest.get("root_cause_clusters", []),
+        "ruled_out_summary": latest.get("ruled_out_summary", []),
+        "residual_unknowns": latest.get("residual_unknowns", []),
+        "recommendations": latest.get("recommendations", []),
+        "ai_review_status": latest.get("ai_review_status", "fallback"),
+        "ai_review_scope": latest.get("ai_review_scope", "session"),
+        "ai_review_attempts": latest.get("ai_review_attempts", 0),
+        "ai_review_model": latest.get("ai_review_model", ""),
+        "ai_review_error": latest.get("ai_review_error", ""),
         "confidence_level": latest.get("confidence_level", "不可判断"),
         "location_type": assessment.get("location_type") or primary.get("location_type"),
         "domain_type": assessment.get("domain_type") or primary.get("domain_type"),
@@ -365,11 +453,13 @@ def _merge_confidence_inputs(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         "has_log_signal",
         "has_dependency_signal",
         "has_redis_signal",
+        "has_complete_control_chain",
     )
     total_fields = (
         "failed_dependency_count",
         "log_error_cluster_count",
         "redis_slowlog_entry_count",
+        "control_event_count",
     )
     result = {
         field: any(bool(item.get(field)) for item in values)
@@ -379,6 +469,7 @@ def _merge_confidence_inputs(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         field: sum(_number(item.get(field)) for item in values)
         for field in total_fields
     })
+    evidence_validity = _merge_evidence_validity(values)
     result.update({
         "sample_count": sum(_number(item.get("sample_count")) for item in values),
         "dominant_percent": max((_number(item.get("dominant_percent")) for item in values), default=0.0),
@@ -403,8 +494,27 @@ def _merge_confidence_inputs(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         "stack_source_status": _best_status(values, "stack_source_status"),
         "trace_correlation_status": _best_status(values, "trace_correlation_status"),
         "trace_max_supported_level": _best_localization_level(values),
+        "runtime_control_evidence_status": (
+            evidence_validity.get("runtime_control_history")
+            or _best_status(values, "runtime_control_evidence_status")
+        ),
+        "evidence_validity_by_family": evidence_validity,
     })
     return result
+
+
+def _merge_evidence_validity(values: list[dict[str, Any]]) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    order = {"": 0, "blocked": 1, "unparseable": 1, "empty_window": 2, "partial": 3, "valid": 4}
+    for value in values:
+        current = value.get("evidence_validity_by_family")
+        if not isinstance(current, dict):
+            continue
+        for family, status in current.items():
+            text = str(status or "")
+            if order.get(text, 0) >= order.get(merged.get(family, ""), 0):
+                merged[str(family)] = text
+    return merged
 
 
 def _number(value: Any) -> float:
@@ -527,6 +637,7 @@ def _required_collector_families_have_structured_artifacts(bundle: dict[str, Any
         "dependency_check",
         "redis_check",
         "trace_endpoint_profile",
+        "runtime_control_history",
         "off_cpu_wait_profile",
         "baseline_window_profile",
         "sys_metrics",
@@ -553,6 +664,14 @@ def _runtime_stack_quality_non_empty(bundle: dict[str, Any]) -> bool:
     }
     if not (executed & runtime_families):
         return True
+    runtime_probes = [
+        probe for probe in bundle.get("probes", [])
+        if _probe_to_collector(probe.get("probe_id", "")) in runtime_families
+        and probe.get("task_id")
+        and probe.get("status") == "COMPLETED"
+    ]
+    if runtime_probes and all(probe.get("evidence_status") == "empty_window" for probe in runtime_probes):
+        return True
     return any(
         _structured_runtime_signal_present(item.get("observed_value"))
         for item in _structured_evidence_items(bundle.get("evidence", []))
@@ -565,15 +684,6 @@ def _structured_runtime_signal_present(value: Any) -> bool:
     summary = value.get("summary") if isinstance(value.get("summary"), dict) else value
     if not isinstance(summary, dict):
         return False
-    sys_metrics = summary.get("sys_metrics")
-    if isinstance(sys_metrics, dict):
-        process_summary = sys_metrics.get("summary") if isinstance(sys_metrics.get("summary"), dict) else sys_metrics
-        if (
-            isinstance(process_summary, dict)
-            and str(process_summary.get("process_state") or "") in {"T", "t"}
-            and _safe_float(process_summary.get("stopped_sample_ratio")) >= 0.8
-        ):
-            return True
     top_functions = summary.get("top_functions")
     if isinstance(top_functions, list) and top_functions:
         return True
@@ -591,6 +701,13 @@ def _structured_runtime_signal_present(value: Any) -> bool:
         return True
     confidence = summary.get("confidence_inputs")
     return isinstance(confidence, dict) and bool(confidence.get("has_wait_or_io_signal"))
+
+
+def _completed_probes_have_valid_evidence(bundle: dict[str, Any]) -> bool:
+    completed = [probe for probe in bundle.get("probes", []) if probe.get("status") == "COMPLETED"]
+    if not completed:
+        return True
+    return all(probe.get("evidence_status") in {"valid", "partial", "empty_window"} for probe in completed)
 
 
 def _off_cpu_wait_signal_present(value: Any) -> bool:
@@ -621,6 +738,8 @@ def _artifact_family(artifact: dict[str, Any]) -> str:
         "continuous_flamegraph_json": "baseline_window_profile",
         "continuous_summary": "baseline_window_profile",
         "trace_endpoint_profile_json": "trace_endpoint_profile",
+        "runtime_control_event_json": "runtime_control_history",
+        "pyspy_status_json": "pyspy",
     }
     return mapping.get(str(artifact.get("artifact_type")), str(artifact.get("artifact_type")))
 
@@ -635,9 +754,12 @@ def _probe_to_collector(probe_id: str) -> str:
         "process_memory_map": "memory_smaps",
         "process_baseline_window": "baseline_window_profile",
         "process_python_runtime_profile": "pyspy",
+        "process_python_heap_profile": "python_heap_profile",
+        "process_source_snapshot": "source_snapshot",
         "process_log_scan": "log_scan",
         "process_dependency_check": "dependency_check",
         "process_redis_check": "redis_check",
+        "process_runtime_control_history": "runtime_control_history",
     }
     return mapping.get(probe_id, probe_id)
 

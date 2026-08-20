@@ -123,7 +123,7 @@
 
 ## Notes
 
-- The scope excludes collector changes, task creation, automatic probing, API changes, and front-end changes.
+- The original T001-T014 MVP excludes collector, task, API, and front-end changes; later named task groups explicitly extend that scope without changing the completed MVP tasks.
 - Existing uncommitted changes remain untouched unless directly required by these tasks.
 
 ---
@@ -803,3 +803,259 @@
 - [x] BF006 Add backend tests and frontend build validation for primitive-only evidence, candidate rejection, backtracking, alternate-candidate continuation, and abstention.
 
 **Outcome**: A failed hypothesis stays visible as a grey branch, the investigation returns to the nearest viable parent and evaluates another candidate, and only eligible mechanism claims can become final conclusions.
+
+### Task Group BQ - 工业 Python Heap、源码定位与逐轮 AI 裁决
+
+**Purpose**: Close the Werkzeug #1521 real-case gaps with industrial producers and evidence-safe AI investigation rounds.
+
+- [ ] BQ001 Document the Memray, py-spy raw, Git/tree-sitter source, evidence validity, and Werkzeug Oracle boundaries in plan/spec/tasks.
+- [ ] BQ002 Add regression tests rejecting baseline percentages outside `0-100`, invalid sample counts, bare addresses, and `[unknown]` function anchors.
+- [ ] BQ003 Switch py-spy structured output to official raw/collapsed stacks and preserve function, file, line, call path, samples, and percent; keep SVG optional and presentation-only.
+- [ ] BQ004 Preserve consistent source context hash from diagnosis target scope through child trees and the session controlled tree; represent revision conflicts explicitly.
+- [ ] BQ005 Add a `python_heap_profile` Probe Registry entry and Agent collector adapter backed only by Memray attach or instrumented official output.
+- [ ] BQ006 Emit structured Memray capability, allocation hotspots, retained allocation hotspots, call paths, line candidates, raw refs, and evidence validity without hand-written GC object scanning.
+- [ ] BQ007 Add a bounded `source_snapshot` Producer using Git revision verification and tree-sitter/universal-ctags symbol context; reject paths outside configured roots.
+- [ ] BQ008 Make memory-leak investigation request `python_heap_profile`, `python_runtime_profile`, and `source_snapshot` before off-CPU/Trace unless independent wait/latency evidence exists.
+- [ ] BQ009 Run session-level controlled AI adjudication before each follow-up round, count only actual model calls, allow evidence-guarded mechanism proposals, and retain explicit fallback/partial status when AI does not run.
+- [ ] BQ010 Add focused Agent, evidence structurer, probe registry, orchestrator, source-context, AI guard, and audit-bundle tests.
+- [ ] BQ011 Rebuild the Worker image and verify Memray/py-spy/Git/tree-sitter capability reporting without changing host sysctl.
+- [ ] BQ012 Re-run Werkzeug #1521 with the unchanged vulnerable Oracle and require valid line evidence, correct probe selection, non-fallback AI review, and an evidence-bounded mechanism conclusion.
+
+**Outcome**: Python memory cases use mature collection tools, invalid profiles cannot poison conclusions, source lines survive structuring, and the AI tree chooses and evaluates the evidence needed for a concrete mechanism instead of spending follow-up budget on unrelated probes.
+
+### Task Group BG - 证据有效性状态契约
+
+**Purpose**: Separate task completion, artifact production, and usable evidence so empty or broken deep probes cannot create false confidence.
+
+- [ ] BG001 Add explicit execution, artifact, and evidence validity fields to structured collector results and audit bundles.
+- [ ] BG002 Define minimum valid evidence checks for off-CPU, Trace, baseline/perf, py-spy, and log scan families.
+- [ ] BG003 Remove zero-count default `top_cause` values and prevent empty Trace from advertising function-level support.
+- [ ] BG004 Mark fully unparseable baseline windows and stopped-target py-spy results with precise non-valid evidence states.
+- [ ] BG005 Make follow-up completion, readiness gate, and benchmark scoring require valid structured evidence instead of collector-name presence.
+- [ ] BG006 Add regression tests for completed-empty, completed-unparseable, blocked, partial, and valid evidence results.
+
+**Outcome**: A generated file remains auditable, but only evidence meeting its family quality contract can advance the AI tree or score as collected evidence.
+
+### Task Group BH - 有界日志窗口与 systemd 回连
+
+**Purpose**: Prevent large log files from timing out and make host/systemd targets discoverable without manual log-path configuration.
+
+- [ ] BH001 Replace full-file `read_text()` parsing with bounded streaming/tail-window NDJSON processing.
+- [ ] BH002 Add Fluent Bit systemd/journald input with PID, unit, timestamp, service, instance, and container metadata preservation.
+- [ ] BH003 Resolve log sources from target PID, systemd unit, container ID, and managed pipeline output without mixing targets.
+- [ ] BH004 Return structured `source_missing`, `empty_window`, `no_error`, `partial`, or valid log-cluster evidence within the probe deadline.
+- [ ] BH005 Add large-file memory/time tests and systemd transient-unit correlation tests.
+
+**Outcome**: Log collection remains bounded on growing industrial log output and can retrieve the target's same-window records for both containers and systemd services.
+
+### Task Group BI - 3A 持久化信号控制溯源
+
+**Purpose**: Capture control actions before task-driven diagnosis begins and preserve who sent which signal to the affected process.
+
+- [ ] BI001 Define `runtime_control_event_json` and normalized actor/action/target/effect/evidence reference fields.
+- [ ] BI002 Add a low-cost persistent eBPF signal observer for `signal_generate` with bounded Rolling Buffer storage.
+- [ ] BI003 Filter and redact events before persistence, retaining only target-scope diagnostic fields.
+- [ ] BI004 Freeze same-window events by PID and timestamp when a Watch incident or diagnosis requests runtime control history.
+- [ ] BI005 Add the registered `runtime_control_history` evidence family and collector invocation/fingerprint contract.
+- [ ] BI006 Convert signal events and process-state observations into control causality graph edges.
+- [ ] BI007 Add Linux integration tests for running, `SIGSTOP`, `SIGCONT`, missing-history, buffer expiry, and multiple watched targets.
+
+**Outcome**: Runtime-stall diagnosis can identify the signal sender and action when captured, while preserving an explicit unknown-actor boundary when history is unavailable.
+
+### Task Group BJ - AI 树运行控制结论资格
+
+**Purpose**: Prevent a stopped-state observation from being presented as a complete root cause and route follow-up to control provenance instead of useless profilers.
+
+- [ ] BJ001 Add observation, direct-failure-mechanism, and complete-root-cause qualification levels.
+- [ ] BJ002 Keep `/proc` `T/t` evidence at `process_suspended` direct mechanism unless a valid same-window control event proves the actor/action chain.
+- [ ] BJ003 Skip py-spy, CPU, off-CPU, and endpoint profiling for an already group-stopped target and request runtime control history plus bounded logs.
+- [ ] BJ004 Make top-level confidence, abstention, candidates, and controlled-tree final causes derive from one eligibility result.
+- [ ] BJ005 Preserve rejected CPU, lock, dependency, and code candidates as grey branches with explicit control-state counterevidence and rollback edges.
+- [ ] BJ006 Add tests preventing high-confidence conclusions when the tree has no eligible final primary cause.
+
+**Outcome**: Reports state exactly whether the system found an observation, a direct failure mechanism, or the complete control-action root cause.
+
+### Task Group BK - Runtime Stall 真实验收
+
+**Purpose**: Re-run the real VM case against evidence-quality and control-provenance gates rather than the previous label-only score.
+
+- [ ] BK001 Deploy BG-BJ changes to Control, Worker1, and Worker2 without overwriting unrelated VM configuration.
+- [ ] BK002 Run a direct Linux `SIGSTOP/SIGCONT` collector smoke test and inspect the frozen runtime control artifact.
+- [ ] BK003 Run `OB-SINGLE-RUNTIME-STALL-001` and save a timestamped audit bundle, readiness result, and score report.
+- [ ] BK004 Verify log scan returns within deadline and py-spy/off-CPU/Trace/baseline empty results are not counted as valid deep evidence.
+- [ ] BK005 Verify the report identifies signal actor/action/target when captured, otherwise explicitly stops at unknown-actor direct mechanism.
+- [ ] BK006 Compare previous `96/100` with corrected scoring and document why invalid evidence no longer receives collector coverage credit.
+
+**Outcome**: The runtime-stall case is accepted only when its conclusion semantics and evidence provenance are correct, not merely because four broad Oracle labels match.
+
+### Task Group BL - 3B/3C 运行控制溯源
+
+**Purpose**: Implement system, runtime, resource-control, deployment, and Kubernetes audit producers under the same runtime-control contract.
+
+- [ ] BL001 3B: Add systemd control event producer and unit lifecycle correlation.
+- [ ] BL002 3B: Add Docker/containerd event producer and pause/kill/restart/OOM correlation.
+- [ ] BL003 3B: Add cgroup freezer, limit-change, and process-migration event producer.
+- [ ] BL004 3C: Add release, configuration, image, and scaling change events.
+- [ ] BL005 3C: Add Kubernetes Audit and workload-controller identity correlation after Kubernetes backend migration.
+- [ ] BL006 Add source capability/status reporting and prevent unavailable producers from emitting synthetic events.
+- [ ] BL007 Add Linux VM integration tests for systemd, Docker/containerd, cgroup, and release-change sources.
+- [ ] BL008 Add Kubernetes Audit Event fixture integration tests and record that real-cluster acceptance remains environment-blocked.
+
+**Outcome**: All 3A/3B/3C producers share one evidence and graph contract; VM-capable sources are genuinely tested and Kubernetes Audit is fixture-validated without overstating environment coverage.
+
+### Task Group BM - 运行控制根因等级修正
+
+**Purpose**: Separate a confirmed direct control cause from the still-unknown source that initiated it.
+
+This group supersedes the old qualification wording in BJ001-BJ002; remaining implementation must use the four levels defined here.
+
+- [x] BM001 Extend controlled-tree and conclusion schemas with `direct_root_cause` and `complete_source_root_cause`, retaining old `complete_root_cause` as read compatibility only.
+- [x] BM002 Tighten runtime-control qualification with exact target matching, action/effect semantics, event ordering, and observed stopped-state correlation.
+- [x] BM003 Add optional source-provenance fields for parent process, redacted command source, systemd/cgroup identity, release event, and audit actor.
+- [x] BM004 Downgrade `bash -> SIGSTOP -> stopped` from complete root cause to direct root cause and expose the unresolved source boundary.
+- [x] BM005 Add regression tests for observation, direct mechanism, direct root cause, complete source root cause, target mismatch, and invalid event ordering.
+
+**Outcome**: A confirmed direct cause remains actionable without being mislabeled as a complete source explanation.
+
+### Task Group BN - 会话级 AI 裁决真实性
+
+**Purpose**: Make the final session conclusion genuinely AI-adjudicated and make fallback status observable.
+
+- [x] BN001 Add persisted `ai_review_status`, `ai_review_scope`, model, attempt count, and sanitized failure reason to the diagnosis conclusion/audit contract.
+- [x] BN002 Stop marking Analyzer fallback layers as `ai_guarded` after full or compact guard failure.
+- [x] BN003 Build one compact session-level AI review after all currently valid evidence has returned; child tasks remain evidence producers rather than independent final-report generators.
+- [x] BN004 Validate session AI output against candidate IDs, evidence refs, probe manifest, supported level, cause qualification, and token/time budget.
+- [x] BN005 Make readiness require a successful session-level review instead of the presence of an `ai_guarded` label.
+- [x] BN006 Add tests for valid review, malformed response, rejected evidence refs, retry exhaustion, truthful fallback, and readiness failure.
+
+**Outcome**: `ai_guarded` means the session-level AI actually returned a valid controlled adjudication.
+
+### Task Group BO - 多根因簇与复合事故裁决
+
+**Purpose**: Represent multiple simultaneously valid causes without treating an ordinary secondary-candidate list as a compound diagnosis.
+
+- [x] BO001 Add `RootCauseCluster` schemas with role, cause level, mechanism, target, explained symptoms, causal chain, relation to primary, evidence refs, confidence, and residual unknowns.
+- [x] BO002 Group candidates by mechanism, target, evidence cohort, and propagation path while deduplicating semantically equivalent candidates and shared evidence.
+- [x] BO003 Run conclusion eligibility independently for each cluster and exclude rejected, unknown, observation-only, and ineligible nodes.
+- [x] BO004 Let the bounded session AI select one primary cluster and classify additional eligible clusters as contributing or independent.
+- [x] BO005 Emit `compound_incident` only when at least two independent eligible clusters remain; otherwise keep a single-cause classification.
+- [x] BO006 Preserve cluster-to-tree node links so rejected grey branches and rollback history remain visible.
+- [x] BO007 Add deterministic tests for one cause, two independent causes, one contributing cause, duplicate candidates, shared evidence, and conflicting clusters.
+
+**Outcome**: Multi-root output explains what each cause affected and how it relates to the primary cause.
+
+### Task Group BP - 人话解释与按簇建议
+
+**Purpose**: Turn validated causality into an understandable explanation rather than repeating evidence summaries.
+
+- [x] BP001 Add `headline`, `why_it_happened`, ordered `causal_chain`, `ruled_out_summary`, `residual_unknowns`, and cluster-scoped recommendations to the conclusion contract.
+- [x] BP002 Require the session AI to explain mechanism-to-symptom links and cite real evidence for every causal step.
+- [x] BP003 Prevent one text value from populating summary, node claim, and `why_this_claim`; preserve deterministic fallback text with explicit non-AI status.
+- [x] BP004 Generate investigation, temporary mitigation, and permanent-fix suggestions per eligible cluster without automatically executing remediation.
+- [x] BP005 Add report validation tests for concrete mechanism language, unsupported claims, duplicate text, missing evidence refs, and generic recommendation rejection.
+
+**Outcome**: The report answers what happened, why it caused the symptom, what remains unknown, and what to do next.
+
+### Task Group BQ - 前端根因簇和 AI 状态展示
+
+**Purpose**: Present the final explanation and multiple causes without hiding the controlled tree investigation history.
+
+- [x] BQ001 Update the diagnosis conclusion card to show headline, mechanism explanation, cause level, residual unknowns, and AI review status.
+- [x] BQ002 Add expandable root-cause cluster sections for primary, contributing, and independent causes with causal steps, evidence, and recommendations.
+- [x] BQ003 Keep the controlled AI tree as the investigation view, with rejected nodes grey and links from final clusters to their source tree nodes.
+- [x] BQ004 Show Analyzer fallback or failed AI review explicitly instead of presenting it as an AI-generated conclusion.
+- [x] BQ005 Add frontend component tests where available and run the production build at desktop and mobile widths.
+
+**Outcome**: Users can read the answer first, inspect each cause second, and audit the full tree when needed.
+
+### Task Group BR - 门禁、评分与真实 Case 验收
+
+**Purpose**: Prove the new semantics on one direct-control case and one real compound case.
+
+- [x] BR001 Extend audit bundles and benchmark scoring with AI review status, root-cause clusters, cluster evidence independence, and symptom coverage.
+- [x] BR002 Add a compound readiness check requiring at least two eligible evidence-backed clusters for `compound_incident`.
+- [x] BR003 Run focused backend tests and the frontend production build.
+- [ ] BR004 Deploy the approved changes to Control, Worker1, and Worker2 without deleting data volumes or changing host sysctl values.
+- [ ] BR005 Re-run `OB-SINGLE-RUNTIME-STALL-001` and verify it stops at `direct_root_cause` with an explicit unknown source boundary.
+- [ ] BR006 Run `OB-COMPOUND-NOISY-DOWNSTREAM-001` and verify `paymentservice paused` is primary while Worker2 CPU noise is a separately evidenced contributing cluster.
+- [ ] BR007 Save timestamped audit bundles and a comparison report covering AI participation truthfulness, explanation quality, cluster count, evidence refs, score, and residual limitations.
+
+**Outcome**: Acceptance depends on real session AI participation and evidence-backed causal explanations, not labels or collector presence.
+
+### Suggested Execution Order For BM-BR
+
+1. Complete BM first so every later explanation uses the correct cause-level semantics.
+2. Complete BN before BO so multi-cause adjudication runs through a truthful session-level AI path.
+3. Complete BO before BP so readable explanations are generated from validated clusters rather than raw candidates.
+4. Complete BP and BQ together around one shared API contract.
+5. Complete BR last, first validating Runtime Stall and then the compound noisy/downstream case.
+
+### Task Group BS - Two-Hop 复合因果闭环
+
+**Purpose**: Close the same-host CPU and downstream pause evidence chains without unbounded topology expansion or repeated model calls.
+
+- [x] BS001 Set the diagnosis topology budget default to 2 hops and enforce bounded expansion, per-round probe limits, stop conditions, and delayed-followup boundaries.
+- [x] BS002 Extend collector fingerprints with target scope, evidence window, source context, and effective parameters; reuse only completed artifacts with acceptable evidence validity.
+- [x] BS003 Extend `sys_metrics` from one PID to a cgroup/process-tree workload scope and emit aggregate plus member-level CPU attribution.
+- [x] BS004 Add target scheduling/throttling signals needed to distinguish contributing CPU contention from an unrelated same-host anomaly.
+- [x] BS005 Backfill Docker paused/running state, cgroup freeze state, and process state into structured runtime-control evidence without fabricating historical actors.
+- [x] BS006 Correlate dependency failure, runtime state, Trace/endpoint propagation, host saturation, and workload CPU into independently qualified root-cause clusters.
+- [x] BS007 Make compound readiness independent of the predicted classification and align empty-window, collector coverage, and cluster-independence semantics with benchmark scoring.
+- [x] BS008 Add deterministic tests for MainPID child CPU aggregation, cgroup membership changes, paused-state backfill, two-hop stopping, fingerprint reuse, contributing/independent/unknown CPU roles, and readiness/scorer agreement.
+- [x] BS009 Run focused backend tests and the frontend production build; fix all deterministic failures before VM deployment.
+- [x] BS010 Deploy once to Control, Worker1, and Worker2 without deleting volumes or changing host sysctl, then run one timestamped `OB-COMPOUND-NOISY-DOWNSTREAM-001` acceptance case.
+- [x] BS011 Audit AI participation, two-hop behavior, probe reuse, primary/contributing clusters, evidence refs, readiness and score; only repeat once when the first result proves a concrete implementation defect.
+- [x] BS012 Add the missing `scope` runtime-trace stage, strict compound multi-value scoring, downstream runtime location mapping, and one guard event per child task.
+- [x] BS013 Count every session AI repair attempt against `max_model_calls`, include the previous rejected output in bounded retries, and stop with an explicit budget status.
+- [x] BS014 Remove the static `perf_event_paranoid` pre-block, use the real `perf record` result, and include the sysctl value only in diagnostic context.
+- [x] BS015 Add `perf.py` to the VM deployment contract and add a regression test for required runtime collector and session-AI files.
+- [x] BS016 Normalize unambiguous single-string list fields in session AI JSON without changing claims, IDs, roles, or evidence refs; retain strict semantic validation.
+- [x] BS017 Run the corrected real compound case, save the timestamped bundle, pass readiness, and score it with the private Oracle.
+
+**Acceptance record**: `diag_session_20260819_175431_44599b8f` completed in `144.09s` with one successful session AI attempt, three `ai_guarded` layers, 8 child tasks, 24 evidence records, and 9 artifacts. Same-window runtime-control evidence proves `docker_daemon` paused downstream `paymentservice`; the upstream initiator remains unknown, so the primary cluster correctly stops at `direct_root_cause`. Worker2 noise-generator CPU is independently proven but not linked to checkoutservice scheduling pressure, so it remains `independent`. Readiness passed and the private Oracle scored the saved bundle `100/100`, with exact root match, compound cluster match, citation validity `1.0`, runtime trace coverage `1.0`, and zero unsafe actions.
+
+**Outcome**: Bounded two-hop collection, same-window downstream task dispatch, causal separation of same-host CPU noise, truthful session AI participation, and direct pause-action provenance are implemented and verified. Only the actor above `docker_daemon` remains outside the accepted evidence boundary.
+
+### Task Group BT - Persistent Watch Episode 与按影响自动诊断
+
+**Purpose**: Preserve transient evidence while preventing a sustained anomaly or a normal heavy workload from repeatedly consuming collector and AI budgets.
+
+- [x] BT001 Extend Watch persistence with the default-on auto-diagnosis switch and backward-compatible Episode fields.
+- [x] BT002 Replace process-memory trigger suppression with persisted Watch Episode aggregation, occurrence/peak updates, recovery confirmation, and 120-second silence closure.
+- [x] BT003 Emit all same-window anomaly signals, use median/MAD robust change detection, and collect process-state/cgroup-throttling context from the Agent.
+- [x] BT004 Gate automatic diagnosis on hard-state or confirmed-impact evidence so an isolated CPU, memory, I/O, or thread shift is recorded without starting an AI tree.
+- [x] BT005 Add an idempotent Episode diagnosis claim and reuse the existing WatchIncident-to-AI-cluster-diagnosis path.
+- [x] BT006 Add one bounded anomaly-point explanation endpoint with strict output schema, no probe/root-cause authority, and persisted fingerprint cache.
+- [x] BT007 Add the default-on frontend switch, Watch -> Episode -> anomaly-point view, lightweight analysis modal, and separate full AI diagnosis entry.
+- [x] BT008 Add database migration compatibility, runtime/API/cache/recovery tests, and run the frontend production build.
+- [x] BT009 Run the broader backend regression suite and inspect the final diff for interaction with the verified two-hop diagnosis path.
+
+### Task Group BU - CodeQL 源码机制查询
+
+- [x] BU001 Register `source_mechanism_query` as an optional R2 evidence family with source root, revision and line-anchor prerequisites.
+- [x] BU002 Add a bounded CodeQL collector that verifies Git revision, reuses a revision/query-version database cache and runs either a managed query suite or a twice-validated AI-generated path query.
+- [x] BU003 Normalize CodeQL SARIF/code-flow output into `source_mechanism_json` with bounded nodes, typed edges, candidate relations and stable evidence refs.
+- [x] BU004 Preserve raw temporary QL, SARIF and database references while preventing source code, arbitrary query paths and unbounded code-flow payloads from reaching the model.
+- [x] BU005 Report CodeQL availability, query-pack version, cache root and blocked reasons in CollectorProfile.
+- [x] BU006 Add collector, revision mismatch, cache reuse, SARIF normalization, path-boundary and probe-registry tests.
+
+### Task Group BV - PyHeap 运行时引用链验证
+
+- [x] BV001 Register `python_heap_reference` as an optional R2 evidence family that is excluded from initial probes and Persistent Watch default collection.
+- [x] BV002 Add a PyHeap collector that accepts a managed existing dump or performs a bounded GDB attach against the selected CPython PID.
+- [x] BV003 Build an offline inbound-reference index and emit bounded retained objects and shortest reference paths as `python_heap_reference_json`.
+- [x] BV004 Keep the raw heap dump outside the LLM payload and enforce object/path/depth/size limits plus structured permission and compatibility failures.
+- [x] BV005 Report GDB, PyHeap analyzer, CPython compatibility and effective ptrace capability in CollectorProfile.
+- [x] BV006 Add dump-ingestion, reference-path bounding, blocked capability, task routing and evidence-structure tests.
+
+### Task Group BW - 按需机制分支与 Werkzeug 验收
+
+- [x] BW001 Downgrade hand-written `source_snapshot.reference_paths` to partial localization so it cannot independently qualify a root cause.
+- [x] BW002 Request `source_mechanism_query` only after a revision-matched line anchor exists and the mechanism-to-symptom causal chain remains unresolved.
+- [x] BW003 Request `python_heap_reference` only for unresolved or conflicting Python retention candidates when the optional capability and budget are available.
+- [x] BW004 Feed bounded source and heap mechanism evidence into the session AI review, require real evidence refs and retain rejected alternatives as grey rollback branches.
+- [x] BW005 Extend artifact structuring, audit summaries, probe fingerprints and task routing for both new evidence families.
+- [x] BW006 Add regression tests proving ordinary line diagnoses do not enter the branch, identical revision queries reuse cache, and blocked PyHeap does not fail the session.
+- [x] BW007 Validate the Werkzeug fixture with a retained surface node, a rejected `defaults` branch and an evidence-bounded bound-method/code-constant mechanism branch.
+
+**Outcome**: Persistent Watch freezes the first abnormal window, aggregates repeated signals into one durable Episode, starts at most one eligible AI diagnosis, and lets users understand individual anomaly points without invoking the controlled tree.

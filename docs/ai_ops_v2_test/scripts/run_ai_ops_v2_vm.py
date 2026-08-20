@@ -390,6 +390,8 @@ def resolve_scope(ssh: SSH, spec: Spec, run_key: str) -> dict[str, Any]:
             "pid": pid,
             "environment": "production",
         }
+        if target.source == "unit":
+            item["systemd_unit"] = f"{target.value}.service"
         if container_id:
             item["container_id"] = container_id
         instances.append(item)

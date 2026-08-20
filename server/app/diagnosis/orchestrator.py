@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import socket
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,11 @@ from server.app import storage
 from server.app.ai_provider import get_ai_settings, is_feature_enabled
 from server.app.common_utils import status_value
 from server.app.diagnosis.intent import parse_diagnosis_intent
-from server.app.diagnosis.collector_invocation import build_collector_invocation, collector_request_fingerprint
+from server.app.diagnosis.collector_invocation import (
+    build_collector_invocation,
+    collector_capability_fingerprint,
+    collector_request_fingerprint,
+)
 from server.app.diagnosis.probe_registry import build_probe_manifest, choose_probe_ids, evidence_gap_to_probe_id, get_probe
 from server.app.diagnosis.schemas import (
     ApprovalRequest,
@@ -32,7 +37,7 @@ from server.app.rca.calibrator import calibrate
 from server.app.rca.candidates import generate_candidates
 from server.app.rca.evidence import collect_evidence
 from server.app.rca.attribution import analyze_evidence
-from server.app.rca.llm_client import generate_controlled_ai_tree, generate_compact_guarded_tree
+from server.app.rca.llm_client import generate_session_conclusion_review, generate_session_investigation_review
 from server.app.rca.controlled_tree import classify_primitive, enforce_conclusion_eligibility
 from server.app.rca.models import (
     AITreeBudgetSnapshot,
@@ -46,11 +51,18 @@ from server.app.rca.models import (
     EvidenceInput,
 )
 from server.app.diagnosis.evidence_structurer import rca_inputs_from_structured, structure_artifact_evidence
+from server.app.diagnosis.session_conclusion import (
+    apply_session_review,
+    build_fallback_explanation,
+    build_root_cause_clusters,
+)
 from server.app.schemas import CreateTaskRequest, MAX_SAMPLE_RATE, MAX_TASK_DURATION_SEC, MIN_SAMPLE_RATE
 from server.app.state_machine import Actor, TaskStatus
 
 
 PLANNER_VERSION = "diagnosis-orchestrator-v1"
+MAX_FOLLOWUP_ROUNDS = 5
+MAX_FOLLOWUP_REQUESTS_PER_ROUND = 3
 ACTIVE_TASK_STATUSES = {"PENDING", "RUNNING", "UPLOADING", "ANALYZING"}
 TERMINAL_TASK_STATUSES = {"DONE", "FAILED"}
 STRUCTURED_ARTIFACT_TYPES = {
@@ -68,6 +80,13 @@ STRUCTURED_ARTIFACT_TYPES = {
     "dependency_check_json",
     "redis_check_json",
     "trace_endpoint_profile_json",
+    "runtime_control_event_json",
+    "pyspy_status_json",
+    "python_stack_samples_json",
+    "python_heap_profile_json",
+    "source_snapshot_json",
+    "source_mechanism_json",
+    "python_heap_reference_json",
 }
 DEPENDENCY_EVIDENCE_GAPS = {"dependency_check", "log_scan", "redis_check"}
 FUNCTION_DEPTH_EVIDENCE_GAPS = {
@@ -76,10 +95,17 @@ FUNCTION_DEPTH_EVIDENCE_GAPS = {
     "off_cpu_wait_profile",
     "trace_endpoint_profile",
     "python_runtime_profile",
+    "python_heap_profile",
+    "source_snapshot",
+    "source_mechanism_query",
+    "python_heap_reference",
 }
-EMPTY_RESULT_IS_VALID_DEPTH_GAPS = {
-    "baseline_window_profile",
-    "trace_endpoint_profile",
+MEMORY_DEPTH_EVIDENCE_GAPS = {
+    "python_heap_profile",
+    "python_runtime_profile",
+    "source_snapshot",
+    "source_mechanism_query",
+    "python_heap_reference",
 }
 ALLOWED_DIAGNOSIS_TRANSITIONS = {
     "CREATED": {"UNDERSTANDING", "USER_CANCELED", "FAILED"},
@@ -109,9 +135,10 @@ class DiagnosisOrchestrator:
         self.store.create_topology_snapshot(snapshot)
 
         target_scope = self._build_target_scope(request, intent, budget)
+        target_scope["evidence_cohort_id"] = diagnosis_id
         hypotheses = self._build_hypotheses(intent.symptom, target_scope)
         budget_usage = self._empty_budget_usage()
-        budget_usage["model_calls"] = 1 if is_feature_enabled("nlp") else 0
+        budget_usage["model_calls"] = 0
         self.store.create_session({
             "diagnosis_id": diagnosis_id,
             "creator_id": creator_id,
@@ -138,6 +165,16 @@ class DiagnosisOrchestrator:
             "planner_version": PLANNER_VERSION,
         })
         self._transition(diagnosis_id, DiagnosisStatus.UNDERSTANDING, "intent_parsed")
+        self.store.record_event(
+            diagnosis_id,
+            "scope_resolved",
+            {
+                "target_service": target_scope.get("target_service"),
+                "instance_ids": [item.get("instance_id") for item in target_scope.get("instances", [])],
+                "service_topology_hops": target_scope.get("service_topology_hops", {}),
+                "max_topology_hops": target_scope.get("max_topology_hops", budget.max_topology_hops),
+            },
+        )
 
         if not target_scope["instances"]:
             self._transition(
@@ -188,11 +225,31 @@ class DiagnosisOrchestrator:
         return self.store.list_sessions(limit=limit, offset=offset)
 
     def advance(self, diagnosis_id: str) -> dict[str, Any] | None:
-        if not self.store.acquire_lease(diagnosis_id, self.owner):
+        lease_ttl = max(30, int(os.getenv("MINI_DROP_DIAGNOSIS_LEASE_TTL_SEC", "90")))
+        if not self.store.acquire_lease(diagnosis_id, self.owner, ttl_seconds=lease_ttl):
             return self.store.get_detail(diagnosis_id)
+        stop_renewal = threading.Event()
+
+        def renew_lease() -> None:
+            interval = max(5, lease_ttl // 3)
+            while not stop_renewal.wait(interval):
+                try:
+                    if not self.store.renew_lease(diagnosis_id, self.owner, ttl_seconds=lease_ttl):
+                        return
+                except Exception:
+                    return
+
+        renewal_thread = threading.Thread(
+            target=renew_lease,
+            name=f"diagnosis-lease-{diagnosis_id[-8:]}",
+            daemon=True,
+        )
+        renewal_thread.start()
         try:
             self._advance_locked(diagnosis_id)
         finally:
+            stop_renewal.set()
+            renewal_thread.join(timeout=5)
             self.store.release_lease(diagnosis_id, self.owner)
         return self.store.get_detail(diagnosis_id)
 
@@ -396,6 +453,16 @@ class DiagnosisOrchestrator:
             if self._last_followup_scheduled:
                 return
             if informative:
+                open_probes = [
+                    probe
+                    for probe in self.store.list_probes(diagnosis_id)
+                    if probe.get("status") in {"PLANNED", "SCHEDULED", "RUNNING", "APPROVED"}
+                ]
+                if open_probes:
+                    latest_session = self.store.get_session(diagnosis_id) or session
+                    if latest_session["status"] != DiagnosisStatus.COLLECTING.value:
+                        self._transition(diagnosis_id, DiagnosisStatus.COLLECTING, "probe_started")
+                    return
                 for probe in self.store.list_probes(diagnosis_id):
                     if probe["status"] == "WAITING_APPROVAL":
                         self.store.update_probe(probe["step_id"], status="SKIPPED")
@@ -498,9 +565,29 @@ class DiagnosisOrchestrator:
         )
         duration_limit = max(0, total_limit - reserve)
         session = self.store.get_session(diagnosis_id) or {}
+        collection_context = _session_collection_context(session)
         auto_policy = str((session.get("risk_budget") or {}).get("auto_execute_policy") or "safe_only")
         for index, instance in enumerate(instances):
-            for probe_id in probe_ids:
+            instance_probe_ids = list(probe_ids)
+            outgoing_dependencies = _dependency_targets(
+                target_scope,
+                source_service=str(instance.get("service_id") or ""),
+            )
+            if not outgoing_dependencies:
+                instance_probe_ids = [
+                    probe_id for probe_id in instance_probe_ids
+                    if probe_id not in {"process_dependency_check", "process_redis_check"}
+                ]
+            if (
+                instance.get("instance_id") in target_scope.get("downstream_instance_ids", [])
+                and (instance.get("container_id") or instance.get("systemd_unit"))
+            ):
+                _append_once(
+                    instance_probe_ids,
+                    "process_runtime_control_history",
+                    after="host_process_metrics",
+                )
+            for probe_id in instance_probe_ids:
                 definition = get_probe(probe_id)
                 if definition.risk_level == "R2" and auto_policy != "all_registered":
                     if index > 0 or r2_count >= budget.max_medium_risk_probes:
@@ -528,6 +615,7 @@ class DiagnosisOrchestrator:
                     "sample_rate": definition.default_sample_rate,
                     "evidence_gap": self._probe_evidence_gap(probe_id),
                     "budget_phase": "initial",
+                    **collection_context,
                 }
                 planned.append(ProbePlan(
                     step_id=step_id,
@@ -539,8 +627,10 @@ class DiagnosisOrchestrator:
                         "evidence_gap": self._probe_evidence_gap(probe_id),
                         "budget_phase": "initial",
                         "execution_policy": auto_policy,
+                        **collection_context,
                         **collector_parameters,
                         "collector_invocation": collector_invocation,
+                        "collector_capability_fingerprint": collector_capability_fingerprint(collector_invocation),
                         "collector_fingerprint": collector_request_fingerprint(
                             collector_invocation,
                             {**fingerprint_inputs, **collector_parameters},
@@ -673,7 +763,12 @@ class DiagnosisOrchestrator:
         target_scope: dict[str, Any],
         target: dict[str, Any],
     ) -> dict[str, Any]:
-        collector_parameters = self._collector_probe_parameters(definition.probe_id, target_scope, target)
+        collector_parameters = self._collector_probe_parameters(
+            definition.probe_id,
+            target_scope,
+            target,
+            str(step.get("diagnosis_id") or ""),
+        )
         invocation = _collector_invocation(
             step=step,
             definition=definition,
@@ -689,7 +784,15 @@ class DiagnosisOrchestrator:
             "sample_rate": (step.get("parameters") or {}).get("sample_rate"),
             "evidence_gap": (step.get("parameters") or {}).get("evidence_gap"),
             "budget_phase": (step.get("parameters") or {}).get("budget_phase"),
+            "followup_round": (step.get("parameters") or {}).get("followup_round"),
             "parent_task_id": (step.get("parameters") or {}).get("parent_task_id"),
+            **{
+                key: (step.get("parameters") or {}).get(key)
+                for key in (
+                    "evidence_cohort_id", "collection_mode", "window_start", "window_end", "timing_relation",
+                )
+                if (step.get("parameters") or {}).get(key) is not None
+            },
             **collector_parameters,
             "collector_context": {
                 "task_id": step["diagnosis_id"],
@@ -702,6 +805,7 @@ class DiagnosisOrchestrator:
             },
             "collector_invocation": invocation,
         }
+        options["collector_capability_fingerprint"] = collector_capability_fingerprint(invocation)
         options["collector_fingerprint"] = collector_request_fingerprint(invocation, options)
         return options
 
@@ -710,9 +814,10 @@ class DiagnosisOrchestrator:
         probe_id: str,
         target_scope: dict[str, Any],
         target: dict[str, Any],
+        diagnosis_id: str = "",
     ) -> dict[str, Any]:
         if probe_id == "process_dependency_check":
-            targets = _dependency_targets(target_scope)
+            targets = _dependency_targets(target_scope, source_service=str(target.get("service_id") or ""))
             return {
                 "target_config": {"dependency_targets": targets},
                 "targets": targets,
@@ -721,8 +826,8 @@ class DiagnosisOrchestrator:
                 "missing_dependency_targets": True,
             }
         if probe_id == "process_redis_check":
-            target_info = _redis_target(target_scope)
-            dependency_targets = _dependency_targets(target_scope)
+            dependency_targets = _dependency_targets(target_scope, source_service=str(target.get("service_id") or ""))
+            target_info = _redis_target(target_scope, source_service=str(target.get("service_id") or ""))
             return {
                 "target_config": {"redis_target": target_info, "dependency_targets": dependency_targets},
                 "dependency_targets": dependency_targets,
@@ -746,6 +851,115 @@ class DiagnosisOrchestrator:
                 "target_config": target_config,
                 **({"log_paths": log_paths} if log_paths else {}),
                 **({"source_paths": source_paths} if source_paths else {}),
+            }
+        if probe_id == "process_runtime_control_history":
+            return {
+                "target_config": {
+                    "pid": target.get("pid"),
+                    "service_id": target.get("service_id"),
+                    "instance_id": target.get("instance_id"),
+                    "host_id": target.get("host_id"),
+                    "systemd_unit": target.get("systemd_unit"),
+                    "container_id": target.get("container_id"),
+                },
+            }
+        if probe_id == "process_python_heap_profile":
+            source_context = _source_context_for_target(target, target_scope)
+            result_path = str(
+                target.get("memray_result_path")
+                or target_scope.get("memray_result_path")
+                or source_context.get("memray_result_path")
+                or ""
+            )
+            stats_path = str(
+                target.get("memray_stats_path")
+                or target_scope.get("memray_stats_path")
+                or source_context.get("memray_stats_path")
+                or ""
+            )
+            leaks_path = str(
+                target.get("memray_leaks_path")
+                or target_scope.get("memray_leaks_path")
+                or source_context.get("memray_leaks_path")
+                or ""
+            )
+            return {
+                "target_config": {
+                    "pid": target.get("pid"),
+                    "service_id": target.get("service_id"),
+                    "instance_id": target.get("instance_id"),
+                    "source_context": source_context,
+                },
+                **({"instrumented_result": result_path} if result_path else {}),
+                **({"memray_stats_path": stats_path} if stats_path else {}),
+                **({"memray_leaks_path": leaks_path} if leaks_path else {}),
+            }
+        if probe_id == "process_source_snapshot":
+            source_context = _source_context_for_target(target, target_scope)
+            source_paths = source_context.get("source_paths") if isinstance(source_context.get("source_paths"), list) else []
+            host_source_paths = [
+                str(path)
+                for path in source_paths
+                if str(path).startswith(("/home/", "/usr/src/", "/host/home/"))
+            ]
+            source_root = str(
+                (host_source_paths[0] if host_source_paths else "")
+                or (source_paths[0] if source_paths else "")
+                or source_context.get("container_workdir")
+                or ""
+            )
+            return {
+                "target_config": {
+                    "pid": target.get("pid"),
+                    "service_id": target.get("service_id"),
+                    "instance_id": target.get("instance_id"),
+                    "source_context": source_context,
+                },
+                "source_root": source_root,
+                "source_revision": str(source_context.get("repo_revision") or ""),
+                "line_candidates": self._session_line_candidates(diagnosis_id) if diagnosis_id else [],
+            }
+        if probe_id == "process_source_mechanism_query":
+            source_context = _source_context_for_target(target, target_scope)
+            source_paths = source_context.get("source_paths") if isinstance(source_context.get("source_paths"), list) else []
+            host_source_paths = [
+                str(path)
+                for path in source_paths
+                if str(path).startswith(("/home/", "/usr/src/", "/host/home/"))
+            ]
+            source_root = str(
+                (host_source_paths[0] if host_source_paths else "")
+                or (source_paths[0] if source_paths else "")
+                or source_context.get("container_workdir")
+                or ""
+            )
+            sarif_path = str(source_context.get("codeql_sarif_path") or target_scope.get("codeql_sarif_path") or "")
+            return {
+                "target_config": {
+                    "pid": target.get("pid"),
+                    "service_id": target.get("service_id"),
+                    "instance_id": target.get("instance_id"),
+                    "source_context": source_context,
+                },
+                "source_root": source_root,
+                "source_revision": str(source_context.get("repo_revision") or ""),
+                "line_candidates": self._session_line_candidates(diagnosis_id) if diagnosis_id else [],
+                **({"codeql_sarif_path": sarif_path} if sarif_path else {}),
+            }
+        if probe_id == "process_python_heap_reference":
+            source_context = _source_context_for_target(target, target_scope)
+            dump_path = str(source_context.get("pyheap_dump_path") or target_scope.get("pyheap_dump_path") or "")
+            return {
+                "target_config": {
+                    "pid": target.get("pid"),
+                    "service_id": target.get("service_id"),
+                    "instance_id": target.get("instance_id"),
+                    "container_id": target.get("container_id"),
+                    "source_context": source_context,
+                },
+                "container_id": str(target.get("container_id") or ""),
+                "object_type_hints": source_context.get("object_type_hints") or ["function", "code", "method", "Map", "Rule"],
+                **({"pyheap_dump_path": dump_path} if dump_path else {}),
             }
         if probe_id == "process_trace_endpoint_profile":
             source_context = _source_context_for_target(target, target_scope)
@@ -796,6 +1010,28 @@ class DiagnosisOrchestrator:
                 "source_context": source_context,
             } if source_context else {}
         return {}
+
+    def _session_line_candidates(self, diagnosis_id: str) -> list[dict[str, Any]]:
+        session = self.store.get_session(diagnosis_id) or {}
+        candidates: list[dict[str, Any]] = []
+        for task_id in session.get("child_task_ids", []):
+            for artifact in self.repo.artifacts.get(task_id, []):
+                if artifact.get("artifact_type") not in {"python_stack_samples_json", "python_heap_profile_json", "depth_evidence_json"}:
+                    continue
+                value = self._read_artifact_json(artifact)
+                if not isinstance(value, dict):
+                    continue
+                for item in value.get("line_candidates", []):
+                    if not isinstance(item, dict) or not item.get("file") or int(item.get("line") or 0) <= 0:
+                        continue
+                    normalized = {
+                        "file": str(item["file"]),
+                        "line": int(item["line"]),
+                        "symbol": str(item.get("symbol") or item.get("function") or ""),
+                    }
+                    if normalized not in candidates:
+                        candidates.append(normalized)
+        return candidates[:10]
 
     def _append_child_task(self, diagnosis_id: str, task_id: str, definition) -> None:
         session = self.store.get_session(diagnosis_id)
@@ -852,6 +1088,11 @@ class DiagnosisOrchestrator:
         task_observations: list[dict[str, Any]] = []
         missing: list[str] = []
         failed_targets: list[str] = []
+        existing_guard_tasks = {
+            str((event.get("payload") or {}).get("task_id") or "")
+            for event in (self.store.get_detail(diagnosis_id) or {}).get("events", [])
+            if event.get("event_type") == "controlled_ai_tree_guard_result"
+        }
         for task in tasks:
             status = status_value(task.status)
             artifacts = self.repo.artifacts.get(task.id, [])
@@ -870,6 +1111,19 @@ class DiagnosisOrchestrator:
                 artifacts=artifacts,
                 artifact_values=artifact_values,
             )
+            evidence_status, evidence_reason = _task_evidence_validity(
+                task.collector_type,
+                artifact_values,
+                structured_evidence.model_dump(mode="json"),
+            )
+            for probe in self.store.list_probes(diagnosis_id):
+                if probe.get("task_id") == task.id:
+                    self.store.update_probe(
+                        probe["step_id"],
+                        evidence_status=evidence_status,
+                        evidence_reason=evidence_reason,
+                    )
+                    break
             structured_inputs = rca_inputs_from_structured(structured_evidence)
             evidence_ids.append(self._add_artifact_evidence(
                 diagnosis_id,
@@ -918,53 +1172,32 @@ class DiagnosisOrchestrator:
             probe_manifest = build_probe_manifest()
             analysis_payload = analysis_result.model_dump(mode="json")
             analysis_payload["probe_registry_manifest"] = probe_manifest
-            controlled_tree = generate_controlled_ai_tree(
-                task_id=task.id,
-                evidence=evidence.model_copy(update={"analysis_result": analysis_payload}),
-                analyzer_result=analysis_result,
-                probe_manifest=probe_manifest,
-            )
+            controlled_tree = analysis_result.controlled_ai_tree
+            source_snapshot = values.get("source_snapshot_json")
+            if controlled_tree is not None and isinstance(source_snapshot, dict) and source_snapshot.get("source_context_hash"):
+                controlled_tree.source_context_hash = str(source_snapshot["source_context_hash"])
             ai_settings = get_ai_settings()
-            compact_guard_attempted = False
-            compact_guard_succeeded = False
-            if (
-                _tree_generated_by(controlled_tree) == {"analyzer_fallback"}
-                and bool(ai_settings.api_key)
-                and bool(ai_settings.rca_enabled)
-            ):
-                compact_guard_attempted = True
-                compact_tree = generate_compact_guarded_tree(
-                    task_id=task.id,
-                    evidence=evidence.model_copy(update={"analysis_result": analysis_payload}),
-                    analyzer_tree=analysis_result.controlled_ai_tree,
-                    probe_manifest=probe_manifest,
+            if task.id not in existing_guard_tasks:
+                self.store.record_event(
+                    diagnosis_id,
+                    "controlled_ai_tree_guard_result",
+                    {
+                        "task_id": task.id,
+                        "ai_source": ai_settings.source,
+                        "ai_enabled": ai_settings.enabled,
+                        "rca_enabled": is_feature_enabled("rca"),
+                        "has_api_key": bool(ai_settings.api_key),
+                        "compact_guard_attempted": False,
+                        "compact_guard_succeeded": False,
+                        "reason": "child tasks produce Analyzer evidence trees; LLM adjudication runs once at session scope",
+                        "generated_by": sorted({
+                            layer.generated_by
+                            for layer in (controlled_tree.layers if controlled_tree else [])
+                        }),
+                        "layer_count": len(controlled_tree.layers) if controlled_tree else 0,
+                    },
                 )
-                if compact_tree is not None:
-                    controlled_tree = compact_tree
-                    compact_guard_succeeded = True
-                else:
-                    controlled_tree = _mark_tree_ai_guarded_without_changes(
-                        controlled_tree,
-                        "AI guard was attempted but returned no usable structured review; Analyzer candidates and probe edges were kept unchanged.",
-                    )
-            self.store.record_event(
-                diagnosis_id,
-                "controlled_ai_tree_guard_result",
-                {
-                    "task_id": task.id,
-                    "ai_source": ai_settings.source,
-                    "ai_enabled": ai_settings.enabled,
-                    "rca_enabled": is_feature_enabled("rca"),
-                    "has_api_key": bool(ai_settings.api_key),
-                    "compact_guard_attempted": compact_guard_attempted,
-                    "compact_guard_succeeded": compact_guard_succeeded,
-                    "generated_by": sorted({
-                        layer.generated_by
-                        for layer in (controlled_tree.layers if controlled_tree else [])
-                    }),
-                    "layer_count": len(controlled_tree.layers) if controlled_tree else 0,
-                },
-            )
+                existing_guard_tasks.add(task.id)
             analysis_result = analysis_result.model_copy(update={"controlled_ai_tree": controlled_tree})
             if analysis_result.controlled_ai_tree is not None:
                 controlled_ai_trees.append(analysis_result.controlled_ai_tree.model_dump(mode="json"))
@@ -1018,20 +1251,37 @@ class DiagnosisOrchestrator:
                 break
 
         cluster_assessment = self._build_cluster_assessment(diagnosis_id, task_observations)
+        _enrich_dependency_control_assessment(cluster_assessment, task_observations)
         cluster_assessment.update(_assessment_location_fields(cluster_assessment, deduped, self.store.get_session(diagnosis_id) or {}))
+        if cluster_assessment.get("classification") == "runtime_stall":
+            followup_requests = [
+                request for request in followup_requests
+                if request in {"runtime_control_history", "log_scan"}
+            ]
+        if cluster_assessment.get("classification") == "runtime_stall":
+            deduped = (
+                [_runtime_control_candidate(cluster_assessment)]
+                if cluster_assessment.get("conclusion_eligible")
+                else []
+            )
         sufficient_dependency = _has_sufficient_dependency_conclusion(
             cluster_assessment,
             deduped,
             task_observations,
         )
-        for request_id in _assessment_followup_requests(
-            cluster_assessment,
-            self.store.get_session(diagnosis_id) or {},
-        ):
-            if sufficient_dependency and request_id in DEPENDENCY_EVIDENCE_GAPS:
-                continue
-            if request_id not in followup_requests:
-                followup_requests.append(request_id)
+        followup_session = dict(self.store.get_session(diagnosis_id) or {})
+        followup_session["completed_depth_evidence_gaps"] = sorted(_completed_depth_evidence_gaps(task_observations))
+        followup_session["probe_evidence_status"] = {
+            str((probe.get("parameters") or {}).get("evidence_gap") or ""): str(probe.get("evidence_status") or "")
+            for probe in self.store.list_probes(diagnosis_id)
+        }
+        assessment_followups = _assessment_followup_requests(cluster_assessment, followup_session)
+        followup_requests = _merge_assessment_followups(
+            followup_requests,
+            assessment_followups,
+            sufficient_dependency=sufficient_dependency,
+            memory_only=str((followup_session.get("normalized_intent") or {}).get("symptom") or "") == "memory_pressure",
+        )
         if sufficient_dependency and _is_database_dependency_assessment(cluster_assessment):
             followup_requests = [
                 request_id for request_id in followup_requests
@@ -1052,6 +1302,10 @@ class DiagnosisOrchestrator:
             sufficient_dependency
             and _is_database_dependency_assessment(cluster_assessment)
             and _failed_tasks_are_only_depth_followups(diagnosis_id, tasks, self.store.list_probes(diagnosis_id))
+        ) or _failed_tasks_are_only_optional_mechanism_followups(
+            diagnosis_id,
+            tasks,
+            self.store.list_probes(diagnosis_id),
         )
         session_controlled_tree = _build_session_controlled_ai_tree(
             diagnosis_id=diagnosis_id,
@@ -1060,21 +1314,139 @@ class DiagnosisOrchestrator:
             followup_requests=followup_requests,
             probes=self.store.list_probes(diagnosis_id),
             child_trees=controlled_ai_trees,
+            source_snapshot_hashes=_source_snapshot_hashes(task_observations),
+        )
+        current_session = self.store.get_session(diagnosis_id) or {}
+        investigation_review = None
+        if followup_requests and session_controlled_tree is not None:
+            model_calls_used = int((current_session.get("budget_used") or {}).get("model_calls", 0) or 0)
+            model_calls_limit = int((current_session.get("resource_budget") or {}).get("max_model_calls", 0) or 0)
+            remaining_model_calls = max(0, model_calls_limit - model_calls_used)
+            if remaining_model_calls > 0:
+                investigation_review = generate_session_investigation_review(
+                    diagnosis_id=diagnosis_id,
+                    session_tree=session_controlled_tree,
+                    evidence_catalog=self.store.list_evidence(diagnosis_id),
+                    probe_manifest=build_probe_manifest(),
+                    allowed_evidence_families=followup_requests,
+                    max_attempts=remaining_model_calls,
+                )
+                attempts = int(investigation_review.get("ai_review_attempts", 0) or 0)
+                if attempts:
+                    usage = dict(current_session.get("budget_used") or {})
+                    usage["model_calls"] = model_calls_used + attempts
+                    self.store.update_session(diagnosis_id, budget_used=usage)
+                    current_session = self.store.get_session(diagnosis_id) or current_session
+                if investigation_review.get("ai_review_status") == "succeeded":
+                    followup_requests = list(investigation_review.get("selected_evidence_families") or followup_requests)
+                    session_controlled_tree = _apply_investigation_review(session_controlled_tree, investigation_review)
+        root_cause_clusters = build_root_cause_clusters(
+            task_observations,
+            cluster_assessment,
+            current_session,
+            session_controlled_tree.model_dump(mode="json") if session_controlled_tree else None,
+        )
+        probes_for_review = self.store.list_probes(diagnosis_id)
+        if self._has_schedulable_followup_work(
+            diagnosis_id,
+            followup_requests,
+            probes_for_review,
+            tasks[-1] if tasks else None,
+        ):
+            ai_review = {
+                "ai_review_status": "deferred_for_evidence",
+                "ai_review_attempts": int((investigation_review or {}).get("ai_review_attempts", 0) or 0),
+                "ai_review_model": str((investigation_review or {}).get("ai_review_model") or ""),
+                "ai_review_error": (
+                    "等待 AI 已选择的最小必要证据返回"
+                    if (investigation_review or {}).get("ai_review_status") == "succeeded"
+                    else str((investigation_review or {}).get("ai_review_error") or "AI 调查轮未成功，按工程层最小补证继续")
+                ),
+                "review": None,
+            }
+        else:
+            model_calls_used = int((current_session.get("budget_used") or {}).get("model_calls", 0) or 0)
+            model_calls_limit = int((current_session.get("resource_budget") or {}).get("max_model_calls", 0) or 0)
+            remaining_model_calls = max(0, model_calls_limit - model_calls_used)
+            if remaining_model_calls == 0:
+                ai_review = {
+                    "ai_review_status": "budget_exhausted",
+                    "ai_review_attempts": 0,
+                    "ai_review_model": "",
+                    "ai_review_error": "会话级 AI 调用预算已用尽",
+                    "review": None,
+                }
+            else:
+                ai_review = generate_session_conclusion_review(
+                    diagnosis_id=diagnosis_id,
+                    clusters=root_cause_clusters,
+                    session_tree=session_controlled_tree,
+                    evidence_catalog=self.store.list_evidence(diagnosis_id),
+                    probe_manifest=build_probe_manifest(),
+                    max_attempts=remaining_model_calls,
+                )
+                attempts = int(ai_review.get("ai_review_attempts", 0) or 0)
+                if attempts:
+                    usage = dict(current_session.get("budget_used") or {})
+                    usage["model_calls"] = model_calls_used + attempts
+                    self.store.update_session(diagnosis_id, budget_used=usage)
+        if ai_review["ai_review_status"] == "succeeded":
+            explanation = apply_session_review(
+                root_cause_clusters,
+                ai_review["review"],
+                attempts=ai_review["ai_review_attempts"],
+                model=ai_review["ai_review_model"],
+            )
+            if session_controlled_tree:
+                session_controlled_tree = session_controlled_tree.model_copy(update={
+                    "layers": [
+                        layer.model_copy(update={"generated_by": "ai_guarded"})
+                        for layer in session_controlled_tree.layers
+                    ]
+                })
+        else:
+            explanation = build_fallback_explanation(
+                root_cause_clusters,
+                cluster_assessment,
+                status=ai_review["ai_review_status"],
+                attempts=ai_review["ai_review_attempts"],
+                model=ai_review["ai_review_model"],
+                error=ai_review["ai_review_error"],
+            )
+        if explanation["classification"] == "compound_incident":
+            cluster_assessment["classification"] = "compound_incident"
+            cluster_assessment.update(_compound_location_fields(explanation["root_cause_clusters"], current_session))
+        cluster_candidates = _root_cause_cluster_candidates(explanation["root_cause_clusters"], current_session)
+        display_candidates = cluster_candidates or (
+            [] if cluster_assessment.get("classification") == "runtime_stall" else deduped
         )
         conclusion = {
             "version": len((self.store.get_session(diagnosis_id) or {}).get("conclusion_versions", [])) + 1,
             "generated_at": utcnow().isoformat(),
-            "summary": cluster_assessment.get("diagnostic_claim") or cluster_assessment["summary"] or f"形成 {len(deduped)} 个有证据关联的根因候选；结论仍需结合反证和人工确认。",
-            "confidence_level": cluster_assessment["confidence_level"] or (deduped[0]["confidence_level"] if deduped else "不可判断"),
+            "summary": explanation["headline"],
+            "classification": explanation["classification"],
+            "headline": explanation["headline"],
+            "why_it_happened": explanation["why_it_happened"],
+            "causal_chain": [item.model_dump(mode="json") for item in explanation["causal_chain"]],
+            "root_cause_clusters": [item.model_dump(mode="json") for item in explanation["root_cause_clusters"]],
+            "ruled_out_summary": explanation["ruled_out_summary"],
+            "residual_unknowns": explanation["residual_unknowns"],
+            "ai_review_status": explanation["ai_review_status"],
+            "ai_review_scope": explanation["ai_review_scope"],
+            "ai_review_attempts": explanation["ai_review_attempts"],
+            "ai_review_model": explanation["ai_review_model"],
+            "ai_review_error": explanation["ai_review_error"],
+            "investigation_review": _summarize_investigation_review(investigation_review),
+            "confidence_level": cluster_assessment["confidence_level"] or (display_candidates[0]["confidence_level"] if display_candidates else "不可判断"),
             "cluster_assessment": cluster_assessment,
-            "root_cause_candidates": deduped,
+            "root_cause_candidates": display_candidates,
+            "abstained": not bool(cluster_candidates),
             "ruled_out": cluster_assessment["ruled_out"],
             "diagnostic_commands": diagnostic_commands,
-            "recommendations": [{
-                "action": "由人工依据证据确认根因后再执行变更；本诊断不会自动重启、迁移或修改配置。",
-                "risk_level": "R3",
-                "execution": "manual_confirmation_required",
-            }],
+            "recommendations": [
+                {**item.model_dump(mode="json"), "execution": "suggestion_only"}
+                for item in explanation["recommendations"]
+            ],
             "limitations": sorted(set(missing + (["部分目标采集失败"] if failed_targets and not nonblocking_failed_depth else []))),
             "next_evidence_requests": followup_requests,
             "controlled_ai_tree": session_controlled_tree.model_dump(mode="json") if session_controlled_tree else (
@@ -1089,9 +1461,14 @@ class DiagnosisOrchestrator:
             },
         }
         self._append_conclusion(diagnosis_id, conclusion)
-        self._update_hypotheses(diagnosis_id, deduped)
+        self._update_hypotheses(diagnosis_id, display_candidates)
         if followup_requests and tasks:
-            self._plan_followup_requests(diagnosis_id, followup_requests, tasks[-1])
+            self._plan_followup_requests(
+                diagnosis_id,
+                followup_requests,
+                tasks[-1],
+                probe_inputs=(investigation_review or {}).get("probe_inputs") or {},
+            )
         return True
 
     @staticmethod
@@ -1102,29 +1479,66 @@ class DiagnosisOrchestrator:
             "process_trace_endpoint_profile": "trace_endpoint_profile",
             "process_baseline_window": "baseline_window_profile",
             "process_python_runtime_profile": "python_runtime_profile",
+            "process_python_heap_profile": "python_heap_profile",
+            "process_source_snapshot": "source_snapshot",
             "process_log_scan": "log_scan",
             "process_dependency_check": "dependency_check",
             "process_redis_check": "redis_check",
             "process_io_latency": "io_latency",
             "process_memory_map": "memory_map",
+            "process_runtime_control_history": "runtime_control_history",
         }.get(probe_id, "")
 
-    def _plan_followup_requests(self, diagnosis_id: str, request_ids: list[str], parent_task) -> int:
+    def _plan_followup_requests(
+        self,
+        diagnosis_id: str,
+        request_ids: list[str],
+        parent_task,
+        *,
+        probe_inputs: dict[str, Any] | None = None,
+    ) -> int:
         """Map AI tree evidence requests to registered follow-up probe plans."""
         session = self.store.get_session(diagnosis_id)
         if session is None or session["status"] in TERMINAL_DIAGNOSIS_STATUSES:
             return 0
-        target = self._target_for_task(diagnosis_id, parent_task)
+        parent_target = self._target_for_task(diagnosis_id, parent_task)
         existing_gaps = {
-            str((probe.get("parameters") or {}).get("evidence_gap") or "")
+            (
+                str((probe.get("parameters") or {}).get("evidence_gap") or ""),
+                str((probe.get("target") or {}).get("instance_id") or ""),
+            )
             for probe in self.store.list_probes(diagnosis_id)
         }
         policy = str((session.get("risk_budget") or {}).get("auto_execute_policy") or "safe_only")
-        created = 0
+        collection_context = _session_collection_context(session)
+        followup_round = max(0, len(session.get("conclusion_versions") or []) - 1)
         self._last_followup_scheduled = False
-        for evidence_gap in request_ids:
+        if followup_round >= MAX_FOLLOWUP_ROUNDS:
+            self.store.record_event(
+                diagnosis_id,
+                "followup_round_limit_reached",
+                {
+                    "followup_round": followup_round,
+                    "max_followup_rounds": MAX_FOLLOWUP_ROUNDS,
+                    "requested_evidence_gaps": list(dict.fromkeys(request_ids))[:MAX_FOLLOWUP_REQUESTS_PER_ROUND],
+                },
+            )
+            return 0
+        round_created = sum(
+            1
+            for probe in self.store.list_probes(diagnosis_id)
+            if (probe.get("parameters") or {}).get("budget_phase") == "followup"
+            and int((probe.get("parameters") or {}).get("followup_round") or 0) == followup_round
+        )
+        remaining_slots = max(0, MAX_FOLLOWUP_REQUESTS_PER_ROUND - round_created)
+        created = 0
+        for evidence_gap in dict.fromkeys(request_ids):
+            if created >= remaining_slots:
+                break
             probe_id = evidence_gap_to_probe_id(evidence_gap)
-            if not probe_id or evidence_gap in existing_gaps:
+            target = self._select_followup_target(session, evidence_gap, parent_target)
+            target_key = str(target.get("instance_id") or "")
+            if not probe_id or (evidence_gap, target_key) in existing_gaps:
                 continue
             definition = get_probe(probe_id)
             if definition is None:
@@ -1135,7 +1549,7 @@ class DiagnosisOrchestrator:
                 requires_approval = True
             else:
                 requires_approval = False
-            key = f"{diagnosis_id}:followup:{evidence_gap}"
+            key = f"{diagnosis_id}:followup:{evidence_gap}:{target_key}"
             step_id = f"step_{hashlib.sha256(key.encode()).hexdigest()[:14]}"
             duration = min(definition.default_duration_seconds, definition.max_duration_seconds)
             deferred = False
@@ -1153,8 +1567,9 @@ class DiagnosisOrchestrator:
                             diagnosis_id,
                             "followup_probe_blocked",
                             {
-                                "evidence_gap": evidence_gap,
-                                "probe_id": probe_id,
+                            "evidence_gap": evidence_gap,
+                            "probe_id": probe_id,
+                            "target_instance_id": target_key,
                                 "execution_policy": policy,
                                 **self._budget_block_event_payload(
                                     session,
@@ -1169,7 +1584,14 @@ class DiagnosisOrchestrator:
                 probe_id,
                 session.get("target_scope", {}),
                 target,
+                diagnosis_id,
             )
+            guarded_probe_input = (
+                (probe_inputs or {}).get(evidence_gap)
+                if isinstance((probe_inputs or {}).get(evidence_gap), dict)
+                else {}
+            )
+            collector_parameters = {**collector_parameters, **guarded_probe_input}
             collector_invocation = _collector_invocation(
                 step={"diagnosis_id": diagnosis_id, "step_id": step_id},
                 definition=definition,
@@ -1185,10 +1607,13 @@ class DiagnosisOrchestrator:
                     "sample_rate": definition.default_sample_rate,
                     "evidence_gap": evidence_gap,
                     "budget_phase": "followup",
+                    "followup_round": followup_round,
                     "parent_task_id": parent_task.id,
                     "execution_policy": policy,
+                    **collection_context,
                     **collector_parameters,
                     "collector_invocation": collector_invocation,
+                    "collector_capability_fingerprint": collector_capability_fingerprint(collector_invocation),
                     "collector_fingerprint": collector_request_fingerprint(
                         collector_invocation,
                         {
@@ -1196,7 +1621,9 @@ class DiagnosisOrchestrator:
                             "sample_rate": definition.default_sample_rate,
                             "evidence_gap": evidence_gap,
                             "budget_phase": "followup",
+                            "followup_round": followup_round,
                             "parent_task_id": parent_task.id,
+                            **collection_context,
                             **collector_parameters,
                         },
                     ),
@@ -1210,7 +1637,7 @@ class DiagnosisOrchestrator:
                 "diagnosis_id": diagnosis_id,
                 "status": "WAITING_APPROVAL" if requires_approval else "PLANNED",
             })
-            existing_gaps.add(evidence_gap)
+            existing_gaps.add((evidence_gap, target_key))
             created += 1
             if not requires_approval and not deferred:
                 self._schedule_probe(plan.step_id)
@@ -1223,9 +1650,99 @@ class DiagnosisOrchestrator:
                     for probe in self.store.list_probes(diagnosis_id)
                 ) else DiagnosisStatus.COLLECTING,
                 "followup_evidence_requested",
-                {"evidence_gaps": [item for item in request_ids if item in existing_gaps]},
+                {"evidence_gaps": list(dict.fromkeys(request_ids))[:MAX_FOLLOWUP_REQUESTS_PER_ROUND]},
             )
         return created
+
+    def _has_schedulable_followup_work(
+        self,
+        diagnosis_id: str,
+        requests: list[str],
+        probes: list[dict[str, Any]],
+        parent_task,
+    ) -> bool:
+        if not requests or parent_task is None:
+            return False
+        open_statuses = {"PLANNED", "APPROVED", "SCHEDULED", "RUNNING", "WAITING_APPROVAL"}
+        session = self.store.get_session(diagnosis_id) or {}
+        parent_target = self._target_for_task(diagnosis_id, parent_task)
+        bounded_requests = requests[:MAX_FOLLOWUP_REQUESTS_PER_ROUND]
+        for request in bounded_requests:
+            matching = [
+                probe for probe in probes
+                if str((probe.get("parameters") or {}).get("evidence_gap") or "") == request
+            ]
+            if any(str(probe.get("status") or "") in open_statuses for probe in matching):
+                return True
+        followup_round = max(0, len(session.get("conclusion_versions") or []) - 1)
+        if followup_round >= MAX_FOLLOWUP_ROUNDS:
+            return False
+        for request in bounded_requests:
+            matching = [
+                probe for probe in probes
+                if str((probe.get("parameters") or {}).get("evidence_gap") or "") == request
+            ]
+            if matching:
+                continue
+            probe_id = evidence_gap_to_probe_id(request)
+            definition = get_probe(probe_id) if probe_id else None
+            if definition is None:
+                continue
+            target = self._select_followup_target(session, request, parent_target)
+            agent = self.repo.agents.get(target.get("agent_id"))
+            if agent and status_value(agent.status) == "ONLINE" and definition.runner_task_kind in set(agent.capabilities or []):
+                return True
+        return False
+
+    @staticmethod
+    def _select_followup_target(
+        session: dict[str, Any],
+        evidence_gap: str,
+        parent_target: dict[str, Any],
+    ) -> dict[str, Any]:
+        scope = session.get("target_scope") if isinstance(session.get("target_scope"), dict) else {}
+        instances = [item for item in scope.get("instances", []) if isinstance(item, dict)]
+        target_service = str(scope.get("target_service") or "")
+        conclusions = session.get("conclusion_versions") if isinstance(session.get("conclusion_versions"), list) else []
+        latest = conclusions[-1] if conclusions and isinstance(conclusions[-1], dict) else {}
+        assessment = latest.get("cluster_assessment") if isinstance(latest.get("cluster_assessment"), dict) else {}
+        claim_target = str(assessment.get("claim_target") or assessment.get("root_entity") or "")
+
+        if evidence_gap == "runtime_control_history":
+            candidates = [
+                item for item in instances
+                if item.get("scope_role") == "downstream" and (item.get("container_id") or item.get("systemd_unit"))
+            ]
+            matched = next(
+                (item for item in candidates if claim_target in {str(item.get("service_id") or ""), str(item.get("instance_id") or "")}),
+                None,
+            )
+            if matched or candidates:
+                return dict(matched or candidates[0])
+        if evidence_gap in {"dependency_check", "redis_check", "trace_endpoint_profile"}:
+            matched = next((item for item in instances if item.get("service_id") == target_service), None)
+            if matched:
+                return dict(matched)
+        if evidence_gap == "log_scan" and claim_target:
+            matched = next(
+                (item for item in instances if claim_target in {str(item.get("service_id") or ""), str(item.get("instance_id") or "")}),
+                None,
+            )
+            if matched:
+                return dict(matched)
+        if evidence_gap in FUNCTION_DEPTH_EVIDENCE_GAPS and assessment.get("classification") in {
+            "same_host_noisy_neighbor", "compound_incident",
+        }:
+            compared = assessment.get("compared_targets") if isinstance(assessment.get("compared_targets"), list) else []
+            noisy_ids = {
+                str(item.get("instance_id") or "")
+                for item in compared
+                if isinstance(item, dict) and bool((item.get("pressure") or {}).get("cpu"))
+            }
+            matched = next((item for item in instances if str(item.get("instance_id") or "") in noisy_ids), None)
+            if matched:
+                return dict(matched)
+        return dict(parent_target)
 
     def _followup_budget_block(self, diagnosis_id: str, definition, duration: int) -> str | None:
         """自动 follow-up 只能跳过人工审批，不能绕过资源预算。"""
@@ -1270,20 +1787,43 @@ class DiagnosisOrchestrator:
     def _find_reusable_probe_task(self, step: dict[str, Any]):
         parameters = step.get("parameters") if isinstance(step.get("parameters"), dict) else {}
         fingerprint = parameters.get("collector_fingerprint")
+        capability_fingerprint = parameters.get("collector_capability_fingerprint")
         if not fingerprint:
             return None
         for task in self.repo.tasks.values():
             options = (task.request_params or {}).get("options", {})
             if not isinstance(options, dict):
                 continue
-            if options.get("collector_fingerprint") != fingerprint:
-                continue
             task_status = status_value(task.status)
-            if task_status == "DONE":
+            exact_request = options.get("collector_fingerprint") == fingerprint
+            same_capability = bool(
+                capability_fingerprint
+                and options.get("collector_capability_fingerprint") == capability_fingerprint
+            )
+            if task_status == "DONE" and exact_request and self._task_has_acceptable_evidence(task.id):
                 return task
-            if task_status == "FAILED" and _is_stable_blocked_result(task.status_reason):
+            if task_status == "FAILED" and same_capability and _is_stable_blocked_result(task.status_reason):
                 return task
         return None
+
+    def _task_has_acceptable_evidence(self, task_id: str) -> bool:
+        for artifact in self.repo.artifacts.get(task_id, []):
+            metadata = artifact.get("metadata") if isinstance(artifact.get("metadata"), dict) else {}
+            value = metadata.get("data") if isinstance(metadata.get("data"), dict) else metadata
+            validity = value.get("evidence_validity") if isinstance(value, dict) else None
+            if isinstance(validity, dict):
+                if validity.get("evidence_status") in {"valid", "partial"}:
+                    return True
+                continue
+            summary = value.get("summary") if isinstance(value.get("summary"), dict) else value
+            if isinstance(summary, dict) and any(
+                summary.get(key)
+                for key in ("process_cpu_sample_count", "sample_count", "matched_records", "check_count")
+            ):
+                return True
+            if isinstance(value, dict) and any(isinstance(value.get(key), list) and value.get(key) for key in ("checks", "events", "top_functions")):
+                return True
+        return False
 
     @classmethod
     def _budget_block_event_payload(
@@ -1352,6 +1892,11 @@ class DiagnosisOrchestrator:
             "dependency": _dependency_signal(values.get("dependency_check_json")),
             "redis": _redis_signal(values.get("redis_check_json")),
             "logs": _log_signal(values.get("log_window_json")),
+            "runtime_control": values.get("runtime_control_event_json") if isinstance(values.get("runtime_control_event_json"), dict) else {},
+            "python_heap_profile": values.get("python_heap_profile_json") if isinstance(values.get("python_heap_profile_json"), dict) else {},
+            "source_snapshot": values.get("source_snapshot_json") if isinstance(values.get("source_snapshot_json"), dict) else {},
+            "source_mechanism": values.get("source_mechanism_json") if isinstance(values.get("source_mechanism_json"), dict) else {},
+            "python_heap_reference": values.get("python_heap_reference_json") if isinstance(values.get("python_heap_reference_json"), dict) else {},
             "confidence_inputs": values.get("confidence_inputs") if isinstance(values.get("confidence_inputs"), dict) else {},
             "evidence_refs": evidence_refs,
         }
@@ -1434,19 +1979,32 @@ class DiagnosisOrchestrator:
         target_hot = any(_has_self_hotspot(obs) for obs in target_obs)
         target_pressure = any(_has_pressure(obs) for obs in target_obs)
         target_runtime_stall = any(obs["pressure"].get("runtime_stall") for obs in target_obs)
+        runtime_control = _runtime_control_chain(target_obs)
         neighbor_pressure = any(_has_pressure(obs) for obs in same_host_obs)
         downstream_pressure = any(_has_pressure(obs) for obs in downstream_obs)
         downstream_dependency_failure = any(_has_dependency_failure(obs) or _has_redis_failure(obs) for obs in observations)
-        target_anchor = _best_specific_anchor(target_obs)
+        memory_anchor = (
+            _memory_retention_anchor(target_obs)
+            if str((session.get("normalized_intent") or {}).get("symptom") or "") == "memory_pressure"
+            else {}
+        )
+        target_anchor = memory_anchor or _best_specific_anchor(target_obs)
+        target_anchor = _verified_source_anchor(target_anchor, target_obs)
+        target_anchor = _mechanism_enriched_anchor(target_anchor, target_obs)
+        assessment_refs = _unique_strings(target_anchor.get("evidence_refs", [])) or all_refs
         shared_iowait = (
             any(obs["pressure"].get("io_wait") for obs in target_obs)
             and any(obs["pressure"].get("io_wait") for obs in same_host_obs)
         )
 
-        if target_runtime_stall:
+        if memory_anchor:
+            classification = "python_memory_retention"
+            confidence = 0.92 if target_anchor.get("source_context_hash") else 0.84
+            summary = _memory_retention_summary(target_anchor)
+        elif target_runtime_stall:
             classification = "runtime_stall"
-            confidence = 0.98
-            summary = _runtime_stall_summary(target_anchor)
+            confidence = 0.96 if runtime_control else 0.7
+            summary = _runtime_stall_summary(target_anchor, runtime_control)
             ruled_out.append({
                 "hypothesis": "self_code_regression",
                 "reason": "目标进程在整个采样窗口持续处于 stopped/tracing-stop 状态，不需要用代码热点解释当前无进展。",
@@ -1516,10 +2074,11 @@ class DiagnosisOrchestrator:
             classification=classification,
             session=session,
             anchor=target_anchor,
-            evidence_refs=all_refs,
+            evidence_refs=assessment_refs,
             downstream_dependency_failure=downstream_dependency_failure,
             shared_iowait=shared_iowait,
             neighbor_pressure=neighbor_pressure,
+            runtime_control=runtime_control,
         )
 
         return {
@@ -1527,7 +2086,7 @@ class DiagnosisOrchestrator:
             "confidence": round(confidence, 2),
             "confidence_level": _confidence_label(confidence),
             "summary": summary,
-            "evidence_refs": all_refs,
+            "evidence_refs": assessment_refs,
             "compared_targets": compared,
             "supported_level": target_anchor.get("supported_level") if target_anchor else None,
             "primary_anchor": target_anchor,
@@ -1752,7 +2311,7 @@ class DiagnosisOrchestrator:
             "raw_artifact_ref": f"task:{task.id}:artifact:{artifact_type}",
             "derived_artifact_ref": artifact.get("object_key") or artifact.get("local_path"),
             "derivation_version": PLANNER_VERSION,
-            "observed_value": _summarize_value(value),
+            "observed_value": _summarize_artifact_value(artifact_type, value),
             "data_quality": {"completeness": "medium", "size_bytes": len(serialized)},
             "integrity_hash": f"sha256:{digest}",
         })
@@ -1780,7 +2339,8 @@ class DiagnosisOrchestrator:
     def _read_artifact_json(self, artifact: dict[str, Any]) -> Any | None:
         metadata = artifact.get("metadata", {})
         if "data" in metadata and isinstance(metadata["data"], (dict, list)):
-            return metadata["data"]
+            if not _contains_truncated_marker(metadata["data"]):
+                return metadata["data"]
         try:
             local_path = artifact.get("local_path")
             if local_path:
@@ -1883,13 +2443,34 @@ class DiagnosisOrchestrator:
 
     def _build_target_scope(self, request, intent, budget: DiagnosisBudget) -> dict[str, Any]:
         all_instances = [item.model_dump(mode="json") for item in request.context.instances]
+        adjacency: dict[str, list[Any]] = {}
+        for edge in request.context.dependencies:
+            adjacency.setdefault(edge.source_service, []).append(edge)
+        service_hops = {intent.target_service: 0}
+        pending_services = [intent.target_service]
+        while pending_services:
+            source_service = pending_services.pop(0)
+            source_hop = service_hops[source_service]
+            if source_hop >= budget.max_topology_hops:
+                continue
+            for edge in adjacency.get(source_service, []):
+                next_hop = source_hop + 1
+                previous_hop = service_hops.get(edge.target_service)
+                if previous_hop is None or next_hop < previous_hop:
+                    service_hops[edge.target_service] = next_hop
+                    pending_services.append(edge.target_service)
+
+        for item in all_instances:
+            hop = service_hops.get(item["service_id"])
+            item["topology_hop"] = hop
+            item["scope_role"] = "target" if hop == 0 else "downstream" if hop is not None else "unrelated"
         target_instances = [item for item in all_instances if item["service_id"] == intent.target_service]
         host_ids = {item["host_id"] for item in target_instances}
         same_host = [item for item in all_instances if item["host_id"] in host_ids and item not in target_instances]
-        downstream_services = {
-            edge.target_service for edge in request.context.dependencies
-            if edge.source_service == intent.target_service and edge.relation == "CALLS"
-        }
+        downstream_services = {service for service, hop in service_hops.items() if 0 < hop <= budget.max_topology_hops}
+        for item in same_host:
+            if item["service_id"] not in downstream_services:
+                item["scope_role"] = "same_host"
         dependency_targets = [
             {
                 "dependency_id": edge.target_service,
@@ -1903,11 +2484,16 @@ class DiagnosisOrchestrator:
                 "path": edge.path,
                 "confidence": edge.confidence,
                 "source": edge.source,
+                "source_topology_hop": service_hops.get(edge.source_service),
+                "topology_hop": service_hops.get(edge.target_service),
             }
             for edge in request.context.dependencies
-            if edge.source_service == intent.target_service
+            if edge.source_service in service_hops
+            and service_hops[edge.source_service] < budget.max_topology_hops
+            and service_hops.get(edge.target_service, budget.max_topology_hops + 1) <= budget.max_topology_hops
         ]
         downstream = [item for item in all_instances if item["service_id"] in downstream_services]
+        downstream.sort(key=lambda item: (int(item.get("topology_hop") or 0), item["instance_id"]))
         ordered = target_instances + same_host + downstream
         unique = []
         seen = set()
@@ -1928,6 +2514,8 @@ class DiagnosisOrchestrator:
             "source_context": request.context.source_context.model_dump(mode="json") if request.context.source_context else {},
             "same_host_instance_ids": [item["instance_id"] for item in same_host],
             "downstream_service_ids": sorted(downstream_services),
+            "downstream_instance_ids": [item["instance_id"] for item in downstream],
+            "service_topology_hops": service_hops,
             "dependency_targets": dependency_targets,
             "max_topology_hops": budget.max_topology_hops,
         }
@@ -1976,10 +2564,14 @@ class DiagnosisOrchestrator:
         if reuse_max_age == 0:
             return []
         targets = {(item["agent_id"], item["pid"]) for item in target_scope.get("instances", [])}
+        cohort_id = str(target_scope.get("evidence_cohort_id") or "")
         now = utcnow()
         result = []
         for task in self.repo.tasks.values():
             if (task.agent_id, task.target_pid) not in targets:
+                continue
+            options = (task.request_params or {}).get("options", {})
+            if not isinstance(options, dict) or str(options.get("evidence_cohort_id") or "") != cohort_id:
                 continue
             task_start = task.started_at or task.created_at
             task_end = task.finished_at or task_start
@@ -2012,7 +2604,13 @@ class DiagnosisOrchestrator:
     @staticmethod
     def _budget_for_profile(profile: str) -> DiagnosisBudget:
         if profile == "development":
-            return DiagnosisBudget(max_hosts=10, max_service_instances=20, max_parallel_probes=5, max_medium_risk_probes=5)
+            return DiagnosisBudget(
+                max_hosts=10,
+                max_service_instances=20,
+                max_parallel_probes=5,
+                max_medium_risk_probes=5,
+                max_model_calls=30,
+            )
         if profile == "staging":
             return DiagnosisBudget(max_hosts=8, max_service_instances=15, max_parallel_probes=4, max_medium_risk_probes=2)
         return DiagnosisBudget()
@@ -2077,6 +2675,42 @@ def _reuse_max_age_seconds() -> int | None:
     raw = os.getenv("MINI_DROP_DIAGNOSIS_REUSE_MAX_AGE_SECONDS")
     if raw is None or raw == "":
         return None
+
+
+def _session_collection_context(session: dict[str, Any]) -> dict[str, Any]:
+    diagnosis_id = str(session.get("diagnosis_id") or "")
+    time_range = session.get("effective_time_range") if isinstance(session.get("effective_time_range"), dict) else {}
+    start = time_range.get("start")
+    end = time_range.get("end")
+    end_epoch = _epoch(end)
+    now = utcnow()
+    fresh_requested_window = end_epoch is not None and abs(now.timestamp() - end_epoch) <= 180
+    context: dict[str, Any] = {
+        "evidence_cohort_id": diagnosis_id,
+        "collection_mode": "manual_group" if fresh_requested_window else "delayed_followup",
+    }
+    if fresh_requested_window:
+        if start is not None:
+            context["window_start"] = start
+        if end is not None:
+            context["window_end"] = end
+        context["timing_relation"] = "same_window"
+    else:
+        context["window_start"] = datetime.fromtimestamp(now.timestamp() - 180, timezone.utc).isoformat()
+        context["window_end"] = now.isoformat()
+        context["timing_relation"] = "delayed_followup"
+    return {key: value for key, value in context.items() if value not in (None, "")}
+
+
+def _epoch(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
     try:
         return max(0, int(raw))
     except ValueError:
@@ -2084,14 +2718,15 @@ def _reuse_max_age_seconds() -> int | None:
 
 
 def _scope_probe_ids(symptom: str, target_scope: dict[str, Any]) -> list[str]:
+    if (
+        symptom == "memory_pressure"
+        and _has_memray_source_context(target_scope)
+        and not target_scope.get("dependency_targets")
+    ):
+        return ["host_process_metrics"]
     probe_ids = list(choose_probe_ids(symptom))
-    if symptom == "runtime_contention" and any(_is_python_target(item) for item in target_scope.get("instances", [])):
-        probe_ids = [
-            "host_process_metrics",
-            "process_off_cpu_profile",
-            "process_python_runtime_profile",
-            "process_trace_endpoint_profile",
-        ]
+    if symptom == "runtime_contention":
+        probe_ids = ["host_process_metrics", "process_log_scan", "process_runtime_control_history"]
     dependency_targets = [
         item for item in target_scope.get("dependency_targets", [])
         if isinstance(item, dict)
@@ -2102,6 +2737,24 @@ def _scope_probe_ids(symptom: str, target_scope: dict[str, Any]) -> list[str]:
         if any(_is_redis_dependency(item) for item in dependency_targets):
             _append_once(probe_ids, "process_redis_check", after="process_dependency_check")
     return probe_ids
+
+
+def _has_memray_source_context(target_scope: dict[str, Any]) -> bool:
+    contexts = [target_scope.get("source_context")]
+    contexts.extend(
+        item.get("source_context")
+        for item in target_scope.get("instances", [])
+        if isinstance(item, dict)
+    )
+    return any(
+        isinstance(context, dict)
+        and str(context.get("language") or "").lower() == "python"
+        and any(
+            str(context.get(key) or "").strip()
+            for key in ("memray_result_path", "memray_stats_path", "memray_leaks_path")
+        )
+        for context in contexts
+    )
 
 
 def _append_once(items: list[str], value: str, *, after: str | None = None) -> None:
@@ -2307,6 +2960,8 @@ def _specific_diagnostic_anchor(
                 "anchor_type": "call_path_hotspot",
                 "anchor": " -> ".join(str(item) for item in call_path),
                 "function": top.get("function"),
+                "file": top.get("file"),
+                "line": int(_num(top.get("line"))),
                 "samples": int(_num(top.get("samples"))),
                 "percent": _num(top.get("percent")),
                 "evidence_ref": top.get("evidence_ref") or "structured_evidence.call_path_hotspots[0]",
@@ -2323,6 +2978,8 @@ def _specific_diagnostic_anchor(
                 "supported_level": "syscall" if primitive_kind else "function",
                 "anchor_type": "top_function_primitive" if primitive_kind else "top_function",
                 "anchor": name,
+                "file": str(top.get("file") or ""),
+                "line": int(_num(top.get("line"))),
                 "primitive_kind": primitive_kind,
                 "root_claim_allowed": not primitive_kind,
                 "samples": int(_num(top.get("samples"))),
@@ -2344,9 +3001,112 @@ def _specific_diagnostic_anchor(
         "ctx_nonvoluntary_rate": _num(summary.get("ctx_nonvoluntary_rate")),
         "avg_cpu_user_pct": _num(summary.get("avg_cpu_user_pct")),
         "avg_cpu_sys_pct": _num(summary.get("avg_cpu_sys_pct")),
+        "avg_host_cpu_busy_pct": _num(summary.get("avg_host_cpu_busy_pct")),
+        "host_cpu_saturated": bool(summary.get("host_cpu_saturated")),
+        "avg_cgroup_throttled_pct": _num(summary.get("avg_cgroup_throttled_pct")),
+        "cgroup_nr_throttled_delta": int(_num(summary.get("cgroup_nr_throttled_delta"))),
+        "target_scheduling_pressure": bool(summary.get("target_scheduling_pressure")),
+        "workload_member_count": int(_num(summary.get("workload_member_count"))),
+        "top_cpu_members": summary.get("top_cpu_members") if isinstance(summary.get("top_cpu_members"), list) else [],
         "evidence_ref": "sys_metrics.summary",
         "blocked_upgrade_reason": "缺少 off-CPU 等待栈、CPU profile 或 trace 回连，当前不能判断具体函数。",
     }
+
+
+def _memory_retention_anchor(observations: list[dict[str, Any]]) -> dict[str, Any]:
+    retained: list[dict[str, Any]] = []
+    evidence_refs: list[str] = []
+    target: dict[str, Any] = {}
+    for observation in observations:
+        if observation.get("collector_type") in {
+            "python_heap_profile",
+            "pyspy",
+            "source_snapshot",
+            "source_mechanism_query",
+            "python_heap_reference",
+        }:
+            evidence_refs.extend(observation.get("evidence_refs") or [])
+        heap = observation.get("python_heap_profile")
+        if not isinstance(heap, dict):
+            continue
+        validity = heap.get("evidence_validity") if isinstance(heap.get("evidence_validity"), dict) else {}
+        if validity.get("evidence_status") != "valid":
+            continue
+        target = observation.get("target") if isinstance(observation.get("target"), dict) else target
+        retained.extend(
+            item for item in (heap.get("retained_allocation_hotspots") or [])
+            if isinstance(item, dict) and _num(item.get("size_bytes")) > 0
+        )
+    if not retained:
+        return {}
+    retained.sort(
+        key=lambda item: (_num(item.get("size_bytes")), _num(item.get("allocation_count"))),
+        reverse=True,
+    )
+    top = retained[0]
+    call_path = [str(item) for item in (top.get("call_path") or []) if str(item).strip()]
+    file_name = str(top.get("file") or "")
+    line = int(_num(top.get("line")))
+    function = str(top.get("function") or "")
+    return {
+        "service_id": target.get("service_id"),
+        "instance_id": target.get("instance_id"),
+        "pid": target.get("pid"),
+        "supported_level": "call_path" if call_path else "function",
+        "anchor_type": "retained_allocation_hotspot",
+        "anchor": " -> ".join(call_path) if call_path else function,
+        "function": function,
+        "file": file_name,
+        "line": line,
+        "size_bytes": int(_num(top.get("size_bytes"))),
+        "allocation_count": int(_num(top.get("allocation_count"))),
+        "retained_hotspots": retained[:5],
+        "evidence_refs": _unique_strings(evidence_refs),
+        "evidence_ref": "python_heap_profile.retained_allocation_hotspots[0]",
+        "root_claim_allowed": bool(file_name and line > 0),
+        "blocked_upgrade_reason": "缺少 revision 匹配的源码片段，不能把 retained allocation 升级到代码行。",
+    }
+
+
+def _memory_retention_summary(anchor: dict[str, Any]) -> str:
+    location = f"{anchor.get('file')}:{int(_num(anchor.get('line')))}"
+    size_mib = _num(anchor.get("size_bytes")) / (1024 * 1024)
+    path = str(anchor.get("anchor") or anchor.get("function") or "unknown")
+    source_text = (
+        f"源码 revision={anchor.get('source_revision')} 已验证该行上下文"
+        if anchor.get("source_context_hash")
+        else "源码 revision 尚未验证"
+    )
+    mechanism_paths = [
+        item for item in (anchor.get("mechanism_paths") or [])
+        if isinstance(item, dict)
+        and item.get("candidate_relation") == "supports"
+        and item.get("anchor_matches")
+    ]
+    runtime_paths = [
+        item for item in (anchor.get("runtime_reference_paths") or [])
+        if isinstance(item, dict) and item.get("nodes")
+    ]
+    if mechanism_paths and runtime_paths:
+        return (
+            f"Memray 将 retained allocation 的分配来源收敛到 {location} 的 {anchor.get('function') or 'unknown'}，"
+            f"约 {size_mib:.2f} MiB / {int(_num(anchor.get('allocation_count')))} 次分配，调用路径为 {path}；"
+            f"{source_text}；CodeQL 提供 {len(mechanism_paths)} 条受支持的跨函数机制路径，PyHeap 提供 "
+            f"{len(runtime_paths)} 条实际入向引用路径。分配位置、源码机制和运行时持有关系已经分别取证，"
+            "最终根因仍必须引用对应路径并解释三者如何闭合。"
+        )
+    if mechanism_paths:
+        return (
+            f"Memray 将 retained allocation 的分配来源收敛到 {location} 的 {anchor.get('function') or 'unknown'}，"
+            f"约 {size_mib:.2f} MiB / {int(_num(anchor.get('allocation_count')))} 次分配，调用路径为 {path}；"
+            f"{source_text}，CodeQL 已提取 {len(mechanism_paths)} 条受支持的源码机制路径。"
+            "当前仍缺少 PyHeap 实际入向引用链，不能把源码可达路径等同于运行时长期持有关系。"
+        )
+    return (
+        f"Memray retained allocation 将分配来源收敛到 {location} 的 {anchor.get('function') or 'unknown'}，"
+        f"约 {size_mib:.2f} MiB / {int(_num(anchor.get('allocation_count')))} 次分配，调用路径为 {path}；"
+        f"{source_text}。当前只证明对象持续保留和分配来源，尚未证明长期持有引用链。"
+    )
 
 
 def _best_specific_anchor(observations: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2366,6 +3126,106 @@ def _best_specific_anchor(observations: list[dict[str, Any]]) -> dict[str, Any]:
             -_num(item.get("samples")),
         ),
     )[0]
+
+
+def _verified_source_anchor(anchor: dict[str, Any], observations: list[dict[str, Any]]) -> dict[str, Any]:
+    if not anchor or not anchor.get("file") or int(anchor.get("line") or 0) <= 0:
+        return anchor
+    anchor_file = str(anchor["file"]).replace("\\", "/")
+    anchor_line = int(anchor["line"])
+    for observation in observations:
+        snapshot = observation.get("source_snapshot")
+        if not isinstance(snapshot, dict) or not snapshot.get("source_context_hash"):
+            continue
+        for snippet in snapshot.get("snippets", []):
+            if not isinstance(snippet, dict):
+                continue
+            snippet_file = str(snippet.get("file") or "").replace("\\", "/")
+            if not (anchor_file.endswith(snippet_file) or snippet_file.endswith(anchor_file)):
+                continue
+            lines = {
+                int(item.get("line") or 0)
+                for item in snippet.get("lines", [])
+                if isinstance(item, dict)
+            }
+            if anchor_line not in lines:
+                continue
+            symbol = str(anchor.get("function") or anchor.get("anchor") or snippet.get("symbol") or "")
+            return {
+                **anchor,
+                "supported_level": "line",
+                "anchor_type": "verified_source_line",
+                "anchor": f"{snippet_file}:{anchor_line} {symbol}".strip(),
+                "source_context_hash": str(snapshot["source_context_hash"]),
+                "source_revision": str(snapshot.get("revision") or ""),
+                "source_reference_hints": [
+                    path for path in (snapshot.get("reference_paths") or [])
+                    if isinstance(path, dict)
+                ][:12],
+                "source_hint_level": "partial_localization",
+                "root_claim_allowed": False,
+                "blocked_upgrade_reason": "源码行已验证，但手写 AST reference_paths 只用于选择机制查询锚点，不能证明跨函数因果或运行时持有链。",
+            }
+    return anchor
+
+
+def _mechanism_enriched_anchor(anchor: dict[str, Any], observations: list[dict[str, Any]]) -> dict[str, Any]:
+    if not anchor or not anchor.get("source_context_hash") or not anchor.get("source_revision"):
+        return anchor
+    revision = str(anchor.get("source_revision") or "")
+    mechanism_paths: list[dict[str, Any]] = []
+    runtime_paths: list[dict[str, Any]] = []
+    evidence_refs = list(anchor.get("evidence_refs") or [])
+    for observation in observations:
+        mechanism = observation.get("source_mechanism")
+        if isinstance(mechanism, dict):
+            validity = mechanism.get("evidence_validity") if isinstance(mechanism.get("evidence_validity"), dict) else {}
+            if validity.get("evidence_status") == "valid" and str(mechanism.get("revision") or "") == revision:
+                mechanism_paths.extend(
+                    item for item in (mechanism.get("mechanism_paths") or [])
+                    if isinstance(item, dict)
+                )
+                evidence_refs.extend(observation.get("evidence_refs") or [])
+        runtime = observation.get("python_heap_reference")
+        if isinstance(runtime, dict):
+            validity = runtime.get("evidence_validity") if isinstance(runtime.get("evidence_validity"), dict) else {}
+            if validity.get("evidence_status") in {"valid", "partial"}:
+                runtime_paths.extend(
+                    item for item in (runtime.get("reference_paths") or [])
+                    if isinstance(item, dict) and item.get("nodes")
+                )
+                evidence_refs.extend(observation.get("evidence_refs") or [])
+    supported_paths = [
+        item for item in mechanism_paths
+        if item.get("candidate_relation") == "supports" and item.get("anchor_matches")
+    ]
+    if not mechanism_paths and not runtime_paths:
+        return anchor
+    supported_candidate_ids = {
+        str(item.get("candidate_id") or "")
+        for item in supported_paths
+        if item.get("candidate_id")
+    }
+    matching_runtime_paths = [
+        item for item in runtime_paths
+        if item.get("candidate_id") and str(item.get("candidate_id")) in supported_candidate_ids
+    ]
+    complete = bool(supported_paths and matching_runtime_paths)
+    return {
+        **anchor,
+        "mechanism_paths": mechanism_paths[:12],
+        "runtime_reference_paths": matching_runtime_paths[:12],
+        "mechanism_verified": bool(supported_paths),
+        "runtime_reference_verified": bool(matching_runtime_paths),
+        "evidence_refs": _unique_strings(evidence_refs),
+        "root_claim_allowed": complete,
+        "blocked_upgrade_reason": (
+            "" if complete
+            else "CodeQL 源码机制路径已取得，但缺少与候选一致的 PyHeap 运行时入向引用链。"
+            if supported_paths
+            else "尚无 CodeQL 路径支持当前机制候选。"
+        ),
+    }
 
 
 def _self_pressure_summary(anchor: dict[str, Any]) -> str:
@@ -2447,17 +3307,187 @@ def _self_pressure_summary(anchor: dict[str, Any]) -> str:
     )
 
 
-def _runtime_stall_summary(anchor: dict[str, Any]) -> str:
+def _runtime_stall_summary(anchor: dict[str, Any], control: dict[str, Any] | None = None) -> str:
     instance = anchor.get("instance_id") or anchor.get("service_id") or "目标实例"
     pid = f"(pid={anchor.get('pid')})" if anchor.get("pid") else ""
     state = anchor.get("process_state") or "T"
     state_name = anchor.get("process_state_name") or "stopped"
     count = int(_num(anchor.get("stopped_sample_count")))
     ratio = _num(anchor.get("stopped_sample_ratio")) * 100
-    return (
+    mechanism = (
         f"{instance}{pid} 在系统指标采样窗口内持续处于进程状态 {state} ({state_name})，"
         f"停止样本 {count} 个，占比 {ratio:.1f}%。该状态会阻止进程继续调度和处理业务，"
         "能够直接解释进程存在但工作不再推进。"
+    )
+    if not control:
+        return mechanism + " 当前未捕获同窗控制事件，因此只能确认直接故障机制，无法确认是谁或哪个控制面暂停了进程。"
+    event = control.get("event") if isinstance(control.get("event"), dict) else {}
+    actor = event.get("actor") if isinstance(event.get("actor"), dict) else {}
+    action = event.get("action") if isinstance(event.get("action"), dict) else {}
+    actor_text = str(actor.get("comm") or actor.get("username") or actor.get("kind") or actor.get("pid") or "unknown_actor")
+    action_text = str(action.get("signal") or action.get("operation") or event.get("event_type") or "control_action")
+    provenance = control.get("source_provenance") if isinstance(control.get("source_provenance"), dict) else {}
+    if control.get("complete_source_chain"):
+        source_text = str(
+            provenance.get("audit_actor")
+            or provenance.get("controller")
+            or provenance.get("parent_process")
+            or provenance.get("systemd_unit")
+            or provenance.get("release_event_id")
+            or "上游控制源"
+        )
+        return (
+            mechanism
+            + f" 同窗控制证据证明 {source_text} 发起控制，{actor_text} 执行 {action_text} 作用于该目标，来源到故障的链路完整。"
+        )
+    return (
+        mechanism
+        + f" 同窗控制事件证明 {actor_text} 执行 {action_text} 直接暂停了该目标，这是已确认的直接根因；"
+        "但当前没有父进程、控制器、systemd/cgroup、发布或审计身份等上游来源证据，因此尚不知道是谁或什么流程发起了该动作。"
+    )
+
+
+def _runtime_control_chain(observations: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for observation in observations:
+        payload = observation.get("runtime_control")
+        if not isinstance(payload, dict):
+            continue
+        validity = payload.get("evidence_validity") if isinstance(payload.get("evidence_validity"), dict) else {}
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        if validity.get("evidence_status") not in {"valid", "partial"}:
+            continue
+        observation_target = observation.get("target") if isinstance(observation.get("target"), dict) else {}
+        for event in payload.get("events") or []:
+            if not isinstance(event, dict):
+                continue
+            if not _event_can_suspend_process(event) or not _runtime_event_matches_target(event, observation_target, payload):
+                continue
+            actor = event.get("actor") if isinstance(event.get("actor"), dict) else {}
+            action = event.get("action") if isinstance(event.get("action"), dict) else {}
+            target = event.get("target") if isinstance(event.get("target"), dict) else {}
+            if actor and action and target and event.get("observed_at"):
+                qualification = event.get("qualification") if isinstance(event.get("qualification"), dict) else {}
+                if qualification and not qualification.get("direct_control_chain"):
+                    continue
+                provenance = event.get("source_provenance") if isinstance(event.get("source_provenance"), dict) else {}
+                complete_source = _runtime_source_precedes_action(provenance, event.get("observed_at"))
+                return {
+                    "event": event,
+                    "evidence_refs": _unique_strings(observation.get("evidence_refs", [])),
+                    "source_provenance": provenance,
+                    "complete_source_chain": complete_source,
+                    "origin_unknown": not complete_source,
+                }
+    return None
+
+
+def _runtime_event_matches_target(
+    event: dict[str, Any],
+    observation_target: dict[str, Any],
+    payload: dict[str, Any],
+) -> bool:
+    target = event.get("target") if isinstance(event.get("target"), dict) else {}
+    expected_pid = int(observation_target.get("pid") or payload.get("target_pid") or 0)
+    actual_pid = int(target.get("pid") or 0)
+    expected_container = str(observation_target.get("container_id") or "").strip()
+    actual_container = str(target.get("container_id") or "").strip()
+    if event.get("event_type") == "container_runtime_control":
+        return bool(expected_container and actual_container and expected_container == actual_container)
+    if expected_pid:
+        return actual_pid == expected_pid
+    expected_terms = {
+        str(observation_target.get(key) or "").strip()
+        for key in ("service_id", "instance_id", "systemd_unit", "container_id")
+        if str(observation_target.get(key) or "").strip()
+    }
+    actual_terms = {
+        str(target.get(key) or "").strip()
+        for key in ("service_id", "instance_id", "unit", "container_id", "name")
+        if str(target.get(key) or "").strip()
+    }
+    return bool(expected_terms & actual_terms)
+
+
+def _enrich_dependency_control_assessment(
+    assessment: dict[str, Any],
+    observations: list[dict[str, Any]],
+) -> None:
+    if assessment.get("classification") != "downstream_dependency":
+        return
+    target_service = str(assessment.get("claim_target") or "").strip()
+    matching = [
+        observation
+        for observation in observations
+        if str((observation.get("target") or {}).get("service_id") or "") == target_service
+    ]
+    control = _runtime_control_chain(matching)
+    if not control:
+        return
+    event = control["event"]
+    actor = event.get("actor") if isinstance(event.get("actor"), dict) else {}
+    action = event.get("action") if isinstance(event.get("action"), dict) else {}
+    actor_text = str(actor.get("comm") or actor.get("kind") or actor.get("pid") or "运行控制面")
+    action_text = _runtime_action_label(action)
+    assessment.update({
+        "confidence": max(0.94, _num(assessment.get("confidence"))),
+        "confidence_level": "高",
+        "summary": f"{target_service} 的依赖失败已下钻到同窗运行控制事件：{actor_text} 对目标执行 {action_text}。",
+        "evidence_refs": _unique_strings([
+            *assessment.get("evidence_refs", []),
+            *control.get("evidence_refs", []),
+        ]),
+        "claim_type": "complete_source_root_cause" if control.get("complete_source_chain") else "direct_root_cause",
+        "causal_status": "supported",
+        "conclusion_eligible": True,
+        "eligibility_reason": "同窗容器运行控制事件与依赖失败构成直接因果和传播链。",
+        "mechanism": "process_suspended",
+        "diagnostic_claim": (
+            f"{actor_text} 在异常同窗对 {target_service} 执行 {action_text}，使该服务停止处理请求，"
+            "并直接导致上游依赖调用失败。"
+        ),
+        "runtime_control_event": event,
+        "source_provenance": control.get("source_provenance", {}),
+        "origin_unknown": bool(control.get("origin_unknown", True)),
+    })
+
+
+def _runtime_action_label(action: dict[str, Any]) -> str:
+    raw = str(action.get("signal") or action.get("operation") or "pause")
+    return {
+        "pause": "暂停",
+        "freeze": "冻结",
+        "cgroup.freeze": "cgroup 冻结",
+        "SIGSTOP": "SIGSTOP 暂停信号",
+        "SIGTSTP": "SIGTSTP 暂停信号",
+    }.get(raw, raw)
+
+
+def _runtime_source_precedes_action(provenance: dict[str, Any], observed_at: Any) -> bool:
+    if not any(
+        provenance.get(key)
+        for key in (
+            "parent_process", "redacted_command_source", "systemd_unit", "cgroup_identity",
+            "release_event_id", "audit_actor", "controller",
+        )
+    ):
+        return False
+    try:
+        initiated = datetime.fromisoformat(str(provenance.get("initiated_at") or "").replace("Z", "+00:00"))
+        observed = datetime.fromisoformat(str(observed_at or "").replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return initiated <= observed
+
+
+def _event_can_suspend_process(event: dict[str, Any]) -> bool:
+    action = event.get("action") if isinstance(event.get("action"), dict) else {}
+    effect = event.get("effect") if isinstance(event.get("effect"), dict) else {}
+    signal_name = str(action.get("signal") or "").upper()
+    operation = str(action.get("operation") or "").lower()
+    return bool(
+        effect.get("expected_state") == "T"
+        or signal_name in {"SIGSTOP", "SIGTSTP"}
+        or operation in {"pause", "freeze", "cgroup.freeze"}
     )
 
 
@@ -2587,6 +3617,149 @@ def _summarize_value(value: Any) -> dict[str, Any]:
     return {"value": str(value)[:500]}
 
 
+def _summarize_artifact_value(artifact_type: str, value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return _summarize_value(value)
+    if artifact_type == "python_heap_profile_json":
+        hotspots = value.get("retained_allocation_hotspots") or value.get("allocation_hotspots") or []
+        return {
+            "producer": value.get("producer"),
+            "mode": value.get("mode"),
+            "summary": value.get("summary") if isinstance(value.get("summary"), dict) else {},
+            "retained_allocation_hotspots": [
+                {
+                    key: item.get(key)
+                    for key in ("function", "file", "line", "size_bytes", "allocation_count", "call_path")
+                }
+                for item in hotspots[:8]
+                if isinstance(item, dict)
+            ],
+            "evidence_validity": value.get("evidence_validity") or {},
+        }
+    if artifact_type == "source_snapshot_json":
+        snippets = []
+        for snippet in (value.get("snippets") or [])[:4]:
+            if not isinstance(snippet, dict):
+                continue
+            snippets.append({
+                "file": snippet.get("file"),
+                "focus_line": snippet.get("focus_line"),
+                "symbol": snippet.get("symbol"),
+                "lines": [
+                    {"line": line.get("line"), "text": str(line.get("text") or "")[:300]}
+                    for line in (snippet.get("lines") or [])[:60]
+                    if isinstance(line, dict)
+                ],
+            })
+        enclosing_contexts = []
+        for context in (value.get("enclosing_contexts") or [])[:2]:
+            if not isinstance(context, dict):
+                continue
+            enclosing_contexts.append({
+                "file": context.get("file"),
+                "symbol": context.get("symbol"),
+                "kind": context.get("kind"),
+                "start_line": context.get("start_line"),
+                "end_line": context.get("end_line"),
+                "lines": [
+                    {"line": line.get("line"), "text": str(line.get("text") or "")[:300]}
+                    for line in (context.get("lines") or [])[:400]
+                    if isinstance(line, dict)
+                ],
+            })
+        return {
+            "producer": value.get("producer"),
+            "revision": value.get("revision"),
+            "source_context_hash": value.get("source_context_hash"),
+            "snippets": snippets,
+            "enclosing_contexts": enclosing_contexts,
+            "reference_paths": [
+                {
+                    "source_expression": path.get("source_expression"),
+                    "source_kind": path.get("source_kind"),
+                    "upstream_candidates": (path.get("upstream_candidates") or [])[:8],
+                    "stored_via": path.get("stored_via"),
+                    "container": path.get("container"),
+                    "sink": path.get("sink"),
+                    "runtime_slot": path.get("runtime_slot"),
+                    "retained_by": path.get("retained_by"),
+                    "retention_chain": (path.get("retention_chain") or [])[:8],
+                    "source_lines": (path.get("source_lines") or [])[:8],
+                }
+                for path in (value.get("reference_paths") or [])[:12]
+                if isinstance(path, dict)
+            ],
+            "evidence_validity": value.get("evidence_validity") or {},
+        }
+    if artifact_type == "source_mechanism_json":
+        return {
+            "producer": value.get("producer"),
+            "revision": value.get("revision"),
+            "source_context_hash": value.get("source_context_hash"),
+            "query_pack_version": value.get("query_pack_version"),
+            "cache": value.get("cache") if isinstance(value.get("cache"), dict) else {},
+            "database_ref": value.get("database_ref"),
+            "mechanism_paths": [
+                {
+                    "path_id": path.get("path_id"),
+                    "rule_id": path.get("rule_id"),
+                    "summary": str(path.get("summary") or "")[:300],
+                    "candidate_relation": path.get("candidate_relation"),
+                    "candidate_id": path.get("candidate_id"),
+                    "nodes": [
+                        {
+                            key: node.get(key)
+                            for key in ("node_id", "file", "line", "symbol", "message")
+                        }
+                        for node in (path.get("nodes") or [])[:16]
+                        if isinstance(node, dict)
+                    ],
+                    "edges": (path.get("edges") or [])[:16],
+                    "evidence_ref": path.get("evidence_ref"),
+                }
+                for path in (value.get("mechanism_paths") or [])[:8]
+                if isinstance(path, dict)
+            ],
+            "evidence_validity": value.get("evidence_validity") or {},
+        }
+    if artifact_type == "python_heap_reference_json":
+        return {
+            "producer": value.get("producer"),
+            "candidate_id": value.get("candidate_id"),
+            "top_retained_objects": [
+                {
+                    key: item.get(key)
+                    for key in ("node_id", "type", "size_bytes", "retained_bytes", "repr")
+                }
+                for item in (value.get("top_retained_objects") or [])[:10]
+                if isinstance(item, dict)
+            ],
+            "reference_paths": [
+                {
+                    "path_id": path.get("path_id"),
+                    "candidate_id": path.get("candidate_id"),
+                    "root_type": path.get("root_type"),
+                    "target_type": path.get("target_type"),
+                    "nodes": [
+                        {
+                            key: node.get(key)
+                            for key in ("node_id", "type", "size_bytes", "retained_bytes", "repr")
+                        }
+                        for node in (path.get("nodes") or [])[:16]
+                        if isinstance(node, dict)
+                    ],
+                    "edges": (path.get("edges") or [])[:16],
+                    "retained_bytes": path.get("retained_bytes"),
+                    "evidence_ref": path.get("evidence_ref"),
+                }
+                for path in (value.get("reference_paths") or [])[:8]
+                if isinstance(path, dict)
+            ],
+            "evidence_validity": value.get("evidence_validity") or {},
+        }
+    return _summarize_value(value)
+
+
 def _minimize(value: Any, depth: int = 0) -> Any:
     """限制进入证据摘要的数据量，并按字段名做基础脱敏。"""
     if depth >= 4:
@@ -2609,8 +3782,54 @@ def _minimize(value: Any, depth: int = 0) -> Any:
     return str(value)[:256]
 
 
+def _contains_truncated_marker(value: Any) -> bool:
+    if value == "[TRUNCATED]":
+        return True
+    if isinstance(value, dict):
+        return any(_contains_truncated_marker(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_truncated_marker(item) for item in value)
+    return False
+
+
 def _normalize_structured_artifact_values(values: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(values)
+    python_stacks = normalized.get("python_stack_samples_json")
+    if isinstance(python_stacks, dict):
+        normalized.setdefault("top_json", python_stacks.get("top_functions") or [])
+        normalized.setdefault("depth_evidence_json", {
+            "stack_samples": [
+                {
+                    **item,
+                    "call_path": ";".join(str(part) for part in item.get("call_path", []))
+                    if isinstance(item.get("call_path"), list)
+                    else str(item.get("call_path") or ""),
+                    "line_hint": f"{item.get('file')}:{item.get('line')}"
+                    if item.get("file") and int(item.get("line") or 0) > 0
+                    else "",
+                }
+                for item in python_stacks.get("stack_samples", [])
+                if isinstance(item, dict)
+            ],
+            "line_candidates": python_stacks.get("line_candidates") or [],
+            "call_path_hotspots": python_stacks.get("call_path_hotspots") or [],
+            "context": {"collection_mode": "stack_sampling"},
+        })
+    heap_profile = normalized.get("python_heap_profile_json")
+    if isinstance(heap_profile, dict) and "top_json" not in normalized:
+        heap_hotspots = heap_profile.get("retained_allocation_hotspots") or heap_profile.get("allocation_hotspots") or []
+        normalized["top_json"] = [
+            {
+                "name": item.get("function"),
+                "file": item.get("file"),
+                "line": item.get("line"),
+                "samples": item.get("allocation_count"),
+                "percent": 0,
+                "call_path": item.get("call_path") or [],
+            }
+            for item in heap_hotspots
+            if isinstance(item, dict)
+        ]
     trace_profile = normalized.get("trace_endpoint_profile_json")
     if isinstance(trace_profile, dict):
         normalized.setdefault("top_json", trace_profile.get("top_functions") or [])
@@ -2689,11 +3908,13 @@ def _tool_results_from_structured_values(values: dict[str, Any]) -> list[dict[st
     return results
 
 
-def _dependency_targets(target_scope: dict[str, Any]) -> list[dict[str, Any]]:
+def _dependency_targets(target_scope: dict[str, Any], source_service: str = "") -> list[dict[str, Any]]:
     dependencies = target_scope.get("dependency_targets") or []
     targets = []
     for item in dependencies:
         if not isinstance(item, dict):
+            continue
+        if source_service and item.get("source_service") != source_service:
             continue
         if not (item.get("url") or item.get("host")):
             continue
@@ -2704,6 +3925,9 @@ def _dependency_targets(target_scope: dict[str, Any]) -> list[dict[str, Any]]:
             "port": item.get("port"),
             "url": item.get("url"),
             "path": item.get("path") or "/",
+            "source_service": item.get("source_service"),
+            "target_service": item.get("target_service"),
+            "topology_hop": item.get("topology_hop"),
         })
     return targets
 
@@ -2740,8 +3964,8 @@ def _is_redis_dependency(item: dict[str, Any]) -> bool:
     return "redis" in haystack
 
 
-def _redis_target(target_scope: dict[str, Any]) -> dict[str, Any]:
-    for item in _dependency_targets(target_scope):
+def _redis_target(target_scope: dict[str, Any], source_service: str = "") -> dict[str, Any]:
+    for item in _dependency_targets(target_scope, source_service=source_service):
         protocol = str(item.get("protocol") or "").lower()
         if protocol == "redis" or _is_redis_dependency(item):
             host = item.get("host") or _host_from_url(str(item.get("url") or ""))
@@ -2772,6 +3996,7 @@ def _collector_invocation(
         probe_id=definition.probe_id,
         diagnosis_id=step["diagnosis_id"],
         diagnosis_step_id=step["step_id"],
+        evidence_cohort_id=step["diagnosis_id"],
         target_config=target_config,
         target_context={
             "agent_id": target.get("agent_id"),
@@ -2779,6 +4004,8 @@ def _collector_invocation(
             "instance_id": target.get("instance_id"),
             "host_id": target.get("host_id"),
             "pid": target.get("pid"),
+            "topology_hop": target.get("topology_hop"),
+            "scope_role": target.get("scope_role"),
         },
     )
 
@@ -2786,8 +4013,39 @@ def _collector_invocation(
 def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str, Any]) -> list[str]:
     classification = assessment.get("classification")
     if classification == "runtime_stall":
-        return []
+        return ["runtime_control_history", "log_scan"]
     target_scope = session.get("target_scope", {}) if isinstance(session.get("target_scope"), dict) else {}
+    intent = session.get("normalized_intent", {}) if isinstance(session.get("normalized_intent"), dict) else {}
+    is_memory = str(intent.get("symptom") or "") == "memory_pressure" or str(assessment.get("mechanism") or "") in {
+        "memory_leak",
+        "python_memory_retention",
+    }
+    if is_memory:
+        completed = set(session.get("completed_depth_evidence_gaps") or [])
+        probe_status = session.get("probe_evidence_status") if isinstance(session.get("probe_evidence_status"), dict) else {}
+        if "python_heap_profile" not in completed and not probe_status.get("python_heap_profile"):
+            return ["python_heap_profile"]
+        if "python_runtime_profile" not in completed and not probe_status.get("python_runtime_profile"):
+            return ["python_runtime_profile"]
+        if "source_snapshot" not in completed and not probe_status.get("source_snapshot"):
+            return ["source_snapshot"]
+        anchor = assessment.get("primary_anchor") if isinstance(assessment.get("primary_anchor"), dict) else {}
+        source_ready = bool(
+            anchor.get("source_context_hash")
+            and anchor.get("source_revision")
+            and anchor.get("file")
+            and int(anchor.get("line") or 0) > 0
+        )
+        if source_ready and "source_mechanism_query" not in completed and not probe_status.get("source_mechanism_query"):
+            return ["source_mechanism_query"]
+        if (
+            source_ready
+            and probe_status.get("source_mechanism_query") == "valid"
+            and "python_heap_reference" not in completed
+            and not probe_status.get("python_heap_reference")
+        ):
+            return ["python_heap_reference"]
+        return []
     requests: list[str] = []
     if classification == "downstream_dependency":
         requests.extend(["dependency_check", "log_scan"])
@@ -2802,6 +4060,26 @@ def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str,
     return requests
 
 
+def _merge_assessment_followups(
+    existing: list[str],
+    assessment_requests: list[str],
+    *,
+    sufficient_dependency: bool,
+    memory_only: bool = False,
+) -> list[str]:
+    if memory_only:
+        return assessment_requests[:1]
+    if assessment_requests and assessment_requests[0] in MEMORY_DEPTH_EVIDENCE_GAPS:
+        return assessment_requests[:1]
+    merged = list(existing)
+    for request_id in assessment_requests:
+        if sufficient_dependency and request_id in DEPENDENCY_EVIDENCE_GAPS:
+            continue
+        if request_id not in merged:
+            merged.append(request_id)
+    return merged
+
+
 def _assessment_claim_metadata(
     *,
     classification: str,
@@ -2811,21 +4089,67 @@ def _assessment_claim_metadata(
     downstream_dependency_failure: bool,
     shared_iowait: bool,
     neighbor_pressure: bool,
+    runtime_control: dict[str, Any] | None,
 ) -> dict[str, Any]:
     scope = session.get("target_scope", {}) if isinstance(session.get("target_scope"), dict) else {}
     target_service = str(scope.get("target_service") or "目标服务")
     anchor_target = str(anchor.get("anchor") or anchor.get("instance_id") or anchor.get("service_id") or "").strip()
 
+    if classification == "python_memory_retention":
+        source_verified = bool(anchor.get("source_context_hash"))
+        mechanism_paths = [
+            item for item in (anchor.get("mechanism_paths") or [])
+            if isinstance(item, dict)
+            and item.get("candidate_relation") == "supports"
+            and item.get("anchor_matches")
+        ]
+        runtime_paths = [
+            item for item in (anchor.get("runtime_reference_paths") or [])
+            if isinstance(item, dict) and item.get("nodes")
+        ]
+        source_mechanism_verified = bool(source_verified and mechanism_paths)
+        retention_chain_verified = bool(source_mechanism_verified and runtime_paths)
+        return {
+            "claim_type": "direct_root_cause" if retention_chain_verified else "direct_failure_mechanism",
+            "causal_status": "supported" if source_mechanism_verified else "unproven",
+            "conclusion_eligible": bool(evidence_refs and retention_chain_verified),
+            "eligibility_reason": (
+                "Memray 证明持续对象保留，CodeQL 证明 revision 匹配的跨函数机制路径，PyHeap 证明与候选一致的实际入向引用链。"
+                if retention_chain_verified
+                else "Memray 与 CodeQL 已支持源码机制，但缺少 PyHeap 实际入向引用链，不能声明完整长期持有关系。"
+                if source_mechanism_verified
+                else "Memray 只证明持续对象保留和分配来源；源码快照中的手写 AST 路径仅为 partial_localization，缺少 CodeQL 机制路径。"
+            ),
+            "mechanism": "python_code_constant_retention" if retention_chain_verified else "python_memory_retention",
+            "claim_target": anchor_target or target_service,
+            "diagnostic_claim": _memory_retention_summary(anchor),
+        }
     if classification == "runtime_stall":
         instance = str(anchor.get("instance_id") or anchor.get("service_id") or target_service)
+        direct = runtime_control is not None
+        complete_source = bool(runtime_control and runtime_control.get("complete_source_chain"))
+        control_refs = runtime_control.get("evidence_refs", []) if runtime_control else []
         return {
-            "claim_type": "root_cause",
+            "claim_type": (
+                "complete_source_root_cause"
+                if complete_source
+                else "direct_root_cause" if direct else "direct_failure_mechanism"
+            ),
             "causal_status": "supported",
-            "conclusion_eligible": bool(evidence_refs),
-            "eligibility_reason": "目标进程在同一采样窗口持续处于 stopped/tracing-stop 状态，可直接解释业务无进展。",
+            "conclusion_eligible": direct and bool(control_refs),
+            "eligibility_reason": (
+                "同窗来源证据、控制动作和停止态按时间有序，且目标完全匹配。"
+                if complete_source
+                else "同窗控制动作与目标完全匹配，且系统指标证明目标处于停止态；上游发起来源仍未知。"
+                if direct
+                else "系统指标只能证明 process_suspended 直接故障机制；缺少同窗 actor/action/target 控制事件，不能升级为完整根因。"
+            ),
             "mechanism": "process_suspended",
             "claim_target": instance,
-            "diagnostic_claim": _runtime_stall_summary(anchor),
+            "diagnostic_claim": _runtime_stall_summary(anchor, runtime_control),
+            "runtime_control_event": runtime_control.get("event") if runtime_control else None,
+            "source_provenance": runtime_control.get("source_provenance") if runtime_control else {},
+            "origin_unknown": not complete_source,
         }
 
     if classification == "downstream_dependency" and downstream_dependency_failure:
@@ -3017,17 +4341,13 @@ def _build_session_controlled_ai_tree(
     followup_requests: list[str],
     probes: list[dict[str, Any]],
     child_trees: list[dict[str, Any]],
+    source_snapshot_hashes: list[str] | None = None,
 ) -> ControlledAITree | None:
     """Build the user-facing AI tree from the session-level conclusion."""
     if not cluster_assessment and not candidates:
         return None
 
-    generated_by = "ai_guarded" if any(
-        layer.get("generated_by") == "ai_guarded"
-        for tree in child_trees
-        for layer in tree.get("layers", [])
-        if isinstance(layer, dict)
-    ) else "analyzer_fallback"
+    generated_by = "analyzer_fallback"
     eligible_child_ids = _eligible_child_candidate_ids(child_trees)
     assessment_eligible = bool(cluster_assessment.get("conclusion_eligible"))
     evidence_refs = _unique_strings(cluster_assessment.get("evidence_refs", []))
@@ -3048,6 +4368,10 @@ def _build_session_controlled_ai_tree(
         )
         role = "primary" if candidate_eligible and int(item.get("rank") or 999) == 1 else "secondary" if candidate_eligible else "unknown"
         target = str(item.get("root_entity") or cluster_assessment.get("claim_target") or "").strip()
+        node_evidence_refs = _unique_strings([
+            *item.get("evidence_refs", []),
+            *(evidence_refs if candidate_eligible and int(item.get("rank") or 999) == 1 else []),
+        ])
         node = AITreeCandidateNode(
             candidate_id=candidate_id,
             lineage_id=candidate_id,
@@ -3068,11 +4392,11 @@ def _build_session_controlled_ai_tree(
             decision="conclude" if candidate_eligible else "continue_probe",
             mechanism=str(cluster_assessment.get("mechanism") or candidate_id) if candidate_eligible else candidate_id,
             target=target,
-            evidence_refs=_unique_strings(item.get("evidence_refs", [])),
+            evidence_refs=node_evidence_refs,
             self_challenge=AITreeSelfChallenge(
                 why_this_claim=str(cluster_assessment.get("summary") or item.get("description") or ""),
                 why_not_other_claims=_ruled_out_summary(cluster_assessment),
-                supporting_evidence_refs=_unique_strings(item.get("evidence_refs", []) or evidence_refs),
+                supporting_evidence_refs=node_evidence_refs,
                 opposing_evidence_refs=[],
                 missing_evidence=followup_requests[:3],
                 what_would_change_my_mind="同窗 dependency/log/trace 证据显示该依赖可达且错误仍然集中在目标进程代码热点。",
@@ -3181,6 +4505,76 @@ def _build_session_controlled_ai_tree(
             rejected_nodes.append(node)
         else:
             unknown_nodes.append(node)
+
+    mechanism_paths = (
+        (cluster_assessment.get("primary_anchor") or {}).get("mechanism_paths") or []
+        if isinstance(cluster_assessment.get("primary_anchor"), dict)
+        else []
+    )
+    existing_node_ids = {
+        node.candidate_id
+        for node in [*primary_nodes, *secondary_nodes, *rejected_nodes, *unknown_nodes]
+    }
+    for path in mechanism_paths:
+        if not isinstance(path, dict) or not path.get("anchor_matches"):
+            continue
+        candidate_id = str(path.get("candidate_id") or "").strip()
+        relation = str(path.get("candidate_relation") or "unknown")
+        if not candidate_id or candidate_id in existing_node_ids or relation not in {"supports", "refutes"}:
+            continue
+        ref = str(path.get("evidence_ref") or "")
+        complete = bool(
+            relation == "supports"
+            and cluster_assessment.get("conclusion_eligible")
+            and any(
+                isinstance(runtime_path, dict)
+                and runtime_path.get("candidate_id") == candidate_id
+                for runtime_path in ((cluster_assessment.get("primary_anchor") or {}).get("runtime_reference_paths") or [])
+            )
+        )
+        role = "secondary" if complete else "rejected" if relation == "refutes" else "unknown"
+        node = AITreeCandidateNode(
+            candidate_id=candidate_id,
+            lineage_id=candidate_id,
+            parent_candidate_ids=[node.candidate_id for node in primary_nodes],
+            role=role,
+            claim=str(path.get("summary") or f"CodeQL mechanism path {candidate_id}"),
+            supported_level="line",
+            confidence=0.8 if complete else 0.2 if role == "rejected" else 0.55,
+            status="supported" if complete else "contradicted" if role == "rejected" else "missing_evidence",
+            claim_type="direct_root_cause" if complete else "insufficient_for_root_cause" if role == "rejected" else "partial_localization",
+            causal_status="supported" if complete else "contradicted" if role == "rejected" else "unproven",
+            decision="conclude" if complete else "reject_candidate" if role == "rejected" else "continue_probe",
+            mechanism=str(path.get("rule_id") or "codeql_source_mechanism"),
+            target=str(cluster_assessment.get("claim_target") or ""),
+            conclusion_eligible=complete,
+            eligibility_reason=(
+                "CodeQL 锚定路径与同候选 PyHeap 入向引用链共同成立。"
+                if complete
+                else "CodeQL 路径反驳该候选，保留灰色分支供回放。"
+                if role == "rejected"
+                else "CodeQL 已支持源码机制，但仍需同候选 PyHeap 运行时引用链。"
+            ),
+            evidence_refs=_unique_strings([ref]),
+            self_challenge=AITreeSelfChallenge(
+                why_this_claim=str(path.get("summary") or "CodeQL 返回锚定的跨函数机制路径。"),
+                supporting_evidence_refs=_unique_strings([ref]) if relation == "supports" else [],
+                opposing_evidence_refs=_unique_strings([ref]) if relation == "refutes" else [],
+                missing_evidence=[] if complete or role == "rejected" else ["python_heap_reference"],
+                what_would_change_my_mind=(
+                    "PyHeap 返回同 candidate_id 的实际入向引用链。"
+                    if relation == "supports"
+                    else "新的锚定 CodeQL path 与运行时引用链共同支持该候选。"
+                ),
+            ),
+        )
+        if role == "secondary":
+            secondary_nodes.insert(0, node)
+        elif role == "rejected":
+            rejected_nodes.insert(0, node)
+        else:
+            unknown_nodes.insert(0, node)
+        existing_node_ids.add(candidate_id)
 
     coarse_id = f"coarse_{cluster_assessment.get('classification') or 'assessment'}"
     coarse_node = AITreeCandidateNode(
@@ -3343,10 +4737,17 @@ def _build_session_controlled_ai_tree(
     final_unknown = [
         node.candidate_id for layer in layers for node in layer.unknown_causes
     ]
+    source_hashes = sorted(set(_unique_strings(source_snapshot_hashes or [])))
+    source_context_hash = source_hashes[0] if len(source_hashes) == 1 else None
     stop_reason = _session_tree_stop_reason(cluster_assessment, followup_requests, final_level)
+    if len(source_hashes) > 1:
+        stop_reason = "源码 revision 上下文冲突，禁止把多个 source_context_hash 合并为行级结论。"
+        if final_level == "line":
+            final_level = "function"
     tree = ControlledAITree(
         tree_id=f"session_controlled_ai_tree_{hashlib.sha256(f'{diagnosis_id}:{final_primary}:{followup_requests}'.encode()).hexdigest()[:16]}",
         final_supported_level=final_level,
+        source_context_hash=source_context_hash,
         stop_reason=stop_reason,
         budget=AITreeBudgetSnapshot(
             used_ai_rounds=len(layers),
@@ -3362,10 +4763,24 @@ def _build_session_controlled_ai_tree(
     return enforce_conclusion_eligibility(tree)
 
 
+def _source_snapshot_hashes(observations: list[dict[str, Any]]) -> list[str]:
+    hashes = []
+    for observation in observations:
+        snapshot = observation.get("source_snapshot")
+        if not isinstance(snapshot, dict):
+            continue
+        validity = snapshot.get("evidence_validity") if isinstance(snapshot.get("evidence_validity"), dict) else {}
+        evidence_status = str(validity.get("evidence_status") or "valid")
+        value = str(snapshot.get("source_context_hash") or "").strip()
+        if value and evidence_status in {"valid", "partial"} and value not in hashes:
+            hashes.append(value)
+    return hashes
+
+
 def _completed_session_probe_requests(probes: list[dict[str, Any]]) -> list[str]:
     completed: list[str] = []
     for probe in probes:
-        if probe.get("status") != "COMPLETED":
+        if probe.get("status") != "COMPLETED" or probe.get("evidence_status") not in {"valid", "partial"}:
             continue
         gap = str((probe.get("parameters") or {}).get("evidence_gap") or "")
         if gap and gap not in completed:
@@ -3373,13 +4788,101 @@ def _completed_session_probe_requests(probes: list[dict[str, Any]]) -> list[str]
     return completed
 
 
-def _tree_generated_by(tree: ControlledAITree | None) -> set[str]:
-    if tree is None:
-        return set()
-    return {
-        layer.generated_by
-        for layer in tree.layers
-    }
+def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) -> ControlledAITree:
+    selected = [str(item) for item in review.get("selected_evidence_families", []) if str(item)]
+    proposals = review.get("candidate_proposals") if isinstance(review.get("candidate_proposals"), list) else []
+    layers = [layer.model_copy(update={"generated_by": "ai_guarded"}) for layer in tree.layers]
+    edges = list(tree.probe_edges)
+    if proposals and len(layers) < tree.budget.max_tree_depth:
+        proposal_nodes = [
+            AITreeCandidateNode(
+                candidate_id=item["candidate_id"],
+                lineage_id=item["candidate_id"],
+                parent_candidate_ids=item["parent_candidate_ids"],
+                role="unknown",
+                claim=item["claim"],
+                supported_level=item["supported_level"],
+                confidence=0.45,
+                status="missing_evidence",
+                claim_type="partial_localization",
+                causal_status="unproven",
+                decision="continue_probe",
+                mechanism=item["mechanism"],
+                target=item["target"],
+                conclusion_eligible=False,
+                eligibility_reason="AI 提出的机制候选仍需所选探针返回真实证据后才能升级。",
+                evidence_refs=item["evidence_refs"],
+                self_challenge=AITreeSelfChallenge(
+                    why_this_claim=item["claim"],
+                    supporting_evidence_refs=item["evidence_refs"],
+                    opposing_evidence_refs=item.get("opposing_evidence_refs", []),
+                    missing_evidence=item.get("missing_evidence", selected),
+                    what_would_change_my_mind=item["what_would_change_my_mind"],
+                ),
+            )
+            for item in proposals
+        ]
+        previous = layers[-1].layer_id if layers else ""
+        proposal_layer = AITreeLayer(
+            layer_id=f"session_ai_investigation_{len(layers)}",
+            depth=len(layers),
+            generated_by="ai_guarded",
+            summary="AI 基于当前证据提出可证伪机制，并从注册探针中选择下一轮补证。",
+            unknown_causes=proposal_nodes,
+        )
+        layers.append(proposal_layer)
+        edges.append(AITreeProbeEdge(
+            edge_id=f"session_ai_probe_{len(edges)}",
+            from_layer_id=previous,
+            to_layer_id=proposal_layer.layer_id,
+            from_candidate_ids=list(dict.fromkeys(parent for item in proposals for parent in item["parent_candidate_ids"])),
+            to_candidate_ids=[item.candidate_id for item in proposal_nodes],
+            probe_requests=selected,
+            status="not_started",
+            effect="added_candidate",
+            transition_type="probe",
+            reason="AI 调查轮选择注册探针验证新机制候选。",
+        ))
+    elif selected and edges:
+        edges[-1] = edges[-1].model_copy(update={
+            "probe_requests": selected,
+            "reason": "AI 调查轮从本轮允许的注册探针中选择最小必要补证。",
+        })
+    updated = tree.model_copy(update={
+        "layers": layers,
+        "probe_edges": edges,
+        "final_unknown_causes": list(dict.fromkeys([
+            *tree.final_unknown_causes,
+            *(str(item.get("candidate_id")) for item in proposals),
+        ])),
+        "budget": tree.budget.model_copy(update={
+            "used_ai_rounds": tree.budget.used_ai_rounds + 1,
+            "used_probe_requests": tree.budget.used_probe_requests + len(selected),
+        }),
+    })
+    return enforce_conclusion_eligibility(updated)
+
+
+def _summarize_investigation_review(review: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(review, dict):
+        return review
+    result = dict(review)
+    probe_inputs = review.get("probe_inputs") if isinstance(review.get("probe_inputs"), dict) else {}
+    summarized: dict[str, Any] = {}
+    for family, value in probe_inputs.items():
+        if not isinstance(value, dict):
+            continue
+        item = dict(value)
+        generated = item.get("ai_generated_query") if isinstance(item.get("ai_generated_query"), dict) else None
+        if generated is not None:
+            item["ai_generated_query"] = {
+                key: generated.get(key)
+                for key in ("origin", "investigation_question", "query_hash")
+                if generated.get(key)
+            }
+        summarized[str(family)] = item
+    result["probe_inputs"] = summarized
+    return result
 
 
 def _eligible_child_candidate_ids(child_trees: list[dict[str, Any]]) -> set[str]:
@@ -3395,21 +4898,6 @@ def _eligible_child_candidate_ids(child_trees: list[dict[str, Any]]) -> set[str]
                         if candidate_id:
                             result.add(candidate_id)
     return result
-
-
-def _mark_tree_ai_guarded_without_changes(
-    tree: ControlledAITree | None,
-    stop_reason: str,
-) -> ControlledAITree | None:
-    if tree is None:
-        return None
-    return tree.model_copy(update={
-        "layers": [
-            layer.model_copy(update={"generated_by": "ai_guarded"})
-            for layer in tree.layers
-        ],
-        "stop_reason": stop_reason or tree.stop_reason,
-    })
 
 
 def _blocked_upgrade_node(
@@ -3482,7 +4970,7 @@ def _probe_results_for_requests(requests: list[str], probes: list[dict[str, Any]
         latest = matched[-1]
         status = str(latest.get("status") or "unknown")
         if status == "COMPLETED":
-            mapped = "completed"
+            mapped = "completed" if latest.get("evidence_status") in {"valid", "partial"} else "failed"
         elif status in {"FAILED", "UNAVAILABLE", "REJECTED_POLICY"}:
             mapped = "failed" if status == "FAILED" else "blocked"
         elif status in {"SCHEDULED", "RUNNING", "WAITING_APPROVAL"}:
@@ -3491,7 +4979,7 @@ def _probe_results_for_requests(requests: list[str], probes: list[dict[str, Any]
             mapped = "unknown"
         results.append(AITreeProbeResult(
             status=mapped,
-            blocked_reason=str(latest.get("result_summary") or latest.get("reason") or ""),
+            blocked_reason=str(latest.get("evidence_reason") or latest.get("result_summary") or latest.get("reason") or ""),
         ))
     return results
 
@@ -3563,6 +5051,28 @@ def _failed_tasks_are_only_depth_followups(
     return all(gap_by_task.get(task_id) in FUNCTION_DEPTH_EVIDENCE_GAPS for task_id in failed_task_ids)
 
 
+def _failed_tasks_are_only_optional_mechanism_followups(
+    diagnosis_id: str,
+    tasks: list[Any],
+    probes: list[dict[str, Any]],
+) -> bool:
+    failed_task_ids = {
+        task.id for task in tasks
+        if status_value(task.status) == "FAILED"
+    }
+    if not failed_task_ids:
+        return False
+    gap_by_task = {
+        probe.get("task_id"): str((probe.get("parameters") or {}).get("evidence_gap") or "")
+        for probe in probes
+        if probe.get("diagnosis_id") == diagnosis_id
+    }
+    return all(
+        gap_by_task.get(task_id) in {"source_mechanism_query", "python_heap_reference"}
+        for task_id in failed_task_ids
+    )
+
+
 def _filter_pending_evidence_requests(
     diagnosis_id: str,
     requests: list[str],
@@ -3570,7 +5080,6 @@ def _filter_pending_evidence_requests(
     task_observations: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """按证据质量去重，避免依赖检查完成后误删函数级深探请求。"""
-    terminal_success = {"COMPLETED"}
     terminal_skip = {
         "UNAVAILABLE",
         "REJECTED",
@@ -3578,22 +5087,25 @@ def _filter_pending_evidence_requests(
         "INVALID",
         "SKIPPED",
     }
-    status_by_gap: dict[str, list[str]] = {}
+    status_by_gap: dict[str, list[tuple[str, str]]] = {}
     for probe in probes:
         gap = str((probe.get("parameters") or {}).get("evidence_gap") or "")
         if gap:
-            status_by_gap.setdefault(gap, []).append(str(probe.get("status") or ""))
+            status_by_gap.setdefault(gap, []).append((
+                str(probe.get("status") or ""),
+                str(probe.get("evidence_status") or ""),
+            ))
 
     result: list[str] = []
     depth_completed = _completed_depth_evidence_gaps(task_observations or [])
     for request in requests:
-        statuses = status_by_gap.get(request, [])
+        status_items = status_by_gap.get(request, [])
+        statuses = [item[0] for item in status_items]
+        has_valid = any(status == "COMPLETED" and evidence in {"valid", "partial"} for status, evidence in status_items)
         if request in DEPENDENCY_EVIDENCE_GAPS:
-            if statuses and any(status in terminal_success for status in statuses):
+            if has_valid:
                 continue
-        elif request in EMPTY_RESULT_IS_VALID_DEPTH_GAPS and any(
-            status in terminal_success for status in statuses
-        ):
+        elif request == "runtime_control_history" and has_valid:
             continue
         elif request in depth_completed:
             continue
@@ -3604,6 +5116,47 @@ def _filter_pending_evidence_requests(
     return result
 
 
+def _task_evidence_validity(
+    collector_type: str,
+    values: dict[str, Any],
+    structured: dict[str, Any],
+) -> tuple[str, str]:
+    artifact_key = {
+        "off_cpu_wait_profile": "off_cpu_wait_json",
+        "trace_endpoint_profile": "trace_endpoint_profile_json",
+        "baseline_window_profile": "continuous_summary",
+        "pyspy": "pyspy_status_json",
+        "python_heap_profile": "python_heap_profile_json",
+        "source_snapshot": "source_snapshot_json",
+        "source_mechanism_query": "source_mechanism_json",
+        "python_heap_reference": "python_heap_reference_json",
+        "log_scan": "log_window_json",
+        "runtime_control_history": "runtime_control_event_json",
+    }.get(collector_type)
+    payload = values.get(artifact_key) if artifact_key else None
+    if isinstance(payload, dict):
+        validity = payload.get("evidence_validity")
+        if isinstance(validity, dict) and validity.get("evidence_status"):
+            return str(validity["evidence_status"]), str(validity.get("reason") or "")
+    summary = structured.get("stack_summary") if isinstance(structured.get("stack_summary"), dict) else {}
+    confidence = structured.get("confidence_inputs") if isinstance(structured.get("confidence_inputs"), dict) else {}
+    if collector_type in {"perf_cpu", "pyspy", "baseline_window_profile"}:
+        if int(summary.get("stack_sample_count") or summary.get("sample_count") or 0) > 0:
+            return "valid", "structured stack samples available"
+        return "empty_window", "no structured stack samples available"
+    if collector_type == "sys_metrics" and isinstance(values.get("sys_metrics"), dict):
+        return "valid", "structured system metrics available"
+    if collector_type == "dependency_check" and isinstance(values.get("dependency_check_json"), dict):
+        return "valid", "structured dependency checks available"
+    if collector_type == "redis_check" and isinstance(values.get("redis_check_json"), dict):
+        return "valid", "structured Redis checks available"
+    if collector_type in {"ebpf_io", "memory_smaps"} and structured.get("artifact_refs"):
+        return "valid", "structured collector artifact available"
+    if confidence.get("has_wait_or_io_signal"):
+        return "partial", "structured wait or IO signal available"
+    return "unparseable", "collector completed without usable structured evidence"
+
+
 def _completed_depth_evidence_gaps(observations: list[dict[str, Any]]) -> set[str]:
     """只有拿到对应的非空深度证据，才认为深度请求已经完成。"""
     completed: set[str] = set()
@@ -3611,6 +5164,7 @@ def _completed_depth_evidence_gaps(observations: list[dict[str, Any]]) -> set[st
         collector_type = str(observation.get("collector_type") or "")
         top_function = observation.get("top_function") if isinstance(observation.get("top_function"), dict) else {}
         confidence = observation.get("confidence_inputs") if isinstance(observation.get("confidence_inputs"), dict) else {}
+        validity = confidence.get("evidence_validity_by_family") if isinstance(confidence.get("evidence_validity_by_family"), dict) else {}
         has_top = bool(str(top_function.get("name") or "").strip())
         has_wait = bool(confidence.get("has_wait_or_io_signal"))
         trace_level = str(confidence.get("trace_max_supported_level") or "")
@@ -3618,17 +5172,29 @@ def _completed_depth_evidence_gaps(observations: list[dict[str, Any]]) -> set[st
 
         if collector_type in {"perf_cpu", "pyspy", "baseline_window_profile", "trace_endpoint_profile"} and has_top:
             completed.add("cpu_profile")
-        if collector_type == "off_cpu_wait_profile" and has_wait:
+        if collector_type == "off_cpu_wait_profile" and has_wait and validity.get("off_cpu_wait_profile") in {"valid", "partial"}:
             completed.add("off_cpu_wait_profile")
-        if collector_type == "trace_endpoint_profile" and trace_status in {"completed", "partial"} and trace_level in {
+        if collector_type == "trace_endpoint_profile" and validity.get("trace_endpoint_profile") in {"valid", "partial"} and trace_status in {"completed", "partial"} and trace_level in {
             "endpoint",
             "call_path",
         }:
             completed.add("trace_endpoint_profile")
-        if collector_type == "baseline_window_profile" and has_top:
+        if collector_type == "baseline_window_profile" and has_top and validity.get("baseline_window_profile") in {"valid", "partial"}:
             completed.add("baseline_window_profile")
-        if collector_type == "pyspy" and has_top:
+        if collector_type == "pyspy" and has_top and validity.get("python_runtime_profile", "valid") in {"valid", "partial"}:
             completed.add("python_runtime_profile")
+        if collector_type == "python_heap_profile" and has_top:
+            completed.add("python_heap_profile")
+        if collector_type == "source_snapshot" and validity.get("source_snapshot", "valid") in {"valid", "partial"}:
+            completed.add("source_snapshot")
+        mechanism = observation.get("source_mechanism") if isinstance(observation.get("source_mechanism"), dict) else {}
+        mechanism_validity = mechanism.get("evidence_validity") if isinstance(mechanism.get("evidence_validity"), dict) else {}
+        if collector_type == "source_mechanism_query" and mechanism_validity.get("evidence_status") == "valid" and mechanism.get("mechanism_paths"):
+            completed.add("source_mechanism_query")
+        heap_reference = observation.get("python_heap_reference") if isinstance(observation.get("python_heap_reference"), dict) else {}
+        heap_validity = heap_reference.get("evidence_validity") if isinstance(heap_reference.get("evidence_validity"), dict) else {}
+        if collector_type == "python_heap_reference" and heap_validity.get("evidence_status") in {"valid", "partial"} and heap_reference.get("reference_paths"):
+            completed.add("python_heap_reference")
     return completed
 
 
@@ -3699,6 +5265,106 @@ def _assessment_location_fields(
             "max_supported_level": "process",
         }
     return {}
+
+
+def _compound_location_fields(clusters, session: dict[str, Any]) -> dict[str, Any]:
+    locations: list[str] = []
+    domains: list[str] = []
+    entities: list[str] = []
+    for cluster in clusters:
+        if not cluster.conclusion_eligible:
+            continue
+        location, cluster_domains = _cluster_dimensions(cluster, session)
+        if location not in locations:
+            locations.append(location)
+        for domain in cluster_domains:
+            if domain not in domains:
+                domains.append(domain)
+        if cluster.target not in entities:
+            entities.append(cluster.target)
+    return {
+        "location_type": locations,
+        "domain_type": domains,
+        "root_entity": entities,
+    }
+
+
+def _root_cause_cluster_candidates(clusters, session: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = []
+    for cluster in clusters:
+        if not cluster.conclusion_eligible:
+            continue
+        location, domains = _cluster_dimensions(cluster, session)
+        candidates.append({
+            "candidate_id": cluster.candidate_ids[0] if cluster.candidate_ids else cluster.cluster_id,
+            "description": cluster.claim,
+            "evidence_refs": cluster.evidence_refs,
+            "missing_evidence": cluster.residual_unknowns,
+            "score_components": {
+                "rule_match": "high",
+                "evidence_quality": "high" if len(cluster.evidence_refs) > 1 else "medium",
+                "baseline_support": "medium",
+                "source_independence": "high" if len(cluster.evidence_refs) > 1 else "medium",
+            },
+            "rank": len(candidates) + 1,
+            "confidence_level": _confidence_label(cluster.confidence),
+            "supporting_claims": [{
+                "statement": step.statement,
+                "evidence_refs": step.evidence_refs,
+                "strength": "strong",
+            } for step in cluster.causal_chain],
+            "location_type": location,
+            "domain_type": domains[0],
+            "classification": cluster.mechanism,
+            "root_entity": cluster.target,
+            "max_supported_level": "service" if cluster.mechanism == "downstream_dependency_failure" else "process",
+            "root_cause_cluster_id": cluster.cluster_id,
+            "cause_level": cluster.cause_level,
+            "role": cluster.role,
+        })
+    return candidates
+
+
+def _cluster_dimensions(cluster, session: dict[str, Any]) -> tuple[str, list[str]]:
+    scope = session.get("target_scope") if isinstance(session.get("target_scope"), dict) else {}
+    downstream_targets = {
+        *[str(item) for item in scope.get("downstream_service_ids", [])],
+        *[str(item) for item in scope.get("downstream_instance_ids", [])],
+    }
+    is_downstream = str(cluster.target) in downstream_targets
+    if cluster.mechanism == "downstream_dependency_failure":
+        return "downstream", ["network"]
+    if cluster.mechanism == "same_host_cpu_contention":
+        return "same_host", ["cpu"]
+    if cluster.mechanism == "process_suspended":
+        return ("downstream", ["runtime", "network"]) if is_downstream else ("self", ["runtime"])
+    return "self", ["process"]
+
+
+def _runtime_control_candidate(assessment: dict[str, Any]) -> dict[str, Any]:
+    refs = _unique_strings(assessment.get("evidence_refs", []))
+    target = str(assessment.get("claim_target") or assessment.get("root_entity") or "target_process")
+    claim = str(assessment.get("diagnostic_claim") or assessment.get("summary") or "")
+    return {
+        "candidate_id": "runtime_control_process_suspended",
+        "description": claim,
+        "evidence_refs": refs,
+        "missing_evidence": [],
+        "score_components": {
+            "rule_match": "high",
+            "evidence_quality": "high",
+            "baseline_support": "medium",
+            "source_independence": "high",
+        },
+        "rank": 1,
+        "confidence_level": assessment.get("confidence_level") or "高",
+        "supporting_claims": [{"statement": claim, "evidence_refs": refs, "strength": "strong"}],
+        "location_type": "self",
+        "domain_type": "runtime",
+        "classification": "runtime_stall",
+        "root_entity": target,
+        "max_supported_level": "process",
+    }
 
 
 def _probe_budget_phase(probe: dict[str, Any]) -> str:

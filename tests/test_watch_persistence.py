@@ -72,6 +72,10 @@ def test_watch_subscription_incident_and_snapshot_survive_registry_reload(tmp_pa
     assert restored_watch.incidents_count == 1
     assert len(restored_incidents) == 1
     assert restored_incidents[0].snapshot_id == result.incident.snapshot_id
+    assert restored_incidents[0].episode_id == result.incident.episode_id
+    assert restored_incidents[0].occurrence_count == 1
+    assert restored_incidents[0].anomaly_points[0]["trigger_type"] == "cpu_shift"
+    assert restored_watch.auto_diagnosis_enabled is True
     assert restored_incidents[0].structured_evidence["evidence_cohort_id"] == result.incident.evidence_cohort_id
     snapshot = repo.get_watch_snapshot(result.incident.snapshot_id)
     assert snapshot is not None

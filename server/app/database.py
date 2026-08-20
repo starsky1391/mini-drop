@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import threading
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -74,7 +74,64 @@ def _get_sessionmaker() -> sessionmaker:
 
 def init_db() -> None:
     """创建所有表（幂等）。应用启动时调用一次。"""
-    Base.metadata.create_all(bind=_get_engine())
+    engine = _get_engine()
+    Base.metadata.create_all(bind=engine)
+    _ensure_probe_evidence_columns(engine)
+    _ensure_watch_episode_columns(engine)
+
+
+def _ensure_probe_evidence_columns(engine: Engine) -> None:
+    inspector = inspect(engine)
+    table = "diagnosis_probe_executions"
+    if table not in inspector.get_table_names():
+        return
+    columns = {item["name"] for item in inspector.get_columns(table)}
+    statements = []
+    if "evidence_status" not in columns:
+        statements.append(f"ALTER TABLE {table} ADD COLUMN evidence_status VARCHAR(32)")
+    if "evidence_reason" not in columns:
+        statements.append(f"ALTER TABLE {table} ADD COLUMN evidence_reason TEXT")
+    if not statements:
+        return
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
+
+def _ensure_watch_episode_columns(engine: Engine) -> None:
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    statements: list[str] = []
+    if "watch_subscriptions" in tables:
+        columns = {item["name"] for item in inspector.get_columns("watch_subscriptions")}
+        if "auto_diagnosis_enabled" not in columns:
+            statements.append(
+                "ALTER TABLE watch_subscriptions ADD COLUMN auto_diagnosis_enabled BOOLEAN NOT NULL DEFAULT TRUE"
+            )
+    if "watch_incidents" in tables:
+        columns = {item["name"] for item in inspector.get_columns("watch_incidents")}
+        timestamp_type = "TIMESTAMP WITH TIME ZONE" if engine.dialect.name == "postgresql" else "TIMESTAMP"
+        additions = {
+            "episode_id": "VARCHAR(128)",
+            "episode_status": "VARCHAR(32) NOT NULL DEFAULT 'AGGREGATING'",
+            "aggregation_deadline": timestamp_type,
+            "first_seen_at": timestamp_type,
+            "last_seen_at": timestamp_type,
+            "recovery_observations": "INTEGER NOT NULL DEFAULT 0",
+            "occurrence_count": "INTEGER NOT NULL DEFAULT 1",
+            "diagnosis_eligible": "BOOLEAN NOT NULL DEFAULT FALSE",
+            "impact_status": "VARCHAR(32) NOT NULL DEFAULT 'impact_unconfirmed'",
+            "anomaly_points_json": "JSON",
+            "conclusion_revision_count": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for name, declaration in additions.items():
+            if name not in columns:
+                statements.append(f"ALTER TABLE watch_incidents ADD COLUMN {name} {declaration}")
+    if not statements:
+        return
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
 
 
 def new_session() -> Session:

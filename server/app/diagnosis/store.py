@@ -254,6 +254,29 @@ class DiagnosisStore:
         finally:
             session.close()
 
+    def renew_lease(self, diagnosis_id: str, owner: str, ttl_seconds: int = 30) -> bool:
+        """延长当前持有者的租约，防止慢速模型调用期间出现并发推进。"""
+        now = utcnow()
+        session = new_session()
+        try:
+            model = (
+                session.query(DiagnosisSessionModel)
+                .filter(DiagnosisSessionModel.id == diagnosis_id)
+                .with_for_update()
+                .first()
+            )
+            if model is None or model.lease_owner != owner:
+                return False
+            model.lease_until = now + timedelta(seconds=ttl_seconds)
+            model.updated_at = now
+            session.commit()
+            return True
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
     def release_lease(self, diagnosis_id: str, owner: str) -> None:
         session = new_session()
         try:
@@ -296,7 +319,7 @@ class DiagnosisStore:
             session.close()
 
     def update_probe(self, step_id: str, **fields: Any) -> dict[str, Any]:
-        allowed = {"status", "task_id", "approved_by", "approved_at"}
+        allowed = {"status", "task_id", "approved_by", "approved_at", "evidence_status", "evidence_reason"}
         unknown = set(fields) - allowed
         if unknown:
             raise ValueError(f"不允许更新探针字段: {sorted(unknown)}")

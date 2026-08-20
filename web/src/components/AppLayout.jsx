@@ -19,6 +19,7 @@ import {
 import { getStoredApiKey, saveApiKey, createEventSource } from "../api/client";
 import ErrorBoundary from "../components/ErrorBoundary";
 import { COLORS, LAYOUT, SPACING, FONT_SIZES } from "../theme";
+import styles from "./AppLayout.module.css";
 
 const { Sider, Header, Content } = Layout;
 
@@ -218,9 +219,10 @@ export default function AppLayout() {
       </Sider>
 
       {/* ── 主区域 ─────────────────────────────────────────── */}
-      <Layout>
+      <Layout style={{ minWidth: 0 }}>
         {/* 顶栏 */}
         <Header
+          className={styles.header}
           style={{
             height: LAYOUT.headerHeight,
             lineHeight: `${LAYOUT.headerHeight}px`,
@@ -236,8 +238,9 @@ export default function AppLayout() {
             transition: "background 0.3s ease, border-color 0.3s ease",
           }}
         >
-          <Space size="middle">
+          <Space size="middle" className={styles.headerLeft}>
             <Typography.Text
+              className={styles.headerTitle}
               strong
               style={{
                 fontSize: FONT_SIZES.lg,
@@ -290,6 +293,7 @@ export default function AppLayout() {
 
         {/* 内容 */}
         <Content
+          className={styles.content}
           style={{
             margin: SPACING.lg,
             padding: SPACING.xl,

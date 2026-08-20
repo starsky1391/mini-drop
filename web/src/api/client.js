@@ -234,6 +234,18 @@ export function analyzeWatchIncident(incidentId, params = {}) {
   return api.post(`/v1/watch-incidents/${incidentId}/analyze`, null, { params, timeout: 180000 });
 }
 
+export function updateWatchSubscription(watchId, payload) {
+  return api.patch(`/v1/watches/${watchId}`, payload);
+}
+
+export function explainWatchAnomalyPoint(incidentId, anomalyPointId) {
+  return api.post(
+    `/v1/watch-incidents/${incidentId}/anomalies/${anomalyPointId}/explain`,
+    null,
+    { timeout: 60000 },
+  );
+}
+
 export function disableWatchSubscription(watchId) {
   return api.delete(`/v1/watches/${watchId}`);
 }

@@ -28,6 +28,11 @@ CollectorType = Literal[
     "dependency_check",
     "redis_check",
     "process_inventory",
+    "runtime_control_history",
+    "python_heap_profile",
+    "source_snapshot",
+    "source_mechanism_query",
+    "python_heap_reference",
 ]
 MIN_TASK_DURATION_SEC = 1
 MAX_TASK_DURATION_SEC = 120

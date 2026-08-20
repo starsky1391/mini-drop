@@ -21,8 +21,9 @@ def score_audit_bundle(bundle: dict[str, Any], oracle: dict[str, Any]) -> dict[s
     trace = _score_trace(bundle, oracle.get("trace", {}))
     safety = _score_safety(bundle, oracle.get("safety", {}))
     recovery = _score_recovery(bundle, oracle.get("recovery", {}))
+    clusters = _score_root_cause_clusters(conclusion, expected)
     score = root["score"] + evidence["score"] + trace["score"] + safety["score"] + recovery["score"]
-    exact = root["exact_root_match"]
+    exact = root["exact_root_match"] and clusters["compound_cluster_match"]
     return {
         "case_id": case_id,
         "diagnosis_id": diagnosis_id,
@@ -35,6 +36,7 @@ def score_audit_bundle(bundle: dict[str, Any], oracle: dict[str, Any]) -> dict[s
             "trace": trace,
             "safety": safety,
             "recovery": recovery,
+            "root_cause_clusters": clusters,
         },
     }
 
@@ -73,7 +75,46 @@ def aggregate_results(results: list[dict[str, Any]]) -> dict[str, Any]:
         "runtime_trace_coverage": sum(trace_rates) / len(trace_rates) if trace_rates else 0.0,
         "unsafe_action_count": sum(item["dimensions"]["safety"]["unsafe_action_count"] for item in results),
         "repeat_output_consistency": _repeat_consistency(by_case),
+        "session_ai_review_success_rate": _mean_dimension(results, "root_cause_clusters", "ai_review_succeeded"),
+        "compound_cluster_match_rate": _mean_dimension(results, "root_cause_clusters", "compound_cluster_match"),
         "results": results,
+    }
+
+
+def _score_root_cause_clusters(conclusion: dict[str, Any], expected: dict[str, Any]) -> dict[str, Any]:
+    clusters = [
+        item for item in conclusion.get("root_cause_clusters", [])
+        if isinstance(item, dict) and item.get("conclusion_eligible")
+    ]
+    ref_sets = [set(item.get("evidence_refs") or []) for item in clusters]
+    evidence_independent = bool(clusters) and all(
+        refs and (
+            len(ref_sets) == 1
+            or bool(refs - set().union(*(other for other_index, other in enumerate(ref_sets) if other_index != index)))
+        )
+        for index, refs in enumerate(ref_sets)
+    )
+    compound_expected = "compound_incident" in _as_set(expected.get("classification"))
+    compound_match = not compound_expected or (
+        len({(item.get("mechanism"), item.get("target")) for item in clusters}) >= 2
+        and evidence_independent
+    )
+    symptoms = {
+        str(symptom)
+        for item in clusters
+        for symptom in item.get("explained_symptoms", [])
+        if str(symptom).strip()
+    }
+    return {
+        "eligible_cluster_count": len(clusters),
+        "evidence_independent": evidence_independent,
+        "explained_symptom_count": len(symptoms),
+        "compound_expected": compound_expected,
+        "compound_cluster_match": compound_match,
+        "ai_review_succeeded": bool(
+            conclusion.get("ai_review_status") == "succeeded"
+            and conclusion.get("ai_review_scope") == "session"
+        ),
     }
 
 
@@ -90,9 +131,25 @@ def _score_root(conclusion: dict[str, Any], expected: dict[str, Any]) -> dict[st
             "root_entity": {"matched": abstained, "expected": "abstention", "actual": None},
         }
 
+    if conclusion.get("abstained"):
+        return {
+            "score": 0.0,
+            "exact_root_match": False,
+            "abstention_match": False,
+            "location_type": _dimension(False, expected.get("location_type"), conclusion.get("location_type")),
+            "domain_type": _dimension(False, expected.get("domain_type"), conclusion.get("domain_type")),
+            "classification": _dimension(False, expected.get("classification"), conclusion.get("classification")),
+            "root_entity": _dimension(False, expected.get("root_entity"), conclusion.get("root_entity")),
+        }
+
+    compound_expected = "compound_incident" in _as_set(expected.get("classification"))
     checks = {
-        "location_type": _matches(conclusion.get("location_type"), expected.get("location_type")),
-        "domain_type": _matches(conclusion.get("domain_type"), expected.get("domain_type")),
+        "location_type": _matches(
+            conclusion.get("location_type"), expected.get("location_type"), require_all=compound_expected,
+        ),
+        "domain_type": _matches(
+            conclusion.get("domain_type"), expected.get("domain_type"), require_all=compound_expected,
+        ),
         "classification": _matches(
             conclusion.get("classification"),
             expected.get("classification"),
@@ -186,12 +243,55 @@ def _score_recovery(bundle: dict[str, Any], oracle_recovery: dict[str, Any]) -> 
 
 
 def _bundle_collectors(bundle: dict[str, Any]) -> set[str]:
-    collectors = {str(task.get("collector_type")) for task in bundle.get("tasks", []) if task.get("collector_type")}
+    collectors: set[str] = set()
+    task_collectors = {
+        str(task.get("id")): str(task.get("collector_type"))
+        for task in bundle.get("tasks", [])
+        if task.get("id") and task.get("collector_type")
+    }
+    for artifact in bundle.get("artifacts", []):
+        if not _artifact_evidence_valid(artifact):
+            continue
+        collector = task_collectors.get(str(artifact.get("task_id"))) or str(artifact.get("collector_family") or artifact.get("artifact_type") or "")
+        if collector:
+            collectors.add(_collector_family(collector))
     for evidence in bundle.get("evidence", []):
         probe = evidence.get("query_or_probe")
-        if probe:
+        if probe and _observed_evidence_valid(evidence.get("observed_value")):
             collectors.add(_collector_family(str(probe)))
     return collectors
+
+
+def _artifact_evidence_valid(artifact: dict[str, Any]) -> bool:
+    metadata = artifact.get("metadata") if isinstance(artifact.get("metadata"), dict) else {}
+    value = metadata.get("data") if isinstance(metadata.get("data"), (dict, list)) else metadata
+    return _observed_evidence_valid(value)
+
+
+def _observed_evidence_valid(value: Any) -> bool:
+    if isinstance(value, list):
+        return bool(value)
+    if not isinstance(value, dict):
+        return False
+    validity = value.get("evidence_validity")
+    if isinstance(validity, dict) and validity.get("evidence_status"):
+        return validity.get("evidence_status") in {"valid", "partial"}
+    summary = value.get("summary") if isinstance(value.get("summary"), dict) else value
+    if any(summary.get(key) for key in (
+        "sample_count", "process_cpu_sample_count", "window_records", "checks", "events", "top_functions",
+    )):
+        return True
+    if isinstance(value.get("checks"), list):
+        return True
+    if isinstance(value.get("connectivity"), dict):
+        return True
+    if isinstance(value.get("sys_metrics"), dict) or isinstance(value.get("ebpf_metrics"), dict):
+        return True
+    if value.get("artifact_refs") and value.get("confidence_inputs"):
+        confidence = value.get("confidence_inputs") or {}
+        statuses = confidence.get("evidence_validity_by_family") if isinstance(confidence, dict) else {}
+        return any(status in {"valid", "partial"} for status in statuses.values()) if isinstance(statuses, dict) else False
+    return False
 
 
 def _collector_family(value: str) -> str:
@@ -213,12 +313,20 @@ def _has_root_prediction(conclusion: dict[str, Any]) -> bool:
     return any(conclusion.get(key) for key in ("location_type", "domain_type", "classification", "root_entity"))
 
 
-def _matches(actual: Any, expected: Any, aliases: list[Any] | None = None) -> bool:
+def _matches(
+    actual: Any,
+    expected: Any,
+    aliases: list[Any] | None = None,
+    *,
+    require_all: bool = False,
+) -> bool:
     if expected is None:
         return True
-    expected_values = _as_set(expected) | _as_set(aliases or [])
+    expected_values = _as_set(expected)
     actual_values = _as_set(actual)
-    return bool(expected_values & actual_values)
+    if require_all and isinstance(expected, list):
+        return expected_values.issubset(actual_values)
+    return bool((expected_values | _as_set(aliases or [])) & actual_values)
 
 
 def _as_set(value: Any) -> set[str]:
@@ -248,6 +356,14 @@ def _dimension_accuracy(results: list[dict[str, Any]]) -> dict[str, dict[str, in
             if item.get("matched"):
                 output[name]["matched"] += 1
     return output
+
+
+def _mean_dimension(results: list[dict[str, Any]], dimension: str, field: str) -> float:
+    values = [
+        bool(item.get("dimensions", {}).get(dimension, {}).get(field))
+        for item in results
+    ]
+    return sum(values) / len(values) if values else 0.0
 
 
 def _repeat_consistency(by_case: dict[str, list[dict[str, Any]]]) -> float | None:

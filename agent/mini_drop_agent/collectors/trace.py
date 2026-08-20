@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.mini_drop_agent.collectors.base import CollectorResult, CollectorTask
+from agent.mini_drop_agent.collectors.evidence_validity import trace_evidence_state
 from agent.mini_drop_agent.collectors.perf import PerfCollector
 
 
@@ -38,6 +39,7 @@ class TraceEndpointCollector:
         stack_result = self._collect_stack(task, config, output_dir)
         trace_source = _load_trace_source(task, config)
         profile = _build_profile(task, config, stack_result, trace_source)
+        profile["evidence_validity"] = trace_evidence_state(profile)
 
         profile_path = os.path.join(output_dir, "trace_endpoint_profile.json")
         with open(profile_path, "w", encoding="utf-8") as fh:
@@ -61,7 +63,7 @@ class TraceEndpointCollector:
         )
         # 即使栈采样被权限阻断，也必须上传结构化 profile，保留可审计的失败证据。
         return CollectorResult(
-            ok=status != "blocked",
+            ok=profile["evidence_validity"]["evidence_status"] in {"valid", "partial", "empty_window"},
             reason=reason,
             artifacts=artifacts,
         )
@@ -191,7 +193,7 @@ def _build_profile(
         config=config,
         window=window,
     )
-    max_level = "function"
+    max_level = "function" if top_functions else "process"
     if hotspots and any(item.get("call_path") for item in hotspots):
         max_level = "call_path"
     elif bindings:
@@ -199,8 +201,10 @@ def _build_profile(
     status = "blocked" if stack.get("status") == "blocked" else "unmatched"
     if bindings or hotspots:
         status = "completed" if max_level == "call_path" else "partial"
-    elif trace.get("status") in {"unavailable", "empty_window"} and stack.get("status") == "completed":
+    elif top_functions and trace.get("status") in {"unavailable", "empty_window"} and stack.get("status") == "completed":
         status = "partial"
+    elif stack.get("status") != "blocked" and not top_functions and trace.get("status") in {"unavailable", "empty_window"}:
+        status = "empty_window"
     return {
         "schema_version": "1.0",
         "task_id": task.id,
