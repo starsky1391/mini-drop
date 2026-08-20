@@ -126,6 +126,10 @@ select sink.getNode(), source, sink, "same anchored node"
                     "expected_relation": "supports",
                     "source_anchor": {"file": "src/werkzeug/routing.py", "line": 1066},
                     "sink_anchor": {"file": "src/werkzeug/routing.py", "line": 1119},
+                    "path_anchors": [
+                        {"file": "src/werkzeug/routing.py", "line": 1066},
+                        {"file": "src/werkzeug/routing.py", "line": 1119},
+                    ],
                     "query": query,
                 },
             },

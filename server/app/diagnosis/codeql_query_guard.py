@@ -9,7 +9,7 @@ from typing import Any
 
 
 MAX_CODEQL_QUERY_CHARS = 12_000
-CODEQL_TEMPLATE_VERSION = "python-global-taint-v1"
+CODEQL_TEMPLATE_VERSION = "python-retention-flow-v2"
 
 
 def validate_ai_generated_codeql_query(
@@ -35,14 +35,30 @@ def validate_ai_generated_codeql_query(
     normalized_allowed = [item for item in normalized_allowed if item]
     if allowed_anchors is not None and not normalized_allowed:
         raise ValueError("CodeQL query 没有可选择的已验证源码锚点")
-    source_anchor = _normalize_anchor(value.get("source_anchor"))
-    sink_anchor = _normalize_anchor(value.get("sink_anchor"))
-    if source_anchor is None or sink_anchor is None:
-        raise ValueError("CodeQL query 必须选择 source_anchor 和 sink_anchor")
-    if _anchor_key(source_anchor) == _anchor_key(sink_anchor):
-        raise ValueError("source_anchor 和 sink_anchor 不能相同")
+    raw_path_anchors = value.get("path_anchors")
+    path_anchors: list[dict[str, Any]] = []
+    if isinstance(raw_path_anchors, list) and raw_path_anchors:
+        if not 2 <= len(raw_path_anchors) <= 6:
+            raise ValueError("CodeQL query 必须选择 2-6 个有序 path_anchors")
+        normalized_path = [_normalize_anchor(anchor) for anchor in raw_path_anchors]
+        if any(anchor is None for anchor in normalized_path):
+            raise ValueError("CodeQL path_anchors 包含非法源码锚点")
+        path_anchors = [anchor for anchor in normalized_path if anchor is not None]
+    else:
+        path_anchors = [
+            item
+            for item in (
+                _normalize_anchor(value.get("source_anchor")),
+                _normalize_anchor(value.get("sink_anchor")),
+            )
+            if item is not None
+        ]
+    if not 2 <= len(path_anchors) <= 6:
+        raise ValueError("CodeQL query 必须选择 2-6 个有序 path_anchors")
+    if len({_anchor_key(item) for item in path_anchors}) != len(path_anchors):
+        raise ValueError("CodeQL path_anchors 不能重复")
     if normalized_allowed:
-        if not _anchor_allowed(source_anchor, normalized_allowed) or not _anchor_allowed(sink_anchor, normalized_allowed):
+        if any(not _anchor_allowed(anchor, normalized_allowed) for anchor in path_anchors):
             raise ValueError("CodeQL query 选择了未验证的源码锚点")
 
     raw_query = str(value.get("query") or "").strip()
@@ -52,8 +68,9 @@ def validate_ai_generated_codeql_query(
         "investigation_question": question,
         "candidate_id": candidate_id,
         "expected_relation": expected_relation,
-        "source_anchor": source_anchor,
-        "sink_anchor": sink_anchor,
+        "source_anchor": path_anchors[0],
+        "sink_anchor": path_anchors[-1],
+        "path_anchors": path_anchors,
         "template_version": CODEQL_TEMPLATE_VERSION,
     }
     digest = hashlib.sha256(
@@ -71,13 +88,30 @@ def validate_ai_generated_codeql_query(
 
 def render_version_locked_codeql_query(value: dict[str, Any]) -> str:
     """Render executable QL from guarded intent, never from model-written QL."""
-    source = _normalize_anchor(value.get("source_anchor"))
-    sink = _normalize_anchor(value.get("sink_anchor"))
-    if source is None or sink is None:
-        raise ValueError("缺少可执行的 CodeQL source/sink 锚点")
-    source_file = _ql_string(source["file"])
-    sink_file = _ql_string(sink["file"])
+    raw_anchors = value.get("path_anchors")
+    if not isinstance(raw_anchors, list) or not 2 <= len(raw_anchors) <= 6:
+        raise ValueError("缺少可执行的 CodeQL 有序锚点链")
+    normalized_anchors = [_normalize_anchor(anchor) for anchor in raw_anchors]
+    if any(anchor is None for anchor in normalized_anchors):
+        raise ValueError("CodeQL 有序锚点链包含非法源码锚点")
+    anchors = [anchor for anchor in normalized_anchors if anchor is not None]
     candidate = re.sub(r"[^A-Za-z0-9_\-]", "_", str(value.get("candidate_id") or "candidate"))[:80]
+    predicates = "\n\n".join(
+        _render_anchor_predicate(index, anchor)
+        for index, anchor in enumerate(anchors)
+    )
+    sources = "\n    or\n    ".join(
+        f"miniDropAnchor{index}(source)"
+        for index in range(len(anchors) - 1)
+    )
+    sinks = "\n    or\n    ".join(
+        f"miniDropAnchor{index}(sink)"
+        for index in range(1, len(anchors))
+    )
+    segments = "\n  or\n  ".join(
+        f"(miniDropAnchor{index}(source.getNode()) and miniDropAnchor{index + 1}(sink.getNode()))"
+        for index in range(len(anchors) - 1)
+    )
     return f'''/**
  * @name Mini-Drop guarded mechanism path
  * @description Version-locked global flow between two evidence-verified source anchors.
@@ -89,22 +123,36 @@ import python
 import semmle.python.dataflow.new.DataFlow
 import semmle.python.dataflow.new.TaintTracking
 
+{predicates}
+
 private module MiniDropConfig implements DataFlow::ConfigSig {{
   predicate isSource(DataFlow::Node source) {{
-    exists(Expr expression |
-      source.asExpr() = expression and
-      expression.getLocation().getFile().getRelativePath() = "{source_file}" and
-      expression.getLocation().getStartLine() <= {source["line"]} and
-      expression.getLocation().getEndLine() >= {source["line"]}
-    )
+    {sources}
   }}
 
   predicate isSink(DataFlow::Node sink) {{
-    exists(Expr expression |
-      sink.asExpr() = expression and
-      expression.getLocation().getFile().getRelativePath() = "{sink_file}" and
-      expression.getLocation().getStartLine() <= {sink["line"]} and
-      expression.getLocation().getEndLine() >= {sink["line"]}
+    {sinks}
+  }}
+
+  predicate isAdditionalFlowStep(DataFlow::Node nodeFrom, DataFlow::Node nodeTo) {{
+    exists(DataFlow::CallCfgNode call, int index |
+      nodeFrom = call.getArg(index) and
+      nodeTo = call
+    )
+    or
+    exists(DataFlow::CallCfgNode call, DataFlow::AttrRead method |
+      call.getFunction() = method and
+      method.getAttributeName() in ["append", "extend"] and
+      nodeFrom = call.getArg(0) and
+      nodeTo = method.getObject()
+    )
+    or
+    exists(DataFlow::AttrRead before, DataFlow::AttrRead after |
+      nodeFrom = before and
+      nodeTo = after and
+      before.getAttributeName() = after.getAttributeName() and
+      before.getObject().asExpr().toString() = after.getObject().asExpr().toString() and
+      before.getLocation().getFile() = after.getLocation().getFile()
     )
   }}
 }}
@@ -113,7 +161,9 @@ private module MiniDropFlow = TaintTracking::Global<MiniDropConfig>;
 import MiniDropFlow::PathGraph
 
 from MiniDropFlow::PathNode source, MiniDropFlow::PathNode sink
-where MiniDropFlow::flowPath(source, sink)
+where MiniDropFlow::flowPath(source, sink) and (
+  {segments}
+)
 select sink.getNode(), source, sink,
   "Evidence-verified value flow from $@ to $@.", source.getNode(), "source", sink.getNode(), "sink"
 '''
@@ -160,3 +210,16 @@ def _anchor_allowed(value: dict[str, Any], allowed: list[dict[str, Any]]) -> boo
 
 def _ql_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _render_anchor_predicate(index: int, anchor: dict[str, Any]) -> str:
+    file_name = _ql_string(str(anchor["file"]))
+    line = int(anchor["line"])
+    return f'''private predicate miniDropAnchor{index}(DataFlow::Node node) {{
+  exists(Expr expression |
+    node.asExpr() = expression and
+    expression.getLocation().getFile().getRelativePath() = "{file_name}" and
+    expression.getLocation().getStartLine() <= {line} and
+    expression.getLocation().getEndLine() >= {line}
+  )
+}}'''

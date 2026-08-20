@@ -5,8 +5,14 @@ import json
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from agent.mini_drop_agent.collectors.base import CollectorTask
 from agent.mini_drop_agent.collectors.source_mechanism import SourceMechanismCollector
+from server.app.diagnosis.codeql_query_guard import (
+    render_version_locked_codeql_query,
+    validate_ai_generated_codeql_query,
+)
 
 
 def _task(repo, sarif, **options):
@@ -184,6 +190,10 @@ select sink.getNode(), source, sink, "same node"
                     "expected_relation": "supports",
                     "source_anchor": {"file": "src/routing.py", "line": 20, "symbol": "compile"},
                     "sink_anchor": {"file": "src/routing.py", "line": 21, "symbol": "compile"},
+                    "path_anchors": [
+                        {"file": "src/routing.py", "line": 20, "symbol": "compile"},
+                        {"file": "src/routing.py", "line": 21, "symbol": "compile"},
+                    ],
                     "query": query,
                 },
                 "line_candidates": [
@@ -217,6 +227,7 @@ select sink.getNode(), source, sink, "same node"
     assert payload["query"]["query_spec_hash"].startswith("sha256:")
     assert payload["query"]["raw_query_hash"].startswith("sha256:")
     assert payload["mechanism_paths"][0]["candidate_id"] == "ai_proposal_bound_method"
+    assert payload["segment_coverage"]["complete"] is True
     assert "query" not in payload["query"]
     query_artifact = next(item for item in result.artifacts if item["artifact_type"] == "codeql_query")
     executed_query = Path(query_artifact["local_path"]).read_text(encoding="utf-8")
@@ -225,3 +236,102 @@ select sink.getNode(), source, sink, "same node"
     assert "where source = sink" not in executed_query
     qlpack = Path(query_artifact["local_path"]).parent / "qlpack.yml"
     assert "codeql/python-all: '*'" in qlpack.read_text(encoding="utf-8")
+
+
+def test_codeql_guard_rejects_out_of_range_duplicate_and_unverified_anchors():
+    allowed = [
+        {"file": "src/routing.py", "line": line}
+        for line in range(20, 27)
+    ]
+    base = {
+        "investigation_question": "值是否沿锚点链传播？",
+        "candidate_id": "candidate_1",
+        "expected_relation": "supports",
+    }
+    invalid_paths = [
+        [allowed[0]],
+        allowed[:6] + [allowed[6]],
+        [allowed[0], allowed[0]],
+        [allowed[0], {"file": "src/other.py", "line": 99}],
+        [allowed[0], {"file": "../routing.py", "line": 21}, allowed[1]],
+    ]
+
+    for path_anchors in invalid_paths:
+        with pytest.raises(ValueError):
+            validate_ai_generated_codeql_query(
+                {**base, "path_anchors": path_anchors},
+                allowed_candidate_ids={"candidate_1"},
+                allowed_anchors=allowed,
+            )
+
+
+def test_codeql_renderer_emits_each_ordered_anchor_segment():
+    anchors = [
+        {"file": "src/routing.py", "line": 1066},
+        {"file": "src/routing.py", "line": 962},
+        {"file": "src/routing.py", "line": 852},
+        {"file": "src/routing.py", "line": 1119},
+    ]
+
+    query = render_version_locked_codeql_query({
+        "candidate_id": "bound_method_retention",
+        "path_anchors": anchors,
+    })
+
+    for index in range(4):
+        assert f"private predicate miniDropAnchor{index}" in query
+    for index in range(3):
+        assert (
+            f"miniDropAnchor{index}(source.getNode()) and "
+            f"miniDropAnchor{index + 1}(sink.getNode())"
+        ) in query
+
+
+def test_codeql_segment_coverage_requires_every_ordered_segment():
+    anchors = [
+        {"file": "src/routing.py", "line": 1066},
+        {"file": "src/routing.py", "line": 962},
+        {"file": "src/routing.py", "line": 852},
+        {"file": "src/routing.py", "line": 1119},
+    ]
+    metadata = {"path_anchors": anchors}
+    partial_paths = [
+        {"evidence_ref": "source_mechanism.mechanism_paths[0]", "anchor_matches": [0, 1]},
+        {"evidence_ref": "source_mechanism.mechanism_paths[1]", "anchor_matches": [1, 2]},
+    ]
+    complete_paths = [
+        *partial_paths,
+        {"evidence_ref": "source_mechanism.mechanism_paths[2]", "anchor_matches": [2, 3]},
+    ]
+
+    partial = SourceMechanismCollector._segment_coverage(partial_paths, metadata, anchors)
+    complete = SourceMechanismCollector._segment_coverage(complete_paths, metadata, anchors)
+
+    assert partial == {
+        "required_segments": 3,
+        "covered_segments": 2,
+        "complete": False,
+        "segments": [
+            {
+                "from_anchor_index": 0,
+                "to_anchor_index": 1,
+                "covered": True,
+                "evidence_refs": ["source_mechanism.mechanism_paths[0]"],
+            },
+            {
+                "from_anchor_index": 1,
+                "to_anchor_index": 2,
+                "covered": True,
+                "evidence_refs": ["source_mechanism.mechanism_paths[1]"],
+            },
+            {
+                "from_anchor_index": 2,
+                "to_anchor_index": 3,
+                "covered": False,
+                "evidence_refs": [],
+            },
+        ],
+    }
+    assert complete["required_segments"] == 3
+    assert complete["covered_segments"] == 3
+    assert complete["complete"] is True

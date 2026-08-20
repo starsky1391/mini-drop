@@ -19,7 +19,7 @@ from server.app.diagnosis.codeql_query_guard import (
 
 class SourceMechanismCollector:
     OUTPUT_BASE = "/tmp/mini-drop"
-    MAX_PATHS = 12
+    MAX_PATHS = 32
     MAX_NODES = 32
     MAX_MESSAGE_LENGTH = 300
     MAX_ANCHORS = 32
@@ -100,8 +100,12 @@ class SourceMechanismCollector:
                     )
                 except ValueError as exc:
                     return self._blocked(output_dir, "ai_generated_query_rejected", str(exc), revision=actual)
-                query_metadata["source_anchor"] = self._tracked_anchor(query_metadata["source_anchor"], tracked_files)
-                query_metadata["sink_anchor"] = self._tracked_anchor(query_metadata["sink_anchor"], tracked_files)
+                query_metadata["path_anchors"] = [
+                    self._tracked_anchor(anchor, tracked_files)
+                    for anchor in query_metadata["path_anchors"]
+                ]
+                query_metadata["source_anchor"] = query_metadata["path_anchors"][0]
+                query_metadata["sink_anchor"] = query_metadata["path_anchors"][-1]
                 query_artifact = output_dir / "guarded-investigation.ql"
                 query_artifact.write_text(
                     render_version_locked_codeql_query(query_metadata),
@@ -167,7 +171,13 @@ class SourceMechanismCollector:
         paths = self._mechanism_paths(sarif, anchors, query_metadata=query_metadata)
         source_hash = hashlib.sha256(f"{identity}\0{actual}".encode("utf-8")).hexdigest()
         anchored_paths = [path for path in paths if path.get("anchor_matches")]
-        status = "valid" if anchored_paths else "partial" if paths else "empty_window"
+        segment_coverage = self._segment_coverage(paths, query_metadata, anchors)
+        status = (
+            "valid"
+            if anchored_paths and segment_coverage.get("complete", True)
+            else "partial" if paths
+            else "empty_window"
+        )
         payload = {
             "schema_version": "1.0",
             "producer": "codeql",
@@ -179,6 +189,7 @@ class SourceMechanismCollector:
             "database_ref": f"codeql-cache:{cache_key}",
             "line_anchors": anchors,
             "mechanism_paths": paths,
+            "segment_coverage": segment_coverage,
             "raw_artifact_refs": [
                 "artifact:codeql_sarif",
                 *(["artifact:codeql_query"] if query_artifact else []),
@@ -188,9 +199,9 @@ class SourceMechanismCollector:
                 "artifact_status": "produced",
                 "evidence_status": status,
                 "reason": (
-                    "codeql_anchored_code_flow_paths"
-                    if anchored_paths
-                    else "codeql_paths_without_line_anchor" if paths
+                    "codeql_complete_anchored_code_flow"
+                    if status == "valid"
+                    else "codeql_incomplete_segment_coverage" if paths
                     else "no_codeql_code_flow_path"
                 ),
             },
@@ -328,6 +339,51 @@ class SourceMechanismCollector:
             ):
                 matches.append(index)
         return matches
+
+    @classmethod
+    def _segment_coverage(
+        cls,
+        paths: list[dict[str, Any]],
+        query_metadata: dict[str, Any],
+        anchors: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        path_anchors = query_metadata.get("path_anchors")
+        if not isinstance(path_anchors, list) or len(path_anchors) < 2:
+            return {"required_segments": 0, "covered_segments": 0, "complete": True, "segments": []}
+        anchor_indexes = []
+        for anchor in path_anchors:
+            key = (str(anchor.get("file") or "").replace("\\", "/"), int(anchor.get("line") or 0))
+            anchor_indexes.append(next(
+                (
+                    index
+                    for index, item in enumerate(anchors)
+                    if str(item.get("file") or "").replace("\\", "/") == key[0]
+                    and int(item.get("line") or 0) == key[1]
+                ),
+                -1,
+            ))
+        segments = []
+        for index in range(len(anchor_indexes) - 1):
+            start = anchor_indexes[index]
+            end = anchor_indexes[index + 1]
+            evidence_refs = [
+                str(path.get("evidence_ref") or "")
+                for path in paths
+                if start in path.get("anchor_matches", []) and end in path.get("anchor_matches", [])
+            ]
+            segments.append({
+                "from_anchor_index": index,
+                "to_anchor_index": index + 1,
+                "covered": bool(evidence_refs),
+                "evidence_refs": evidence_refs,
+            })
+        covered = sum(1 for segment in segments if segment["covered"])
+        return {
+            "required_segments": len(segments),
+            "covered_segments": covered,
+            "complete": covered == len(segments),
+            "segments": segments,
+        }
 
     @classmethod
     def _anchors(cls, value: Any) -> list[dict[str, Any]]:
