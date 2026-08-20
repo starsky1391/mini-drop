@@ -1,5 +1,7 @@
 """Scheme B deployment contract tests."""
 
+from pathlib import Path
+
 from docs.ai_ops_v2_test.scripts.deploy_scheme_b_vm import SCHEME_B_FILES
 
 
@@ -21,3 +23,12 @@ def test_scheme_b_syncs_runtime_collectors_and_session_ai_modules():
     }
 
     assert required <= set(SCHEME_B_FILES)
+
+
+def test_agent_uses_codeql_bundle_with_python_query_packs():
+    dockerfile = Path("deploy/dockerfiles/agent.Dockerfile").read_text(encoding="utf-8")
+
+    assert "github/codeql-action/releases/download/codeql-bundle-v" in dockerfile
+    assert "codeql-cli-binaries" not in dockerfile
+    assert "qlpacks/codeql/python-all" in dockerfile
+    assert "qlpacks/codeql/python-queries" in dockerfile

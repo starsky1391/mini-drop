@@ -23,11 +23,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     universal-ctags \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL "https://github.com/github/codeql-cli-binaries/releases/download/v${CODEQL_VERSION}/codeql-linux64.zip" \
-      -o /tmp/codeql.zip \
-    && unzip -q /tmp/codeql.zip -d /opt \
+RUN curl -fsSL "https://github.com/github/codeql-action/releases/download/codeql-bundle-v${CODEQL_VERSION}/codeql-bundle-linux64.tar.gz" \
+      -o /tmp/codeql-bundle.tar.gz \
+    && tar -xzf /tmp/codeql-bundle.tar.gz -C /opt \
     && ln -s /opt/codeql/codeql /usr/local/bin/codeql \
-    && rm -f /tmp/codeql.zip
+    && test -f /opt/codeql/qlpacks/codeql/python-all/*/qlpack.yml \
+    && test -f /opt/codeql/qlpacks/codeql/python-queries/*/qlpack.yml \
+    && rm -f /tmp/codeql-bundle.tar.gz
 
 RUN curl -fsSL "https://github.com/ivanyu/pyheap/archive/refs/tags/v${PYHEAP_VERSION}.tar.gz" \
       -o /tmp/pyheap.tar.gz \
