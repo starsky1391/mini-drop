@@ -124,6 +124,8 @@ select sink.getNode(), source, sink, "same anchored node"
                         for node in [*layer.primary_causes, *layer.secondary_causes, *layer.unknown_causes, *layer.rejected_causes]
                     ),
                     "expected_relation": "supports",
+                    "source_anchor": {"file": "src/werkzeug/routing.py", "line": 1066},
+                    "sink_anchor": {"file": "src/werkzeug/routing.py", "line": 1119},
                     "query": query,
                 },
             },
@@ -135,19 +137,35 @@ select sink.getNode(), source, sink, "same anchored node"
         result = generate_session_investigation_review(
             diagnosis_id="diag-codeql",
             session_tree=analysis.controlled_ai_tree,
-            evidence_catalog=[],
+            evidence_catalog=[{
+                "query_or_probe": "source_snapshot",
+                "observed_value": {
+                    "producer": "git+universal-ctags",
+                    "snippets": [],
+                    "enclosing_contexts": [{
+                        "file": "src/werkzeug/routing.py",
+                        "symbol": "BuilderCompiler",
+                        "reference_paths": [{
+                            "upstream_candidates": [{"line": 1066, "expression": "converter.to_url"}],
+                            "source_lines": [{"line": 1119, "text": "co = types.CodeType(*code_args)"}],
+                        }],
+                    }],
+                },
+            }],
             probe_manifest=build_probe_manifest(),
             allowed_evidence_families=["source_mechanism_query"],
         )
 
     assert result["ai_review_status"] == "succeeded"
     guarded = result["probe_inputs"]["source_mechanism_query"]["ai_generated_query"]
-    assert guarded["origin"] == "ai_guarded"
-    assert guarded["query_hash"].startswith("sha256:")
-    assert guarded["query"] == query.strip()
+    assert guarded["origin"] == "ai_guarded_anchor_spec"
+    assert guarded["query_spec_hash"].startswith("sha256:")
+    assert guarded["raw_query_hash"].startswith("sha256:")
+    assert guarded["source_anchor"]["line"] == 1066
+    assert "query" not in guarded
 
 
-def test_session_investigation_review_rejects_codeql_query_path_import():
+def test_session_investigation_review_rejects_unverified_codeql_anchor():
     evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
     analysis = analyze_evidence(evidence, [])
     response = {
@@ -163,7 +181,8 @@ def test_session_investigation_review_rejects_codeql_query_path_import():
                         for node in [*layer.primary_causes, *layer.secondary_causes, *layer.unknown_causes, *layer.rejected_causes]
                     ),
                     "expected_relation": "supports",
-                    "query": "/** @kind path-problem */\nimport \"/tmp/arbitrary.ql\"\nselect 1",
+                    "source_anchor": {"file": "src/routing.py", "line": 20},
+                    "sink_anchor": {"file": "/tmp/arbitrary.py", "line": 99},
                 },
             },
         },
@@ -174,7 +193,17 @@ def test_session_investigation_review_rejects_codeql_query_path_import():
         result = generate_session_investigation_review(
             diagnosis_id="diag-codeql-invalid",
             session_tree=analysis.controlled_ai_tree,
-            evidence_catalog=[],
+            evidence_catalog=[{
+                "query_or_probe": "source_snapshot",
+                "observed_value": {
+                    "producer": "git+universal-ctags",
+                    "snippets": [
+                        {"file": "src/routing.py", "focus_line": 20, "symbol": "compile"},
+                        {"file": "src/routing.py", "focus_line": 21, "symbol": "compile"},
+                    ],
+                    "enclosing_contexts": [],
+                },
+            }],
             probe_manifest=build_probe_manifest(),
             allowed_evidence_families=["source_mechanism_query"],
         )

@@ -99,7 +99,7 @@ def _investigation_scope(options: dict[str, Any]) -> dict[str, Any]:
         for key, value in {
             "source_revision": options.get("source_revision") or options.get("repo_revision"),
             "line_candidates": options.get("line_candidates"),
-            "codeql_query_hash": generated.get("query_hash"),
+            "codeql_query_hash": generated.get("query_spec_hash") or generated.get("query_hash"),
             "investigation_question": generated.get("investigation_question"),
             "object_type_hints": options.get("object_type_hints"),
             "pyheap_dump_path": options.get("pyheap_dump_path"),

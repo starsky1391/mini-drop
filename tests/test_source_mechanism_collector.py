@@ -177,15 +177,21 @@ select sink.getNode(), source, sink, "same node"
         "options": {
             key: value for key, value in task.options.items() if key != "codeql_sarif_path"
         } | {
-            "ai_generated_query": {
-                "origin": "ai_guarded",
-                "investigation_question": "值是否进入生成代码常量？",
-                "candidate_id": "ai_proposal_bound_method",
-                "expected_relation": "supports",
-                "query": query,
+                "ai_generated_query": {
+                    "origin": "ai_guarded",
+                    "investigation_question": "值是否进入生成代码常量？",
+                    "candidate_id": "ai_proposal_bound_method",
+                    "expected_relation": "supports",
+                    "source_anchor": {"file": "src/routing.py", "line": 20, "symbol": "compile"},
+                    "sink_anchor": {"file": "src/routing.py", "line": 21, "symbol": "compile"},
+                    "query": query,
+                },
+                "line_candidates": [
+                    {"file": "src/routing.py", "line": 20, "symbol": "compile"},
+                    {"file": "src/routing.py", "line": 21, "symbol": "compile"},
+                ],
             },
-        },
-    })
+        })
 
     def fake_run(command, timeout):
         if "create" in command:
@@ -195,7 +201,11 @@ select sink.getNode(), source, sink, "same node"
             _sarif(Path(output))
         return mock.MagicMock(returncode=0, stdout=b"", stderr=b"")
 
-    with mock.patch.object(collector, "_git", side_effect=["abc123", "abc123", "origin/repo"]), mock.patch.object(
+    with mock.patch.object(
+        collector,
+        "_git",
+        side_effect=["abc123", "abc123", "origin/repo", "src/routing.py"],
+    ), mock.patch.object(
         collector, "_run", side_effect=fake_run
     ), mock.patch("shutil.which", return_value="/usr/local/bin/codeql"):
         result = collector.collect(task)
@@ -203,7 +213,13 @@ select sink.getNode(), source, sink, "same node"
     assert result.ok is True
     assert any(item["artifact_type"] == "codeql_query" for item in result.artifacts)
     payload = next(item["metadata"]["data"] for item in result.artifacts if item["artifact_type"] == "source_mechanism_json")
-    assert payload["query"]["origin"] == "ai_guarded"
-    assert payload["query"]["query_hash"].startswith("sha256:")
+    assert payload["query"]["origin"] == "ai_guarded_anchor_spec"
+    assert payload["query"]["query_spec_hash"].startswith("sha256:")
+    assert payload["query"]["raw_query_hash"].startswith("sha256:")
     assert payload["mechanism_paths"][0]["candidate_id"] == "ai_proposal_bound_method"
     assert "query" not in payload["query"]
+    query_artifact = next(item for item in result.artifacts if item["artifact_type"] == "codeql_query")
+    executed_query = Path(query_artifact["local_path"]).read_text(encoding="utf-8")
+    assert "DataFlow::ConfigSig" in executed_query
+    assert "TaintTracking::Global<MiniDropConfig>" in executed_query
+    assert "where source = sink" not in executed_query

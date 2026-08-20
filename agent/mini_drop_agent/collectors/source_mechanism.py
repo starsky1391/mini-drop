@@ -11,7 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from agent.mini_drop_agent.collectors.base import CollectorResult, CollectorTask
-from server.app.diagnosis.codeql_query_guard import validate_ai_generated_codeql_query
+from server.app.diagnosis.codeql_query_guard import (
+    render_version_locked_codeql_query,
+    validate_ai_generated_codeql_query,
+)
 
 
 class SourceMechanismCollector:
@@ -19,6 +22,7 @@ class SourceMechanismCollector:
     MAX_PATHS = 12
     MAX_NODES = 32
     MAX_MESSAGE_LENGTH = 300
+    MAX_ANCHORS = 32
 
     def collect(self, task: CollectorTask) -> CollectorResult:
         output_dir = Path(self.OUTPUT_BASE) / task.id
@@ -47,7 +51,10 @@ class SourceMechanismCollector:
                 revision=actual or revision,
             )
 
-        pack_version = os.getenv("MINI_DROP_CODEQL_QUERY_PACK_VERSION", "unversioned").strip() or "unversioned"
+        pack_version = os.getenv(
+            "MINI_DROP_CODEQL_QUERY_PACK_VERSION",
+            "bundle-2.26.3-python-all-7.2.3",
+        ).strip() or "bundle-2.26.3-python-all-7.2.3"
         identity = self._git(source_root, ["config", "--get", "remote.origin.url"]) or str(source_root)
         cache_key = hashlib.sha256(
             f"{identity}\0{actual}\0python\0{pack_version}".encode("utf-8")
@@ -77,12 +84,29 @@ class SourceMechanismCollector:
             if not codeql:
                 return self._blocked(output_dir, "codeql_not_installed", "CodeQL CLI 不可用", revision=actual)
             if generated_query:
+                tracked_files = self._git(source_root, ["ls-files"]).splitlines()
+                anchors = self._tracked_anchors(anchors, tracked_files)
+                if not anchors:
+                    return self._blocked(
+                        output_dir,
+                        "line_anchor_missing",
+                        "已验证行锚点无法映射到当前 revision",
+                        revision=actual,
+                    )
                 try:
-                    query_metadata = validate_ai_generated_codeql_query(generated_query)
+                    query_metadata = validate_ai_generated_codeql_query(
+                        generated_query,
+                        allowed_anchors=anchors,
+                    )
                 except ValueError as exc:
                     return self._blocked(output_dir, "ai_generated_query_rejected", str(exc), revision=actual)
-                query_artifact = output_dir / "ai-investigation.ql"
-                query_artifact.write_text(query_metadata["query"], encoding="utf-8")
+                query_metadata["source_anchor"] = self._tracked_anchor(query_metadata["source_anchor"], tracked_files)
+                query_metadata["sink_anchor"] = self._tracked_anchor(query_metadata["sink_anchor"], tracked_files)
+                query_artifact = output_dir / "guarded-investigation.ql"
+                query_artifact.write_text(
+                    render_version_locked_codeql_query(query_metadata),
+                    encoding="utf-8",
+                )
                 query_source = query_artifact
             elif not suite_text:
                 return self._blocked(output_dir, "managed_query_suite_missing", "未配置受管理 CodeQL query suite", revision=actual)
@@ -90,6 +114,18 @@ class SourceMechanismCollector:
                 query_source = Path(suite_text).resolve()
             if not query_source.is_file():
                 return self._blocked(output_dir, "managed_query_suite_missing", "受管理 CodeQL query suite 不存在", revision=actual)
+            if query_artifact is not None:
+                compiled = self._run(
+                    [codeql, "query", "compile", str(query_source)],
+                    timeout=max(120, task.duration_sec + 60),
+                )
+                if compiled.returncode != 0:
+                    return self._blocked(
+                        output_dir,
+                        "codeql_query_compile_failed",
+                        self._stderr(compiled) or "CodeQL query 编译失败",
+                        revision=actual,
+                    )
             if not cache_hit:
                 database.parent.mkdir(parents=True, exist_ok=True)
                 created = self._run([
@@ -131,9 +167,7 @@ class SourceMechanismCollector:
             "revision": actual,
             "source_context_hash": f"sha256:{source_hash}",
             "query_pack_version": pack_version,
-            "query": {
-                key: value for key, value in query_metadata.items() if key != "query"
-            },
+            "query": query_metadata,
             "cache": {"hit": cache_hit, "cache_key": cache_key},
             "database_ref": f"codeql-cache:{cache_key}",
             "line_anchors": anchors,
@@ -288,8 +322,8 @@ class SourceMechanismCollector:
                 matches.append(index)
         return matches
 
-    @staticmethod
-    def _anchors(value: Any) -> list[dict[str, Any]]:
+    @classmethod
+    def _anchors(cls, value: Any) -> list[dict[str, Any]]:
         result = []
         for item in value if isinstance(value, list) else []:
             if not isinstance(item, dict):
@@ -301,7 +335,33 @@ class SourceMechanismCollector:
                 line = 0
             if file_name and line > 0:
                 result.append({"file": file_name[:500], "line": line, "symbol": str(item.get("symbol") or "")[:300]})
-        return result[:10]
+        return result[: cls.MAX_ANCHORS]
+
+    @classmethod
+    def _tracked_anchors(
+        cls,
+        anchors: list[dict[str, Any]],
+        tracked_files: list[str],
+    ) -> list[dict[str, Any]]:
+        result = []
+        for anchor in anchors:
+            tracked = cls._tracked_anchor(anchor, tracked_files)
+            if tracked and tracked not in result:
+                result.append(tracked)
+        return result[: cls.MAX_ANCHORS]
+
+    @staticmethod
+    def _tracked_anchor(anchor: dict[str, Any], tracked_files: list[str]) -> dict[str, Any]:
+        file_name = str(anchor.get("file") or "").replace("\\", "/").lstrip("/")
+        matches = []
+        for item in tracked_files:
+            normalized = item.replace("\\", "/")
+            if file_name == normalized or file_name.endswith(f"/{normalized}"):
+                matches.append(normalized)
+        if not matches:
+            return {}
+        tracked = max(matches, key=len)
+        return {**anchor, "file": tracked}
 
     @staticmethod
     def _git(root: Path, args: list[str]) -> str:

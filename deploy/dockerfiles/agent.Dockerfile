@@ -9,6 +9,8 @@ FROM python:3.11-slim
 ARG CODEQL_VERSION=2.26.3
 ARG PYHEAP_VERSION=0.7.0
 
+ENV MINI_DROP_CODEQL_QUERY_PACK_VERSION="bundle-2.26.3-python-all-7.2.3"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     bpftrace \

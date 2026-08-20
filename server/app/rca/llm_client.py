@@ -83,6 +83,7 @@ def generate_session_investigation_review(
         for ref in [*node.evidence_refs, *node.self_challenge.supporting_evidence_refs, *node.self_challenge.opposing_evidence_refs]
         if ref
     )
+    source_anchor_catalog = _source_anchor_catalog(evidence_catalog)
     payload = {
         "diagnosis_id": diagnosis_id,
         "current_tree": session_tree.model_dump(mode="json"),
@@ -97,6 +98,7 @@ def generate_session_investigation_review(
         ],
         "probe_manifest": probe_manifest,
         "eligible_this_round": sorted(allowed),
+        "source_anchor_catalog": source_anchor_catalog,
     }
     messages = [
         {
@@ -105,9 +107,9 @@ def generate_session_investigation_review(
                 "你是 Mini-Drop 会话级调查树裁决器，只输出 JSON。选择最小必要补证并形成可证伪机制候选。"
                 "selected_evidence_families 只能来自 eligible_this_round；不能输出命令、修复动作或未注册工具。"
                 "当选择 source_mechanism_query 时，必须输出 probe_inputs.source_mechanism_query.ai_generated_query，"
-                "其中包含 investigation_question、candidate_id、expected_relation(supports|refutes) 和受控 CodeQL Python path-problem query；"
-                "candidate_id 必须绑定 current_tree 或本轮 candidate_proposals；query 只能 import python 或 semmle.python.*，"
-                "不得引用本机路径、shell 或修复动作。"
+                "其中包含 investigation_question、candidate_id、expected_relation(supports|refutes)、source_anchor 和 sink_anchor；"
+                "两个锚点必须逐字选择 source_anchor_catalog 中不同的 file/line，candidate_id 必须绑定 current_tree 或本轮 candidate_proposals；"
+                "不要编写 CodeQL 语法，系统会从锚点生成版本锁定的查询；不得引用目录外路径、shell 或修复动作。"
                 "当选择 python_heap_reference 时，必须输出 probe_inputs.python_heap_reference，包含 current_tree 或本轮候选的"
                 "candidate_id，以及 1-8 个 object_type_hints，用于限制 PyHeap 运行时引用验证目标。"
                 "candidate_proposals 可为空；新增 candidate_id 必须以 ai_proposal_ 开头，parent_candidate_ids 必须引用 current_tree，"
@@ -132,6 +134,7 @@ def generate_session_investigation_review(
                 data.get("probe_inputs"),
                 selected,
                 candidate_ids | {str(item.get("candidate_id") or "") for item in proposals},
+                source_anchor_catalog,
             )
             return {
                 "ai_review_status": "succeeded",
@@ -166,6 +169,7 @@ def _validate_investigation_probe_inputs(
     value,
     selected: list[str],
     allowed_candidate_ids: set[str],
+    allowed_source_anchors: list[dict] | None = None,
 ) -> dict[str, dict]:
     value = value if isinstance(value, dict) else {}
     allowed_keys = {"source_mechanism_query", "python_heap_reference"} & set(selected)
@@ -179,6 +183,7 @@ def _validate_investigation_probe_inputs(
         guarded = validate_ai_generated_codeql_query(
             item.get("ai_generated_query"),
             allowed_candidate_ids=allowed_candidate_ids,
+            allowed_anchors=allowed_source_anchors,
         )
         result["source_mechanism_query"] = {"ai_generated_query": guarded}
     if "python_heap_reference" in selected:
@@ -196,6 +201,83 @@ def _validate_investigation_probe_inputs(
             "object_type_hints": list(dict.fromkeys(hints)),
         }
     return result
+
+
+def _source_anchor_catalog(evidence_catalog: list[dict]) -> list[dict]:
+    """Build a compact, evidence-backed anchor menu for the investigation model."""
+    result: list[dict] = []
+    seen: set[tuple[str, int]] = set()
+
+    def add(file_name, line, symbol="", text="", semantic_role="observed_line"):
+        file_text = str(file_name or "").strip().replace("\\", "/")
+        try:
+            line_number = int(line or 0)
+        except (TypeError, ValueError):
+            return
+        if not file_text or line_number <= 0:
+            return
+        key = (file_text.lstrip("/"), line_number)
+        if key in seen:
+            return
+        seen.add(key)
+        result.append({
+            "file": file_text,
+            "line": line_number,
+            "symbol": str(symbol or "")[:160],
+            "text": str(text or "")[:300],
+            "semantic_role": str(semantic_role or "observed_line")[:80],
+        })
+
+    def visit(value):
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict):
+            return
+        if value.get("producer") == "git+universal-ctags":
+            for snippet in value.get("snippets", []):
+                if isinstance(snippet, dict):
+                    add(
+                        snippet.get("file"),
+                        snippet.get("focus_line"),
+                        snippet.get("symbol"),
+                        semantic_role="runtime_focus",
+                    )
+            for context in value.get("enclosing_contexts", []):
+                if not isinstance(context, dict):
+                    continue
+                file_name = context.get("file")
+                symbol = context.get("symbol")
+                for path in context.get("reference_paths", []):
+                    if not isinstance(path, dict):
+                        continue
+                    for upstream in path.get("upstream_candidates", []):
+                        if isinstance(upstream, dict):
+                            add(
+                                file_name,
+                                upstream.get("line"),
+                                symbol,
+                                upstream.get("expression"),
+                                "reference_origin",
+                            )
+                    for source_line in path.get("source_lines", []):
+                        if isinstance(source_line, dict):
+                            add(
+                                file_name,
+                                source_line.get("line"),
+                                symbol,
+                                source_line.get("text"),
+                                "reference_step",
+                            )
+            return
+        for child in value.values():
+            visit(child)
+
+    for evidence in evidence_catalog:
+        if isinstance(evidence, dict) and evidence.get("query_or_probe") == "source_snapshot":
+            visit(evidence.get("observed_value"))
+    return result[:40]
 
 
 def _validate_investigation_proposals(value, parent_ids: set[str], valid_refs: set[str], max_level: str) -> list[dict]:

@@ -1026,6 +1026,48 @@ class DiagnosisOrchestrator:
     def _session_line_candidates(self, diagnosis_id: str) -> list[dict[str, Any]]:
         session = self.store.get_session(diagnosis_id) or {}
         candidates: list[dict[str, Any]] = []
+
+        def add(file_name: Any, line: Any, symbol: Any = "") -> None:
+            try:
+                line_number = int(line or 0)
+            except (TypeError, ValueError):
+                return
+            if not file_name or line_number <= 0:
+                return
+            normalized = {
+                "file": str(file_name),
+                "line": line_number,
+                "symbol": str(symbol or ""),
+            }
+            if normalized not in candidates:
+                candidates.append(normalized)
+
+        # Source inspection can discover mechanism lines that were not present in
+        # the original runtime stack. Feed those verified lines into the next probe.
+        for task_id in session.get("child_task_ids", []):
+            for artifact in self.repo.artifacts.get(task_id, []):
+                if artifact.get("artifact_type") != "source_snapshot_json":
+                    continue
+                value = self._read_artifact_json(artifact)
+                if not isinstance(value, dict):
+                    continue
+                for snippet in value.get("snippets", []):
+                    if isinstance(snippet, dict):
+                        add(snippet.get("file"), snippet.get("focus_line"), snippet.get("symbol"))
+                for context in value.get("enclosing_contexts", []):
+                    if not isinstance(context, dict):
+                        continue
+                    file_name = context.get("file")
+                    symbol = context.get("symbol")
+                    for path in context.get("reference_paths", []):
+                        if not isinstance(path, dict):
+                            continue
+                        for upstream in path.get("upstream_candidates", []):
+                            if isinstance(upstream, dict):
+                                add(file_name, upstream.get("line"), symbol)
+                        for source_line in path.get("source_lines", []):
+                            if isinstance(source_line, dict):
+                                add(file_name, source_line.get("line"), symbol)
         for task_id in session.get("child_task_ids", []):
             for artifact in self.repo.artifacts.get(task_id, []):
                 if artifact.get("artifact_type") not in {"python_stack_samples_json", "python_heap_profile_json", "depth_evidence_json"}:
@@ -1036,14 +1078,8 @@ class DiagnosisOrchestrator:
                 for item in value.get("line_candidates", []):
                     if not isinstance(item, dict) or not item.get("file") or int(item.get("line") or 0) <= 0:
                         continue
-                    normalized = {
-                        "file": str(item["file"]),
-                        "line": int(item["line"]),
-                        "symbol": str(item.get("symbol") or item.get("function") or ""),
-                    }
-                    if normalized not in candidates:
-                        candidates.append(normalized)
-        return candidates[:10]
+                    add(item["file"], item["line"], item.get("symbol") or item.get("function"))
+        return candidates[:32]
 
     def _append_child_task(self, diagnosis_id: str, task_id: str, definition) -> None:
         session = self.store.get_session(diagnosis_id)
@@ -4889,7 +4925,17 @@ def _summarize_investigation_review(review: dict[str, Any] | None) -> dict[str, 
         if generated is not None:
             item["ai_generated_query"] = {
                 key: generated.get(key)
-                for key in ("origin", "investigation_question", "query_hash")
+                for key in (
+                    "origin",
+                    "investigation_question",
+                    "candidate_id",
+                    "expected_relation",
+                    "source_anchor",
+                    "sink_anchor",
+                    "query_spec_hash",
+                    "raw_query_hash",
+                    "template_version",
+                )
                 if generated.get(key)
             }
         summarized[str(family)] = item
