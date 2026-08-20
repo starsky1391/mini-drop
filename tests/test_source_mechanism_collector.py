@@ -223,3 +223,5 @@ select sink.getNode(), source, sink, "same node"
     assert "DataFlow::ConfigSig" in executed_query
     assert "TaintTracking::Global<MiniDropConfig>" in executed_query
     assert "where source = sink" not in executed_query
+    qlpack = Path(query_artifact["local_path"]).parent / "qlpack.yml"
+    assert "codeql/python-all: '*'" in qlpack.read_text(encoding="utf-8")

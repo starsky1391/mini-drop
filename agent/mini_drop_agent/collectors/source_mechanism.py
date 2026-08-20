@@ -107,6 +107,13 @@ class SourceMechanismCollector:
                     render_version_locked_codeql_query(query_metadata),
                     encoding="utf-8",
                 )
+                (output_dir / "qlpack.yml").write_text(
+                    "name: mini-drop/guarded-python-investigation\n"
+                    "version: 0.0.0\n"
+                    "dependencies:\n"
+                    "  codeql/python-all: '*'\n",
+                    encoding="utf-8",
+                )
                 query_source = query_artifact
             elif not suite_text:
                 return self._blocked(output_dir, "managed_query_suite_missing", "未配置受管理 CodeQL query suite", revision=actual)
