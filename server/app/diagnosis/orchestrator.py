@@ -763,12 +763,24 @@ class DiagnosisOrchestrator:
         target_scope: dict[str, Any],
         target: dict[str, Any],
     ) -> dict[str, Any]:
+        step_parameters = step.get("parameters") or {}
         collector_parameters = self._collector_probe_parameters(
             definition.probe_id,
             target_scope,
             target,
             str(step.get("diagnosis_id") or ""),
         )
+        if definition.probe_id == "process_source_mechanism_query":
+            generated_query = step_parameters.get("ai_generated_query")
+            if isinstance(generated_query, dict):
+                collector_parameters["ai_generated_query"] = generated_query
+        elif definition.probe_id == "process_python_heap_reference":
+            candidate_id = str(step_parameters.get("candidate_id") or "").strip()
+            object_type_hints = step_parameters.get("object_type_hints")
+            if candidate_id:
+                collector_parameters["candidate_id"] = candidate_id
+            if isinstance(object_type_hints, list):
+                collector_parameters["object_type_hints"] = object_type_hints
         invocation = _collector_invocation(
             step=step,
             definition=definition,
@@ -780,18 +792,18 @@ class DiagnosisOrchestrator:
             "diagnosis_step_id": step["step_id"],
             "probe_id": definition.probe_id,
             "registered_probe": True,
-            "duration_sec": (step.get("parameters") or {}).get("duration_sec"),
-            "sample_rate": (step.get("parameters") or {}).get("sample_rate"),
-            "evidence_gap": (step.get("parameters") or {}).get("evidence_gap"),
-            "budget_phase": (step.get("parameters") or {}).get("budget_phase"),
-            "followup_round": (step.get("parameters") or {}).get("followup_round"),
-            "parent_task_id": (step.get("parameters") or {}).get("parent_task_id"),
+            "duration_sec": step_parameters.get("duration_sec"),
+            "sample_rate": step_parameters.get("sample_rate"),
+            "evidence_gap": step_parameters.get("evidence_gap"),
+            "budget_phase": step_parameters.get("budget_phase"),
+            "followup_round": step_parameters.get("followup_round"),
+            "parent_task_id": step_parameters.get("parent_task_id"),
             **{
-                key: (step.get("parameters") or {}).get(key)
+                key: step_parameters.get(key)
                 for key in (
                     "evidence_cohort_id", "collection_mode", "window_start", "window_end", "timing_relation",
                 )
-                if (step.get("parameters") or {}).get(key) is not None
+                if step_parameters.get(key) is not None
             },
             **collector_parameters,
             "collector_context": {

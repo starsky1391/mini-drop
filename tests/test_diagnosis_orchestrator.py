@@ -2598,6 +2598,69 @@ def test_source_snapshot_task_options_keep_session_line_candidates(monkeypatch):
     assert options["line_candidates"] == [candidate]
 
 
+def test_optional_mechanism_task_options_keep_guarded_ai_inputs(monkeypatch):
+    candidate = {"file": "/case/src/werkzeug/routing.py", "line": 844, "symbol": "__init__"}
+    monkeypatch.setattr(
+        diagnosis_orchestrator,
+        "_session_line_candidates",
+        lambda diagnosis_id: [candidate],
+    )
+    source_context = {
+        "source_paths": ["/home/worker1/mini-drop-real-cases/werkzeug-1521"],
+        "repo_revision": "a220671d",
+    }
+    target = {
+        "pid": 1234,
+        "agent_id": "a1",
+        "host_id": "host-1",
+        "service_id": "werkzeug-routing",
+        "instance_id": "werkzeug-vulnerable",
+        "container_id": "container-1",
+        "source_context": source_context,
+    }
+    generated_query = {
+        "origin": "ai_guarded",
+        "candidate_id": "ai_proposal_bound_method",
+        "expected_relation": "supports",
+        "query": "import python",
+    }
+    codeql_options = diagnosis_orchestrator._task_options_for_probe(
+        {
+            "diagnosis_id": "diag-source",
+            "step_id": "step-codeql",
+            "parameters": {
+                "duration_sec": 30,
+                "sample_rate": 1,
+                "ai_generated_query": generated_query,
+            },
+        },
+        orchestrator_module.get_probe("process_source_mechanism_query"),
+        {"source_context": source_context},
+        target,
+    )
+    pyheap_options = diagnosis_orchestrator._task_options_for_probe(
+        {
+            "diagnosis_id": "diag-source",
+            "step_id": "step-pyheap",
+            "parameters": {
+                "duration_sec": 30,
+                "sample_rate": 1,
+                "candidate_id": "ai_proposal_bound_method",
+                "object_type_hints": ["method", "code"],
+            },
+        },
+        orchestrator_module.get_probe("process_python_heap_reference"),
+        {"source_context": source_context},
+        target,
+    )
+
+    assert codeql_options["ai_generated_query"] == generated_query
+    assert codeql_options["collector_fingerprint"].startswith("sha256:")
+    assert pyheap_options["candidate_id"] == "ai_proposal_bound_method"
+    assert pyheap_options["object_type_hints"] == ["method", "code"]
+    assert pyheap_options["collector_fingerprint"].startswith("sha256:")
+
+
 def test_development_budget_accepts_requested_model_calls():
     requested = orchestrator_module.DiagnosisBudget(max_model_calls=12)
 
