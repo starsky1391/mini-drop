@@ -89,22 +89,23 @@ import python
 import semmle.python.dataflow.new.DataFlow
 import semmle.python.dataflow.new.TaintTracking
 
-private predicate anchored(DataFlow::Node node, string relativePath, int line) {{
-  exists(Expr expression |
-    node.asExpr() = expression and
-    expression.getLocation().getFile().getRelativePath() = relativePath and
-    expression.getLocation().getStartLine() <= line and
-    expression.getLocation().getEndLine() >= line
-  )
-}}
-
 private module MiniDropConfig implements DataFlow::ConfigSig {{
   predicate isSource(DataFlow::Node source) {{
-    anchored(source, "{source_file}", {source["line"]})
+    exists(Expr expression |
+      source.asExpr() = expression and
+      expression.getLocation().getFile().getRelativePath() = "{source_file}" and
+      expression.getLocation().getStartLine() <= {source["line"]} and
+      expression.getLocation().getEndLine() >= {source["line"]}
+    )
   }}
 
   predicate isSink(DataFlow::Node sink) {{
-    anchored(sink, "{sink_file}", {sink["line"]})
+    exists(Expr expression |
+      sink.asExpr() = expression and
+      expression.getLocation().getFile().getRelativePath() = "{sink_file}" and
+      expression.getLocation().getStartLine() <= {sink["line"]} and
+      expression.getLocation().getEndLine() >= {sink["line"]}
+    )
   }}
 }}
 
