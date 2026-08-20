@@ -10,6 +10,7 @@ from unittest import mock
 import pytest
 
 from server.app.rca.calibrator import calibrate, interpret_confidence
+from server.app.rca.controlled_tree import enforce_conclusion_eligibility
 from server.app.rca.candidates import generate_candidates, load_rules
 from server.app.rca.evidence import collect_evidence, evidence_to_json
 from server.app.rca.attribution import analyze_evidence
@@ -37,6 +38,33 @@ from server.app.rca.models import (
 )
 from server.app.rca.prompt import build_system_prompt, build_user_message
 from server.app.rca.report import run_diagnosis, run_diagnosis_context
+
+
+def test_forbidden_upgrade_boundary_is_inconclusive_not_counterevidence():
+    tree = ControlledAITree(
+        tree_id="forbidden-boundary",
+        layers=[AITreeLayer(
+            layer_id="layer-1",
+            depth=1,
+            unknown_causes=[AITreeCandidateNode(
+                candidate_id="blocked_line_upgrade",
+                role="unknown",
+                claim="缺少行级证据，禁止升级。",
+                supported_level="function",
+                status="forbidden",
+                evidence_refs=["ev-function"],
+            )],
+        )],
+    )
+
+    guarded = enforce_conclusion_eligibility(tree)
+    node = guarded.layers[0].unknown_causes[0]
+
+    assert node.causal_status == "inconclusive"
+    assert node.decision == "backtrack"
+    assert node.conclusion_eligible is False
+    assert node.candidate_id in guarded.final_unknown_causes
+    assert node.candidate_id not in guarded.final_rejected_causes
 
 
 def test_session_investigation_review_selects_registered_probe_and_guarded_proposal():

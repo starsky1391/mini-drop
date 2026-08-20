@@ -125,27 +125,29 @@ def build_root_cause_clusters(
             eligible=bool(assessment.get("conclusion_eligible") and refs),
             unknowns=["已确认直接执行控制动作的进程，但上游发起者或自动化来源仍未知。"] if origin_unknown else [],
         ))
-    elif (
-        assessment.get("conclusion_eligible")
-        and assessment.get("classification") not in {"downstream_dependency", "same_host_noisy_neighbor"}
-    ):
+    elif assessment.get("classification") not in {
+        "downstream_dependency",
+        "same_host_noisy_neighbor",
+        "insufficient_evidence",
+    }:
         refs = _unique(assessment.get("evidence_refs", []))
         mechanism = str(assessment.get("mechanism") or assessment.get("classification") or "unknown_mechanism")
-        candidates.append(_cluster_template(
-            mechanism=mechanism,
-            target=str(assessment.get("claim_target") or target_service),
-            cause_level=_cause_level(assessment),
-            claim=str(assessment.get("diagnostic_claim") or assessment.get("summary") or mechanism),
-            why=str(assessment.get("eligibility_reason") or "当前同窗证据支持该机制与症状之间的因果关系。"),
-            symptoms=[str(assessment.get("classification") or "性能异常")],
-            refs=refs,
-            confidence=_number(assessment.get("confidence")),
-            cohort="same_window",
-            propagation_path=mechanism,
-            source_ids=source_ids.get(mechanism, []),
-            eligible=bool(refs),
-            unknowns=[],
-        ))
+        if refs and mechanism:
+            candidates.append(_cluster_template(
+                mechanism=mechanism,
+                target=str(assessment.get("claim_target") or target_service),
+                cause_level=_cause_level(assessment),
+                claim=str(assessment.get("diagnostic_claim") or assessment.get("summary") or mechanism),
+                why=str(assessment.get("eligibility_reason") or "当前证据只支持该候选，因果机制仍需补证。"),
+                symptoms=[str(assessment.get("classification") or "性能异常")],
+                refs=refs,
+                confidence=_number(assessment.get("confidence")),
+                cohort="same_window",
+                propagation_path=mechanism,
+                source_ids=source_ids.get(mechanism, []),
+                eligible=bool(assessment.get("conclusion_eligible")),
+                unknowns=_unique(assessment.get("missing_evidence", [])),
+            ))
 
     for observation in observations:
         target = observation.get("target") if isinstance(observation.get("target"), dict) else {}
@@ -221,6 +223,17 @@ def build_root_cause_clusters(
             cluster.role = "contributing"
         else:
             cluster.role = "independent"
+        cluster.qualification = (
+            "confirmed_root_cause"
+            if cluster.conclusion_eligible
+            else "possible_root_cause"
+            if cluster.cause_level == "direct_failure_mechanism" and cluster.mechanism and cluster.evidence_refs
+            else "partial_localization"
+            if cluster.target and cluster.evidence_refs
+            else "observation"
+        )
+        if not cluster.conclusion_eligible:
+            cluster.confidence = min(cluster.confidence, 0.49)
     if not primary_assigned:
         first_eligible = next((cluster for cluster in clusters if cluster.conclusion_eligible), None)
         if first_eligible:
@@ -254,7 +267,11 @@ def build_fallback_explanation(
     error: str = "",
 ) -> dict[str, Any]:
     eligible = [cluster for cluster in clusters if cluster.conclusion_eligible]
-    primary = eligible[0] if eligible else (clusters[0] if clusters else None)
+    primary = eligible[0] if eligible else None
+    possible = next(
+        (cluster for cluster in clusters if cluster.qualification == "possible_root_cause"),
+        None,
+    )
     if primary:
         primary.role = "primary"
         primary.causal_status = "primary"
@@ -265,8 +282,20 @@ def build_fallback_explanation(
         else:
             cluster.role = "independent"
             cluster.relation_to_primary = "该异常与主因同窗独立成立，但现有证据未证明它影响目标服务。"
-    headline = primary.claim if primary else str(assessment.get("summary") or "当前证据不足以形成根因结论。")
-    why = primary.why_it_happened if primary else "当前只有观察事实，尚未建立可引用证据支持的因果机制。"
+    headline = (
+        primary.claim
+        if primary
+        else f"可能根因：{possible.claim}"
+        if possible
+        else str(assessment.get("summary") or "当前证据不足以形成根因结论。")
+    )
+    why = (
+        primary.why_it_happened
+        if primary
+        else f"{possible.why_it_happened} 当前深探尚未闭环，因此该机制保留为待验证候选。"
+        if possible
+        else "当前只有观察事实，尚未建立可引用证据支持的因果机制。"
+    )
     residual = _unique(
         item
         for cluster in clusters
@@ -293,6 +322,8 @@ def build_fallback_explanation(
         "ai_review_attempts": attempts,
         "ai_review_model": model,
         "ai_review_error": error[:500],
+        "confidence_level": "高" if primary else "低" if possible else "不可判断",
+        "abstained": not bool(primary),
     }
 
 

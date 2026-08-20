@@ -79,9 +79,12 @@ def _guard_candidate(node: AITreeCandidateNode) -> AITreeCandidateNode:
     ]))
     reason = ""
     eligible = True
-    if node.role == "rejected" or node.status in {"forbidden", "contradicted", "rejected"}:
+    if node.role == "rejected" or node.status in {"contradicted", "rejected"}:
         eligible = False
-        reason = "候选已经被反证或策略边界拒绝。"
+        reason = "候选已经被明确反证或拒绝。"
+    elif node.status == "forbidden":
+        eligible = False
+        reason = "当前策略或证据边界禁止继续升级，但不构成对候选的反证。"
     elif node.status != "supported" or node.causal_status != "supported":
         eligible = False
         reason = "当前只有观察或相关性，尚未形成受支持的因果判断。"
@@ -111,9 +114,12 @@ def _guard_candidate(node: AITreeCandidateNode) -> AITreeCandidateNode:
         causal_status = "unproven"
         claim_type = "observation_only"
         decision = "continue_probe"
-    if node.status in {"contradicted", "rejected", "forbidden"}:
+    if node.status in {"contradicted", "rejected"}:
         causal_status = "contradicted"
         decision = "reject_candidate"
+    elif node.status == "forbidden":
+        causal_status = "inconclusive"
+        decision = "backtrack"
     elif eligible:
         decision = "conclude"
 

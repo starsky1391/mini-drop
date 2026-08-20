@@ -89,6 +89,22 @@ def test_readiness_gate_tolerates_truncated_runtime_counts():
     assert any(check["name"] == "runtime_stack_quality_non_empty" for check in gate["checks"])
 
 
+def test_werkzeug_blocked_mechanism_regression_fixture_preserves_parent_boundary():
+    fixture_path = Path(__file__).parent / "fixtures" / "diagnosis" / "werkzeug_1521_blocked_mechanism_session.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    assert fixture["probe_input"]["ai_generated_query"] is None
+    assert fixture["probe_result"]["status"] == "blocked"
+    assert fixture["parent_candidate"]["evidence_refs"] == ["ev-memray", "ev-source"]
+    assert fixture["parent_candidate"]["conclusion_eligible"] is False
+    assert fixture["invalid_previous_conclusion"] == {
+        "abstained": True,
+        "confidence_level": "高",
+        "root_cause_candidates": [],
+        "possible_root_causes": [],
+    }
+
+
 def test_source_snapshot_prefers_agent_visible_host_source_path():
     source_context = {
         "source_paths": [
@@ -657,6 +673,8 @@ def test_session_controlled_tree_contains_rejected_unknown_and_blocked_branches(
     assert any(edge.transition_type == "backtrack" for edge in tree.probe_edges)
     assert tree.layers[2].unknown_causes[0].candidate_id == "blocked_line_upgrade"
     assert tree.layers[2].unknown_causes[0].status == "forbidden"
+    assert tree.layers[2].unknown_causes[0].causal_status == "inconclusive"
+    assert tree.layers[2].unknown_causes[0].decision == "backtrack"
     assert "blocked_line_upgrade" in tree.final_unknown_causes
 
 
@@ -1459,12 +1477,14 @@ class TestDiagnosisSessionAPI:
 
         detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
         assert detail["status"] in {"COLLECTING", "WAITING_APPROVAL"}
-        assert detail["latest_conclusion"]["root_cause_candidates"]
+        assert detail["latest_conclusion"]["root_cause_candidates"] == []
+        assert detail["latest_conclusion"]["possible_root_causes"]
         assert detail["latest_conclusion"]["cluster_assessment"]["evidence_refs"]
         assert detail["latest_conclusion"]["diagnostic_commands"]
         assert all(cmd["auto_execute"] is False for cmd in detail["latest_conclusion"]["diagnostic_commands"])
-        candidate = detail["latest_conclusion"]["root_cause_candidates"][0]
-        assert candidate["confidence_level"] in {"低", "中", "高"}
+        candidate = detail["latest_conclusion"]["possible_root_causes"][0]
+        assert candidate["qualification"] in {"possible_root_cause", "partial_localization"}
+        assert candidate["confidence"] <= 0.49
         assert candidate["evidence_refs"]
         evidence_ids = {item["evidence_id"] for item in detail["evidence"]}
         assert set(candidate["evidence_refs"]).issubset(evidence_ids)
@@ -1663,7 +1683,8 @@ class TestDiagnosisSessionAPI:
         assessment = detail["latest_conclusion"]["cluster_assessment"]
         assert detail["status"] in {"COMPLETED", "COLLECTING", "WAITING_APPROVAL"}
         assert assessment["classification"] == "same_host_noisy_neighbor"
-        assert assessment["confidence_level"] in {"中", "高"}
+        assert assessment["confidence_level"] == "低"
+        assert assessment["observation_confidence"] >= assessment["confidence"]
         assert len(assessment["compared_targets"]) == 2
         evidence_ids = {item["evidence_id"] for item in detail["evidence"]}
         assert set(assessment["evidence_refs"]).issubset(evidence_ids)
@@ -2921,8 +2942,9 @@ def test_memory_followup_requests_optional_mechanism_then_runtime_reference():
     blocked = {
         **base,
         "probe_evidence_status": {**base["probe_evidence_status"], "source_mechanism_query": "blocked"},
+        "probe_attempt_counts": {"source_mechanism_query": 1},
     }
-    assert orchestrator_module._assessment_followup_requests(assessment, blocked) == []
+    assert orchestrator_module._assessment_followup_requests(assessment, blocked) == ["source_mechanism_query"]
     partial = {
         **base,
         "probe_evidence_status": {**base["probe_evidence_status"], "source_mechanism_query": "partial"},
@@ -2935,7 +2957,7 @@ def test_memory_followup_requests_optional_mechanism_then_runtime_reference():
             "source_mechanism_query": orchestrator_module.MAX_SOURCE_MECHANISM_ATTEMPTS,
         },
     }
-    assert orchestrator_module._assessment_followup_requests(assessment, exhausted) == []
+    assert orchestrator_module._assessment_followup_requests(assessment, exhausted) == ["python_heap_reference"]
 
 
 def test_source_mechanism_partial_allows_new_query_but_not_same_query(client: TestClient):
@@ -2996,6 +3018,40 @@ def test_source_mechanism_partial_allows_new_query_but_not_same_query(client: Te
     ]
     assert len(mechanism_probes) == 2
     assert mechanism_probes[-1]["parameters"]["ai_generated_query"]["query_spec_hash"] == "sha256:second"
+    invocation = mechanism_probes[-1]["parameters"]["collector_invocation"]
+    assert invocation["target_config"]["ai_generated_query"]["query_spec_hash"] == "sha256:second"
+
+
+def test_source_mechanism_without_guarded_input_is_not_dispatched(client: TestClient):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=[*repo.agents["a1"].capabilities, "source_mechanism_query"],
+    )
+    payload = _payload("服务 service-a 内存持续增长")
+    payload["budget_profile"] = "development"
+    payload["auto_execute_policy"] = "all_registered"
+    data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    parent_task = repo.tasks[data["child_task_ids"][0]]
+
+    created = diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["source_mechanism_query"],
+        parent_task,
+        probe_inputs={},
+    )
+
+    assert created == 0
+    assert not any(
+        (probe.get("parameters") or {}).get("evidence_gap") == "source_mechanism_query"
+        for probe in diagnosis_orchestrator.store.list_probes(diagnosis_id)
+    )
+    events = (diagnosis_orchestrator.store.get_detail(diagnosis_id) or {}).get("events", [])
+    assert any(
+        event.get("event_type") == "followup_probe_input_missing"
+        and (event.get("payload") or {}).get("evidence_gap") == "source_mechanism_query"
+        for event in events
+    )
 
 
 def test_ordinary_verified_line_does_not_enter_optional_mechanism_branch():
@@ -3101,7 +3157,7 @@ def test_session_tree_rebuilds_supported_and_refuted_codeql_candidates():
     )
 
 
-def test_partial_codeql_chain_greys_existing_candidate_and_backtracks():
+def test_partial_codeql_chain_keeps_existing_candidate_unresolved_and_backtracks():
     observations = [{
         "evidence_refs": ["ev-codeql-partial"],
         "source_mechanism": {
@@ -3158,20 +3214,118 @@ def test_partial_codeql_chain_greys_existing_candidate_and_backtracks():
         child_trees=[],
     )
 
-    rejected = [
+    unresolved = [
         node
         for layer in tree.layers
-        for node in layer.rejected_causes
+        for node in layer.unknown_causes
         if node.candidate_id == "python_runtime_stack_hotspot"
     ]
-    assert rejected
-    assert rejected[0].status == "contradicted"
-    assert rejected[0].decision == "reject_candidate"
+    assert unresolved
+    assert unresolved[0].status == "missing_evidence"
+    assert unresolved[0].causal_status == "inconclusive"
+    assert unresolved[0].decision == "backtrack"
     assert "python_runtime_stack_hotspot" not in tree.final_primary_causes
     assert any(
         edge.effect == "rollback" and "python_runtime_stack_hotspot" in edge.from_candidate_ids
         for edge in tree.probe_edges
     )
+
+
+def test_previous_unrefuted_candidate_survives_blocked_deep_probe_as_checkpoint():
+    previous_tree = {
+        "layers": [{
+            "layer_id": "prior-layer",
+            "depth": 1,
+            "primary_causes": [],
+            "secondary_causes": [],
+            "rejected_causes": [],
+            "unknown_causes": [{
+                "candidate_id": "python_code_constant_retention",
+                "lineage_id": "python_code_constant_retention",
+                "role": "unknown",
+                "claim": "代码常量可能持有运行时对象。",
+                "supported_level": "line",
+                "confidence": 0.84,
+                "status": "missing_evidence",
+                "claim_type": "direct_failure_mechanism",
+                "causal_status": "unproven",
+                "decision": "continue_probe",
+                "mechanism": "python_code_constant_retention",
+                "target": "src/werkzeug/routing.py:844",
+                "conclusion_eligible": False,
+                "evidence_refs": ["ev-memray", "ev-source"],
+                "self_challenge": {
+                    "supporting_evidence_refs": ["ev-memray", "ev-source"],
+                    "missing_evidence": ["source_mechanism_query"],
+                },
+            }],
+        }],
+    }
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-checkpoint",
+        cluster_assessment={
+            "classification": "python_memory_retention",
+            "summary": "Memray 已确认对象持续保留。",
+            "supported_level": "line",
+            "confidence": 0.8,
+            "evidence_refs": ["ev-memray", "ev-source"],
+            "conclusion_eligible": False,
+            "claim_type": "direct_failure_mechanism",
+            "causal_status": "unproven",
+        },
+        candidates=[],
+        followup_requests=["python_heap_reference"],
+        probes=[],
+        child_trees=[],
+        previous_tree=previous_tree,
+    )
+
+    checkpoint = next(
+        node
+        for layer in tree.layers
+        for node in layer.unknown_causes
+        if node.candidate_id == "python_code_constant_retention"
+    )
+    assert checkpoint.causal_status == "inconclusive"
+    assert checkpoint.decision == "backtrack"
+    assert checkpoint.evidence_refs == ["ev-memray", "ev-source"]
+    assert checkpoint.conclusion_eligible is False
+    assert "python_heap_reference" in checkpoint.self_challenge.missing_evidence
+
+
+@pytest.mark.parametrize(
+    ("conclusion", "expected"),
+    [
+        (
+            {
+                "abstained": False,
+                "controlled_ai_tree": {"final_primary_causes": ["root-1"]},
+                "root_cause_clusters": [],
+            },
+            "COMPLETED",
+        ),
+        (
+            {
+                "abstained": True,
+                "controlled_ai_tree": {"final_primary_causes": []},
+                "root_cause_clusters": [{"qualification": "possible_root_cause", "conclusion_eligible": False}],
+                "possible_root_causes": [{"cluster_id": "possible-1"}],
+            },
+            "PARTIAL_COMPLETED",
+        ),
+        (
+            {
+                "abstained": True,
+                "controlled_ai_tree": {"final_primary_causes": []},
+                "root_cause_clusters": [{"qualification": "observation", "conclusion_eligible": False}],
+                "possible_root_causes": [],
+            },
+            "INSUFFICIENT_EVIDENCE",
+        ),
+    ],
+)
+def test_terminal_status_uses_single_conclusion_eligibility_contract(conclusion, expected):
+    assert orchestrator_module._diagnosis_terminal_status(conclusion).value == expected
 
 
 def test_mechanism_anchor_only_closes_same_candidate_codeql_and_pyheap_paths():

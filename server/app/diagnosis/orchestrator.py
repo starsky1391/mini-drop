@@ -207,7 +207,12 @@ class DiagnosisOrchestrator:
                 if self._last_followup_scheduled:
                     return self.store.get_detail(diagnosis_id) or {}
                 self._transition(diagnosis_id, DiagnosisStatus.CONCLUDING, "conclusion_generated")
-                self._transition(diagnosis_id, DiagnosisStatus.COMPLETED, "diagnosis_completed")
+                latest = (self.store.get_session(diagnosis_id) or {}).get("conclusion_versions", [])
+                self._transition(
+                    diagnosis_id,
+                    _diagnosis_terminal_status(latest[-1] if latest else {}),
+                    "diagnosis_completed",
+                )
                 return self.store.get_detail(diagnosis_id) or {}
 
         self._plan_and_schedule(diagnosis_id, intent.symptom, target_scope, budget)
@@ -472,10 +477,10 @@ class DiagnosisOrchestrator:
                 nonblocking_failed_depth = bool(
                     (latest_conclusion.get("coverage") or {}).get("nonblocking_failed_depth")
                 )
-                final_status = (
-                    DiagnosisStatus.PARTIAL_COMPLETED
-                    if any(status_value(task.status) == "FAILED" for task in terminal_tasks) and not nonblocking_failed_depth
-                    else DiagnosisStatus.COMPLETED
+                final_status = _diagnosis_terminal_status(
+                    latest_conclusion,
+                    had_failures=any(status_value(task.status) == "FAILED" for task in terminal_tasks),
+                    nonblocking_failures=nonblocking_failed_depth,
                 )
                 latest_session = self.store.get_session(diagnosis_id) or session
                 if latest_session["status"] in TERMINAL_DIAGNOSIS_STATUSES:
@@ -1364,6 +1369,13 @@ class DiagnosisOrchestrator:
             tasks,
             self.store.list_probes(diagnosis_id),
         )
+        current_session = self.store.get_session(diagnosis_id) or {}
+        previous_conclusions = current_session.get("conclusion_versions") or []
+        previous_tree = (
+            previous_conclusions[-1].get("controlled_ai_tree")
+            if previous_conclusions and isinstance(previous_conclusions[-1], dict)
+            else None
+        )
         session_controlled_tree = _build_session_controlled_ai_tree(
             diagnosis_id=diagnosis_id,
             cluster_assessment=cluster_assessment,
@@ -1372,8 +1384,8 @@ class DiagnosisOrchestrator:
             probes=self.store.list_probes(diagnosis_id),
             child_trees=controlled_ai_trees,
             source_snapshot_hashes=_source_snapshot_hashes(task_observations),
+            previous_tree=previous_tree,
         )
-        current_session = self.store.get_session(diagnosis_id) or {}
         investigation_review = None
         if followup_requests and session_controlled_tree is not None:
             model_calls_used = int((current_session.get("budget_used") or {}).get("model_calls", 0) or 0)
@@ -1474,9 +1486,17 @@ class DiagnosisOrchestrator:
             cluster_assessment["classification"] = "compound_incident"
             cluster_assessment.update(_compound_location_fields(explanation["root_cause_clusters"], current_session))
         cluster_candidates = _root_cause_cluster_candidates(explanation["root_cause_clusters"], current_session)
-        display_candidates = cluster_candidates or (
+        hypothesis_candidates = cluster_candidates or (
             [] if cluster_assessment.get("classification") == "runtime_stall" else deduped
         )
+        possible_clusters = [
+            item for item in explanation["root_cause_clusters"]
+            if not item.conclusion_eligible and item.qualification in {"possible_root_cause", "partial_localization"}
+        ]
+        if not cluster_candidates:
+            cluster_assessment["observation_confidence"] = cluster_assessment.get("confidence")
+            cluster_assessment["confidence"] = min(_num(cluster_assessment.get("confidence")), 0.49)
+            cluster_assessment["confidence_level"] = "低" if possible_clusters else "不可判断"
         conclusion = {
             "version": len((self.store.get_session(diagnosis_id) or {}).get("conclusion_versions", [])) + 1,
             "generated_at": utcnow().isoformat(),
@@ -1494,9 +1514,16 @@ class DiagnosisOrchestrator:
             "ai_review_model": explanation["ai_review_model"],
             "ai_review_error": explanation["ai_review_error"],
             "investigation_review": _summarize_investigation_review(investigation_review),
-            "confidence_level": cluster_assessment["confidence_level"] or (display_candidates[0]["confidence_level"] if display_candidates else "不可判断"),
+            "confidence_level": (
+                cluster_assessment.get("confidence_level")
+                if cluster_candidates
+                else (explanation.get("confidence_level") or "低")
+                if possible_clusters
+                else "不可判断"
+            ),
             "cluster_assessment": cluster_assessment,
-            "root_cause_candidates": display_candidates,
+            "root_cause_candidates": cluster_candidates,
+            "possible_root_causes": [item.model_dump(mode="json") for item in possible_clusters],
             "abstained": not bool(cluster_candidates),
             "ruled_out": cluster_assessment["ruled_out"],
             "diagnostic_commands": diagnostic_commands,
@@ -1518,7 +1545,7 @@ class DiagnosisOrchestrator:
             },
         }
         self._append_conclusion(diagnosis_id, conclusion)
-        self._update_hypotheses(diagnosis_id, display_candidates)
+        self._update_hypotheses(diagnosis_id, hypothesis_candidates)
         if followup_requests and tasks:
             self._plan_followup_requests(
                 diagnosis_id,
@@ -1650,6 +1677,21 @@ class DiagnosisOrchestrator:
                 if isinstance((probe_inputs or {}).get(evidence_gap), dict)
                 else {}
             )
+            if evidence_gap == "source_mechanism_query" and not _source_mechanism_input_ready(
+                guarded_probe_input,
+                collector_parameters,
+            ):
+                self.store.record_event(
+                    diagnosis_id,
+                    "followup_probe_input_missing",
+                    {
+                        "evidence_gap": evidence_gap,
+                        "probe_id": probe_id,
+                        "target_instance_id": target_key,
+                        "reason": "缺少受控 AI 查询、受管理 SARIF 或显式受管理 query suite",
+                    },
+                )
+                continue
             if evidence_gap == "source_mechanism_query" and _repeats_guarded_query(
                 guarded_probe_input,
                 matching_probes,
@@ -3160,6 +3202,10 @@ def _memory_retention_summary(anchor: dict[str, Any]) -> str:
         item for item in (anchor.get("runtime_reference_paths") or [])
         if isinstance(item, dict) and item.get("nodes")
     ]
+    source_hints = [
+        item for item in (anchor.get("source_reference_hints") or [])
+        if isinstance(item, dict) and item.get("retention_chain")
+    ]
     if mechanism_paths and runtime_paths:
         return (
             f"Memray 将 retained allocation 的分配来源收敛到 {location} 的 {anchor.get('function') or 'unknown'}，"
@@ -3174,6 +3220,23 @@ def _memory_retention_summary(anchor: dict[str, Any]) -> str:
             f"约 {size_mib:.2f} MiB / {int(_num(anchor.get('allocation_count')))} 次分配，调用路径为 {path}；"
             f"{source_text}，CodeQL 已提取 {len(mechanism_paths)} 条受支持的源码机制路径。"
             "当前仍缺少 PyHeap 实际入向引用链，不能把源码可达路径等同于运行时长期持有关系。"
+        )
+    if source_hints:
+        hint = source_hints[0]
+        upstream = next(
+            (
+                str(item.get("expression") or "")
+                for item in (hint.get("upstream_candidates") or [])
+                if isinstance(item, dict) and item.get("expression")
+            ),
+            str(hint.get("source_expression") or "unknown"),
+        )
+        chain = " -> ".join(str(item) for item in hint.get("retention_chain") or [] if str(item))
+        return (
+            f"可能根因位于 {location} 附近的动态代码构建机制：源码局部引用路径显示 {upstream} 可能沿 "
+            f"{chain} 被 {hint.get('retained_by') or '生成函数'} 长期持有；Memray 同时确认该位置持续保留约 "
+            f"{size_mib:.2f} MiB / {int(_num(anchor.get('allocation_count')))} 次分配。{source_text}。"
+            "该路径目前只是源码级候选，仍需 CodeQL 验证完整传播段，并由 PyHeap 验证运行时入向引用链。"
         )
     return (
         f"Memray retained allocation 将分配来源收敛到 {location} 的 {anchor.get('function') or 'unknown'}，"
@@ -3271,11 +3334,12 @@ def _mechanism_enriched_anchor(anchor: dict[str, Any], observations: list[dict[s
                     rejected_mechanism_paths.append({
                         **(paths[0] if paths else {}),
                         "candidate_id": candidate_id,
-                        "candidate_relation": "refutes",
+                        "candidate_relation": "inconclusive",
                         "summary": (
                             f"候选 {candidate_id} 的 CodeQL 有序锚点链未完整闭合："
                             f"{validity.get('reason') or 'incomplete segment coverage'}。"
                         ),
+                        "verification_outcome": "inconclusive",
                         "segment_coverage": mechanism.get("segment_coverage") or {},
                         "query_spec_hash": query.get("query_spec_hash"),
                         "evidence_ref": (
@@ -4091,6 +4155,12 @@ def _collector_invocation(
     target_config = collector_parameters.get("target_config")
     if not isinstance(target_config, dict):
         target_config = {}
+    else:
+        target_config = dict(target_config)
+    for key in ("ai_generated_query", "candidate_id", "object_type_hints"):
+        value = collector_parameters.get(key)
+        if value not in (None, "", []):
+            target_config[key] = value
     return build_collector_invocation(
         scope_source="diagnosis_target_scope",
         collector_family=definition.runner_task_kind,
@@ -4143,13 +4213,16 @@ def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str,
         if (
             source_ready
             and "source_mechanism_query" not in completed
-            and mechanism_status not in {"blocked", "failed", "unavailable", "invalid"}
+            and mechanism_status not in {"unavailable", "invalid"}
             and mechanism_attempts < MAX_SOURCE_MECHANISM_ATTEMPTS
         ):
             return ["source_mechanism_query"]
         if (
             source_ready
-            and probe_status.get("source_mechanism_query") == "valid"
+            and (
+                probe_status.get("source_mechanism_query") == "valid"
+                or mechanism_attempts >= MAX_SOURCE_MECHANISM_ATTEMPTS
+            )
             and "python_heap_reference" not in completed
             and not probe_status.get("python_heap_reference")
         ):
@@ -4451,6 +4524,7 @@ def _build_session_controlled_ai_tree(
     probes: list[dict[str, Any]],
     child_trees: list[dict[str, Any]],
     source_snapshot_hashes: list[str] | None = None,
+    previous_tree: dict[str, Any] | None = None,
 ) -> ControlledAITree | None:
     """Build the user-facing AI tree from the session-level conclusion."""
     if not cluster_assessment and not candidates:
@@ -4615,24 +4689,67 @@ def _build_session_controlled_ai_tree(
         else:
             unknown_nodes.append(node)
 
+    existing_node_ids = {
+        node.candidate_id
+        for node in [*primary_nodes, *secondary_nodes, *rejected_nodes, *unknown_nodes]
+    }
+    for prior_node in _unresolved_prior_ai_candidates(previous_tree):
+        if prior_node.candidate_id not in existing_node_ids:
+            unknown_nodes.append(prior_node.model_copy(update={
+                "self_challenge": prior_node.self_challenge.model_copy(update={
+                    "missing_evidence": _unique_strings([
+                        *prior_node.self_challenge.missing_evidence,
+                        *followup_requests,
+                    ]),
+                }),
+            }))
+            existing_node_ids.add(prior_node.candidate_id)
+
     mechanism_paths = (
         (cluster_assessment.get("primary_anchor") or {}).get("mechanism_paths") or []
         if isinstance(cluster_assessment.get("primary_anchor"), dict)
         else []
     )
-    existing_node_ids = {
-        node.candidate_id
-        for node in [*primary_nodes, *secondary_nodes, *rejected_nodes, *unknown_nodes]
-    }
     for path in mechanism_paths:
         if not isinstance(path, dict) or not path.get("anchor_matches"):
             continue
         candidate_id = str(path.get("candidate_id") or "").strip()
         relation = str(path.get("candidate_relation") or "unknown")
-        if not candidate_id or relation not in {"supports", "refutes"}:
+        if not candidate_id or relation not in {"supports", "refutes", "inconclusive"}:
             continue
         ref = str(path.get("evidence_ref") or "")
         if candidate_id in existing_node_ids:
+            if relation == "inconclusive":
+                matched_node = None
+                for nodes in (primary_nodes, secondary_nodes, unknown_nodes):
+                    for index, existing in enumerate(nodes):
+                        if existing.candidate_id == candidate_id:
+                            matched_node = nodes.pop(index)
+                            break
+                    if matched_node is not None:
+                        break
+                if matched_node is not None:
+                    unknown_nodes.insert(0, matched_node.model_copy(update={
+                        "role": "unknown",
+                        "claim": str(path.get("summary") or matched_node.claim),
+                        "confidence": min(matched_node.confidence, 0.65),
+                        "status": "missing_evidence",
+                        "claim_type": "partial_localization",
+                        "causal_status": "inconclusive",
+                        "decision": "backtrack",
+                        "conclusion_eligible": False,
+                        "eligibility_reason": "当前 CodeQL 查询只覆盖部分有序锚点，不支持也不反驳父候选。",
+                        "evidence_refs": _unique_strings([*matched_node.evidence_refs, ref]),
+                        "self_challenge": matched_node.self_challenge.model_copy(update={
+                            "supporting_evidence_refs": _unique_strings([
+                                *matched_node.self_challenge.supporting_evidence_refs,
+                                ref,
+                            ]),
+                            "missing_evidence": ["source_mechanism_query"],
+                            "what_would_change_my_mind": "不同锚点查询取得完整分段覆盖，或 PyHeap 返回同候选运行时引用链。",
+                        }),
+                    }))
+                continue
             if relation != "refutes":
                 continue
             matched_node = None
@@ -4685,8 +4802,8 @@ def _build_session_controlled_ai_tree(
             confidence=0.8 if complete else 0.2 if role == "rejected" else 0.55,
             status="supported" if complete else "contradicted" if role == "rejected" else "missing_evidence",
             claim_type="direct_root_cause" if complete else "insufficient_for_root_cause" if role == "rejected" else "partial_localization",
-            causal_status="supported" if complete else "contradicted" if role == "rejected" else "unproven",
-            decision="conclude" if complete else "reject_candidate" if role == "rejected" else "continue_probe",
+            causal_status="supported" if complete else "contradicted" if role == "rejected" else "inconclusive" if relation == "inconclusive" else "unproven",
+            decision="conclude" if complete else "reject_candidate" if role == "rejected" else "backtrack" if relation == "inconclusive" else "continue_probe",
             mechanism=str(path.get("rule_id") or "codeql_source_mechanism"),
             target=str(cluster_assessment.get("claim_target") or ""),
             conclusion_eligible=complete,
@@ -4796,6 +4913,27 @@ def _build_session_controlled_ai_tree(
             reason="已完成的结构化证据把粗粒度候选收敛为当前会话级结论。",
         )
     ]
+    for path in mechanism_paths:
+        if not isinstance(path, dict) or path.get("candidate_relation") != "inconclusive":
+            continue
+        candidate_id = str(path.get("candidate_id") or "")
+        if not candidate_id:
+            continue
+        edges.append(AITreeProbeEdge(
+            edge_id=f"session_inconclusive_{candidate_id}_to_parent",
+            from_layer_id=layer1.layer_id,
+            to_layer_id=layer0.layer_id,
+            from_candidate_ids=[candidate_id],
+            to_candidate_ids=[coarse_id],
+            probe_requests=["source_mechanism_query"],
+            probe_results=_probe_results_for_requests(["source_mechanism_query"], probes),
+            status=_edge_status_for_requests(["source_mechanism_query"], probes),
+            evidence_refs=_unique_strings([path.get("evidence_ref")]),
+            reuse_status="not_checked",
+            effect="rollback",
+            transition_type="backtrack",
+            reason="当前 CodeQL 路径未完整闭合，但没有形成反证；返回父候选并改用不同查询或独立引用链继续验证。",
+        ))
     next_candidates = [*layer1.primary_causes, *layer1.secondary_causes, *layer1.unknown_causes]
     if next_candidates:
         next_candidate = next_candidates[0]
@@ -4903,6 +5041,58 @@ def _build_session_controlled_ai_tree(
         final_unknown_causes=final_unknown,
     )
     return enforce_conclusion_eligibility(tree)
+
+
+def _unresolved_prior_ai_candidates(tree: dict[str, Any] | None) -> list[AITreeCandidateNode]:
+    if not isinstance(tree, dict):
+        return []
+    result: list[AITreeCandidateNode] = []
+    seen: set[str] = set()
+    for layer in tree.get("layers", []):
+        if not isinstance(layer, dict):
+            continue
+        for group in ("primary_causes", "secondary_causes", "unknown_causes"):
+            for raw in layer.get(group, []) or []:
+                if not isinstance(raw, dict):
+                    continue
+                candidate_id = str(raw.get("candidate_id") or "")
+                if (
+                    not candidate_id
+                    or candidate_id in seen
+                    or candidate_id.startswith(("coarse_", "gap_", "blocked_", "unknown_"))
+                    or raw.get("conclusion_eligible")
+                    or raw.get("status") in {"contradicted", "rejected", "forbidden"}
+                ):
+                    continue
+                challenge = raw.get("self_challenge") if isinstance(raw.get("self_challenge"), dict) else {}
+                missing = _unique_strings([
+                    *challenge.get("missing_evidence", []),
+                    "source_mechanism_query",
+                ])
+                try:
+                    node = AITreeCandidateNode.model_validate({
+                        **raw,
+                        "role": "unknown",
+                        "status": "missing_evidence",
+                        "causal_status": "inconclusive",
+                        "decision": "backtrack",
+                        "conclusion_eligible": False,
+                        "eligibility_reason": "上一轮候选尚未被反证；深探阻断或不完整只表示机制仍待验证。",
+                        "confidence": min(float(raw.get("confidence") or 0.0), 0.65),
+                        "self_challenge": {
+                            **challenge,
+                            "missing_evidence": missing,
+                            "what_would_change_my_mind": (
+                                challenge.get("what_would_change_my_mind")
+                                or "完整 CodeQL 分段路径或同候选 PyHeap 入向引用链支持或反驳该机制。"
+                            ),
+                        },
+                    })
+                except (TypeError, ValueError):
+                    continue
+                result.append(node)
+                seen.add(candidate_id)
+    return result
 
 
 def _source_snapshot_hashes(observations: list[dict[str, Any]]) -> list[str]:
@@ -5122,10 +5312,11 @@ def _probe_results_for_requests(requests: list[str], probes: list[dict[str, Any]
             continue
         latest = matched[-1]
         status = str(latest.get("status") or "unknown")
+        evidence_status = str(latest.get("evidence_status") or "")
         if status == "COMPLETED":
-            mapped = "completed" if latest.get("evidence_status") in {"valid", "partial"} else "failed"
+            mapped = "completed" if evidence_status == "valid" else "inconclusive" if evidence_status == "partial" else "blocked" if evidence_status == "blocked" else "failed"
         elif status in {"FAILED", "UNAVAILABLE", "REJECTED_POLICY"}:
-            mapped = "failed" if status == "FAILED" else "blocked"
+            mapped = "blocked" if evidence_status == "blocked" or status != "FAILED" else "failed"
         elif status in {"SCHEDULED", "RUNNING", "WAITING_APPROVAL"}:
             mapped = "not_started"
         else:
@@ -5145,6 +5336,8 @@ def _edge_status_for_requests(requests: list[str], probes: list[dict[str, Any]])
         return "failed"
     if any(status == "blocked" for status in statuses):
         return "blocked"
+    if any(status == "inconclusive" for status in statuses):
+        return "inconclusive"
     if any(status == "not_started" for status in statuses):
         return "not_started"
     return "unknown"
@@ -5226,6 +5419,36 @@ def _failed_tasks_are_only_optional_mechanism_followups(
     )
 
 
+def _diagnosis_terminal_status(
+    conclusion: dict[str, Any],
+    *,
+    had_failures: bool = False,
+    nonblocking_failures: bool = False,
+) -> DiagnosisStatus:
+    tree = conclusion.get("controlled_ai_tree") if isinstance(conclusion.get("controlled_ai_tree"), dict) else {}
+    clusters = conclusion.get("root_cause_clusters") if isinstance(conclusion.get("root_cause_clusters"), list) else []
+    has_eligible_root = bool(
+        not conclusion.get("abstained")
+        and (
+            tree.get("final_primary_causes")
+            or any(isinstance(item, dict) and item.get("conclusion_eligible") for item in clusters)
+        )
+    )
+    if has_eligible_root:
+        if had_failures and not nonblocking_failures:
+            return DiagnosisStatus.PARTIAL_COMPLETED
+        return DiagnosisStatus.COMPLETED
+    has_partial = bool(
+        conclusion.get("possible_root_causes")
+        or any(
+            isinstance(item, dict)
+            and item.get("qualification") in {"possible_root_cause", "partial_localization"}
+            for item in clusters
+        )
+    )
+    return DiagnosisStatus.PARTIAL_COMPLETED if has_partial else DiagnosisStatus.INSUFFICIENT_EVIDENCE
+
+
 def _max_followup_rounds(session: dict[str, Any]) -> int:
     return 8 if str(session.get("policy_profile") or "") == "development" else MAX_FOLLOWUP_ROUNDS
 
@@ -5248,6 +5471,17 @@ def _can_schedule_evidence_attempt(evidence_gap: str, matching_probes: list[dict
 def _guarded_query_spec_hash(probe_input: dict[str, Any]) -> str:
     query = probe_input.get("ai_generated_query") if isinstance(probe_input.get("ai_generated_query"), dict) else {}
     return str(query.get("query_spec_hash") or "")
+
+
+def _source_mechanism_input_ready(
+    probe_input: dict[str, Any],
+    collector_parameters: dict[str, Any],
+) -> bool:
+    return bool(
+        _guarded_query_spec_hash(probe_input)
+        or collector_parameters.get("codeql_sarif_path")
+        or os.getenv("MINI_DROP_CODEQL_QUERY_SUITE", "").strip()
+    )
 
 
 def _repeats_guarded_query(probe_input: dict[str, Any], matching_probes: list[dict[str, Any]]) -> bool:

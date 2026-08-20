@@ -379,6 +379,29 @@ def test_fallback_explanation_is_explicit_and_keeps_unknowns():
     assert explanation["root_cause_clusters"][0].cause_level == "direct_root_cause"
 
 
+def test_ineligible_memory_fallback_is_possible_cause_not_confirmed_root():
+    assessment = _assessment(
+        classification="python_memory_retention",
+        claim_type="direct_failure_mechanism",
+        mechanism="python_memory_retention",
+        claim_target="src/werkzeug/routing.py:844",
+        diagnostic_claim="路由构建期间形成的代码常量持有链可能造成对象持续保留。",
+        conclusion_eligible=False,
+        confidence=0.84,
+        confidence_level="高",
+        evidence_refs=["ev-memray", "ev-source"],
+    )
+    clusters = build_root_cause_clusters([], assessment, {"target_scope": {"target_service": "werkzeug-routing"}})
+
+    explanation = build_fallback_explanation(clusters, assessment)
+
+    assert explanation["root_cause_clusters"][0].qualification == "possible_root_cause"
+    assert explanation["root_cause_clusters"][0].role == "independent"
+    assert explanation["headline"].startswith("可能根因：")
+    assert explanation["confidence_level"] == "低"
+    assert explanation["abstained"] is True
+
+
 def test_session_ai_review_rejects_unknown_cluster_and_evidence(monkeypatch):
     clusters = build_root_cause_clusters(
         [_observation(service_id="checkoutservice", instance_id="checkout-1", pid=11, refs=["ev-dependency"], failed_dependencies=["paymentservice"])],

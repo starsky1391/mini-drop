@@ -73,6 +73,7 @@ function ControlledAITreeGraphInner({ tree, evidenceMap, highlightedCandidateIds
           <Tag color="red">主因</Tag>
           <Tag color="orange">次因</Tag>
           <Tag color="default">反证灰节点</Tag>
+          <Tag color="cyan">未决/阻断节点</Tag>
           <Tag color="blue">探针边</Tag>
           <Tag color="default">回溯边</Tag>
           <Tag color="gold">停止边界</Tag>
@@ -121,7 +122,12 @@ export default function ControlledAITreeGraph(props) {
 function AITreeNode({ data }) {
   const candidate = data.candidate || {};
   const challenge = candidate.self_challenge || {};
-  const isRejected = data.role === "rejected" || ["contradicted", "rejected"].includes(candidate.status);
+  const isRejected = candidate.status !== "forbidden" && (
+    ["contradicted", "rejected"].includes(candidate.status)
+    || candidate.causal_status === "contradicted"
+  );
+  const isUnresolved = candidate.causal_status === "inconclusive"
+    || (data.role === "unknown" && candidate.status === "missing_evidence");
   const isForbidden = candidate.status === "forbidden" || data.status === "forbidden";
   const content = (
     <Space direction="vertical" size={6} className="ai-tree-popover">
@@ -137,7 +143,7 @@ function AITreeNode({ data }) {
 
   return (
     <Popover trigger="hover" placement="right" content={content}>
-      <div className={`ai-tree-node ai-tree-node-${data.role} ${isRejected ? "ai-tree-node-muted" : ""} ${isForbidden ? "ai-tree-node-forbidden" : ""} ${data.outsideFinalBoundary ? "ai-tree-node-observed-only" : ""} ${data.highlighted ? "ai-tree-node-highlighted" : ""}`}>
+      <div className={`ai-tree-node ai-tree-node-${data.role} ${isRejected ? "ai-tree-node-muted" : ""} ${isUnresolved ? "ai-tree-node-unresolved" : ""} ${isForbidden ? "ai-tree-node-forbidden" : ""} ${data.outsideFinalBoundary ? "ai-tree-node-observed-only" : ""} ${data.highlighted ? "ai-tree-node-highlighted" : ""}`}>
         <Handle type="target" position={Position.Top} />
         <div className="ai-tree-node-topline">
           <span className="ai-tree-node-role">{ROLE_LABELS[data.role] || data.role}</span>
@@ -317,17 +323,19 @@ async function getElk() {
 
 function decorateEdge(edge) {
   const kind = edge.data?.kind || "lineage";
-  const failed = ["failed", "blocked"].includes(edge.data?.status);
+  const failed = edge.data?.status === "failed";
+  const unresolved = ["blocked", "inconclusive"].includes(edge.data?.status);
+  const edgeColor = failed ? "#cf1322" : unresolved ? "#d48806" : EDGE_COLORS[kind] || EDGE_COLORS.lineage;
   return {
     ...edge,
-    markerEnd: { type: MarkerType.ArrowClosed, color: EDGE_COLORS[kind] || EDGE_COLORS.lineage },
+    markerEnd: { type: MarkerType.ArrowClosed, color: edgeColor },
     style: {
-      stroke: failed ? "#cf1322" : EDGE_COLORS[kind] || EDGE_COLORS.lineage,
+      stroke: edgeColor,
       strokeWidth: kind === "probe" ? 2.4 : 1.6,
-      strokeDasharray: failed || kind === "boundary" || kind === "backtrack" ? "6 5" : undefined,
+      strokeDasharray: failed || unresolved || kind === "boundary" || kind === "backtrack" ? "6 5" : undefined,
     },
     labelStyle: {
-      fill: EDGE_COLORS[kind] || EDGE_COLORS.lineage,
+      fill: edgeColor,
       fontWeight: 700,
       fontSize: 11,
     },

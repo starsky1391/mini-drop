@@ -512,6 +512,16 @@ export default function AIDiagnosis() {
 function DiagnosisDetail({ detail }) {
   const conclusion = detail.latest_conclusion;
   const candidates = conclusion?.root_cause_candidates || [];
+  const possibleCauses = conclusion?.possible_root_causes || [];
+  const hasEligiblePrimary = Boolean(
+    !conclusion?.abstained
+    && (conclusion?.controlled_ai_tree?.final_primary_causes?.length || candidates.length),
+  );
+  const displayedConfidence = hasEligiblePrimary
+    ? conclusion?.confidence_level
+    : possibleCauses.length
+      ? "低（可能根因待验证）"
+      : "不可判断";
   const assessment = conclusion?.cluster_assessment;
   const commands = conclusion?.diagnostic_commands || [];
   const hypotheses = detail.hypothesis_graph?.hypotheses || [];
@@ -582,13 +592,14 @@ function DiagnosisDetail({ detail }) {
         <Card title="最新结论">
           <Alert
             showIcon
-            type={detail.status === "INSUFFICIENT_EVIDENCE" || aiReviewStatus !== "succeeded" ? "warning" : "info"}
+            type={!hasEligiblePrimary || aiReviewStatus !== "succeeded" ? "warning" : "info"}
             message={conclusion.headline || conclusion.summary}
             description={(
               <Space direction="vertical" size={6}>
                 <Typography.Text>{conclusion.why_it_happened || conclusion.summary}</Typography.Text>
                 <Space wrap>
-                  <Tag>置信等级 {conclusion.confidence_level}</Tag>
+                  <Tag color={hasEligiblePrimary ? "green" : "gold"}>根因置信等级 {displayedConfidence}</Tag>
+                  {!hasEligiblePrimary && <Tag>未形成最终主因</Tag>}
                   <Tag color={aiReviewStatus === "succeeded" ? "green" : aiReviewStatus === "failed" ? "red" : "orange"}>
                     {aiReviewStatus === "succeeded" ? "AI 会话裁决已通过" : aiReviewStatus === "failed" ? "AI 裁决失败，已回退" : "Analyzer 回退结论"}
                   </Tag>
@@ -604,6 +615,15 @@ function DiagnosisDetail({ detail }) {
               showIcon
               message="当前结论不是 AI 最终裁决"
               description={conclusion.ai_review_error}
+              style={{ marginBottom: 12 }}
+            />
+          )}
+          {!hasEligiblePrimary && possibleCauses.length > 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              message="当前保留的是可能根因，不是最终根因"
+              description="深探被阻断或结果不完整不会否定上一层候选；系统已保留已有证据、未验证因果边和下一步补证请求。"
               style={{ marginBottom: 12 }}
             />
           )}
@@ -652,23 +672,25 @@ function DiagnosisDetail({ detail }) {
               </Descriptions.Item>
             </Descriptions>
           )}
-          <Table
-            rowKey="candidate_id"
-            size="small"
-            pagination={false}
-            dataSource={candidates}
-            columns={[
-              { title: "排名", dataIndex: "rank", width: 70 },
-              { title: "候选", dataIndex: "candidate_id", width: 220 },
-              { title: "置信等级", dataIndex: "confidence_level", width: 100, render: (value) => <Tag>{value}</Tag> },
-              { title: "说明", dataIndex: "description" },
-              {
-                title: "证据",
-                dataIndex: "evidence_refs",
-                render: (refs = []) => <Space wrap>{refs.map((ref) => <Tag key={ref} color={evidenceMap.has(ref) ? "blue" : "red"}>{ref}</Tag>)}</Space>,
-              },
-            ]}
-          />
+          {candidates.length > 0 && (
+            <Table
+              rowKey="candidate_id"
+              size="small"
+              pagination={false}
+              dataSource={candidates}
+              columns={[
+                { title: "排名", dataIndex: "rank", width: 70 },
+                { title: "已确认候选", dataIndex: "candidate_id", width: 220 },
+                { title: "置信等级", dataIndex: "confidence_level", width: 100, render: (value) => <Tag>{value}</Tag> },
+                { title: "说明", dataIndex: "description" },
+                {
+                  title: "证据",
+                  dataIndex: "evidence_refs",
+                  render: (refs = []) => <Space wrap>{refs.map((ref) => <Tag key={ref} color={evidenceMap.has(ref) ? "blue" : "red"}>{ref}</Tag>)}</Space>,
+                },
+              ]}
+            />
+          )}
           {conclusion.limitations?.length > 0 && (
             <Alert type="warning" message="限制与缺失证据" description={conclusion.limitations.join("；")} style={{ marginTop: 12 }} />
           )}
@@ -678,13 +700,15 @@ function DiagnosisDetail({ detail }) {
       {conclusion?.controlled_ai_tree && (
         <Card
           id="controlled-ai-tree"
-          title="受控 AI 树（当前终态）"
+          title="受控 AI 树（当前状态）"
           extra={(
             <Space wrap>
               <Tag color="red">主因 {treeStats.primary}</Tag>
               <Tag color="default">反证 {treeStats.rejected}</Tag>
-              <Tag color="blue">未知/阻断 {treeStats.unknown}</Tag>
-              <Tag color={conclusion.controlled_ai_tree.final_supported_level === "line" ? "green" : "blue"}>正式结论：{conclusion.controlled_ai_tree.final_supported_level}</Tag>
+              <Tag color="cyan">未决/阻断 {treeStats.unknown}</Tag>
+              <Tag color={hasEligiblePrimary ? "green" : "gold"}>
+                {hasEligiblePrimary ? "正式结论" : "当前证据边界"}：{conclusion.controlled_ai_tree.final_supported_level}
+              </Tag>
             </Space>
           )}
         >
@@ -946,12 +970,26 @@ function DiagnosisDetail({ detail }) {
 function countControlledTreeBranches(tree) {
   const initial = { primary: 0, secondary: 0, rejected: 0, unknown: 0 };
   if (!tree?.layers?.length) return initial;
-  return tree.layers.reduce((acc, layer) => ({
-    primary: acc.primary + (layer.primary_causes?.length || 0),
-    secondary: acc.secondary + (layer.secondary_causes?.length || 0),
-    rejected: acc.rejected + (layer.rejected_causes?.length || 0),
-    unknown: acc.unknown + (layer.unknown_causes?.length || 0),
-  }), initial);
+  return tree.layers.reduce((acc, layer) => {
+    const candidates = [
+      ...(layer.primary_causes || []),
+      ...(layer.secondary_causes || []),
+      ...(layer.rejected_causes || []),
+      ...(layer.unknown_causes || []),
+    ];
+    for (const candidate of candidates) {
+      const rejected = candidate.status !== "forbidden" && (
+        candidate.role === "rejected"
+        || ["contradicted", "rejected"].includes(candidate.status)
+        || candidate.causal_status === "contradicted"
+      );
+      if (rejected) acc.rejected += 1;
+      else if (candidate.conclusion_eligible && candidate.role === "primary") acc.primary += 1;
+      else if (candidate.conclusion_eligible && candidate.role === "secondary") acc.secondary += 1;
+      else acc.unknown += 1;
+    }
+    return acc;
+  }, initial);
 }
 
 function ChildTaskList({ taskIds }) {

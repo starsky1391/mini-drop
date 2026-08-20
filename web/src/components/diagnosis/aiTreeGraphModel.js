@@ -16,7 +16,7 @@ export const ROLE_LABELS = {
   primary: "主因",
   secondary: "次因",
   rejected: "反证",
-  unknown: "未知",
+  unknown: "未决",
 };
 
 export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = []) {
@@ -29,6 +29,7 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
   const edgeKeys = new Set();
   const finalLevel = tree.final_supported_level || "resource";
   const observedLevels = [];
+  const hasEligiblePrimary = Boolean(tree.final_primary_causes?.length);
 
   const pushEdge = (edge) => {
     if (!edge.source || !edge.target || edge.source === edge.target) return;
@@ -56,6 +57,11 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
     const candidates = flattenLayerCandidates(layer);
     layerIndex.set(layer.layer_id, candidates);
     for (const candidate of candidates) {
+      const visualRole = candidate.role === "rejected" || ["contradicted", "rejected"].includes(candidate.status)
+        ? "rejected"
+        : candidate.conclusion_eligible
+          ? candidate.role
+          : "unknown";
       observedLevels.push(candidate.supported_level);
       const outsideFinalBoundary = isDeeperLevel(candidate.supported_level, finalLevel);
       const nodeId = nodeIdFor(layer.layer_id, candidate.candidate_id);
@@ -74,7 +80,7 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
           generatedBy: layer.generated_by,
           layerSummary: layer.summary,
           candidate,
-          role: candidate.role,
+          role: visualRole,
           title: candidate.candidate_id,
           claim: candidate.claim,
           level: candidate.supported_level,
@@ -84,10 +90,11 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
           highlighted: highlighted.has(candidate.candidate_id),
           badges: [
             `L${layer.depth}`,
-            ROLE_LABELS[candidate.role] || candidate.role,
+            ROLE_LABELS[visualRole] || visualRole,
             candidate.supported_level,
             candidate.claim_type,
             candidate.conclusion_eligible ? "可进入结论" : "未过门禁",
+            candidate.causal_status === "inconclusive" ? "探针未决" : candidate.causal_status,
             outsideFinalBoundary ? "已观察/未入终态" : "终态边界内",
             layer.generated_by === "ai_guarded" ? "AI" : "fallback",
           ],
@@ -185,11 +192,11 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
     data: {
       nodeKind: "stop",
       role: "stop",
-      title: `正式结论停在 ${finalLevel}`,
+      title: hasEligiblePrimary ? `正式结论停在 ${finalLevel}` : `当前证据边界停在 ${finalLevel}`,
       claim: boundaryClaim(tree.stop_reason, deepestLevel(observedLevels), finalLevel),
       level: finalLevel,
       confidence: levelProgress(finalLevel),
-      badges: ["stop", finalLevel],
+      badges: [hasEligiblePrimary ? "正式结论" : "未形成最终根因", finalLevel],
     },
   });
   for (const source of fallbackFinalSources) {

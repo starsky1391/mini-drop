@@ -1,0 +1,37 @@
+{
+  "diagnosis_id": "diag_session_20260820_140856_578c5c5e",
+  "parent_candidate": {
+    "candidate_id": "python_code_constant_retention",
+    "role": "unknown",
+    "claim": "路由构建函数把运行时对象嵌入代码常量，可能形成持续持有链。",
+    "supported_level": "line",
+    "confidence": 0.84,
+    "status": "missing_evidence",
+    "claim_type": "direct_failure_mechanism",
+    "causal_status": "unproven",
+    "decision": "continue_probe",
+    "mechanism": "python_code_constant_retention",
+    "target": "src/werkzeug/routing.py:844",
+    "conclusion_eligible": false,
+    "evidence_refs": ["ev-memray", "ev-source"],
+    "self_challenge": {
+      "supporting_evidence_refs": ["ev-memray", "ev-source"],
+      "missing_evidence": ["source_mechanism_query", "python_heap_reference"]
+    }
+  },
+  "probe_input": {
+    "candidate_id": "python_code_constant_retention",
+    "ai_generated_query": null
+  },
+  "probe_result": {
+    "status": "blocked",
+    "evidence_status": "blocked",
+    "blocked_reason": "managed_query_suite_missing"
+  },
+  "invalid_previous_conclusion": {
+    "abstained": true,
+    "confidence_level": "高",
+    "root_cause_candidates": [],
+    "possible_root_causes": []
+  }
+}

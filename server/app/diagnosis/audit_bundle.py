@@ -278,7 +278,12 @@ def _payload_refs(payload: Any) -> list[str]:
 def _normalize_conclusion(latest: dict[str, Any]) -> dict[str, Any]:
     assessment = latest.get("cluster_assessment") or {}
     candidates = latest.get("root_cause_candidates") or []
+    possible = latest.get("possible_root_causes") or []
     primary = candidates[0] if candidates else {}
+    abstained = bool(latest.get("abstained", not bool(candidates)))
+    confidence_level = latest.get("confidence_level", "不可判断")
+    if abstained and confidence_level == "高":
+        confidence_level = "低" if possible else "不可判断"
     return {
         "summary": latest.get("summary", ""),
         "headline": latest.get("headline", ""),
@@ -293,13 +298,14 @@ def _normalize_conclusion(latest: dict[str, Any]) -> dict[str, Any]:
         "ai_review_attempts": latest.get("ai_review_attempts", 0),
         "ai_review_model": latest.get("ai_review_model", ""),
         "ai_review_error": latest.get("ai_review_error", ""),
-        "confidence_level": latest.get("confidence_level", "不可判断"),
+        "confidence_level": confidence_level,
         "location_type": assessment.get("location_type") or primary.get("location_type"),
         "domain_type": assessment.get("domain_type") or primary.get("domain_type"),
         "classification": assessment.get("classification") or primary.get("classification"),
         "root_entity": assessment.get("root_entity") or primary.get("root_entity"),
-        "abstained": not bool(candidates) or latest.get("confidence_level") == "不可判断",
+        "abstained": abstained,
         "root_cause_candidates": candidates,
+        "possible_root_causes": possible,
         "supporting_evidence_refs": assessment.get("evidence_refs") or primary.get("evidence_refs", []),
         "missing_evidence": latest.get("missing_evidence") or assessment.get("missing_evidence", []),
         "diagnostic_commands": latest.get("diagnostic_commands", []),

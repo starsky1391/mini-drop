@@ -8,6 +8,13 @@ const ROLE_META = {
   independent: { label: "独立原因", color: "blue" },
 };
 
+const QUALIFICATION_META = {
+  confirmed_root_cause: { label: "已确认根因", color: "green" },
+  possible_root_cause: { label: "可能根因", color: "gold" },
+  partial_localization: { label: "局部定位", color: "cyan" },
+  observation: { label: "观察事实", color: "default" },
+};
+
 const LEVEL_LABELS = {
   observation: "观察事实",
   direct_failure_mechanism: "直接故障机制",
@@ -23,6 +30,8 @@ const RECOMMENDATION_LABELS = {
 
 export default function RootCauseClusters({ clusters = [], evidenceMap, onInspectTree }) {
   if (!clusters.length) return null;
+  const confirmedCount = clusters.filter((item) => item.qualification === "confirmed_root_cause").length;
+  const pendingCount = clusters.length - confirmedCount;
 
   return (
     <section className="root-cause-clusters" aria-label="根因簇">
@@ -31,7 +40,10 @@ export default function RootCauseClusters({ clusters = [], evidenceMap, onInspec
           <Typography.Title level={5}>根因与影响范围</Typography.Title>
           <Typography.Text type="secondary">每个根因独立通过证据门禁，展开后可查看因果链与处理建议。</Typography.Text>
         </div>
-        <Tag icon={<SafetyCertificateOutlined />} color="blue">{clusters.filter((item) => item.conclusion_eligible).length} 个合格根因</Tag>
+        <Space wrap>
+          <Tag icon={<SafetyCertificateOutlined />} color="green">{confirmedCount} 个已确认根因</Tag>
+          {pendingCount > 0 && <Tag color="gold">{pendingCount} 个待验证结论</Tag>}
+        </Space>
       </div>
       <Collapse
         className="root-cause-cluster-list"
@@ -54,15 +66,22 @@ export default function RootCauseClusters({ clusters = [], evidenceMap, onInspec
 
 function ClusterLabel({ cluster }) {
   const role = ROLE_META[cluster.role] || ROLE_META.independent;
+  const qualification = QUALIFICATION_META[cluster.qualification] || QUALIFICATION_META.observation;
   return (
     <div className="root-cause-cluster-label">
       <Space wrap size={6}>
         <Tag color={role.color}>{role.label}</Tag>
+        <Tag color={qualification.color}>{qualification.label}</Tag>
         <Tag>{LEVEL_LABELS[cluster.cause_level] || cluster.cause_level}</Tag>
         {!cluster.conclusion_eligible && <Tag>未过结论门禁</Tag>}
       </Space>
       <Typography.Text strong>{cluster.claim}</Typography.Text>
-      <Progress percent={Math.round((cluster.confidence || 0) * 100)} size="small" showInfo={false} />
+      <Progress
+        percent={Math.round((cluster.confidence || 0) * 100)}
+        size="small"
+        showInfo={false}
+        strokeColor={cluster.conclusion_eligible ? "#389e0d" : cluster.qualification === "possible_root_cause" ? "#d48806" : "#08979c"}
+      />
     </div>
   );
 }

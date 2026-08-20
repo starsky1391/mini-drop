@@ -265,7 +265,7 @@ class AITreeCandidateNode(BaseModel):
 class AITreeProbeResult(BaseModel):
     """受控 AI 树边上的探针结果摘要。"""
 
-    status: Literal["completed", "blocked", "failed", "reused", "not_started", "unknown"] = "unknown"
+    status: Literal["completed", "inconclusive", "blocked", "failed", "reused", "not_started", "unknown"] = "unknown"
     evidence_refs: list[str] = Field(default_factory=list)
     blocked_reason: str = ""
 
@@ -280,7 +280,7 @@ class AITreeProbeEdge(BaseModel):
     to_candidate_ids: list[str] = Field(default_factory=list)
     probe_requests: list[str] = Field(default_factory=list)
     probe_results: list[AITreeProbeResult] = Field(default_factory=list)
-    status: Literal["completed", "blocked", "failed", "reused", "not_started", "unknown"] = "unknown"
+    status: Literal["completed", "inconclusive", "blocked", "failed", "reused", "not_started", "unknown"] = "unknown"
     evidence_refs: list[str] = Field(default_factory=list)
     reuse_status: Literal[
         "reuse_hit",
@@ -380,6 +380,12 @@ class RootCauseCluster(BaseModel):
     residual_unknowns: list[str] = Field(default_factory=list)
     recommendations: list[RootCauseRecommendation] = Field(default_factory=list)
     conclusion_eligible: bool = False
+    qualification: Literal[
+        "confirmed_root_cause",
+        "possible_root_cause",
+        "partial_localization",
+        "observation",
+    ] = "observation"
 
 
 class SessionConclusionReview(BaseModel):

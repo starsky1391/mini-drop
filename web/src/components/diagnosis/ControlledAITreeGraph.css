@@ -53,6 +53,13 @@
   background: linear-gradient(180deg, #f0f7ff, #ffffff);
 }
 
+.ai-tree-node-unresolved {
+  border-color: #13a8a8;
+  border-style: dashed;
+  background: linear-gradient(180deg, #e6fffb, #ffffff);
+  opacity: 1;
+}
+
 .ai-tree-node-forbidden {
   border-color: #ffd666;
   background:
