@@ -90,9 +90,35 @@ def generate_session_investigation_review(
         if ref
     )
     source_anchor_catalog = _source_anchor_catalog(evidence_catalog)
+    candidate_catalog = [
+        {
+            "candidate_id": node.candidate_id,
+            "parent_candidate_ids": list(node.parent_candidate_ids),
+            "origin_parent_candidate_id": node.origin_parent_candidate_id,
+            "depth_kind": node.depth_kind,
+            "supported_level": node.supported_level,
+            "role": node.role,
+            "status": node.status,
+        }
+        for layer in session_tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    ]
+    eligible_probe_candidates = [
+        item["candidate_id"]
+        for item in candidate_catalog
+        if item["candidate_id"] in (candidate_ids - rejected_candidate_ids)
+    ]
     payload = {
         "diagnosis_id": diagnosis_id,
         "current_tree": session_tree.model_dump(mode="json"),
+        "candidate_catalog": candidate_catalog,
+        "eligible_probe_candidates": eligible_probe_candidates,
+        "valid_evidence_refs": sorted(valid_refs),
         "evidence_catalog": [
             {
                 key: item.get(key)
@@ -113,9 +139,12 @@ def generate_session_investigation_review(
                 "你是 Mini-Drop 会话级调查树裁决器，只输出 JSON。选择最小必要补证并形成可证伪机制候选。"
                 "selected_evidence_families 只能来自 eligible_this_round；不能输出命令、修复动作或未注册工具。"
                 "当选择 source_mechanism_query 时，必须输出 probe_inputs.source_mechanism_query.ai_generated_query，"
-                "其中包含 investigation_question、candidate_id、expected_relation(supports|refutes) 和 2-6 个有序 path_anchors；"
+                "其中包含 investigation_question、candidate_id、origin_parent_candidate_id、expected_relation(supports|refutes) 和 2-6 个有序 path_anchors；"
                 "锚点必须逐字选择 source_anchor_catalog 中不同的 file/line，并按预期机制传播顺序排列；"
                 "candidate_id 必须绑定 current_tree 或本轮 candidate_proposals；"
+                "candidate_catalog 是唯一可用的候选 ID 和父子关系清单；candidate_proposals 的 parent_candidate_ids 只能逐字选择其中的 candidate_id，"
+                "source_mechanism_query 的 origin_parent_candidate_id 必须选择其中 depth_kind=base、supported_level=line 的节点；"
+                "valid_evidence_refs 是唯一可引用的 evidence_refs 清单，不能自行改写、拼接或引用不存在的 ref；"
                 "若 current_tree 已把候选标为 rejected/contradicted，禁止再次绑定该候选，也禁止重复其原 path_anchors；"
                 "此时必须回退到父层并提出不同机制的新候选。分配热点行只是表层位置，源码机制查询应优先验证"
                 "reference_origin 到 reference_step 的完整传播链；"
@@ -123,6 +152,7 @@ def generate_session_investigation_review(
                 "当选择 python_heap_reference 时，必须输出 probe_inputs.python_heap_reference，包含 current_tree 或本轮候选的"
                 "candidate_id，以及 1-8 个 object_type_hints，用于限制 PyHeap 运行时引用验证目标。"
                 "candidate_proposals 可为空；新增 candidate_id 必须以 ai_proposal_ 开头，parent_candidate_ids 必须引用 current_tree，"
+                "并且每个候选必须给出唯一 origin_parent_candidate_id，且该值必须属于 parent_candidate_ids；"
                 "evidence_refs 必须真实存在，supported_level 不得超过 current_tree.final_supported_level。"
                 "每个候选必须包含 claim、mechanism、target、支持/反驳/缺失证据和 what_would_change_my_mind。"
             ),
@@ -146,6 +176,15 @@ def generate_session_investigation_review(
                 (candidate_ids - rejected_candidate_ids)
                 | {str(item.get("candidate_id") or "") for item in proposals},
                 source_anchor_catalog,
+                candidate_parent_ids={
+                    node.candidate_id: set(node.parent_candidate_ids)
+                    for layer in session_tree.layers
+                    for node in [*layer.primary_causes, *layer.secondary_causes, *layer.rejected_causes, *layer.unknown_causes]
+                }
+                | {
+                    str(item.get("candidate_id")): set(str(parent) for parent in item.get("parent_candidate_ids", []))
+                    for item in proposals
+                },
             )
             return {
                 "ai_review_status": "succeeded",
@@ -181,6 +220,7 @@ def _validate_investigation_probe_inputs(
     selected: list[str],
     allowed_candidate_ids: set[str],
     allowed_source_anchors: list[dict] | None = None,
+    candidate_parent_ids: dict[str, set[str]] | None = None,
 ) -> dict[str, dict]:
     value = value if isinstance(value, dict) else {}
     allowed_keys = {"source_mechanism_query", "python_heap_reference"} & set(selected)
@@ -196,7 +236,24 @@ def _validate_investigation_probe_inputs(
             allowed_candidate_ids=allowed_candidate_ids,
             allowed_anchors=allowed_source_anchors,
         )
-        result["source_mechanism_query"] = {"ai_generated_query": guarded}
+        raw_generated = item.get("ai_generated_query") if isinstance(item.get("ai_generated_query"), dict) else {}
+        origin_parent = str(
+            item.get("origin_parent_candidate_id")
+            or raw_generated.get("origin_parent_candidate_id")
+            or guarded.get("origin_parent_candidate_id")
+            or ""
+        ).strip()
+        if not origin_parent or origin_parent not in allowed_candidate_ids:
+            raise ValueError("source_mechanism_query 缺少合法 origin_parent_candidate_id")
+        known_parents = (candidate_parent_ids or {}).get(guarded["candidate_id"], set())
+        if known_parents and origin_parent not in known_parents:
+            raise ValueError("source_mechanism_query 的来源父节点不属于候选的 parent_candidate_ids")
+        guarded["origin_parent_candidate_id"] = origin_parent
+        result["source_mechanism_query"] = {
+            "candidate_id": guarded["candidate_id"],
+            "origin_parent_candidate_id": origin_parent,
+            "ai_generated_query": guarded,
+        }
     if "python_heap_reference" in selected:
         item = value.get("python_heap_reference")
         if not isinstance(item, dict):
@@ -205,10 +262,17 @@ def _validate_investigation_probe_inputs(
         hints = [str(hint).strip() for hint in item.get("object_type_hints", []) if str(hint).strip()]
         if candidate_id not in allowed_candidate_ids:
             raise ValueError("python_heap_reference 绑定了越界候选")
+        origin_parent = str(item.get("origin_parent_candidate_id") or "").strip()
+        if not origin_parent or origin_parent not in allowed_candidate_ids:
+            raise ValueError("python_heap_reference 缺少合法 origin_parent_candidate_id")
+        known_parents = (candidate_parent_ids or {}).get(candidate_id, set())
+        if known_parents and origin_parent not in known_parents:
+            raise ValueError("python_heap_reference 的来源父节点不属于候选的 parent_candidate_ids")
         if not 1 <= len(hints) <= 8 or any(not re.fullmatch(r"[A-Za-z0-9_. -]{1,80}", hint) for hint in hints):
             raise ValueError("python_heap_reference object_type_hints 非法")
         result["python_heap_reference"] = {
             "candidate_id": candidate_id,
+            "origin_parent_candidate_id": origin_parent,
             "object_type_hints": list(dict.fromkeys(hints)),
         }
     return result
@@ -327,12 +391,15 @@ def _validate_investigation_proposals(value, parent_ids: set[str], valid_refs: s
             raise ValueError("candidate_proposal 不是对象")
         candidate_id = str(item.get("candidate_id") or "")
         parents = [str(parent) for parent in item.get("parent_candidate_ids", [])]
+        origin_parent = str(item.get("origin_parent_candidate_id") or "")
         refs = [str(ref) for ref in item.get("evidence_refs", [])]
         level = str(item.get("supported_level") or "resource")
         if not re.fullmatch(r"ai_proposal_[a-zA-Z0-9_\-]{1,80}", candidate_id) or candidate_id in seen:
             raise ValueError("candidate_id 非法或重复")
         if not parents or any(parent not in parent_ids for parent in parents):
             raise ValueError("candidate parent 越界")
+        if not origin_parent or origin_parent not in parents:
+            raise ValueError("candidate 必须提供属于 parent_candidate_ids 的唯一 origin_parent_candidate_id")
         if not refs or any(ref not in valid_refs for ref in refs):
             raise ValueError("candidate evidence_refs 不真实")
         if _level_order(level) > _level_order(max_level):
@@ -343,6 +410,7 @@ def _validate_investigation_proposals(value, parent_ids: set[str], valid_refs: s
         result.append({
             "candidate_id": candidate_id,
             "parent_candidate_ids": parents,
+            "origin_parent_candidate_id": origin_parent,
             "claim": str(item["claim"]).strip(),
             "mechanism": str(item["mechanism"]).strip(),
             "target": str(item["target"]).strip(),
@@ -1411,6 +1479,13 @@ def _llm_tree_shape_is_safe(
             llm_candidate_ids.add(item.candidate_id)
             if any(parent_id not in analyzer_candidate_ids for parent_id in item.parent_candidate_ids):
                 return False
+            if item.origin_parent_candidate_id:
+                if item.origin_parent_candidate_id not in item.parent_candidate_ids:
+                    return False
+                if base.origin_parent_candidate_id and item.origin_parent_candidate_id != base.origin_parent_candidate_id:
+                    return False
+            elif base.origin_parent_candidate_id and item.depth_kind != "base":
+                return False
             if not _candidate_status_is_safe(base.status, item.status):
                 return False
             if _level_order(item.supported_level) > max_level_order:
@@ -1498,7 +1573,7 @@ def _build_controlled_tree_system_prompt() -> str:
 1. tree_id、schema_version、source_context_hash、final_supported_level 必须沿用 Analyzer 模板。
 2. layer_id 必须沿用 Analyzer 模板，不得新增或删除层。
 3. candidate_id 必须来自 Analyzer 模板，不得新增候选；模板里的所有候选必须保留且只能出现一次。
-4. 你可以在已有候选内重新分配 primary / secondary / rejected / unknown，并填写 parent_candidate_ids / probe_edges 的 candidate 血缘，但不得引用不存在的 candidate。
+4. 你可以在已有候选内重新分配 primary / secondary / rejected / unknown，并填写 parent_candidate_ids / probe_edges 的 candidate 血缘，但不得引用不存在的 candidate；正常父子边只使用 parent_candidate_ids，origin_parent_candidate_id 必须沿用 Analyzer 的唯一来源。
 5. supported_level 不得超过 Analyzer 给出的 final_supported_level，也不得超过候选原始 supported_level。
 6. evidence_refs 只能引用当前证据中真实存在的路径。
 7. probe_edges[].probe_requests 只能选择 Probe Manifest 中的 evidence_family，不能写 probe_id，不能写任意 shell、sysctl、修复动作。

@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ── 输入侧 ──
@@ -221,6 +221,7 @@ class AITreeCandidateNode(BaseModel):
     candidate_id: str
     lineage_id: Optional[str] = None
     parent_candidate_ids: list[str] = Field(default_factory=list)
+    origin_parent_candidate_id: Optional[str] = None
     role: Literal["primary", "secondary", "rejected", "unknown"]
     claim: str
     supported_level: Literal["resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"] = "resource"
@@ -256,10 +257,28 @@ class AITreeCandidateNode(BaseModel):
         "syscall_primitive",
         "runtime_primitive",
     ]] = None
+    depth_kind: Literal["base", "mechanism", "boundary"] = "base"
     conclusion_eligible: bool = False
     eligibility_reason: str = ""
     evidence_refs: list[str] = Field(default_factory=list)
     self_challenge: AITreeSelfChallenge = Field(default_factory=AITreeSelfChallenge)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _read_legacy_origin_field(cls, value):
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if not data.get("origin_parent_candidate_id") and data.get("source_parent_candidate_id"):
+            data["origin_parent_candidate_id"] = data["source_parent_candidate_id"]
+        data.pop("source_parent_candidate_id", None)
+        return data
+
+    @model_validator(mode="after")
+    def _validate_origin_parent(self):
+        if self.origin_parent_candidate_id and self.origin_parent_candidate_id not in self.parent_candidate_ids:
+            raise ValueError("origin_parent_candidate_id 必须是 parent_candidate_ids 中的唯一来源父节点")
+        return self
 
 
 class AITreeProbeResult(BaseModel):
@@ -325,10 +344,11 @@ class ControlledAITree(BaseModel):
     """完整版受控 AI 树。"""
 
     tree_id: str
-    schema_version: str = "1.0"
+    schema_version: str = "1.1"
     source_context_hash: Optional[str] = None
     final_supported_level: Literal["resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"] = "resource"
     stop_reason: str = ""
+    stop_source_candidate_ids: list[str] = Field(default_factory=list)
     budget: AITreeBudgetSnapshot = Field(default_factory=AITreeBudgetSnapshot)
     layers: list[AITreeLayer] = Field(default_factory=list)
     probe_edges: list[AITreeProbeEdge] = Field(default_factory=list)

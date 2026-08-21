@@ -9,6 +9,7 @@ from agent.mini_drop_agent.collectors.runtime_control import RuntimeControlColle
 from agent.mini_drop_agent.runtime_control import (
     RuntimeControlEventStore,
     RuntimeControlObserver,
+    _docker_container_snapshot,
     normalize_kubernetes_audit_event,
     normalize_release_event,
 )
@@ -359,6 +360,18 @@ def test_runtime_control_collector_empty_history_is_not_valid(tmp_path):
 
     assert payload["events"] == []
     assert payload["evidence_validity"]["evidence_status"] == "empty_window"
+
+
+def test_docker_snapshot_without_socket_is_structured_unavailable(monkeypatch):
+    monkeypatch.setenv("MINI_DROP_DOCKER_SOCKET", "/missing/docker.sock")
+
+    snapshot = _docker_container_snapshot("payment-container-123")
+
+    assert snapshot == {
+        "configured": True,
+        "available": False,
+        "reason": "docker_socket_or_curl_missing",
+    }
 
 
 def test_runtime_control_collector_default_window_looks_back_180_seconds(tmp_path, monkeypatch):

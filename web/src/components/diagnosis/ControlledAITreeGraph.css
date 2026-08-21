@@ -100,6 +100,17 @@
   background: linear-gradient(180deg, #fffbe6, #ffffff);
 }
 
+.ai-tree-node-depth-mechanism:not(.ai-tree-node-muted) {
+  border-color: #73d13d;
+  border-style: solid;
+  background: #f6ffed;
+}
+
+.ai-tree-node-depth-boundary {
+  border-color: #ffd666;
+  background: #fffbe6;
+}
+
 .ai-tree-node-highlighted {
   outline: 3px solid rgba(22, 119, 255, 0.26);
   outline-offset: 4px;

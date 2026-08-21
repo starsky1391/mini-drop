@@ -30,7 +30,7 @@ def test_wait_primitives_are_not_eligible_root_functions():
         layers=[AITreeLayer(layer_id="layer_0", depth=0, primary_causes=[node])],
     ))
 
-    guarded = tree.layers[0].primary_causes[0]
+    guarded = tree.layers[0].unknown_causes[0]
     assert classify_primitive("clock_nanosleep+90") == "wait_primitive"
     assert guarded.claim_type == "observation_only"
     assert guarded.conclusion_eligible is False
@@ -58,3 +58,34 @@ def test_mechanism_claim_with_target_and_evidence_passes_gate():
 
     assert tree.layers[0].primary_causes[0].conclusion_eligible is True
     assert tree.final_primary_causes == ["redis_timeout"]
+
+
+def test_runtime_stack_observation_cannot_be_promoted_to_primary_cause():
+    node = AITreeCandidateNode(
+        candidate_id="python_runtime_stack_hotspot",
+        role="primary",
+        claim="采样调用栈非空。",
+        supported_level="function",
+        confidence=0.82,
+        status="supported",
+        claim_type="likely_root_cause",
+        causal_status="supported",
+        decision="conclude",
+        mechanism="python_runtime_stack_hotspot",
+        target="worker",
+        evidence_refs=["top_functions[0]"],
+    )
+    tree = ControlledAITree(
+        tree_id="tree-observation-only",
+        final_supported_level="function",
+        layers=[AITreeLayer(layer_id="layer_0", depth=0, primary_causes=[node])],
+    )
+
+    guarded = enforce_conclusion_eligibility(tree)
+
+    assert guarded.final_primary_causes == []
+    assert guarded.final_unknown_causes == ["python_runtime_stack_hotspot"]
+    guarded_node = guarded.layers[0].unknown_causes[0]
+    assert guarded_node.claim_type == "observation_only"
+    assert guarded_node.causal_status == "unproven"
+    assert guarded_node.decision == "continue_probe"

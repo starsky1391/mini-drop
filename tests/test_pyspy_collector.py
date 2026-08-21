@@ -172,6 +172,12 @@ def test_extracts_structured_stacks_and_source_lines_from_raw(collector, task, t
     assert top[0]["call_path"][-2:] == ["Map.__init__", "Rule.compile"]
     assert stacks["total_samples"] == 30
     assert stacks["line_candidates"][0]["line"] == 768
+    assert any(
+        item["file"] == "werkzeug/routing.py"
+        and item["line"] == 1521
+        and item["frame_type"] == "intermediate"
+        for item in stacks["line_candidates"]
+    )
     assert sum(item["percent"] for item in top) == 100.0
 
 

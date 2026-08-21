@@ -24,34 +24,22 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
   const highlighted = new Set(highlightedCandidateIds);
   const graphNodes = [];
   const graphEdges = [];
+  const layoutEdges = [];
   const candidateIndex = new Map();
+  const ambiguousCandidateIds = new Set();
   const layerIndex = new Map();
   const edgeKeys = new Set();
   const finalLevel = tree.final_supported_level || "resource";
   const observedLevels = [];
-  const hasEligiblePrimary = Boolean(tree.final_primary_causes?.length);
 
   const pushEdge = (edge) => {
-    if (!edge.source || !edge.target || edge.source === edge.target) return;
+    if (!edge.source || !edge.target || edge.source === edge.target) return false;
     const key = `${edge.source}->${edge.target}:${edge.data?.kind || "lineage"}:${edge.data?.edgeId || edge.id || ""}`;
-    if (edgeKeys.has(key)) return;
+    if (edgeKeys.has(key)) return false;
     edgeKeys.add(key);
     graphEdges.push(edge);
+    return true;
   };
-
-  graphNodes.push({
-    id: "tree_start",
-    type: "aiTreeNode",
-    data: {
-      nodeKind: "start",
-      role: "start",
-      title: "诊断起点",
-      claim: "AI 树从粗粒度候选开始，再通过探针补证逐层收敛。",
-      level: "resource",
-      confidence: 1,
-      badges: ["start"],
-    },
-  });
 
   for (const layer of layers) {
     const candidates = flattenLayerCandidates(layer);
@@ -65,16 +53,21 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
       observedLevels.push(candidate.supported_level);
       const outsideFinalBoundary = isDeeperLevel(candidate.supported_level, finalLevel);
       const nodeId = nodeIdFor(layer.layer_id, candidate.candidate_id);
-      candidateIndex.set(candidate.candidate_id, {
-        nodeId,
-        layer,
-        candidate,
-      });
+      if (candidateIndex.has(candidate.candidate_id)) {
+        ambiguousCandidateIds.add(candidate.candidate_id);
+      } else {
+        candidateIndex.set(candidate.candidate_id, {
+          nodeId,
+          layer,
+          candidate,
+        });
+      }
       graphNodes.push({
         id: nodeId,
         type: "aiTreeNode",
         data: {
           nodeKind: "candidate",
+          layoutRole: "tree",
           layerId: layer.layer_id,
           layerDepth: layer.depth,
           generatedBy: layer.generated_by,
@@ -86,6 +79,7 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
           level: candidate.supported_level,
           confidence: candidate.confidence || 0,
           status: candidate.status,
+          layoutBand: candidate.depth_kind || "base",
           outsideFinalBoundary,
           highlighted: highlighted.has(candidate.candidate_id),
           badges: [
@@ -95,6 +89,7 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
             candidate.claim_type,
             candidate.conclusion_eligible ? "可进入结论" : "未过门禁",
             candidate.causal_status === "inconclusive" ? "探针未决" : candidate.causal_status,
+            candidate.depth_kind === "mechanism" ? "机制链" : candidate.depth_kind === "boundary" ? "边界" : "基础定位",
             outsideFinalBoundary ? "已观察/未入终态" : "终态边界内",
             layer.generated_by === "ai_guarded" ? "AI" : "fallback",
           ],
@@ -103,37 +98,36 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
     }
   }
 
-  const firstLayer = layers[0] ? layerIndex.get(layers[0].layer_id) || [] : [];
-  for (const candidate of firstLayer) {
-    pushEdge({
-      id: `start-${candidate.candidate_id}`,
-      source: "tree_start",
-      target: nodeIdFor(layers[0].layer_id, candidate.candidate_id),
-      type: "smoothstep",
-      label: "粗候选",
-      data: { kind: "lineage", effect: "start" },
-      animated: false,
-    });
-  }
-
   for (const layer of layers) {
     for (const candidate of layerIndex.get(layer.layer_id) || []) {
-      for (const parentId of candidate.parent_candidate_ids || []) {
+      const parentIds = Array.isArray(candidate.parent_candidate_ids)
+        ? candidate.parent_candidate_ids
+        : [];
+      for (const parentId of parentIds) {
+        if (ambiguousCandidateIds.has(parentId)) continue;
         const parent = candidateIndex.get(parentId);
         if (!parent) continue;
-        pushEdge({
+        const depthKind = candidate.depth_kind || "base";
+        if (
+          depthKind === "mechanism"
+          && (parent.candidate.depth_kind !== "base" || parent.candidate.supported_level !== "line")
+        ) continue;
+        if (pushEdge({
           id: `lineage-${parentId}-${candidate.candidate_id}`,
           source: parent.nodeId,
           target: nodeIdFor(layer.layer_id, candidate.candidate_id),
           type: "smoothstep",
-          label: "细化",
+          label: depthKind === "mechanism" ? "机制展开" : depthKind === "boundary" ? "证据边界" : "定位细化",
           data: {
-            kind: "lineage",
+            kind: depthKind === "mechanism" ? "mechanism" : depthKind === "boundary" ? "boundary" : "lineage",
+            layoutRole: "tree",
             effect: "refine",
             parentCandidateId: parentId,
             candidateId: candidate.candidate_id,
           },
-        });
+        })) {
+          layoutEdges.push(graphEdges[graphEdges.length - 1]);
+        }
       }
     }
   }
@@ -153,6 +147,7 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
             : probeEdge.probe_requests?.join(" + ") || "探针补证",
           data: {
             kind: probeEdge.transition_type === "backtrack" || probeEdge.effect === "rollback" ? "backtrack" : "probe",
+            layoutRole: "annotation",
             edgeId: probeEdge.edge_id,
             status: probeEdge.status,
             effect: probeEdge.effect,
@@ -172,34 +167,30 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
     }
   }
 
-  const finalCandidateIds = [
-    ...(tree.final_primary_causes || []),
-    ...(tree.final_secondary_causes || []),
-    ...(tree.final_unknown_causes || []),
-  ];
-  const finalSources = finalCandidateIds
+  const hasEligiblePrimary = (tree.final_primary_causes || [])
+    .map((candidateId) => candidateIndex.get(candidateId))
+    .some((item) => item?.candidate?.depth_kind === "base" && item.candidate.conclusion_eligible);
+  const stopSources = (tree.stop_source_candidate_ids || [])
+    .filter((candidateId) => !ambiguousCandidateIds.has(candidateId))
     .map((candidateId) => candidateIndex.get(candidateId))
     .filter(Boolean);
-  const fallbackFinalSources = finalSources.length
-    ? finalSources
-    : (layers.length ? layerIndex.get(layers[layers.length - 1].layer_id) || [] : [])
-      .map((candidate) => candidateIndex.get(candidate.candidate_id))
-      .filter(Boolean);
 
   graphNodes.push({
     id: "tree_stop",
     type: "aiTreeNode",
     data: {
       nodeKind: "stop",
+      layoutRole: "annotation",
       role: "stop",
       title: hasEligiblePrimary ? `正式结论停在 ${finalLevel}` : `当前证据边界停在 ${finalLevel}`,
       claim: boundaryClaim(tree.stop_reason, deepestLevel(observedLevels), finalLevel),
       level: finalLevel,
       confidence: levelProgress(finalLevel),
+      layoutBand: "stop",
       badges: [hasEligiblePrimary ? "正式结论" : "未形成最终根因", finalLevel],
     },
   });
-  for (const source of fallbackFinalSources) {
+  for (const source of stopSources) {
     pushEdge({
       id: `stop-${source.nodeId}`,
       source: source.nodeId,
@@ -208,13 +199,14 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
       label: "停止边界",
       data: {
         kind: "boundary",
+        layoutRole: "annotation",
         effect: "stop",
         reason: tree.stop_reason,
       },
     });
   }
 
-  return { nodes: graphNodes, edges: graphEdges };
+  return { nodes: graphNodes, edges: graphEdges, layoutEdges };
 }
 
 export function flattenLayerCandidates(layer = {}) {

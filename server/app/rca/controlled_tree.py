@@ -30,6 +30,12 @@ _PRIMITIVE_PATTERNS = (
     )),
 )
 
+_OBSERVATIONAL_CANDIDATE_IDS = {
+    "python_runtime_stack_hotspot",
+    "python_userland_hotspot",
+    "off_cpu_wait_hotspot",
+}
+
 
 def classify_primitive(symbol: str | None) -> str | None:
     value = str(symbol or "").strip()
@@ -53,6 +59,9 @@ def enforce_conclusion_eligibility(tree: ControlledAITree | None) -> ControlledA
             role = guarded.role
             if role in {"primary", "secondary"} and guarded.causal_status == "contradicted":
                 role = "rejected"
+                guarded = guarded.model_copy(update={"role": role})
+            elif role in {"primary", "secondary"} and not guarded.conclusion_eligible:
+                role = "unknown"
                 guarded = guarded.model_copy(update={"role": role})
             grouped[role].append(guarded)
         layers.append(layer.model_copy(update={
@@ -79,12 +88,22 @@ def _guard_candidate(node: AITreeCandidateNode) -> AITreeCandidateNode:
     ]))
     reason = ""
     eligible = True
-    if node.role == "rejected" or node.status in {"contradicted", "rejected"}:
+    observational_candidate = (
+        node.candidate_id in _OBSERVATIONAL_CANDIDATE_IDS
+        or node.mechanism in _OBSERVATIONAL_CANDIDATE_IDS
+    )
+    if observational_candidate:
+        eligible = False
+        reason = "该节点只表示采样热点或等待观察，不能作为正式主因；需挂在基础定位之后作为附加解释。"
+    elif node.role == "rejected" or node.status in {"contradicted", "rejected"}:
         eligible = False
         reason = "候选已经被明确反证或拒绝。"
     elif node.status == "forbidden":
         eligible = False
         reason = "当前策略或证据边界禁止继续升级，但不构成对候选的反证。"
+    elif node.depth_kind != "base":
+        eligible = False
+        reason = "机制或边界节点只能作为附加解释，不能进入正式基础结论。"
     elif node.status != "supported" or node.causal_status != "supported":
         eligible = False
         reason = "当前只有观察或相关性，尚未形成受支持的因果判断。"
@@ -111,6 +130,10 @@ def _guard_candidate(node: AITreeCandidateNode) -> AITreeCandidateNode:
     causal_status = node.causal_status
     claim_type = node.claim_type
     if primitive_kind and causal_status == "supported":
+        causal_status = "unproven"
+        claim_type = "observation_only"
+        decision = "continue_probe"
+    if observational_candidate:
         causal_status = "unproven"
         claim_type = "observation_only"
         decision = "continue_probe"

@@ -1,0 +1,18 @@
+{
+  "case_id": "L4-CELERY-8882-EXCEPTION-MEMLEAK",
+  "hidden": true,
+  "issue": "#8882",
+  "fix_pr": "#9799",
+  "expected_vulnerable_revision": "a83070e5ec748c32325332db422756cfdd709aae",
+  "expected_fix_revision": "ca2d22204a47d7c7d553ae1408a099ab10caf055",
+  "expected_conclusion": {
+    "minimum": "exception handling retains traceback references across failed task execution",
+    "acceptable_boundary": "direct_failure_mechanism or partial_localization when only RSS and stack evidence exist",
+    "complete_source_requirement": "verified Celery trace.py line anchor plus runtime evidence for the traceback retention path",
+    "forbidden": [
+      "claiming Redis is the leak without broker evidence",
+      "claiming the producer is the leak when the worker RSS is the measured target",
+      "promoting an unverified function or line into a high-confidence root cause"
+    ]
+  }
+}

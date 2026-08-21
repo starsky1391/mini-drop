@@ -23,6 +23,7 @@ const NODE_SIZE = {
 
 const EDGE_COLORS = {
   probe: "#1677ff",
+  mechanism: "#389e0d",
   backtrack: "#8c8c8c",
   boundary: "#d48806",
   lineage: "#748094",
@@ -75,6 +76,7 @@ function ControlledAITreeGraphInner({ tree, evidenceMap, highlightedCandidateIds
           <Tag color="default">反证灰节点</Tag>
           <Tag color="cyan">未决/阻断节点</Tag>
           <Tag color="blue">探针边</Tag>
+          <Tag color="green">机制分支</Tag>
           <Tag color="default">回溯边</Tag>
           <Tag color="gold">停止边界</Tag>
         </Space>
@@ -129,6 +131,12 @@ function AITreeNode({ data }) {
   const isUnresolved = candidate.causal_status === "inconclusive"
     || (data.role === "unknown" && candidate.status === "missing_evidence");
   const isForbidden = candidate.status === "forbidden" || data.status === "forbidden";
+  const depthKind = candidate.depth_kind || data.layoutBand || "base";
+  const roleLabel = depthKind === "mechanism"
+    ? "机制分支"
+    : depthKind === "boundary"
+      ? "证据边界"
+      : ROLE_LABELS[data.role] || data.role;
   const content = (
     <Space direction="vertical" size={6} className="ai-tree-popover">
       <Typography.Text strong>{data.claim}</Typography.Text>
@@ -143,10 +151,10 @@ function AITreeNode({ data }) {
 
   return (
     <Popover trigger="hover" placement="right" content={content}>
-      <div className={`ai-tree-node ai-tree-node-${data.role} ${isRejected ? "ai-tree-node-muted" : ""} ${isUnresolved ? "ai-tree-node-unresolved" : ""} ${isForbidden ? "ai-tree-node-forbidden" : ""} ${data.outsideFinalBoundary ? "ai-tree-node-observed-only" : ""} ${data.highlighted ? "ai-tree-node-highlighted" : ""}`}>
+      <div className={`ai-tree-node ai-tree-node-${data.role} ai-tree-node-depth-${depthKind} ${isRejected ? "ai-tree-node-muted" : ""} ${isUnresolved ? "ai-tree-node-unresolved" : ""} ${isForbidden ? "ai-tree-node-forbidden" : ""} ${data.outsideFinalBoundary ? "ai-tree-node-observed-only" : ""} ${data.highlighted ? "ai-tree-node-highlighted" : ""}`}>
         <Handle type="target" position={Position.Top} />
         <div className="ai-tree-node-topline">
-          <span className="ai-tree-node-role">{ROLE_LABELS[data.role] || data.role}</span>
+          <span className="ai-tree-node-role">{roleLabel}</span>
           <span className="ai-tree-node-level">{data.level}</span>
         </div>
         <Typography.Text className="ai-tree-node-title" ellipsis>
@@ -181,6 +189,12 @@ function TreeDetailDrawer({ selected, evidenceMap, onClose }) {
   const value = selected?.value || {};
   const candidate = value.candidate || {};
   const challenge = candidate.self_challenge || {};
+  const depthKind = candidate.depth_kind || value.layoutBand || "base";
+  const roleLabel = depthKind === "mechanism"
+    ? "机制分支"
+    : depthKind === "boundary"
+      ? "证据边界"
+      : ROLE_LABELS[value.role] || value.role;
   const evidenceRefs = selected?.type === "edge"
     ? value.evidenceRefs || []
     : [
@@ -216,7 +230,7 @@ function TreeDetailDrawer({ selected, evidenceMap, onClose }) {
       ) : (
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
           <Space wrap>
-            <Tag color={roleColor(value.role)}>{ROLE_LABELS[value.role] || value.role}</Tag>
+            <Tag color={roleColor(value.role)}>{roleLabel}</Tag>
             <Tag>{value.level}</Tag>
             <Tag>{value.generatedBy}</Tag>
             <Tag>{candidate.status || value.status || "unknown"}</Tag>
@@ -264,6 +278,9 @@ function TagList({ title, values = [], evidenceMap, color }) {
 }
 
 async function layoutGraph(graph) {
+  const layoutNodes = graph.nodes.filter((node) => node.data?.layoutRole !== "annotation");
+  const annotationNodes = graph.nodes.filter((node) => node.data?.layoutRole === "annotation");
+  const layoutEdges = graph.layoutEdges || graph.edges.filter((edge) => edge.data?.layoutRole === "tree");
   const elkGraph = {
     id: "root",
     layoutOptions: {
@@ -273,12 +290,12 @@ async function layoutGraph(graph) {
       "elk.spacing.nodeNode": "42",
       "elk.edgeRouting": "ORTHOGONAL",
     },
-    children: graph.nodes.map((node) => ({
+    children: layoutNodes.map((node) => ({
       id: node.id,
       width: NODE_SIZE.width,
       height: NODE_SIZE.height,
     })),
-    edges: graph.edges.map((edge) => ({
+    edges: layoutEdges.map((edge) => ({
       id: edge.id,
       sources: [edge.source],
       targets: [edge.target],
@@ -289,25 +306,27 @@ async function layoutGraph(graph) {
     const elk = await getElk();
     const layouted = await elk.layout(elkGraph);
     const positions = new Map((layouted.children || []).map((node) => [node.id, node]));
+    const positionedLayoutNodes = layoutNodes.map((node) => {
+      const position = positions.get(node.id);
+      return {
+        ...node,
+        position: { x: position?.x || 0, y: position?.y || 0 },
+      };
+    });
     return {
-      nodes: graph.nodes.map((node) => {
-        const position = positions.get(node.id);
-        return {
-          ...node,
-          position: { x: position?.x || 0, y: position?.y || 0 },
-        };
-      }),
+      nodes: placeAnnotationNodes(positionedLayoutNodes, annotationNodes),
       edges: graph.edges,
     };
   } catch {
+    const fallbackLayoutNodes = layoutNodes.map((node, index) => ({
+      ...node,
+      position: {
+        x: (index % 4) * (NODE_SIZE.width + 60),
+        y: Math.floor(index / 4) * (NODE_SIZE.height + 90),
+      },
+    }));
     return {
-      nodes: graph.nodes.map((node, index) => ({
-        ...node,
-        position: {
-          x: (index % 4) * (NODE_SIZE.width + 60),
-          y: Math.floor(index / 4) * (NODE_SIZE.height + 90),
-        },
-      })),
+      nodes: placeAnnotationNodes(fallbackLayoutNodes, annotationNodes),
       edges: graph.edges,
     };
   }
@@ -319,6 +338,37 @@ async function getElk() {
   const ELK = module.default;
   elkInstance = new ELK();
   return elkInstance;
+}
+
+function placeAnnotationNodes(layoutedNodes, annotationNodes) {
+  if (!annotationNodes.length) return layoutedNodes;
+  const bounds = layoutedNodes.reduce((acc, node) => {
+    const x = node.position?.x || 0;
+    const y = node.position?.y || 0;
+    return {
+      minX: Math.min(acc.minX, x),
+      maxX: Math.max(acc.maxX, x),
+      maxBottom: Math.max(acc.maxBottom, y + NODE_SIZE.height),
+    };
+  }, {
+    minX: Number.POSITIVE_INFINITY,
+    maxX: Number.NEGATIVE_INFINITY,
+    maxBottom: Number.NEGATIVE_INFINITY,
+  });
+  const hasLayoutBounds = Number.isFinite(bounds.minX) && Number.isFinite(bounds.maxX) && Number.isFinite(bounds.maxBottom);
+  const anchorX = hasLayoutBounds ? (bounds.minX + bounds.maxX) / 2 : 0;
+  let nextY = hasLayoutBounds ? bounds.maxBottom + 86 : 0;
+  return [
+    ...layoutedNodes,
+    ...annotationNodes.map((node) => {
+      const positioned = {
+        ...node,
+        position: { x: anchorX, y: nextY },
+      };
+      nextY += NODE_SIZE.height + 24;
+      return positioned;
+    }),
+  ];
 }
 
 function decorateEdge(edge) {

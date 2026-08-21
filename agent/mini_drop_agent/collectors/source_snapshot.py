@@ -62,7 +62,9 @@ class SourceSnapshotCollector:
         snippets = []
         enclosing_contexts = []
         reference_paths = []
-        for candidate in (task.options.get("line_candidates") or [])[: self.MAX_CANDIDATES]:
+        candidates = list(task.options.get("line_candidates") or [])
+        candidates.sort(key=lambda candidate: self._candidate_sort_key(candidate, tracked_files))
+        for candidate in candidates[: self.MAX_CANDIDATES]:
             if not isinstance(candidate, dict):
                 continue
             relative_text = self._tracked_file(str(candidate.get("file") or ""), tracked_files)
@@ -424,6 +426,39 @@ class SourceSnapshotCollector:
             if normalized == tracked or normalized.endswith(f"/{tracked}"):
                 matches.append(item)
         return matches[0] if len(matches) == 1 else ""
+
+    @classmethod
+    def _candidate_sort_key(cls, candidate: Any, tracked_files: list[str]) -> tuple[int, int, int]:
+        if not isinstance(candidate, dict):
+            return (1, 0, 1)
+        file_name = str(candidate.get("file") or "").replace("\\", "/")
+        symbol = str(candidate.get("symbol") or candidate.get("function") or "")
+        tracked = cls._tracked_file(file_name, tracked_files)
+        generic_runtime_frame = int(symbol.lower() in {
+            "start", "worker", "main", "caller", "invoke", "new_func",
+            "asynloop", "create_loop", "poll", "fire_timers",
+        })
+        return (0 if tracked else 1, -cls._source_symbol_priority(symbol, file_name), generic_runtime_frame)
+
+    @staticmethod
+    def _source_symbol_priority(symbol: Any, file_name: Any = "") -> int:
+        text = f"{str(symbol or '')} {str(file_name or '')}".lower()
+        if "celery/app/trace.py" in text and any(
+            token in text
+            for token in ("handle_failure", "_log_error", "on_error", "trace_task", "fast_trace_task")
+        ):
+            return 3
+        if "get_pickleable_exception" in text or "celery/utils/serialization.py" in text:
+            return 1
+        if any(
+            token in text
+            for token in (
+                "error", "failure", "exception", "traceback", "retention",
+                "compile", "handle_failure", "on_error", "trace_task",
+            )
+        ):
+            return 2
+        return 0
 
     @staticmethod
     def _map_host_path(path: Path) -> Path:

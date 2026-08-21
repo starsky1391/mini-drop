@@ -1,0 +1,90 @@
+services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        CELERY_REVISION: ${CELERY_REVISION:-a83070e5ec748c32325332db422756cfdd709aae}
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_CASE_DURATION_SEC: ${CELERY_CASE_DURATION_SEC:-300}
+      CELERY_SAMPLE_INTERVAL_SEC: ${CELERY_SAMPLE_INTERVAL_SEC:-1}
+      CELERY_FAILURE_PAYLOAD_BYTES: ${CELERY_FAILURE_PAYLOAD_BYTES:-1}
+      CELERY_FAILURE_TASK_SECONDS: ${CELERY_FAILURE_TASK_SECONDS:-0}
+      CELERY_WORKER_POOL: ${CELERY_WORKER_POOL:-prefork}
+      CELERY_WORKER_CONCURRENCY: ${CELERY_WORKER_CONCURRENCY:-1}
+      CELERY_ENABLE_TRACEMALLOC: ${CELERY_ENABLE_TRACEMALLOC:-1}
+      CELERY_SOURCE_ROOT: /opt/celery-src
+      CELERY_CONTAINER_WORKDIR: /opt/celery-src
+      CELERY_REPO_REVISION: ${CELERY_REVISION:-a83070e5ec748c32325332db422756cfdd709aae}
+      C_FORCE_ROOT: "1"
+    volumes:
+      - ${CELERY_SOURCE_ROOT:?set CELERY_SOURCE_ROOT}:/opt/celery-src:ro
+      - ${CELERY_EVIDENCE_ROOT:-./evidence}:/evidence
+    depends_on:
+      redis:
+        condition: service_healthy
+    command:
+      - python
+      - /case/worker_entrypoint.py
+
+  worker-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        CELERY_REVISION: ${CELERY_REVISION:-a83070e5ec748c32325332db422756cfdd709aae}
+    pid: "service:worker"
+    environment:
+      CELERY_CASE_DURATION_SEC: ${CELERY_CASE_DURATION_SEC:-300}
+      CELERY_SAMPLE_INTERVAL_SEC: ${CELERY_SAMPLE_INTERVAL_SEC:-1}
+      CELERY_SOURCE_ROOT: /opt/celery-src
+      CELERY_CONTAINER_WORKDIR: /opt/celery-src
+      CELERY_REPO_REVISION: ${CELERY_REVISION:-a83070e5ec748c32325332db422756cfdd709aae}
+    volumes:
+      - ${CELERY_SOURCE_ROOT:?set CELERY_SOURCE_ROOT}:/opt/celery-src:ro
+      - ${CELERY_EVIDENCE_ROOT:-./evidence}:/evidence
+    depends_on:
+      worker:
+        condition: service_started
+    command:
+      - python
+      - /case/worker_monitor.py
+
+  producer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        CELERY_REVISION: ${CELERY_REVISION:-a83070e5ec748c32325332db422756cfdd709aae}
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_PRODUCER_DURATION_SEC: ${CELERY_PRODUCER_DURATION_SEC:-240}
+      CELERY_PRODUCER_INTERVAL_SEC: ${CELERY_PRODUCER_INTERVAL_SEC:-0}
+      CELERY_WARMUP_COUNT: ${CELERY_WARMUP_COUNT:-1000}
+      CELERY_FAILURE_COUNT: ${CELERY_FAILURE_COUNT:-1000}
+      CELERY_FAILURE_BATCHES: ${CELERY_FAILURE_BATCHES:-2}
+      CELERY_WARMUP_SETTLE_SEC: ${CELERY_WARMUP_SETTLE_SEC:-10}
+      CELERY_FAILURE_TASK_SECONDS: ${CELERY_FAILURE_TASK_SECONDS:-0}
+      CELERY_ENABLE_TRACEMALLOC: ${CELERY_ENABLE_TRACEMALLOC:-1}
+      CELERY_SOURCE_ROOT: /opt/celery-src
+      CELERY_CONTAINER_WORKDIR: /opt/celery-src
+      CELERY_REPO_REVISION: ${CELERY_REVISION:-a83070e5ec748c32325332db422756cfdd709aae}
+    volumes:
+      - ${CELERY_SOURCE_ROOT:?set CELERY_SOURCE_ROOT}:/opt/celery-src:ro
+      - ${CELERY_EVIDENCE_ROOT:-./evidence}:/evidence
+    depends_on:
+      redis:
+        condition: service_healthy
+    command:
+      - python
+      - /case/producer.py

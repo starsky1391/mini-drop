@@ -83,6 +83,7 @@ def test_session_investigation_review_selects_registered_probe_and_guarded_propo
         "candidate_proposals": [{
             "candidate_id": "ai_proposal_retained_rule_builder",
             "parent_candidate_ids": [parent_id],
+            "origin_parent_candidate_id": parent_id,
             "claim": "动态规则构建阶段保留分配对象，可能造成 Map 生命周期延长。",
             "mechanism": "retained_allocation_during_rule_compilation",
             "target": "Rule.compile",
@@ -147,6 +148,11 @@ select sink.getNode(), source, sink, "same anchored node"
                 "ai_generated_query": {
                     "investigation_question": "converter.to_url 是否经常量容器进入生成函数的 code object？",
                     "candidate_id": next(
+                        node.candidate_id
+                        for layer in analysis.controlled_ai_tree.layers
+                        for node in [*layer.primary_causes, *layer.secondary_causes, *layer.unknown_causes, *layer.rejected_causes]
+                    ),
+                    "origin_parent_candidate_id": next(
                         node.candidate_id
                         for layer in analysis.controlled_ai_tree.layers
                         for node in [*layer.primary_causes, *layer.secondary_causes, *layer.unknown_causes, *layer.rejected_causes]
@@ -257,6 +263,7 @@ def test_session_investigation_review_binds_pyheap_to_existing_candidate():
         "probe_inputs": {
             "python_heap_reference": {
                 "candidate_id": candidate_id,
+                "origin_parent_candidate_id": candidate_id,
                 "object_type_hints": ["function", "code", "method", "Map"],
             },
         },

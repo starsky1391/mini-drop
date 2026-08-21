@@ -1839,6 +1839,7 @@ def _derive_controlled_ai_tree(
         source_context_hash=source_context_hash,
         final_supported_level=boundary.max_supported_level,
         stop_reason=boundary.reason,
+        stop_source_candidate_ids=list(dict.fromkeys(final_primary + final_secondary or layer0_candidate_ids)),
         budget=AITreeBudgetSnapshot(
             used_ai_rounds=len(layers),
             used_probe_requests=len(next_requests),

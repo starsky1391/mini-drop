@@ -808,6 +808,7 @@ class DiagnosisOrchestrator:
                 key: step_parameters.get(key)
                 for key in (
                     "evidence_cohort_id", "collection_mode", "window_start", "window_end", "timing_relation",
+                    "candidate_id", "origin_parent_candidate_id",
                 )
                 if step_parameters.get(key) is not None
             },
@@ -1085,7 +1086,7 @@ class DiagnosisOrchestrator:
                     if not isinstance(item, dict) or not item.get("file") or int(item.get("line") or 0) <= 0:
                         continue
                     add(item["file"], item["line"], item.get("symbol") or item.get("function"))
-        return candidates[:32]
+        return _prioritized_line_candidates(candidates)[:64]
 
     def _append_child_task(self, diagnosis_id: str, task_id: str, definition) -> None:
         session = self.store.get_session(diagnosis_id)
@@ -1706,6 +1707,24 @@ class DiagnosisOrchestrator:
                     },
                 )
                 continue
+            deep_candidate_id, origin_parent_candidate_id = _followup_provenance(
+                evidence_gap,
+                guarded_probe_input,
+            )
+            if evidence_gap in {"source_mechanism_query", "python_heap_reference"} and (
+                not deep_candidate_id or not origin_parent_candidate_id
+            ):
+                self.store.record_event(
+                    diagnosis_id,
+                    "followup_probe_provenance_missing",
+                    {
+                        "evidence_gap": evidence_gap,
+                        "candidate_id": deep_candidate_id,
+                        "origin_parent_candidate_id": origin_parent_candidate_id,
+                        "reason": "深探任务必须绑定唯一来源父节点，禁止从候选顺序推断。",
+                    },
+                )
+                continue
             collector_parameters = {**collector_parameters, **guarded_probe_input}
             collector_invocation = _collector_invocation(
                 step={"diagnosis_id": diagnosis_id, "step_id": step_id},
@@ -1724,6 +1743,14 @@ class DiagnosisOrchestrator:
                     "budget_phase": "followup",
                     "followup_round": followup_round,
                     "parent_task_id": parent_task.id,
+                    **(
+                        {
+                            "candidate_id": deep_candidate_id,
+                            "origin_parent_candidate_id": origin_parent_candidate_id,
+                        }
+                        if deep_candidate_id and origin_parent_candidate_id
+                        else {}
+                    ),
                     "execution_policy": policy,
                     **collection_context,
                     **collector_parameters,
@@ -3069,17 +3096,26 @@ def _specific_diagnostic_anchor(
         top = next((item for item in call_paths if isinstance(item, dict)), {})
         call_path = top.get("call_path") if isinstance(top.get("call_path"), list) else []
         if top and call_path:
+            source_candidate = _source_line_candidate_for_call_path(values, call_paths)
             return {
                 **base,
                 "supported_level": "call_path",
                 "anchor_type": "call_path_hotspot",
                 "anchor": " -> ".join(str(item) for item in call_path),
-                "function": top.get("function"),
-                "file": top.get("file"),
-                "line": int(_num(top.get("line"))),
+                "function": (source_candidate or {}).get("symbol") or top.get("function"),
+                "file": (source_candidate or {}).get("file") or top.get("file"),
+                "line": int(_num((source_candidate or {}).get("line") or top.get("line"))),
                 "samples": int(_num(top.get("samples"))),
                 "percent": _num(top.get("percent")),
                 "evidence_ref": top.get("evidence_ref") or "structured_evidence.call_path_hotspots[0]",
+                "runtime_line_candidates": [
+                    item for item in (
+                        (values.get("python_stack_samples_json") or {}).get("line_candidates", [])
+                        if isinstance(values.get("python_stack_samples_json"), dict)
+                        else (values.get("depth_evidence_json") or {}).get("line_candidates", [])
+                    )
+                    if isinstance(item, dict)
+                ],
                 "blocked_upgrade_reason": "缺少 line profiler 或源码映射，不能直接升级到具体代码行。",
             }
 
@@ -3125,6 +3161,74 @@ def _specific_diagnostic_anchor(
         "top_cpu_members": summary.get("top_cpu_members") if isinstance(summary.get("top_cpu_members"), list) else [],
         "evidence_ref": "sys_metrics.summary",
         "blocked_upgrade_reason": "缺少 off-CPU 等待栈、CPU profile 或 trace 回连，当前不能判断具体函数。",
+    }
+
+
+def _source_line_candidate_for_call_path(
+    values: dict[str, Any],
+    call_paths: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Select a project-source frame that is actually present in a sampled path."""
+    depth = values.get("depth_evidence_json")
+    python_stacks = values.get("python_stack_samples_json")
+    candidate_sources = []
+    if isinstance(depth, dict):
+        candidate_sources.extend(depth.get("line_candidates", []))
+    if isinstance(python_stacks, dict):
+        candidate_sources.extend(python_stacks.get("line_candidates", []))
+    candidates = [
+        item for item in candidate_sources
+        if isinstance(item, dict) and item.get("file") and int(_num(item.get("line"))) > 0
+    ]
+    if not candidates:
+        return None
+
+    path_symbols = {
+        str(symbol).strip()
+        for hotspot in call_paths
+        if isinstance(hotspot, dict)
+        for path in [hotspot.get("call_path")]
+        if isinstance(path, list)
+        for symbol in path
+        if str(symbol).strip()
+    }
+    if not path_symbols:
+        return None
+
+    def score(candidate: dict[str, Any]) -> tuple[int, int, int, int, int]:
+        symbol = str(candidate.get("symbol") or "").strip()
+        file_name = str(candidate.get("file") or "").replace("\\", "/")
+        semantic = _source_symbol_priority(symbol, file_name)
+        generic_runtime_frame = int(symbol.lower() in {
+            "start", "worker", "main", "caller", "invoke", "new_func",
+            "asynloop", "create_loop", "poll", "fire_timers",
+        })
+        project_source = int(
+            not file_name.startswith((
+                "/usr/local/lib/python",
+                "/usr/lib/python",
+                "/usr/local/lib/python3",
+            ))
+            and "/site-packages/" not in file_name
+        )
+        return (
+            int(bool(symbol and symbol in path_symbols)),
+            semantic,
+            -generic_runtime_frame,
+            project_source,
+            -candidates.index(candidate),
+        )
+
+    selected = max(candidates, key=score)
+    selected_symbol = str(selected.get("symbol") or "").strip()
+    if selected_symbol not in path_symbols:
+        return None
+    if not score(selected)[1] or score(selected)[2] == -1:
+        return None
+    return {
+        "file": str(selected["file"]),
+        "line": int(_num(selected["line"])),
+        "symbol": str(selected.get("symbol") or ""),
     }
 
 
@@ -3265,43 +3369,138 @@ def _best_specific_anchor(observations: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _verified_source_anchor(anchor: dict[str, Any], observations: list[dict[str, Any]]) -> dict[str, Any]:
-    if not anchor or not anchor.get("file") or int(anchor.get("line") or 0) <= 0:
+    if not anchor:
         return anchor
-    anchor_file = str(anchor["file"]).replace("\\", "/")
-    anchor_line = int(anchor["line"])
+    anchor_file = str(anchor.get("file") or "").replace("\\", "/")
+    anchor_line = int(_num(anchor.get("line")))
+    runtime_candidates = [
+        item for item in anchor.get("runtime_line_candidates", [])
+        if isinstance(item, dict) and item.get("file") and int(_num(item.get("line"))) > 0
+    ]
+    source_matches: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
     for observation in observations:
         snapshot = observation.get("source_snapshot")
         if not isinstance(snapshot, dict) or not snapshot.get("source_context_hash"):
+            continue
+        validity = snapshot.get("evidence_validity") if isinstance(snapshot.get("evidence_validity"), dict) else {}
+        if str(validity.get("evidence_status") or "valid") not in {"valid", "partial"}:
             continue
         for snippet in snapshot.get("snippets", []):
             if not isinstance(snippet, dict):
                 continue
             snippet_file = str(snippet.get("file") or "").replace("\\", "/")
-            if not (anchor_file.endswith(snippet_file) or snippet_file.endswith(anchor_file)):
-                continue
             lines = {
                 int(item.get("line") or 0)
                 for item in snippet.get("lines", [])
                 if isinstance(item, dict)
             }
-            if anchor_line not in lines:
-                continue
+            focus_line = int(_num(snippet.get("focus_line")))
+            if anchor.get("file") and anchor_line > 0 and (
+                not (anchor_file.endswith(snippet_file) or snippet_file.endswith(anchor_file))
+                or anchor_line not in lines
+            ):
+                runtime_match = next(
+                    (
+                        item for item in runtime_candidates
+                        if int(_num(item.get("line"))) == focus_line
+                        and (
+                            str(item.get("file") or "").replace("\\", "/").endswith(snippet_file)
+                            or snippet_file.endswith(str(item.get("file") or "").replace("\\", "/"))
+                        )
+                    ),
+                    None,
+                )
+                if runtime_match is None:
+                    continue
+            elif not anchor.get("file") or anchor_line <= 0:
+                runtime_match = next(
+                    (
+                        item for item in runtime_candidates
+                        if int(_num(item.get("line"))) == focus_line
+                        and (
+                            str(item.get("file") or "").replace("\\", "/").endswith(snippet_file)
+                            or snippet_file.endswith(str(item.get("file") or "").replace("\\", "/"))
+                        )
+                    ),
+                    None,
+                )
+                if runtime_match is None:
+                    continue
+            else:
+                runtime_match = None
             symbol = str(anchor.get("function") or anchor.get("anchor") or snippet.get("symbol") or "")
-            return {
-                **anchor,
-                "supported_level": "line",
-                "anchor_type": "verified_source_line",
-                "anchor": f"{snippet_file}:{anchor_line} {symbol}".strip(),
-                "source_context_hash": str(snapshot["source_context_hash"]),
-                "source_revision": str(snapshot.get("revision") or ""),
-                "source_reference_hints": [
-                    path for path in (snapshot.get("reference_paths") or [])
-                    if isinstance(path, dict)
-                ][:12],
-                "source_hint_level": "partial_localization",
-                "root_claim_allowed": False,
-                "blocked_upgrade_reason": "源码行已验证，但手写 AST reference_paths 只用于选择机制查询锚点，不能证明跨函数因果或运行时持有链。",
-            }
+            direct_symbol = str(
+                anchor.get("function") or anchor.get("symbol") or anchor.get("anchor") or snippet.get("symbol") or ""
+            )
+            direct_semantic = _source_symbol_semantic(direct_symbol, snippet_file)
+            if (
+                anchor.get("file")
+                and anchor_line > 0
+                and anchor_file.endswith(snippet_file)
+                and anchor_line in lines
+                and direct_semantic
+            ):
+                return {
+                    **anchor,
+                    "supported_level": "line",
+                    "anchor_type": "verified_source_line",
+                    "anchor": f"{snippet_file}:{anchor_line} {direct_symbol}".strip(),
+                    "source_context_hash": str(snapshot["source_context_hash"]),
+                    "source_revision": str(snapshot.get("revision") or ""),
+                    "source_reference_hints": [
+                        path for path in (snapshot.get("reference_paths") or [])
+                        if isinstance(path, dict)
+                    ][:12],
+                    "source_hint_level": "partial_localization",
+                    "root_claim_allowed": False,
+                    "blocked_upgrade_reason": "源码行已验证，但手写 AST reference_paths 只用于选择机制查询锚点，不能证明跨函数因果或运行时持有链。",
+                }
+            source_matches.append((runtime_match or {}, snippet, snapshot))
+
+    if source_matches:
+        def source_score(item: tuple[dict[str, Any], dict[str, Any], dict[str, Any]]) -> tuple[int, int, int, int]:
+            runtime, snippet, _snapshot = item
+            file_name = str(snippet.get("file") or "").replace("\\", "/")
+            symbol = str(snippet.get("symbol") or runtime.get("symbol") or "").lower()
+            semantic = _source_symbol_priority(symbol, file_name)
+            generic_runtime_frame = int(symbol in _GENERIC_RUNTIME_SOURCE_SYMBOLS)
+            project = int("/site-packages/" not in file_name and not file_name.startswith("/usr/"))
+            return semantic, -generic_runtime_frame, project, -source_matches.index(item)
+
+        best_score = max(source_score(item) for item in source_matches)
+        if best_score[0] == 0:
+            return anchor
+        best = [item for item in source_matches if source_score(item) == best_score]
+        if len(best) != 1:
+            return anchor
+        runtime, snippet, snapshot = best[0]
+        focus_line = int(_num(snippet.get("focus_line") or runtime.get("line")))
+        symbol = str(snippet.get("symbol") or runtime.get("symbol") or anchor.get("function") or "")
+        source_refs = [
+            ref for observation in observations
+            if isinstance(observation.get("source_snapshot"), dict)
+            and observation["source_snapshot"].get("source_context_hash") == snapshot.get("source_context_hash")
+            for ref in observation.get("evidence_refs", [])
+        ]
+        return {
+            **anchor,
+            "supported_level": "line",
+            "anchor_type": "verified_source_line",
+            "anchor": f"{snippet.get('file')}:{focus_line} {symbol}".strip(),
+            "file": snippet.get("file"),
+            "line": focus_line,
+            "function": symbol,
+            "source_context_hash": str(snapshot["source_context_hash"]),
+            "source_revision": str(snapshot.get("revision") or ""),
+            "source_evidence_refs": _unique_strings(source_refs),
+            "source_reference_hints": [
+                path for path in (snapshot.get("reference_paths") or [])
+                if isinstance(path, dict)
+            ][:12],
+            "source_hint_level": "partial_localization",
+            "root_claim_allowed": False,
+            "blocked_upgrade_reason": "源码行已验证，但当前运行时证据只支持 partial_localization，不能把该行直接提升为根因。",
+        }
     return anchor
 
 
@@ -3752,6 +3951,75 @@ def _unique_strings(items) -> list[str]:
         if text and text not in values:
             values.append(text)
     return values
+
+
+def _verified_line_candidate_id(anchor: dict[str, Any], classification: str) -> str:
+    file_name = str(anchor.get("file") or "source").replace("\\", "/")
+    symbol = str(anchor.get("function") or anchor.get("symbol") or "line")
+    identity = f"{classification}:{file_name}:{int(_num(anchor.get('line')))}:{symbol}"
+    digest = hashlib.sha256(identity.encode()).hexdigest()[:12]
+    return f"verified_line_{digest}"
+
+
+_GENERIC_RUNTIME_SOURCE_SYMBOLS = {
+    "start", "worker", "main", "caller", "invoke", "new_func",
+    "asynloop", "create_loop", "poll", "fire_timers",
+}
+
+
+def _source_symbol_semantic(symbol: Any, file_name: Any = "") -> int:
+    return int(_source_symbol_priority(symbol, file_name) > 0)
+
+
+def _source_symbol_priority(symbol: Any, file_name: Any = "") -> int:
+    text = f"{str(symbol or '')} {str(file_name or '')}".lower()
+    if "celery/app/trace.py" in text and any(
+        token in text
+        for token in ("handle_failure", "_log_error", "on_error", "trace_task", "fast_trace_task")
+    ):
+        return 3
+    if "get_pickleable_exception" in text or "celery/utils/serialization.py" in text:
+        return 1
+    if any(
+        token in text
+        for token in (
+            "error", "failure", "exception", "traceback", "retention",
+            "compile", "handle_failure", "on_error", "trace_task",
+        )
+    ):
+        return 2
+    return 0
+
+
+def _prioritized_line_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def score(index_and_candidate: tuple[int, dict[str, Any]]) -> tuple[int, int, int, int]:
+        index, candidate = index_and_candidate
+        file_name = str(candidate.get("file") or "").replace("\\", "/")
+        symbol = str(candidate.get("symbol") or candidate.get("function") or "")
+        project_source = int(
+            not file_name.startswith((
+                "/usr/local/lib/python",
+                "/usr/lib/python",
+                "/usr/local/lib/python3",
+            ))
+            and "/site-packages/" not in file_name
+        )
+        generic_runtime_frame = int(symbol.lower() in _GENERIC_RUNTIME_SOURCE_SYMBOLS)
+        return (
+            _source_symbol_priority(symbol, file_name),
+            project_source,
+            -generic_runtime_frame,
+            -index,
+        )
+
+    return [
+        candidate
+        for _, candidate in sorted(
+            enumerate(candidates),
+            key=score,
+            reverse=True,
+        )
+    ]
 
 
 def _num(value: Any) -> float:
@@ -4531,7 +4799,6 @@ def _build_session_controlled_ai_tree(
         return None
 
     generated_by = "analyzer_fallback"
-    eligible_child_ids = _eligible_child_candidate_ids(child_trees)
     assessment_eligible = bool(cluster_assessment.get("conclusion_eligible"))
     evidence_refs = _unique_strings(cluster_assessment.get("evidence_refs", []))
     final_level = _best_supported_level(
@@ -4544,11 +4811,13 @@ def _build_session_controlled_ai_tree(
     rejected_nodes: list[AITreeCandidateNode] = []
     unknown_nodes: list[AITreeCandidateNode] = []
 
+    seen_candidate_ids: set[str] = set()
     for item in candidates:
         candidate_id = str(item.get("candidate_id") or f"candidate_{len(primary_nodes) + len(secondary_nodes) + 1}")
-        candidate_eligible = candidate_id in eligible_child_ids or (
-            int(item.get("rank") or 999) == 1 and assessment_eligible
-        )
+        if candidate_id in seen_candidate_ids:
+            continue
+        seen_candidate_ids.add(candidate_id)
+        candidate_eligible = int(item.get("rank") or 999) == 1 and assessment_eligible
         role = "primary" if candidate_eligible and int(item.get("rank") or 999) == 1 else "secondary" if candidate_eligible else "unknown"
         target = str(item.get("root_entity") or cluster_assessment.get("claim_target") or "").strip()
         node_evidence_refs = _unique_strings([
@@ -4592,7 +4861,10 @@ def _build_session_controlled_ai_tree(
         else:
             unknown_nodes.append(node)
 
-    if not primary_nodes and cluster_assessment.get("classification"):
+    if not primary_nodes and cluster_assessment.get("classification") and not any(
+        node.candidate_id == str(cluster_assessment.get("root_entity") or cluster_assessment.get("classification"))
+        for node in [*secondary_nodes, *rejected_nodes, *unknown_nodes]
+    ):
         candidate_id = str(cluster_assessment.get("root_entity") or cluster_assessment.get("classification"))
         fallback_role = "primary" if assessment_eligible else "unknown"
         fallback_node = AITreeCandidateNode(
@@ -4627,10 +4899,12 @@ def _build_session_controlled_ai_tree(
         if not isinstance(item, dict):
             continue
         hypothesis = str(item.get("hypothesis") or "ruled_out")
+        parent_id = primary_nodes[0].candidate_id if primary_nodes else None
         rejected_nodes.append(AITreeCandidateNode(
             candidate_id=f"ruled_out_{hypothesis}",
             lineage_id=f"ruled_out_{hypothesis}",
-            parent_candidate_ids=[node.candidate_id for node in primary_nodes],
+            parent_candidate_ids=[parent_id] if parent_id else [],
+            origin_parent_candidate_id=parent_id,
             role="rejected",
             claim=str(item.get("reason") or hypothesis),
             supported_level=final_level,
@@ -4656,10 +4930,12 @@ def _build_session_controlled_ai_tree(
         hypothesis = str(item.get("hypothesis") or "alternative")
         status = str(item.get("status") or "missing_evidence")
         role = "rejected" if status == "weakened" else "unknown"
+        parent_id = primary_nodes[0].candidate_id if primary_nodes else None
         node = AITreeCandidateNode(
             candidate_id=f"{role}_{hypothesis}",
             lineage_id=f"{role}_{hypothesis}",
-            parent_candidate_ids=[node.candidate_id for node in primary_nodes],
+            parent_candidate_ids=[parent_id] if parent_id else [],
+            origin_parent_candidate_id=parent_id,
             role=role,
             claim=str(item.get("reason") or hypothesis),
             supported_level=str(item.get("supported_level") or final_level),
@@ -4705,11 +4981,178 @@ def _build_session_controlled_ai_tree(
             }))
             existing_node_ids.add(prior_node.candidate_id)
 
-    mechanism_paths = (
-        (cluster_assessment.get("primary_anchor") or {}).get("mechanism_paths") or []
+    primary_anchor = (
+        cluster_assessment.get("primary_anchor")
         if isinstance(cluster_assessment.get("primary_anchor"), dict)
+        else {}
+    )
+    has_verified_line_anchor = bool(
+        final_level == "line"
+        and primary_anchor.get("source_context_hash")
+        and primary_anchor.get("source_revision")
+        and primary_anchor.get("file")
+        and int(primary_anchor.get("line") or 0) > 0
+    )
+
+    # A verified source line is itself a base localization node. Mechanism
+    # paths may attach to it, but they must never use a service/function node
+    # as an inferred substitute parent.
+    base_line_nodes = {
+        node.candidate_id: node
+        for node in [*primary_nodes, *secondary_nodes, *rejected_nodes, *unknown_nodes]
+        if node.depth_kind == "base" and node.supported_level == "line"
+    }
+    line_id_aliases: dict[str, str] = {}
+    if has_verified_line_anchor:
+        line_candidate_id = _verified_line_candidate_id(
+            primary_anchor,
+            str(cluster_assessment.get("classification") or "source"),
+        )
+        anchor_file = str(primary_anchor.get("file") or "").replace("\\", "/")
+        anchor_label = f"{anchor_file}:{int(_num(primary_anchor.get('line')))}"
+        matching_line_nodes = [
+            node
+            for node in base_line_nodes.values()
+            if anchor_label in str(node.target or "") or anchor_label in str(node.claim or "")
+        ]
+        declared_line_origins = {
+            str(path.get("origin_parent_candidate_id") or "").strip()
+            for path in primary_anchor.get("mechanism_paths", [])
+            if isinstance(path, dict)
+        }
+        declared_line_origins.update(
+            str((probe.get("parameters") or {}).get("origin_parent_candidate_id") or "").strip()
+            for probe in probes
+            if isinstance(probe, dict)
+        )
+        matching_line_nodes.extend(
+            node
+            for node in base_line_nodes.values()
+            if node.candidate_id in declared_line_origins and node not in matching_line_nodes
+        )
+        # Analyzer candidates can already be line-level while still carrying a
+        # service-level ID. With one unambiguous line candidate, normalize that
+        # ID instead of creating a second visual parent for the same source line.
+        if not matching_line_nodes and len(base_line_nodes) == 1:
+            matching_line_nodes = list(base_line_nodes.values())
+        if matching_line_nodes:
+            root_entity = str(cluster_assessment.get("root_entity") or "").strip()
+            line_node = next(
+                (
+                    node for node in matching_line_nodes
+                    if node.candidate_id in declared_line_origins
+                ),
+                None,
+            ) or next(
+                (node for node in matching_line_nodes if node.candidate_id == root_entity),
+                None,
+            ) or next(
+                (node for node in matching_line_nodes if node.role == "primary"),
+                matching_line_nodes[0],
+            )
+            old_line_id = line_node.candidate_id
+            duplicate_line_ids = {
+                node.candidate_id
+                for node in matching_line_nodes
+                if node.candidate_id != old_line_id
+            }
+            for duplicate_id in duplicate_line_ids:
+                line_id_aliases[duplicate_id] = line_candidate_id
+            if old_line_id != line_candidate_id:
+                line_id_aliases[old_line_id] = line_candidate_id
+            line_node = line_node.model_copy(update={
+                "candidate_id": line_candidate_id,
+                "lineage_id": line_candidate_id,
+                "role": "primary" if assessment_eligible else "unknown",
+                "target": anchor_label,
+                "depth_kind": "base",
+                "supported_level": "line",
+                "conclusion_eligible": assessment_eligible,
+                "eligibility_reason": (
+                    "源码行已验证，但尚未完成会话级因果门禁。"
+                    if not assessment_eligible
+                    else "该源码行通过会话级因果门禁。"
+                ),
+            })
+            for node_group in (primary_nodes, secondary_nodes, rejected_nodes, unknown_nodes):
+                kept_nodes = []
+                for node in node_group:
+                    if node.candidate_id in duplicate_line_ids:
+                        continue
+                    if node.candidate_id == old_line_id:
+                        kept_nodes.append(line_node)
+                        continue
+                    parent_ids = [
+                        line_id_aliases.get(parent_id, parent_id)
+                        for parent_id in node.parent_candidate_ids
+                    ]
+                    origin_parent = line_id_aliases.get(
+                        node.origin_parent_candidate_id,
+                        node.origin_parent_candidate_id,
+                    )
+                    kept_nodes.append(node.model_copy(update={
+                        "parent_candidate_ids": parent_ids,
+                        "origin_parent_candidate_id": origin_parent,
+                    }) if parent_ids != node.parent_candidate_ids or origin_parent != node.origin_parent_candidate_id else node)
+                node_group[:] = kept_nodes
+            existing_node_ids.difference_update({old_line_id, *duplicate_line_ids})
+            existing_node_ids.add(line_candidate_id)
+            base_line_nodes = {line_candidate_id: line_node}
+        else:
+            line_refs = _unique_strings([
+                *evidence_refs,
+                *primary_anchor.get("source_evidence_refs", []),
+                *primary_anchor.get("evidence_refs", []),
+            ])
+            line_node = AITreeCandidateNode(
+                candidate_id=line_candidate_id,
+                lineage_id=line_candidate_id,
+                role="primary" if assessment_eligible else "unknown",
+                claim=str(
+                    cluster_assessment.get("diagnostic_claim")
+                    or cluster_assessment.get("summary")
+                    or f"已验证源码行 {primary_anchor.get('file')}:{int(_num(primary_anchor.get('line')))}"
+                ),
+                supported_level="line",
+                confidence=_num(cluster_assessment.get("confidence")),
+                status="supported" if assessment_eligible else "missing_evidence",
+                claim_type=str(cluster_assessment.get("claim_type") or "partial_localization"),
+                causal_status="supported" if assessment_eligible else "unproven",
+                decision="conclude" if assessment_eligible else "continue_probe",
+                mechanism=str(cluster_assessment.get("mechanism") or "verified_source_line"),
+                target=anchor_label,
+                conclusion_eligible=assessment_eligible,
+                eligibility_reason=(
+                    "源码行已验证，但尚未完成会话级因果门禁。"
+                    if not assessment_eligible
+                    else "该源码行通过会话级因果门禁。"
+                ),
+                evidence_refs=line_refs,
+                self_challenge=AITreeSelfChallenge(
+                    why_this_claim=str(cluster_assessment.get("summary") or "已验证源码行是当前基础定位。"),
+                    supporting_evidence_refs=line_refs,
+                    missing_evidence=followup_requests[:3],
+                    what_would_change_my_mind="补证反驳该源码行，或同窗因果证据转向另一条基础定位。",
+                ),
+            )
+            if assessment_eligible:
+                primary_nodes.insert(0, line_node)
+            else:
+                unknown_nodes.insert(0, line_node)
+            base_line_nodes[line_candidate_id] = line_node
+
+    deep_origins = {
+        candidate_id: line_id_aliases.get(origin_parent, origin_parent)
+        for candidate_id, origin_parent in _deep_probe_provenance(probes).items()
+    }
+    mechanism_paths = (
+        primary_anchor.get("mechanism_paths") or []
+        if has_verified_line_anchor
         else []
     )
+    mechanism_nodes: list[AITreeCandidateNode] = []
+    rejected_mechanism_nodes: list[AITreeCandidateNode] = []
+    prior_mechanism_nodes = _prior_deep_candidates(previous_tree)
     for path in mechanism_paths:
         if not isinstance(path, dict) or not path.get("anchor_matches"):
             continue
@@ -4717,71 +5160,26 @@ def _build_session_controlled_ai_tree(
         relation = str(path.get("candidate_relation") or "unknown")
         if not candidate_id or relation not in {"supports", "refutes", "inconclusive"}:
             continue
-        ref = str(path.get("evidence_ref") or "")
-        if candidate_id in existing_node_ids:
-            if relation == "inconclusive":
-                matched_node = None
-                for nodes in (primary_nodes, secondary_nodes, unknown_nodes):
-                    for index, existing in enumerate(nodes):
-                        if existing.candidate_id == candidate_id:
-                            matched_node = nodes.pop(index)
-                            break
-                    if matched_node is not None:
-                        break
-                if matched_node is not None:
-                    unknown_nodes.insert(0, matched_node.model_copy(update={
-                        "role": "unknown",
-                        "claim": str(path.get("summary") or matched_node.claim),
-                        "confidence": min(matched_node.confidence, 0.65),
-                        "status": "missing_evidence",
-                        "claim_type": "partial_localization",
-                        "causal_status": "inconclusive",
-                        "decision": "backtrack",
-                        "conclusion_eligible": False,
-                        "eligibility_reason": "当前 CodeQL 查询只覆盖部分有序锚点，不支持也不反驳父候选。",
-                        "evidence_refs": _unique_strings([*matched_node.evidence_refs, ref]),
-                        "self_challenge": matched_node.self_challenge.model_copy(update={
-                            "supporting_evidence_refs": _unique_strings([
-                                *matched_node.self_challenge.supporting_evidence_refs,
-                                ref,
-                            ]),
-                            "missing_evidence": ["source_mechanism_query"],
-                            "what_would_change_my_mind": "不同锚点查询取得完整分段覆盖，或 PyHeap 返回同候选运行时引用链。",
-                        }),
-                    }))
-                continue
-            if relation != "refutes":
-                continue
-            matched_node = None
-            for nodes in (primary_nodes, secondary_nodes, unknown_nodes):
-                for index, existing in enumerate(nodes):
-                    if existing.candidate_id == candidate_id:
-                        matched_node = nodes.pop(index)
-                        break
-                if matched_node is not None:
-                    break
-            if matched_node is not None:
-                rejected_nodes.insert(0, matched_node.model_copy(update={
-                    "role": "rejected",
-                    "claim": str(path.get("summary") or matched_node.claim),
-                    "confidence": min(matched_node.confidence, 0.2),
-                    "status": "contradicted",
-                    "claim_type": "insufficient_for_root_cause",
-                    "causal_status": "contradicted",
-                    "decision": "backtrack",
-                    "conclusion_eligible": False,
-                    "eligibility_reason": "CodeQL 有序锚点链未完整闭合，必须回退并验证其他候选。",
-                    "evidence_refs": _unique_strings([*matched_node.evidence_refs, ref]),
-                    "self_challenge": matched_node.self_challenge.model_copy(update={
-                        "opposing_evidence_refs": _unique_strings([
-                            *matched_node.self_challenge.opposing_evidence_refs,
-                            ref,
-                        ]),
-                        "missing_evidence": ["source_mechanism_query"],
-                        "what_would_change_my_mind": "新的候选使用不同锚点链取得完整 CodeQL 分段覆盖。",
-                    }),
-                }))
+        mechanism_parent_id = str(
+            path.get("origin_parent_candidate_id")
+            or deep_origins.get(candidate_id)
+            or ""
+        ).strip()
+        mechanism_parent_id = line_id_aliases.get(mechanism_parent_id, mechanism_parent_id)
+        if not mechanism_parent_id:
             continue
+        parent_node = base_line_nodes.get(mechanism_parent_id)
+        if parent_node is None:
+            # A source mechanism has no valid visual parent unless the recorded
+            # origin is the verified line-level base node. Never infer one from
+            # service/function order or from the first candidate in a layer.
+            continue
+        ref = str(path.get("evidence_ref") or "")
+        if relation == "inconclusive":
+            continue
+        mechanism_candidate_id = (
+            f"mechanism_{candidate_id}" if candidate_id in existing_node_ids else candidate_id
+        )
         complete = bool(
             relation == "supports"
             and cluster_assessment.get("conclusion_eligible")
@@ -4791,24 +5189,29 @@ def _build_session_controlled_ai_tree(
                 for runtime_path in ((cluster_assessment.get("primary_anchor") or {}).get("runtime_reference_paths") or [])
             )
         )
-        role = "secondary" if complete else "rejected" if relation == "refutes" else "unknown"
+        role = "rejected" if relation == "refutes" else "unknown"
         node = AITreeCandidateNode(
-            candidate_id=candidate_id,
+            candidate_id=mechanism_candidate_id,
             lineage_id=candidate_id,
-            parent_candidate_ids=[node.candidate_id for node in primary_nodes],
+            parent_candidate_ids=[mechanism_parent_id],
+            origin_parent_candidate_id=mechanism_parent_id,
             role=role,
             claim=str(path.get("summary") or f"CodeQL mechanism path {candidate_id}"),
-            supported_level="line",
+            # The source line is the verified base anchor. The path itself is
+            # an explanatory call-chain layer, so it must not masquerade as a
+            # second line-level primary conclusion.
+            supported_level="call_path",
             confidence=0.8 if complete else 0.2 if role == "rejected" else 0.55,
             status="supported" if complete else "contradicted" if role == "rejected" else "missing_evidence",
-            claim_type="direct_root_cause" if complete else "insufficient_for_root_cause" if role == "rejected" else "partial_localization",
+            claim_type="direct_failure_mechanism" if complete else "insufficient_for_root_cause" if role == "rejected" else "partial_localization",
             causal_status="supported" if complete else "contradicted" if role == "rejected" else "inconclusive" if relation == "inconclusive" else "unproven",
-            decision="conclude" if complete else "reject_candidate" if role == "rejected" else "backtrack" if relation == "inconclusive" else "continue_probe",
+            decision="continue_probe" if complete else "reject_candidate" if role == "rejected" else "continue_probe",
             mechanism=str(path.get("rule_id") or "codeql_source_mechanism"),
             target=str(cluster_assessment.get("claim_target") or ""),
-            conclusion_eligible=complete,
+            depth_kind="mechanism",
+            conclusion_eligible=False,
             eligibility_reason=(
-                "CodeQL 锚定路径与同候选 PyHeap 入向引用链共同成立。"
+                "该节点只解释基础行级定位的持有机制，不单独进入主因或次因结论。"
                 if complete
                 else "CodeQL 路径反驳该候选，保留灰色分支供回放。"
                 if role == "rejected"
@@ -4827,27 +5230,33 @@ def _build_session_controlled_ai_tree(
                 ),
             ),
         )
-        if role == "secondary":
-            secondary_nodes.insert(0, node)
-        elif role == "rejected":
-            rejected_nodes.insert(0, node)
+        if role == "rejected":
+            rejected_mechanism_nodes.append(node)
         else:
-            unknown_nodes.insert(0, node)
-        existing_node_ids.add(candidate_id)
+            mechanism_nodes.append(node)
+        existing_node_ids.add(mechanism_candidate_id)
+
+    for prior_node in prior_mechanism_nodes:
+        if prior_node.candidate_id not in existing_node_ids and prior_node.origin_parent_candidate_id:
+            mechanism_nodes.append(prior_node)
+            existing_node_ids.add(prior_node.candidate_id)
 
     coarse_id = f"coarse_{cluster_assessment.get('classification') or 'assessment'}"
     coarse_node = AITreeCandidateNode(
         candidate_id=coarse_id,
         lineage_id=coarse_id,
-        role="primary",
-        claim=str(cluster_assessment.get("summary") or cluster_assessment.get("classification") or "形成会话级粗候选。"),
-        supported_level=str(cluster_assessment.get("supported_level") or "resource"),
-        confidence=_num(cluster_assessment.get("confidence")),
+        role="unknown",
+        claim=(
+            f"目标服务出现{cluster_assessment.get('symptom') or '当前异常'}，"
+            f"需要在{cluster_assessment.get('classification') or '多个候选方向'}之间继续核验。"
+        ),
+        supported_level="resource",
+        confidence=min(_num(cluster_assessment.get("confidence")), 0.45),
         status="missing_evidence" if cluster_assessment.get("classification") else "unknown",
         claim_type="partial_localization",
         causal_status="unproven",
         decision="continue_probe",
-        target=str(cluster_assessment.get("claim_target") or ""),
+        target=str(cluster_assessment.get("claim_target") or "目标服务"),
         evidence_refs=evidence_refs,
         self_challenge=AITreeSelfChallenge(
             why_this_claim=str(cluster_assessment.get("summary") or ""),
@@ -4858,19 +5267,19 @@ def _build_session_controlled_ai_tree(
         ),
     )
     primary_nodes = [
-        node.model_copy(update={"parent_candidate_ids": [coarse_id]})
+        _attach_coarse_parent_if_missing(node, coarse_id)
         for node in primary_nodes
     ]
     secondary_nodes = [
-        node.model_copy(update={"parent_candidate_ids": [coarse_id]})
+        _attach_coarse_parent_if_missing(node, coarse_id)
         for node in secondary_nodes
     ]
     rejected_nodes = [
-        node.model_copy(update={"parent_candidate_ids": [coarse_id]})
+        _attach_coarse_parent_if_missing(node, coarse_id)
         for node in rejected_nodes
     ]
     unknown_nodes = [
-        node.model_copy(update={"parent_candidate_ids": [coarse_id]})
+        _attach_coarse_parent_if_missing(node, coarse_id)
         for node in unknown_nodes
     ]
 
@@ -4878,14 +5287,14 @@ def _build_session_controlled_ai_tree(
         layer_id="session_layer_0_coarse_assessment",
         depth=0,
         generated_by=generated_by,
-        summary="会话级 AI 树先形成粗粒度归因方向，再通过已完成探针证据收敛到具体主因。",
-        primary_causes=[coarse_node],
+        summary="会话级 AI 树先形成粗粒度归因方向，再通过已完成探针证据收敛到基础定位。",
+        unknown_causes=[coarse_node],
     )
     layer1 = AITreeLayer(
         layer_id="session_layer_1_supported_causes",
         depth=1,
         generated_by=generated_by,
-        summary="已完成的 dependency/log/Redis 等证据将粗候选收敛为当前会话级主因和反证分支。",
+        summary="已完成证据将粗候选收敛为基础定位；只有通过会话级门禁的节点才是主因或次因。",
         primary_causes=primary_nodes[:1],
         secondary_causes=[*primary_nodes[1:], *secondary_nodes][:3],
         rejected_causes=rejected_nodes[:4],
@@ -4893,6 +5302,15 @@ def _build_session_controlled_ai_tree(
     )
 
     layers = [layer0, layer1]
+    if mechanism_nodes or rejected_mechanism_nodes:
+        layers.append(AITreeLayer(
+            layer_id="session_layer_2_mechanism_branch",
+            depth=2,
+            generated_by=generated_by,
+            summary="机制链只解释已验证代码行后的对象调用或持有路径，不改变基础定位和最终结论资格。",
+            rejected_causes=rejected_mechanism_nodes[:4],
+            unknown_causes=mechanism_nodes[:4],
+        ))
     completed_probe_requests = _completed_session_probe_requests(probes)
     edges: list[AITreeProbeEdge] = [
         AITreeProbeEdge(
@@ -4900,7 +5318,15 @@ def _build_session_controlled_ai_tree(
             from_layer_id=layer0.layer_id,
             to_layer_id=layer1.layer_id,
             from_candidate_ids=[coarse_id],
-            to_candidate_ids=[node.candidate_id for node in [*layer1.primary_causes, *layer1.secondary_causes, *layer1.rejected_causes]],
+            to_candidate_ids=[
+                node.candidate_id
+                for node in [
+                    *layer1.primary_causes,
+                    *layer1.secondary_causes,
+                    *layer1.rejected_causes,
+                    *layer1.unknown_causes,
+                ]
+            ],
             probe_requests=completed_probe_requests or ["cluster_assessment"],
             probe_results=_probe_results_for_requests(completed_probe_requests, probes) if completed_probe_requests else [
                 AITreeProbeResult(status="completed", evidence_refs=evidence_refs),
@@ -4913,27 +5339,6 @@ def _build_session_controlled_ai_tree(
             reason="已完成的结构化证据把粗粒度候选收敛为当前会话级结论。",
         )
     ]
-    for path in mechanism_paths:
-        if not isinstance(path, dict) or path.get("candidate_relation") != "inconclusive":
-            continue
-        candidate_id = str(path.get("candidate_id") or "")
-        if not candidate_id:
-            continue
-        edges.append(AITreeProbeEdge(
-            edge_id=f"session_inconclusive_{candidate_id}_to_parent",
-            from_layer_id=layer1.layer_id,
-            to_layer_id=layer0.layer_id,
-            from_candidate_ids=[candidate_id],
-            to_candidate_ids=[coarse_id],
-            probe_requests=["source_mechanism_query"],
-            probe_results=_probe_results_for_requests(["source_mechanism_query"], probes),
-            status=_edge_status_for_requests(["source_mechanism_query"], probes),
-            evidence_refs=_unique_strings([path.get("evidence_ref")]),
-            reuse_status="not_checked",
-            effect="rollback",
-            transition_type="backtrack",
-            reason="当前 CodeQL 路径未完整闭合，但没有形成反证；返回父候选并改用不同查询或独立引用链继续验证。",
-        ))
     next_candidates = [*layer1.primary_causes, *layer1.secondary_causes, *layer1.unknown_causes]
     if next_candidates:
         next_candidate = next_candidates[0]
@@ -4961,55 +5366,129 @@ def _build_session_controlled_ai_tree(
                     f"{rejected.candidate_id} 被反证后保留为灰色分支；回退并转查 {next_candidate.candidate_id}。"
                 ),
             ))
-    blocked_upgrade_node = _blocked_upgrade_node(cluster_assessment, final_level, layer1.primary_causes)
+    primary_anchor_origin = str(
+        primary_anchor.get("origin_parent_candidate_id") or ""
+    ).strip()
+    blocked_upgrade_node = _blocked_upgrade_node(
+        cluster_assessment,
+        final_level,
+        primary_anchor_origin or None,
+    )
+    boundary_nodes: list[AITreeCandidateNode] = []
+    boundary_probe_candidates: dict[str, str] = {}
     if followup_requests or blocked_upgrade_node is not None:
-        boundary_nodes = [
-            AITreeCandidateNode(
-                candidate_id=f"gap_{request_id}",
-                lineage_id=f"gap_{request_id}",
-                parent_candidate_ids=[node.candidate_id for node in layer1.primary_causes],
-                role="unknown",
-                claim=f"如果需要继续下钻，需要补充 {request_id}。",
-                supported_level=final_level,
-                confidence=0.25,
-                status="missing_evidence",
-                self_challenge=AITreeSelfChallenge(
-                    missing_evidence=[request_id],
-                    what_would_change_my_mind=f"{request_id} 产生同窗结构化证据并改变主因排序。",
-                ),
-            )
-            for request_id in followup_requests[:3]
-        ]
+        for request_id in followup_requests[:3]:
+            provenance_pairs = {
+                (
+                    str((probe.get("parameters") or {}).get("candidate_id") or "").strip(),
+                    line_id_aliases.get(
+                        str((probe.get("parameters") or {}).get("origin_parent_candidate_id") or "").strip(),
+                        str((probe.get("parameters") or {}).get("origin_parent_candidate_id") or "").strip(),
+                    ),
+                )
+                for probe in probes
+                if isinstance(probe, dict)
+                and str((probe.get("parameters") or {}).get("evidence_gap") or "") == request_id
+                and str((probe.get("parameters") or {}).get("candidate_id") or "").strip()
+                and str((probe.get("parameters") or {}).get("origin_parent_candidate_id") or "").strip()
+            }
+            # A follow-up without persisted provenance is not a tree node. It
+            # remains a scheduling/data-quality gap rather than an orphan that
+            # the renderer could attach to an arbitrary parent.
+            if not provenance_pairs:
+                continue
+            for candidate_id, origin_parent in sorted(provenance_pairs):
+                node_id = f"gap_{request_id}" + (f"_{candidate_id}" if candidate_id else "")
+                parent_ids = [origin_parent] if origin_parent else []
+                boundary_nodes.append(AITreeCandidateNode(
+                    candidate_id=node_id,
+                    lineage_id=node_id,
+                    parent_candidate_ids=parent_ids,
+                    origin_parent_candidate_id=origin_parent or None,
+                    role="unknown",
+                    claim=f"如果需要继续下钻，需要补充 {request_id}。",
+                    supported_level=final_level,
+                    confidence=0.25,
+                    status="missing_evidence",
+                    depth_kind="boundary",
+                    self_challenge=AITreeSelfChallenge(
+                        missing_evidence=[request_id],
+                        what_would_change_my_mind=f"{request_id} 产生同窗结构化证据并改变主因排序。",
+                    ),
+                ))
+                if candidate_id:
+                    boundary_probe_candidates[node_id] = candidate_id
         if blocked_upgrade_node is not None:
             boundary_nodes.append(blocked_upgrade_node)
+        boundary_depth = 3 if mechanism_nodes or rejected_mechanism_nodes else 2
         layer2 = AITreeLayer(
-            layer_id="session_layer_2_remaining_evidence",
-            depth=2,
+            layer_id=f"session_layer_{boundary_depth}_remaining_evidence",
+            depth=boundary_depth,
             generated_by=generated_by,
             summary="剩余补证或升级阻断只作为继续下钻的边界，不覆盖当前已支持的会话级主因。",
             unknown_causes=boundary_nodes,
         )
         layers.append(layer2)
-        edge_status = _edge_status_for_requests(followup_requests[:3], probes) if followup_requests else "blocked"
-        edges.append(AITreeProbeEdge(
-            edge_id="session_edge_conclusion_to_remaining_evidence",
-            from_layer_id=layer1.layer_id,
-            to_layer_id=layer2.layer_id,
-            from_candidate_ids=[node.candidate_id for node in layer1.primary_causes],
-            to_candidate_ids=[node.candidate_id for node in boundary_nodes],
-            probe_requests=followup_requests[:3],
-            probe_results=_probe_results_for_requests(followup_requests[:3], probes),
-            status=edge_status,
-            evidence_refs=evidence_refs,
-            reuse_status="not_checked",
-            effect="pending" if followup_requests else "no_change",
-            transition_type="probe" if followup_requests else "boundary",
-            reason=(
-                "当前结论已形成；这些请求只用于进一步细化或反证。"
-                if followup_requests
-                else "当前证据已到可支持边界，缺少源码、锁持有者或行级证据，不能继续升级。"
-            ),
-        ))
+        for node in boundary_nodes:
+            request_id = next(
+                (request for request in followup_requests if node.candidate_id.startswith(f"gap_{request}")),
+                None,
+            )
+            if not request_id or not node.parent_candidate_ids:
+                continue
+            edges.append(AITreeProbeEdge(
+                edge_id=f"session_edge_{node.candidate_id}",
+                from_layer_id=layer1.layer_id,
+                to_layer_id=layer2.layer_id,
+                from_candidate_ids=list(node.parent_candidate_ids),
+                to_candidate_ids=[node.candidate_id],
+                probe_requests=[request_id],
+                probe_results=_probe_results_for_requests([request_id], probes),
+                status=_edge_status_for_requests([request_id], probes),
+                evidence_refs=evidence_refs,
+                reuse_status="not_checked",
+                effect="pending",
+                transition_type="probe",
+                reason="深探节点只保留明确来源父节点，失败时由该节点回退到同一来源。",
+            ))
+        if blocked_upgrade_node is not None and blocked_upgrade_node.parent_candidate_ids:
+            edges.append(AITreeProbeEdge(
+                edge_id="session_edge_blocked_line_upgrade",
+                from_layer_id=layer1.layer_id,
+                to_layer_id=layer2.layer_id,
+                from_candidate_ids=list(blocked_upgrade_node.parent_candidate_ids),
+                to_candidate_ids=[blocked_upgrade_node.candidate_id],
+                probe_requests=[],
+                status="blocked",
+                evidence_refs=evidence_refs,
+                effect="no_change",
+                transition_type="boundary",
+                reason="行级升级缺少已验证的来源任务，只保留显式来源父节点。",
+            ))
+        for node in [*mechanism_nodes, *rejected_mechanism_nodes, *boundary_nodes]:
+            origin = node.origin_parent_candidate_id
+            probe_candidate_id = boundary_probe_candidates.get(node.candidate_id, node.candidate_id)
+            failed_probe = _probe_failure_for_candidate(probe_candidate_id, probes)
+            if not origin or not failed_probe:
+                continue
+            request_id = str((failed_probe.get("parameters") or {}).get("evidence_gap") or "")
+            edges.append(AITreeProbeEdge(
+                edge_id=f"rollback_{node.candidate_id}_to_{origin}",
+                from_layer_id=layer2.layer_id if node in boundary_nodes else (
+                    "session_layer_2_mechanism_branch"
+                    if node in [*mechanism_nodes, *rejected_mechanism_nodes]
+                    else layer1.layer_id
+                ),
+                to_layer_id=layer1.layer_id,
+                from_candidate_ids=[node.candidate_id],
+                to_candidate_ids=[origin],
+                probe_requests=[request_id] if request_id else [],
+                probe_results=_probe_results_for_requests([request_id], probes) if request_id else [],
+                status=_rollback_edge_status(failed_probe),
+                effect="rollback",
+                transition_type="backtrack",
+                reason=f"{node.candidate_id} 的深探未完成，精确回退到创建任务时记录的来源父节点 {origin}。",
+            ))
 
     final_primary = [node.candidate_id for node in layer1.primary_causes]
     final_secondary = [node.candidate_id for node in layer1.secondary_causes]
@@ -5017,6 +5496,15 @@ def _build_session_controlled_ai_tree(
     final_unknown = [
         node.candidate_id for layer in layers for node in layer.unknown_causes
     ]
+    rollback_sources = [
+        node.origin_parent_candidate_id
+        for node in [*mechanism_nodes, *rejected_mechanism_nodes, *unknown_nodes, *boundary_nodes]
+        if node.origin_parent_candidate_id and _probe_failure_for_candidate(
+            boundary_probe_candidates.get(node.candidate_id, node.candidate_id),
+            probes,
+        )
+    ]
+    stop_source_candidate_ids = list(dict.fromkeys([*final_primary, *final_secondary, *rollback_sources]))
     source_hashes = sorted(set(_unique_strings(source_snapshot_hashes or [])))
     source_context_hash = source_hashes[0] if len(source_hashes) == 1 else None
     stop_reason = _session_tree_stop_reason(cluster_assessment, followup_requests, final_level)
@@ -5029,6 +5517,7 @@ def _build_session_controlled_ai_tree(
         final_supported_level=final_level,
         source_context_hash=source_context_hash,
         stop_reason=stop_reason,
+        stop_source_candidate_ids=stop_source_candidate_ids,
         budget=AITreeBudgetSnapshot(
             used_ai_rounds=len(layers),
             used_probe_requests=len(completed_probe_requests) + len(followup_requests),
@@ -5040,7 +5529,24 @@ def _build_session_controlled_ai_tree(
         final_rejected_causes=final_rejected,
         final_unknown_causes=final_unknown,
     )
-    return enforce_conclusion_eligibility(tree)
+    guarded_tree = enforce_conclusion_eligibility(tree)
+    if guarded_tree is None:
+        return None
+    guarded_stop_sources = list(dict.fromkeys([
+        *guarded_tree.final_primary_causes,
+        *guarded_tree.final_secondary_causes,
+        *rollback_sources,
+    ]))
+    return guarded_tree.model_copy(update={"stop_source_candidate_ids": guarded_stop_sources})
+
+
+def _attach_coarse_parent_if_missing(node: AITreeCandidateNode, coarse_id: str) -> AITreeCandidateNode:
+    if node.parent_candidate_ids:
+        return node
+    return node.model_copy(update={
+        "parent_candidate_ids": [coarse_id],
+        "origin_parent_candidate_id": coarse_id,
+    })
 
 
 def _unresolved_prior_ai_candidates(tree: dict[str, Any] | None) -> list[AITreeCandidateNode]:
@@ -5060,6 +5566,7 @@ def _unresolved_prior_ai_candidates(tree: dict[str, Any] | None) -> list[AITreeC
                     not candidate_id
                     or candidate_id in seen
                     or candidate_id.startswith(("coarse_", "gap_", "blocked_", "unknown_"))
+                    or raw.get("depth_kind", "base") != "base"
                     or raw.get("conclusion_eligible")
                     or raw.get("status") in {"contradicted", "rejected", "forbidden"}
                 ):
@@ -5073,20 +5580,45 @@ def _unresolved_prior_ai_candidates(tree: dict[str, Any] | None) -> list[AITreeC
                     node = AITreeCandidateNode.model_validate({
                         **raw,
                         "role": "unknown",
-                        "status": "missing_evidence",
-                        "causal_status": "inconclusive",
-                        "decision": "backtrack",
                         "conclusion_eligible": False,
-                        "eligibility_reason": "上一轮候选尚未被反证；深探阻断或不完整只表示机制仍待验证。",
                         "confidence": min(float(raw.get("confidence") or 0.0), 0.65),
                         "self_challenge": {
                             **challenge,
                             "missing_evidence": missing,
-                            "what_would_change_my_mind": (
-                                challenge.get("what_would_change_my_mind")
-                                or "完整 CodeQL 分段路径或同候选 PyHeap 入向引用链支持或反驳该机制。"
-                            ),
+                            "what_would_change_my_mind": challenge.get("what_would_change_my_mind") or "补齐深探证据后重新判断该基础定位。",
                         },
+                    })
+                except (TypeError, ValueError):
+                    continue
+                result.append(node)
+                seen.add(candidate_id)
+    return result
+
+
+def _prior_deep_candidates(tree: dict[str, Any] | None) -> list[AITreeCandidateNode]:
+    if not isinstance(tree, dict):
+        return []
+    result: list[AITreeCandidateNode] = []
+    seen: set[str] = set()
+    for layer in tree.get("layers", []):
+        if not isinstance(layer, dict):
+            continue
+        for group in ("primary_causes", "secondary_causes", "rejected_causes", "unknown_causes"):
+            for raw in layer.get(group, []) or []:
+                if not isinstance(raw, dict):
+                    continue
+                if raw.get("depth_kind") != "mechanism":
+                    continue
+                candidate_id = str(raw.get("candidate_id") or "")
+                if not candidate_id or candidate_id in seen or raw.get("status") in {"contradicted", "rejected"}:
+                    continue
+                try:
+                    node = AITreeCandidateNode.model_validate({
+                        **raw,
+                        "role": "unknown",
+                        "conclusion_eligible": False,
+                        "decision": "continue_probe",
+                        "supported_level": "call_path",
                     })
                 except (TypeError, ValueError):
                     continue
@@ -5120,20 +5652,103 @@ def _completed_session_probe_requests(probes: list[dict[str, Any]]) -> list[str]
     return completed
 
 
+def _followup_provenance(evidence_gap: str, probe_input: dict[str, Any]) -> tuple[str, str]:
+    """Read deep-probe provenance supplied by the guarded review without inference."""
+    item = probe_input if isinstance(probe_input, dict) else {}
+    generated = item.get("ai_generated_query") if isinstance(item.get("ai_generated_query"), dict) else {}
+    candidate_id = str(item.get("candidate_id") or generated.get("candidate_id") or "").strip()
+    origin_parent = str(
+        item.get("origin_parent_candidate_id")
+        or generated.get("origin_parent_candidate_id")
+        or ""
+    ).strip()
+    return candidate_id, origin_parent
+
+
+def _deep_probe_provenance(probes: list[dict[str, Any]]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for probe in probes:
+        parameters = probe.get("parameters") if isinstance(probe, dict) else {}
+        if not isinstance(parameters, dict):
+            continue
+        candidate_id = str(parameters.get("candidate_id") or "").strip()
+        origin_parent = str(parameters.get("origin_parent_candidate_id") or "").strip()
+        if candidate_id and origin_parent and candidate_id not in result:
+            result[candidate_id] = origin_parent
+        elif candidate_id and origin_parent and result.get(candidate_id) == origin_parent:
+            continue
+        elif candidate_id and origin_parent and result.get(candidate_id) != origin_parent:
+            result.pop(candidate_id, None)
+    return result
+
+
+def _probe_needs_rollback(probe: dict[str, Any]) -> bool:
+    status = str(probe.get("status") or "").strip().lower()
+    evidence_status = str(probe.get("evidence_status") or "").strip().lower()
+    return status in {"failed", "blocked", "timed_out", "timeout"} or evidence_status in {
+        "partial",
+        "blocked",
+        "failed",
+        "empty_window",
+        "unparseable",
+        "target_exit",
+    }
+
+
+def _rollback_edge_status(probe: dict[str, Any]) -> str:
+    status = str(probe.get("status") or "").strip().lower()
+    evidence_status = str(probe.get("evidence_status") or "").strip().lower()
+    if status in {"failed", "timed_out", "timeout"} or evidence_status in {"failed", "unparseable"}:
+        return "failed"
+    if status == "blocked" or evidence_status in {"blocked", "empty_window", "target_exit"}:
+        return "blocked"
+    if evidence_status == "partial":
+        return "inconclusive"
+    return "unknown"
+
+
+def _probe_failure_for_candidate(candidate_id: str, probes: list[dict[str, Any]]) -> dict[str, Any] | None:
+    matches = []
+    for probe in probes:
+        parameters = probe.get("parameters") if isinstance(probe, dict) else {}
+        if not isinstance(parameters, dict):
+            continue
+        if str(parameters.get("candidate_id") or "").strip() in {candidate_id, candidate_id.removeprefix("mechanism_")}:
+            matches.append(probe)
+    failed = [probe for probe in matches if _probe_needs_rollback(probe)]
+    return failed[-1] if failed else None
+
+
 def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) -> ControlledAITree:
     selected = [str(item) for item in review.get("selected_evidence_families", []) if str(item)]
     proposals = review.get("candidate_proposals") if isinstance(review.get("candidate_proposals"), list) else []
     layers = [layer.model_copy(update={"generated_by": "ai_guarded"}) for layer in tree.layers]
     edges = list(tree.probe_edges)
+    base_line_ids = {
+        node.candidate_id
+        for layer in layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+        if node.depth_kind == "base" and node.supported_level == "line"
+    }
+    proposals = [
+        item for item in proposals
+        if str(item.get("origin_parent_candidate_id") or "") in base_line_ids
+    ]
     if proposals and len(layers) < tree.budget.max_tree_depth:
         proposal_nodes = [
             AITreeCandidateNode(
                 candidate_id=item["candidate_id"],
                 lineage_id=item["candidate_id"],
-                parent_candidate_ids=item["parent_candidate_ids"],
+                parent_candidate_ids=[str(item["origin_parent_candidate_id"])],
+                origin_parent_candidate_id=str(item["origin_parent_candidate_id"]),
                 role="unknown",
                 claim=item["claim"],
-                supported_level=item["supported_level"],
+                supported_level="call_path",
                 confidence=0.45,
                 status="missing_evidence",
                 claim_type="partial_localization",
@@ -5141,6 +5756,7 @@ def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) 
                 decision="continue_probe",
                 mechanism=item["mechanism"],
                 target=item["target"],
+                depth_kind="mechanism",
                 conclusion_eligible=False,
                 eligibility_reason="AI 提出的机制候选仍需所选探针返回真实证据后才能升级。",
                 evidence_refs=item["evidence_refs"],
@@ -5167,7 +5783,10 @@ def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) 
             edge_id=f"session_ai_probe_{len(edges)}",
             from_layer_id=previous,
             to_layer_id=proposal_layer.layer_id,
-            from_candidate_ids=list(dict.fromkeys(parent for item in proposals for parent in item["parent_candidate_ids"])),
+            from_candidate_ids=list(dict.fromkeys(
+                str(item["origin_parent_candidate_id"])
+                for item in proposals
+            )),
             to_candidate_ids=[item.candidate_id for item in proposal_nodes],
             probe_requests=selected,
             status="not_started",
@@ -5228,25 +5847,10 @@ def _summarize_investigation_review(review: dict[str, Any] | None) -> dict[str, 
     return result
 
 
-def _eligible_child_candidate_ids(child_trees: list[dict[str, Any]]) -> set[str]:
-    result: set[str] = set()
-    for tree in child_trees:
-        for layer in tree.get("layers", []) if isinstance(tree, dict) else []:
-            if not isinstance(layer, dict):
-                continue
-            for group in ("primary_causes", "secondary_causes"):
-                for node in layer.get(group, []) or []:
-                    if isinstance(node, dict) and node.get("conclusion_eligible"):
-                        candidate_id = str(node.get("candidate_id") or "").strip()
-                        if candidate_id:
-                            result.add(candidate_id)
-    return result
-
-
 def _blocked_upgrade_node(
     assessment: dict[str, Any],
     final_level: str,
-    primary_nodes: list[AITreeCandidateNode],
+    parent_candidate_id: str | None,
 ) -> AITreeCandidateNode | None:
     anchor = assessment.get("primary_anchor")
     if not isinstance(anchor, dict):
@@ -5254,7 +5858,11 @@ def _blocked_upgrade_node(
     reason = str(anchor.get("blocked_upgrade_reason") or "").strip()
     if not reason:
         return None
+    if not parent_candidate_id:
+        return None
     current_level = str(anchor.get("supported_level") or final_level)
+    if current_level == "line":
+        return None
     missing = ["source_context", "line_level_profile"]
     if "锁持有者" in reason:
         missing.append("lock_owner_thread")
@@ -5263,12 +5871,14 @@ def _blocked_upgrade_node(
     return AITreeCandidateNode(
         candidate_id="blocked_line_upgrade",
         lineage_id="blocked_line_upgrade",
-        parent_candidate_ids=[node.candidate_id for node in primary_nodes],
+        parent_candidate_ids=[parent_candidate_id] if parent_candidate_id else [],
+        origin_parent_candidate_id=parent_candidate_id,
         role="unknown",
         claim=f"当前只能停在 {current_level} 层：{reason}",
         supported_level=current_level,
         confidence=0.3,
         status="forbidden",
+        depth_kind="boundary",
         evidence_refs=_unique_strings([anchor.get("evidence_ref")] + assessment.get("evidence_refs", [])[:2]),
         self_challenge=AITreeSelfChallenge(
             why_this_claim=reason,

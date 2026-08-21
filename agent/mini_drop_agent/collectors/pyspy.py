@@ -204,6 +204,9 @@ class PySpyCollector:
         stacks: list[dict] = []
         leaf_counts: dict[tuple[str, str, int], int] = {}
         leaf_paths: dict[tuple[str, str, int], list[str]] = {}
+        frame_counts: dict[tuple[str, str, int], int] = {}
+        frame_paths: dict[tuple[str, str, int], dict[tuple[str, ...], int]] = {}
+        frame_depths: dict[tuple[str, str, int], dict[int, int]] = {}
         total_samples = 0
         for raw_line in text.splitlines():
             match = re.match(r"^(.*)\s+(-?\d+)\s*$", raw_line.strip())
@@ -224,6 +227,17 @@ class PySpyCollector:
             key = (leaf["name"], leaf["file"], leaf["line"])
             leaf_counts[key] = leaf_counts.get(key, 0) + count
             leaf_paths.setdefault(key, names)
+            for frame_index, frame in enumerate(frames):
+                if PySpyCollector._invalid_anchor(frame["name"]):
+                    continue
+                frame_key = (frame["name"], frame["file"], frame["line"])
+                frame_counts[frame_key] = frame_counts.get(frame_key, 0) + count
+                path_key = tuple(names)
+                paths = frame_paths.setdefault(frame_key, {})
+                paths[path_key] = paths.get(path_key, 0) + count
+                depth_from_leaf = len(frames) - frame_index - 1
+                depths = frame_depths.setdefault(frame_key, {})
+                depths[depth_from_leaf] = depths.get(depth_from_leaf, 0) + count
             stacks.append({
                 "frames": frames,
                 "call_path": names,
@@ -259,6 +273,36 @@ class PySpyCollector:
             for item in top_functions
             if item["file"] and item["line"] > 0
         ]
+        source_line_candidates = []
+        for (name, file_name, line), count in frame_counts.items():
+            if not file_name or line <= 0:
+                continue
+            paths = frame_paths[(name, file_name, line)]
+            call_path = list(max(paths.items(), key=lambda item: (item[1], item[0]))[0])
+            depth = max(
+                frame_depths[(name, file_name, line)].items(),
+                key=lambda item: (item[1], -item[0]),
+            )[0]
+            source_line_candidates.append({
+                "symbol": name,
+                "file": file_name,
+                "line": line,
+                "samples": count,
+                "percent": round(count / total_samples * 100.0, 2) if total_samples else 0.0,
+                "call_path": call_path,
+                "frame_depth": depth,
+                "frame_type": "leaf" if depth == 0 else "intermediate",
+            })
+        source_line_candidates.sort(
+            key=lambda item: (
+                0 if item["frame_type"] == "leaf" else 1,
+                -item["samples"],
+                item["frame_depth"],
+                item["symbol"],
+                item["file"],
+                item["line"],
+            )
+        )
         return {
             "schema_version": "1.0",
             "producer": "py-spy",
@@ -267,7 +311,7 @@ class PySpyCollector:
             "stack_samples": stacks,
             "top_functions": top_functions,
             "call_path_hotspots": stacks[:limit],
-            "line_candidates": line_candidates,
+            "line_candidates": source_line_candidates[: max(limit * 4, len(line_candidates))],
             "evidence_validity": {
                 "execution_status": "completed",
                 "artifact_status": "produced",

@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "case_id": "L4-CELERY-8882-EXCEPTION-MEMLEAK",
+  "level": "L4_FULL_PROJECT_PR_CASE",
+  "repository": "https://github.com/celery/celery",
+  "bug_issue": "#8882",
+  "fix_pr": "#9799",
+  "vulnerable_revision": "a83070e5ec748c32325332db422756cfdd709aae",
+  "fixed_revision": "ca2d22204a47d7c7d553ae1408a099ab10caf055",
+  "runtime": {
+    "broker": "redis",
+    "worker_command": "celery -A celery_case_tasks worker --loglevel=INFO --pool=solo --concurrency=1 --queues=failure-workload",
+    "submission": "celery_case_tasks.unhandled_failure.apply_async",
+    "control_submission": "celery_case_tasks.control_success.apply_async",
+    "worker_barrier": "celery_case_tasks.batch_barrier.apply_async",
+    "measurement": "worker-side barrier RSS plus optional tracemalloc after gc.collect",
+    "same_workload_required": true
+  },
+  "target": {
+    "service_id": "celery-worker",
+    "instance_id": "celery-worker-{container_id}",
+    "host_id": "vm-worker1",
+    "agent_id": "linux-worker-1",
+    "pid_source": "worker_observations.ndjson.worker_pid",
+    "container_id_source": "worker_observations.ndjson.container_id"
+  },
+  "source_context": {
+    "source_root_host": "/home/worker1/mini-drop-cases/python_worker_failure_case/celery-src",
+    "source_root_agent": "/host/home/worker1/mini-drop-cases/python_worker_failure_case/celery-src",
+    "container_workdir": "/opt/celery-src",
+    "repo_revision": "stage-specific"
+  },
+  "evidence": {
+    "worker_observations": "evidence/worker_observations.ndjson",
+    "task_observations": "evidence/task_observations.ndjson",
+    "producer_observations": "evidence/producer_observations.ndjson",
+    "worker_logs": "evidence/{diagnosis_target,regression_control}/worker.log",
+    "diagnosis_target": "vulnerable.diagnosis",
+    "regression_control": "fixed.runtime_manifest"
+  },
+  "oracle_policy": "oracle.json is offline-only and must not enter diagnosis context"
+}

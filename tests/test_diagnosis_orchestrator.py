@@ -671,11 +671,22 @@ def test_session_controlled_tree_contains_rejected_unknown_and_blocked_branches(
     assert any(node.candidate_id == "rejected_same_host_noisy_neighbor" for node in layer1.rejected_causes)
     assert any(node.candidate_id == "unknown_downstream_dependency" for node in layer1.unknown_causes)
     assert any(edge.transition_type == "backtrack" for edge in tree.probe_edges)
-    assert tree.layers[2].unknown_causes[0].candidate_id == "blocked_line_upgrade"
-    assert tree.layers[2].unknown_causes[0].status == "forbidden"
-    assert tree.layers[2].unknown_causes[0].causal_status == "inconclusive"
-    assert tree.layers[2].unknown_causes[0].decision == "backtrack"
-    assert "blocked_line_upgrade" in tree.final_unknown_causes
+    assert not any(
+        node.candidate_id == "blocked_line_upgrade"
+        for layer in tree.layers
+        for node in layer.unknown_causes
+    )
+    assert all(
+        node.origin_parent_candidate_id
+        for layer in tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+        if node.depth_kind in {"mechanism", "boundary"}
+    )
 
 
 def test_audit_structured_evidence_merges_task_families_without_last_empty_task_erasing_signals():
@@ -1878,6 +1889,7 @@ def test_development_ai_tree_allows_mechanism_retry_beyond_five_rounds(client: T
             "source_mechanism_query": {
                 "ai_generated_query": {
                     "candidate_id": "ai_proposal_retention",
+                    "origin_parent_candidate_id": "coarse_python_memory_retention",
                     "query_spec_hash": "sha256:new-query",
                 },
             },
@@ -2181,7 +2193,12 @@ def test_redis_dependency_session_tree_matches_cluster_conclusion(client: TestCl
     assert detail["status"] == "COMPLETED"
     assert tree["final_supported_level"] == "service"
     assert any("redis" in item for item in primary_ids)
-    assert tree["layers"][0]["primary_causes"]
+    assert tree["layers"][0]["primary_causes"] == []
+    assert tree["layers"][0]["unknown_causes"]
+    assert any(
+        "redis" in node["candidate_id"]
+        for node in tree["layers"][1]["primary_causes"]
+    )
     assert "insufficient_data" not in primary_ids
     assert pending_requests.isdisjoint({"cpu_profile", "off_cpu_wait_profile", "trace_endpoint_profile", "baseline_window_profile"})
 
@@ -2621,6 +2638,195 @@ def test_source_snapshot_upgrades_matching_call_path_anchor_to_line_only():
     assert mismatched["supported_level"] == "call_path"
 
 
+def test_python_call_path_keeps_verified_project_frame_for_source_upgrade():
+    values = {
+        "depth_evidence_json": {
+            "line_candidates": [
+                {"file": "/usr/local/lib/python3.11/logging/__init__.py", "line": 630, "symbol": "formatTime"},
+                {"file": "/opt/celery-src/celery/app/trace.py", "line": 222, "symbol": "handle_failure"},
+            ],
+        },
+    }
+    call_paths = [{
+        "call_path": ["worker", "handle_failure", "formatTime"],
+        "function": "formatTime",
+        "file": "/usr/local/lib/python3.11/logging/__init__.py",
+        "line": 630,
+    }]
+
+    candidate = orchestrator_module._source_line_candidate_for_call_path(values, call_paths)
+
+    assert candidate == {
+        "file": "/opt/celery-src/celery/app/trace.py",
+        "line": 222,
+        "symbol": "handle_failure",
+    }
+
+
+def test_unmatched_source_line_does_not_upgrade_call_path():
+    anchor = {
+        "supported_level": "call_path",
+        "file": "/usr/local/lib/python3.11/logging/__init__.py",
+        "line": 630,
+        "function": "formatTime",
+    }
+    observations = [{
+        "source_snapshot": {
+            "source_context_hash": "sha256:verified",
+            "revision": "abc123",
+            "snippets": [{
+                "file": "celery/app/trace.py",
+                "focus_line": 222,
+                "lines": [{"line": 222, "text": "handle_failure"}],
+            }],
+        },
+    }]
+
+    result = orchestrator_module._verified_source_anchor(anchor, observations)
+
+    assert result["supported_level"] == "call_path"
+    assert "source_context_hash" not in result
+
+
+def test_verified_source_fallback_chooses_unique_failure_handling_line():
+    anchor = {
+        "supported_level": "call_path",
+        "anchor": "worker -> redis -> logging",
+        "file": "/usr/local/lib/python3.11/site-packages/redis/client.py",
+        "line": 76,
+        "function": "__setitem__",
+        "runtime_line_candidates": [
+            {"file": "/case/celery_case_tasks.py", "line": 27, "symbol": "unhandled_failure"},
+            {"file": "/opt/celery-src/celery/app/trace.py", "line": 255, "symbol": "_log_error"},
+        ],
+    }
+    observations = [{
+        "evidence_refs": ["ev-source"],
+        "source_snapshot": {
+            "source_context_hash": "sha256:verified",
+            "revision": "abc123",
+            "snippets": [
+                {"file": "celery/app/task.py", "focus_line": 27, "symbol": "unhandled_failure", "lines": [{"line": 27}]},
+                {"file": "celery/app/trace.py", "focus_line": 255, "symbol": "_log_error", "lines": [{"line": 255}]},
+            ],
+            "evidence_validity": {"evidence_status": "valid"},
+        },
+    }]
+
+    result = orchestrator_module._verified_source_anchor(anchor, observations)
+
+    assert result["supported_level"] == "line"
+    assert result["file"] == "celery/app/trace.py"
+    assert result["line"] == 255
+    assert result["source_hint_level"] == "partial_localization"
+    assert result["root_claim_allowed"] is False
+
+
+def test_celery_exception_helper_does_not_replace_trace_failure_anchor():
+    values = {
+        "depth_evidence_json": {
+            "line_candidates": [
+                {
+                    "file": "/opt/celery-src/celery/utils/serialization.py",
+                    "line": 164,
+                    "symbol": "get_pickleable_exception",
+                },
+                {
+                    "file": "/opt/celery-src/celery/app/trace.py",
+                    "line": 647,
+                    "symbol": "fast_trace_task",
+                },
+            ],
+        },
+    }
+    call_paths = [{
+        "call_path": ["fast_trace_task", "trace_task", "handle_failure", "get_pickleable_exception"],
+        "function": "get_pickleable_exception",
+        "file": "/opt/celery-src/celery/utils/serialization.py",
+        "line": 164,
+    }]
+
+    candidate = orchestrator_module._source_line_candidate_for_call_path(values, call_paths)
+
+    assert candidate == {
+        "file": "/opt/celery-src/celery/app/trace.py",
+        "line": 647,
+        "symbol": "fast_trace_task",
+    }
+
+
+def test_source_snapshot_prefers_celery_trace_failure_frame_over_exception_helper():
+    anchor = {
+        "supported_level": "call_path",
+        "anchor": "fast_trace_task -> trace_task -> handle_failure -> get_pickleable_exception",
+        "file": "/usr/local/lib/python3.11/site-packages/logging/__init__.py",
+        "line": 630,
+        "function": "formatTime",
+        "runtime_line_candidates": [
+            {"file": "/opt/celery-src/celery/utils/serialization.py", "line": 164, "symbol": "get_pickleable_exception"},
+            {"file": "/opt/celery-src/celery/app/trace.py", "line": 647, "symbol": "fast_trace_task"},
+        ],
+    }
+    observations = [{
+        "source_snapshot": {
+            "source_context_hash": "sha256:verified",
+            "revision": "abc123",
+            "snippets": [
+                {
+                    "file": "celery/utils/serialization.py",
+                    "focus_line": 164,
+                    "symbol": "get_pickleable_exception",
+                    "lines": [{"line": 164}],
+                },
+                {
+                    "file": "celery/app/trace.py",
+                    "focus_line": 647,
+                    "symbol": "fast_trace_task",
+                    "lines": [{"line": 647}],
+                },
+            ],
+            "evidence_validity": {"evidence_status": "valid"},
+        },
+    }]
+
+    result = orchestrator_module._verified_source_anchor(anchor, observations)
+
+    assert result["supported_level"] == "line"
+    assert result["file"] == "celery/app/trace.py"
+    assert result["line"] == 647
+
+
+def test_generic_direct_source_match_does_not_bypass_failure_line_selection():
+    anchor = {
+        "supported_level": "call_path",
+        "anchor": "worker -> start -> poll",
+        "function": "start",
+        "file": "/opt/celery-src/celery/bootsteps.py",
+        "line": 116,
+        "runtime_line_candidates": [
+            {"file": "/opt/celery-src/celery/bootsteps.py", "line": 116, "symbol": "start"},
+            {"file": "/opt/celery-src/celery/app/trace.py", "line": 255, "symbol": "_log_error"},
+        ],
+    }
+    observations = [{
+        "source_snapshot": {
+            "source_context_hash": "sha256:verified",
+            "revision": "abc123",
+            "snippets": [
+                {"file": "celery/bootsteps.py", "focus_line": 116, "symbol": "start", "lines": [{"line": 116}]},
+                {"file": "celery/app/trace.py", "focus_line": 255, "symbol": "_log_error", "lines": [{"line": 255}]},
+            ],
+            "evidence_validity": {"evidence_status": "valid"},
+        },
+    }]
+
+    result = orchestrator_module._verified_source_anchor(anchor, observations)
+
+    assert result["supported_level"] == "line"
+    assert result["file"] == "celery/app/trace.py"
+    assert result["line"] == 255
+
+
 def test_source_snapshot_task_options_keep_session_line_candidates(monkeypatch):
     candidate = {"file": "/case/src/werkzeug/routing.py", "line": 1120, "symbol": "compile"}
     monkeypatch.setattr(
@@ -2701,11 +2907,11 @@ def test_optional_mechanism_task_options_keep_guarded_ai_inputs(monkeypatch):
         {
             "diagnosis_id": "diag-source",
             "step_id": "step-pyheap",
-            "parameters": {
-                "duration_sec": 30,
-                "sample_rate": 1,
-                "candidate_id": "ai_proposal_bound_method",
-                "object_type_hints": ["method", "code"],
+                "parameters": {
+                    "duration_sec": 30,
+                    "sample_rate": 1,
+                    "candidate_id": "ai_proposal_bound_method",
+                    "object_type_hints": ["method", "code"],
             },
         },
         orchestrator_module.get_probe("process_python_heap_reference"),
@@ -2980,6 +3186,8 @@ def test_source_mechanism_partial_allows_new_query_but_not_same_query(client: Te
         "target": target,
         "parameters": {
             "evidence_gap": "source_mechanism_query",
+            "candidate_id": "ai_proposal_retention",
+            "origin_parent_candidate_id": "coarse_python_memory_retention",
             "ai_generated_query": {"query_spec_hash": "sha256:first"},
         },
         "reason": "first attempt",
@@ -2996,6 +3204,8 @@ def test_source_mechanism_partial_allows_new_query_but_not_same_query(client: Te
         probe_inputs={
             "source_mechanism_query": {
                 "ai_generated_query": {"query_spec_hash": "sha256:first"},
+                "candidate_id": "ai_proposal_retention",
+                "origin_parent_candidate_id": "coarse_python_memory_retention",
             },
         },
     )
@@ -3006,6 +3216,8 @@ def test_source_mechanism_partial_allows_new_query_but_not_same_query(client: Te
         probe_inputs={
             "source_mechanism_query": {
                 "ai_generated_query": {"query_spec_hash": "sha256:second"},
+                "candidate_id": "ai_proposal_retention",
+                "origin_parent_candidate_id": "coarse_python_memory_retention",
             },
         },
     )
@@ -3147,14 +3359,10 @@ def test_session_tree_rebuilds_supported_and_refuted_codeql_candidates():
         for layer in tree.layers
         for node in [*layer.primary_causes, *layer.secondary_causes, *layer.rejected_causes, *layer.unknown_causes]
     }
-    assert nodes["ai_proposal_bound_method"].role == "unknown"
-    assert nodes["ai_proposal_bound_method"].self_challenge.missing_evidence == ["python_heap_reference"]
-    assert nodes["ai_proposal_defaults"].role == "rejected"
-    assert nodes["ai_proposal_defaults"].causal_status == "contradicted"
-    assert any(
-        edge.effect == "rollback" and "ai_proposal_defaults" in edge.from_candidate_ids
-        for edge in tree.probe_edges
-    )
+    assert nodes["python_memory_retention"].role == "unknown"
+    assert nodes["python_memory_retention"].conclusion_eligible is False
+    assert all(node.depth_kind != "mechanism" for node in nodes.values())
+    assert nodes["python_memory_retention"].parent_candidate_ids == ["coarse_python_memory_retention"]
 
 
 def test_partial_codeql_chain_keeps_existing_candidate_unresolved_and_backtracks():
@@ -3221,14 +3429,328 @@ def test_partial_codeql_chain_keeps_existing_candidate_unresolved_and_backtracks
         if node.candidate_id == "python_runtime_stack_hotspot"
     ]
     assert unresolved
-    assert unresolved[0].status == "missing_evidence"
-    assert unresolved[0].causal_status == "inconclusive"
-    assert unresolved[0].decision == "backtrack"
+    assert unresolved[0].status == "supported"
+    assert unresolved[0].causal_status == "unproven"
+    assert unresolved[0].decision == "continue_probe"
+    assert unresolved[0].depth_kind == "base"
+    assert unresolved[0].origin_parent_candidate_id == "coarse_python_memory_retention"
     assert "python_runtime_stack_hotspot" not in tree.final_primary_causes
-    assert any(
-        edge.effect == "rollback" and "python_runtime_stack_hotspot" in edge.from_candidate_ids
-        for edge in tree.probe_edges
+    assert all(node.depth_kind != "mechanism" for layer in tree.layers for node in [
+        *layer.primary_causes,
+        *layer.secondary_causes,
+        *layer.rejected_causes,
+        *layer.unknown_causes,
+    ])
+
+
+def test_source_mechanism_is_attached_only_after_verified_line_base_node():
+    assessment = {
+        "classification": "python_memory_retention",
+        "summary": "源码行已被运行时证据定位。",
+        "supported_level": "line",
+        "confidence": 0.86,
+        "evidence_refs": ["ev-runtime", "ev-source", "ev-codeql", "ev-heap"],
+        "conclusion_eligible": True,
+        "claim_type": "direct_root_cause",
+        "causal_status": "supported",
+        "claim_target": "celery/app/trace.py:1120",
+        "mechanism": "python_traceback_retention",
+        "primary_anchor": {
+            "source_context_hash": "sha256:celery",
+            "source_revision": "a83070e5ec748c32325332db422756cfdd709aae",
+            "file": "celery/app/trace.py",
+            "line": 1120,
+            "mechanism_paths": [{
+                "candidate_id": "ai_proposal_trace_cycle",
+                "candidate_relation": "supports",
+                "anchor_matches": [0],
+                "summary": "failure traceback remains reachable from task exception handling",
+                "evidence_ref": "ev-codeql",
+            }],
+            "runtime_reference_paths": [{
+                "candidate_id": "ai_proposal_trace_cycle",
+                "nodes": [{"type": "traceback"}, {"type": "task"}],
+                "evidence_ref": "ev-heap",
+            }],
+        },
+    }
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-celery-mechanism",
+        cluster_assessment=assessment,
+        candidates=[{
+            "candidate_id": "celery-trace-line",
+            "rank": 1,
+            "description": "异常处理行保留 traceback",
+            "evidence_refs": ["ev-runtime", "ev-source"],
+            "max_supported_level": "line",
+        }],
+        followup_requests=[],
+        probes=[{
+            "parameters": {
+                "candidate_id": "ai_proposal_trace_cycle",
+                "origin_parent_candidate_id": "celery-trace-line",
+            },
+            "status": "COMPLETED",
+            "evidence_status": "valid",
+        }],
+        child_trees=[],
     )
+
+    nodes = {
+        node.candidate_id: node
+        for layer in tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    }
+    mechanism = nodes["ai_proposal_trace_cycle"]
+    line_id = orchestrator_module._verified_line_candidate_id(
+        assessment["primary_anchor"],
+        assessment["classification"],
+    )
+    assert mechanism.depth_kind == "mechanism"
+    assert mechanism.supported_level == "call_path"
+    assert mechanism.parent_candidate_ids == [line_id]
+    assert mechanism.origin_parent_candidate_id == line_id
+
+    invalid_origin = [
+        {**item, "origin_parent_candidate_id": "coarse_python_memory_retention"}
+        for item in assessment["primary_anchor"]["mechanism_paths"]
+    ]
+    invalid_assessment = {
+        **assessment,
+        "primary_anchor": {**assessment["primary_anchor"], "mechanism_paths": invalid_origin},
+    }
+    invalid_tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-celery-invalid-mechanism-parent",
+        cluster_assessment=invalid_assessment,
+        candidates=[{
+            "candidate_id": "celery-trace-line",
+            "rank": 1,
+            "description": "异常处理行保留 traceback",
+            "evidence_refs": ["ev-runtime", "ev-source"],
+            "max_supported_level": "line",
+        }],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+    )
+    assert all(
+        node.depth_kind != "mechanism"
+        for layer in invalid_tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    )
+
+
+def test_duplicate_verified_line_hotspots_collapse_and_failed_deep_probe_returns_to_line():
+    assessment = {
+        "classification": "self_code_or_process_pressure",
+        "summary": "源码热点已定位，但机制证据失败。",
+        "supported_level": "line",
+        "confidence": 0.68,
+        "conclusion_eligible": False,
+        "claim_type": "partial_localization",
+        "causal_status": "unproven",
+        "root_entity": "celery-worker",
+        "claim_target": "celery/app/trace.py:258 _log_error",
+        "primary_anchor": {
+            "source_context_hash": "sha256:celery",
+            "source_revision": "a83070e5ec748c32325332db422756cfdd709aae",
+            "file": "celery/app/trace.py",
+            "line": 258,
+            "function": "_log_error",
+        },
+    }
+    candidates = [
+        {
+            "candidate_id": candidate_id,
+            "rank": rank,
+            "description": "同一源码行的热点候选",
+            "evidence_refs": ["ev-runtime"],
+            "max_supported_level": "line",
+        }
+        for rank, candidate_id in enumerate(
+            ["python_runtime_stack_hotspot", "python_userland_hotspot", "celery-worker"],
+            start=1,
+        )
+    ]
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-celery-duplicate-line",
+        cluster_assessment=assessment,
+        candidates=candidates,
+        followup_requests=["source_mechanism_query"],
+        probes=[{
+            "parameters": {
+                "evidence_gap": "source_mechanism_query",
+                "candidate_id": "ai_proposal_trace_retention",
+                "origin_parent_candidate_id": "celery-worker",
+            },
+            "status": "FAILED",
+            "evidence_status": "unparseable",
+        }],
+        child_trees=[],
+    )
+    line_id = orchestrator_module._verified_line_candidate_id(
+        assessment["primary_anchor"],
+        assessment["classification"],
+    )
+    nodes = {
+        node.candidate_id: node
+        for layer in tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    }
+    assert line_id in nodes
+    assert "celery-worker" not in nodes
+    boundary = nodes["gap_source_mechanism_query_ai_proposal_trace_retention"]
+    assert boundary.parent_candidate_ids == [line_id]
+    rollback = next(edge for edge in tree.probe_edges if edge.effect == "rollback")
+    assert rollback.to_candidate_ids == [line_id]
+
+
+def test_verified_source_line_is_synthesized_as_base_parent_for_mechanism():
+    assessment = {
+        "classification": "python_memory_retention",
+        "summary": "异常处理源码行已验证。",
+        "supported_level": "line",
+        "confidence": 0.86,
+        "evidence_refs": ["ev-runtime", "ev-source", "ev-codeql", "ev-heap"],
+        "conclusion_eligible": True,
+        "claim_type": "direct_root_cause",
+        "causal_status": "supported",
+        "claim_target": "celery/app/trace.py:1120",
+        "mechanism": "python_traceback_retention",
+        "primary_anchor": {
+            "source_context_hash": "sha256:celery",
+            "source_revision": "a83070e5ec748c32325332db422756cfdd709aae",
+            "file": "celery/app/trace.py",
+            "line": 1120,
+            "function": "handle_failure",
+            "mechanism_paths": [{
+                "candidate_id": "ai_proposal_trace_cycle",
+                "candidate_relation": "supports",
+                "anchor_matches": [0],
+                "summary": "failure traceback remains reachable from task exception handling",
+                "evidence_ref": "ev-codeql",
+                "origin_parent_candidate_id": "verified_line_placeholder",
+            }],
+            "runtime_reference_paths": [{
+                "candidate_id": "ai_proposal_trace_cycle",
+                "nodes": [{"type": "traceback"}, {"type": "task"}],
+                "evidence_ref": "ev-heap",
+            }],
+        },
+    }
+    line_id = orchestrator_module._verified_line_candidate_id(
+        assessment["primary_anchor"],
+        assessment["classification"],
+    )
+    assessment["primary_anchor"]["mechanism_paths"][0]["origin_parent_candidate_id"] = line_id
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-synthesized-line-parent",
+        cluster_assessment=assessment,
+        candidates=[{
+            "candidate_id": "python_runtime_stack_hotspot",
+            "rank": 1,
+            "description": "异常处理调用路径",
+            "evidence_refs": ["ev-runtime"],
+            "max_supported_level": "call_path",
+        }],
+        followup_requests=[],
+        probes=[{
+            "parameters": {
+                "candidate_id": "ai_proposal_trace_cycle",
+                "origin_parent_candidate_id": line_id,
+            },
+            "status": "COMPLETED",
+            "evidence_status": "valid",
+        }],
+        child_trees=[],
+    )
+
+    nodes = {
+        node.candidate_id: node
+        for layer in tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    }
+    assert nodes[line_id].depth_kind == "base"
+    assert nodes[line_id].supported_level == "line"
+    assert tree.final_primary_causes == [line_id]
+    assert nodes["ai_proposal_trace_cycle"].parent_candidate_ids == [line_id]
+
+
+def test_generic_event_loop_frame_does_not_upgrade_call_path_to_line():
+    values = {
+        "depth_evidence_json": {
+            "line_candidates": [
+                {"file": "/opt/celery-src/celery/bootsteps.py", "line": 116, "symbol": "start"},
+                {"file": "/opt/celery-src/celery/worker/loops.py", "line": 97, "symbol": "asynloop"},
+            ],
+        },
+    }
+    call_paths = [{
+        "call_path": ["worker", "start", "asynloop", "poll"],
+        "function": "poll",
+    }]
+
+    assert orchestrator_module._source_line_candidate_for_call_path(values, call_paths) is None
+
+
+def test_unbound_followup_does_not_create_orphan_boundary_node():
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-orphan-followup",
+        cluster_assessment={
+            "classification": "python_memory_retention",
+            "summary": "已定位到源码行，但深探来源尚未保存。",
+            "supported_level": "line",
+            "confidence": 0.7,
+            "conclusion_eligible": False,
+            "primary_anchor": {
+                "supported_level": "line",
+                "blocked_upgrade_reason": "缺少源码机制证据。",
+            },
+        },
+        candidates=[{
+            "candidate_id": "line-root",
+            "rank": 1,
+            "description": "已定位的源码行",
+            "max_supported_level": "line",
+        }],
+        followup_requests=["source_mechanism_query"],
+        probes=[],
+        child_trees=[],
+    )
+
+    deep_nodes = [
+        node
+        for layer in tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+        if node.depth_kind in {"mechanism", "boundary"}
+    ]
+    assert deep_nodes == []
+    assert not any(node.candidate_id.startswith("gap_") for layer in tree.layers for node in layer.unknown_causes)
 
 
 def test_previous_unrefuted_candidate_survives_blocked_deep_probe_as_checkpoint():
@@ -3286,8 +3808,9 @@ def test_previous_unrefuted_candidate_survives_blocked_deep_probe_as_checkpoint(
         for node in layer.unknown_causes
         if node.candidate_id == "python_code_constant_retention"
     )
-    assert checkpoint.causal_status == "inconclusive"
-    assert checkpoint.decision == "backtrack"
+    assert checkpoint.status == "missing_evidence"
+    assert checkpoint.causal_status == "unproven"
+    assert checkpoint.decision == "continue_probe"
     assert checkpoint.evidence_refs == ["ev-memray", "ev-source"]
     assert checkpoint.conclusion_eligible is False
     assert "python_heap_reference" in checkpoint.self_challenge.missing_evidence
@@ -3415,7 +3938,19 @@ def test_werkzeug_1521_fixture_closes_bound_method_branch_and_greys_defaults():
         cluster_assessment=assessment,
         candidates=[],
         followup_requests=[],
-        probes=[],
+        probes=[{
+            "parameters": {
+                "candidate_id": "ai_proposal_bound_method_code_constant",
+                "origin_parent_candidate_id": "python_memory_retention",
+                "evidence_gap": "source_mechanism_query",
+            },
+        }, {
+            "parameters": {
+                "candidate_id": "ai_proposal_defaults",
+                "origin_parent_candidate_id": "python_memory_retention",
+                "evidence_gap": "source_mechanism_query",
+            },
+        }],
         child_trees=[],
         source_snapshot_hashes=["sha256:werkzeug-1521"],
     )
@@ -3435,7 +3970,11 @@ def test_werkzeug_1521_fixture_closes_bound_method_branch_and_greys_defaults():
     ]
     assert runtime_types == ["function", "code", "tuple", "method", "converter", "Map"]
     assert metadata["conclusion_eligible"] is True
-    assert nodes["ai_proposal_bound_method_code_constant"].conclusion_eligible is True
+    assert nodes["ai_proposal_bound_method_code_constant"].conclusion_eligible is False
+    assert nodes["ai_proposal_bound_method_code_constant"].depth_kind == "mechanism"
+    line_id = orchestrator_module._verified_line_candidate_id(anchor, "python_memory_retention")
+    assert nodes["ai_proposal_bound_method_code_constant"].origin_parent_candidate_id == line_id
+    assert line_id in tree.final_primary_causes
     assert nodes["ai_proposal_defaults"].role == "rejected"
     assert nodes["ai_proposal_defaults"].status == "contradicted"
 
@@ -3554,3 +4093,130 @@ def test_all_registered_dependency_followup_schedules_function_depth_probes(clie
     assert all(probe["status"] in {"SCHEDULED", "RUNNING", "COMPLETED"} for probe in depth_probes)
     assert all(probe["task_id"] for probe in depth_probes)
     assert not any(probe["status"] == "PLANNED" for probe in depth_probes)
+
+
+def _origin_backtrack_tree(*, probe_status="BLOCKED", evidence_status="blocked", multiple_parents=False):
+    origin = "line_rule_compile"
+    other_parent = "python_memory_retention"
+    path = {
+        "candidate_id": "bound_method_retention",
+        "candidate_relation": "supports",
+        "anchor_matches": [0],
+        "origin_parent_candidate_id": origin,
+        "parent_candidate_ids": [origin, other_parent] if multiple_parents else [origin],
+        "evidence_ref": "source_mechanism.mechanism_paths[0]",
+    }
+    assessment = {
+        "classification": "python_memory_retention",
+        "summary": "源码行已定位，机制深探尚未完成。",
+        "supported_level": "line",
+        "confidence": 0.85,
+        "conclusion_eligible": True,
+        "claim_type": "direct_root_cause",
+        "causal_status": "supported",
+        "mechanism": "python_code_constant_retention",
+        "claim_target": "werkzeug-routing",
+        "primary_anchor": {
+            "source_context_hash": "sha256:verified",
+            "source_revision": "a220671d",
+            "file": "src/werkzeug/routing.py",
+            "line": 844,
+            "mechanism_paths": [path],
+        },
+        "evidence_refs": ["ev-source"],
+    }
+    if evidence_status == "valid":
+        assessment["primary_anchor"]["runtime_reference_paths"] = [{
+            "candidate_id": "bound_method_retention",
+            "evidence_ref": "python_heap_reference.reference_paths[0]",
+        }]
+    candidates = [
+        {
+            "candidate_id": origin,
+            "rank": 1,
+            "description": "源码行级基础定位",
+            "evidence_refs": ["ev-source"],
+            "max_supported_level": "line",
+        },
+    ]
+    if multiple_parents:
+        candidates.append({
+            "candidate_id": other_parent,
+            "rank": 2,
+            "description": "另一条基础定位分支",
+            "evidence_refs": ["ev-source"],
+            "max_supported_level": "line",
+        })
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-origin-backtrack",
+        cluster_assessment=assessment,
+        candidates=candidates,
+        followup_requests=["source_mechanism_query"],
+        probes=[{
+            "parameters": {
+                "evidence_gap": "source_mechanism_query",
+                "candidate_id": "bound_method_retention",
+                "origin_parent_candidate_id": origin,
+            },
+            "status": probe_status,
+            "evidence_status": evidence_status,
+        }],
+        child_trees=[],
+    )
+    return tree
+
+
+def test_blocked_deep_probe_rolls_back_to_its_origin_parent_only():
+    tree = _origin_backtrack_tree()
+    line_id = orchestrator_module._verified_line_candidate_id(
+        {
+            "file": "src/werkzeug/routing.py",
+            "line": 844,
+        },
+        "python_memory_retention",
+    )
+    mechanism = next(
+        node for layer in tree.layers for node in layer.unknown_causes
+        if node.candidate_id == "bound_method_retention"
+    )
+    assert mechanism.origin_parent_candidate_id == line_id
+    assert tree.final_primary_causes == [line_id]
+    rollback = next(edge for edge in tree.probe_edges if edge.effect == "rollback")
+    assert rollback.from_candidate_ids == ["bound_method_retention"]
+    assert rollback.to_candidate_ids == [line_id]
+    assert "coarse_" not in rollback.to_candidate_ids[0]
+
+
+def test_multiple_lineage_parents_collapse_to_the_single_origin_for_mechanism():
+    tree = _origin_backtrack_tree(multiple_parents=True, probe_status="COMPLETED", evidence_status="partial")
+    line_id = orchestrator_module._verified_line_candidate_id(
+        {
+            "file": "src/werkzeug/routing.py",
+            "line": 844,
+        },
+        "python_memory_retention",
+    )
+    mechanism = next(
+        node for layer in tree.layers for node in layer.unknown_causes
+        if node.candidate_id == "bound_method_retention"
+    )
+    assert mechanism.parent_candidate_ids == [line_id]
+    rollback = next(edge for edge in tree.probe_edges if edge.effect == "rollback")
+    assert rollback.to_candidate_ids == [line_id]
+    assert tree.final_primary_causes == [line_id]
+
+
+def test_supported_mechanism_is_additional_and_cannot_replace_base_primary():
+    tree = _origin_backtrack_tree(probe_status="COMPLETED", evidence_status="valid")
+    line_id = orchestrator_module._verified_line_candidate_id(
+        {
+            "file": "src/werkzeug/routing.py",
+            "line": 844,
+        },
+        "python_memory_retention",
+    )
+    mechanism_path = tree.layers[2].unknown_causes[0]
+    assert mechanism_path.depth_kind == "mechanism"
+    assert mechanism_path.conclusion_eligible is False
+    assert mechanism_path.candidate_id not in tree.final_primary_causes
+    assert tree.final_primary_causes == [line_id]

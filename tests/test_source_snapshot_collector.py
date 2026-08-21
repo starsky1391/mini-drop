@@ -121,6 +121,85 @@ def test_source_snapshot_maps_container_absolute_path_to_unique_git_file(tmp_pat
     assert result.artifacts[0]["metadata"]["data"]["snippets"][0]["file"] == "werkzeug/routing.py"
 
 
+def test_source_snapshot_prioritizes_tracked_candidates_before_bounded_limit(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    source = repo / "celery" / "app" / "trace.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def trace_task():\n    return 1\n", encoding="utf-8")
+    monkeypatch.setenv("MINI_DROP_SOURCE_ROOTS", str(tmp_path))
+    collector = SourceSnapshotCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    candidates = [
+        {"file": f"/usr/local/lib/python3.11/site-packages/pkg_{index}.py", "line": 1}
+        for index in range(12)
+    ]
+    candidates.append({"file": "/opt/celery-src/celery/app/trace.py", "line": 1, "symbol": "trace_task"})
+    base_task = _task(repo)
+    task = base_task.__class__(**{
+        **base_task.__dict__,
+        "options": {**base_task.options, "line_candidates": candidates},
+    })
+
+    def fake_run(cmd, **_kwargs):
+        if "rev-parse" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="abc123\n", stderr="")
+        if "ls-files" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"celery/app/trace.py\0", stderr=b"")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with mock.patch("shutil.which", side_effect=lambda name: f"/usr/bin/{name}"), mock.patch(
+        "subprocess.run", side_effect=fake_run
+    ):
+        result = collector.collect(task)
+
+    assert result.ok is True
+    assert result.artifacts[0]["metadata"]["data"]["snippets"][0]["file"] == "celery/app/trace.py"
+
+
+def test_source_snapshot_prioritizes_celery_trace_frame_before_exception_helper(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    trace = repo / "celery" / "app" / "trace.py"
+    helper = repo / "celery" / "utils" / "serialization.py"
+    trace.parent.mkdir(parents=True)
+    helper.parent.mkdir(parents=True)
+    trace.write_text("\n".join(["pass"] * 646 + ["def fast_trace_task():", "    pass"]), encoding="utf-8")
+    helper.write_text("\n".join(["pass"] * 163 + ["def get_pickleable_exception():", "    pass"]), encoding="utf-8")
+    monkeypatch.setenv("MINI_DROP_SOURCE_ROOTS", str(tmp_path))
+    collector = SourceSnapshotCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    candidates = [
+        {"file": "/opt/celery-src/celery/utils/serialization.py", "line": 164, "symbol": "get_pickleable_exception"},
+        {"file": "/opt/celery-src/celery/app/trace.py", "line": 647, "symbol": "fast_trace_task"},
+    ]
+    base_task = _task(repo)
+    task = base_task.__class__(**{
+        **base_task.__dict__,
+        "options": {**base_task.options, "line_candidates": candidates},
+    })
+
+    def fake_run(cmd, **_kwargs):
+        if "rev-parse" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="abc123\n", stderr="")
+        if "ls-files" in cmd:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=b"celery/app/trace.py\0celery/utils/serialization.py\0",
+                stderr=b"",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with mock.patch("shutil.which", side_effect=lambda name: f"/usr/bin/{name}"), mock.patch(
+        "subprocess.run", side_effect=fake_run
+    ):
+        result = collector.collect(task)
+
+    snippets = result.artifacts[0]["metadata"]["data"]["snippets"]
+    assert result.ok is True
+    assert snippets[0]["file"] == "celery/app/trace.py"
+    assert snippets[0]["focus_line"] == 647
+
+
 def test_source_snapshot_rejects_revision_mismatch(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
