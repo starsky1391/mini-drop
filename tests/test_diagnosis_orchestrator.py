@@ -689,6 +689,70 @@ def test_session_controlled_tree_contains_rejected_unknown_and_blocked_branches(
     )
 
 
+def test_session_tree_uses_local_stop_boundaries_without_truncating_branches():
+    alternatives = [
+        {
+            "hypothesis": f"alt_{index}",
+            "status": "missing_evidence",
+            "reason": f"候选分支 {index} 缺少同窗证据。",
+            "supported_level": "service",
+            "missing_evidence": ["log_scan"],
+        }
+        for index in range(6)
+    ]
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag_local_stop_forest",
+        cluster_assessment={
+            "classification": "process_memory_retention",
+            "summary": "RSS 在目标 worker 进程内持续增长，GC 后仍保持。",
+            "diagnostic_claim": "worker 进程内存保留是当前最细有效定位。",
+            "claim_type": "direct_root_cause",
+            "causal_status": "supported",
+            "conclusion_eligible": True,
+            "supported_level": "process",
+            "max_supported_level": "process",
+            "confidence": 0.82,
+            "mechanism": "process_memory_retention",
+            "claim_target": "celery-worker",
+            "evidence_refs": ["ev_rss", "ev_barrier"],
+            "alternative_hypotheses": alternatives,
+        },
+        candidates=[{
+            "candidate_id": "process_worker_memory_growth",
+            "rank": 1,
+            "root_entity": "celery-worker",
+            "description": "worker 进程 RSS 在同一 workload 第二批继续增长。",
+            "confidence_level": "高",
+            "evidence_refs": ["ev_rss"],
+            "max_supported_level": "process",
+        }],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+    )
+
+    assert tree is not None
+    assert tree.final_primary_causes == ["process_worker_memory_growth"]
+    assert tree.stop_source_candidate_ids == []
+    all_nodes = [
+        node
+        for layer in tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    ]
+    stop_node = next(node for node in all_nodes if node.candidate_id == "stop_boundary_process_worker_memory_growth")
+    assert stop_node.node_type == "stop_boundary"
+    assert stop_node.parent_candidate_ids == ["process_worker_memory_growth"]
+    assert stop_node.origin_parent_candidate_id == "process_worker_memory_growth"
+    assert stop_node.conclusion_eligible is False
+    assert stop_node.candidate_id not in tree.final_primary_causes
+    assert sum(1 for node in all_nodes if node.candidate_id.startswith("unknown_alt_")) == 6
+
+
 def test_audit_structured_evidence_merges_task_families_without_last_empty_task_erasing_signals():
     evidence = [
         {

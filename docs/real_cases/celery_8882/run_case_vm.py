@@ -41,15 +41,32 @@ RUNTIME_FILES = {
     "worker_monitor.py",
 }
 LOCAL_SOURCE_SEED = "/home/worker1/mini-drop-cases/celery_8882/celery-src"
-WARMUP_COUNT = 1000
-FAILURE_COUNT = 1000
-FAILURE_BATCHES = 2
-WARMUP_SETTLE_SEC = 10.0
-FAILURE_TASK_SECONDS = 0.0
-FAILURE_PAYLOAD_BYTES = 16384
-PRODUCER_INTERVAL_SEC = 0.0
-WORKER_POOL = "prefork"
-WORKER_CONCURRENCY = 1
+
+
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+
+
+WARMUP_COUNT = env_int("CELERY_L4_WARMUP_COUNT", 1000)
+FAILURE_COUNT = env_int("CELERY_L4_FAILURE_COUNT", 1000)
+FAILURE_BATCHES = env_int("CELERY_L4_FAILURE_BATCHES", 2)
+WARMUP_SETTLE_SEC = env_float("CELERY_L4_WARMUP_SETTLE_SEC", 10.0)
+FAILURE_TASK_SECONDS = env_float("CELERY_L4_FAILURE_TASK_SECONDS", 0.0)
+FAILURE_PAYLOAD_BYTES = env_int("CELERY_L4_FAILURE_PAYLOAD_BYTES", 16384)
+PRODUCER_INTERVAL_SEC = env_float("CELERY_L4_PRODUCER_INTERVAL_SEC", 0.0)
+WORKER_POOL = os.environ.get("CELERY_L4_WORKER_POOL", "prefork")
+WORKER_CONCURRENCY = env_int("CELERY_L4_WORKER_CONCURRENCY", 1)
+BARRIER_GC_COLLECT = env_int("CELERY_L4_BARRIER_GC_COLLECT", 0)
 
 
 def progress(message: str) -> None:
@@ -253,6 +270,7 @@ def run_stage(
         f"CELERY_PRODUCER_DURATION_SEC={duration_sec} "
         f"CELERY_FAILURE_PAYLOAD_BYTES={FAILURE_PAYLOAD_BYTES} "
         f"CELERY_WORKER_POOL={WORKER_POOL} CELERY_WORKER_CONCURRENCY={WORKER_CONCURRENCY} "
+        f"CELERY_BARRIER_GC_COLLECT={BARRIER_GC_COLLECT} "
         f"docker compose -p {project_name} -f compose.yml build",
         timeout=2400,
     )
@@ -263,6 +281,7 @@ def run_stage(
         f"CELERY_PRODUCER_DURATION_SEC={duration_sec} CELERY_CASE_DURATION_SEC={worker_duration} "
         f"CELERY_FAILURE_PAYLOAD_BYTES={FAILURE_PAYLOAD_BYTES} "
         f"CELERY_WORKER_POOL={WORKER_POOL} CELERY_WORKER_CONCURRENCY={WORKER_CONCURRENCY} "
+        f"CELERY_BARRIER_GC_COLLECT={BARRIER_GC_COLLECT} "
         f"docker compose -p {project_name} -f compose.yml up -d worker worker-monitor producer",
         timeout=180,
     )
@@ -328,6 +347,7 @@ def run_stage(
                 "failure_payload_bytes": FAILURE_PAYLOAD_BYTES,
                 "worker_pool": WORKER_POOL,
                 "worker_concurrency": WORKER_CONCURRENCY,
+                "barrier_gc_collect": bool(BARRIER_GC_COLLECT),
                 "worker_barriers": True,
                 "tracemalloc_enabled": True,
                 "queue": "failure-workload",
@@ -392,6 +412,11 @@ def main() -> int:
         action="store_true",
         help="仅跳过 vulnerable 阶段的诊断；fixed 始终只做无诊断回放",
     )
+    parser.add_argument(
+        "--vulnerable-only",
+        action="store_true",
+        help="只运行 vulnerable 真实诊断阶段，不执行 fixed control replay",
+    )
     parser.add_argument("--keep-running", action="store_true", help="保留最后一个 stage 的 VM 服务供人工检查")
     parser.add_argument("--output-json", default="")
     args = parser.parse_args()
@@ -437,6 +462,7 @@ def main() -> int:
                 "failure_payload_bytes": FAILURE_PAYLOAD_BYTES,
                 "worker_pool": WORKER_POOL,
                 "worker_concurrency": WORKER_CONCURRENCY,
+                "barrier_gc_collect": bool(BARRIER_GC_COLLECT),
                 "queue": "failure-workload",
                 "submission": "celery_case_tasks.unhandled_failure.apply_async",
                 "control_submission": "celery_case_tasks.control_success.apply_async",
@@ -452,6 +478,18 @@ def main() -> int:
             keep_running=False,
         )
         output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        if args.vulnerable_only:
+            progress("vulnerable-only run completed and saved; fixed control replay skipped by request")
+            print(json.dumps({
+                "output_json": str(output_path),
+                "vulnerable": {
+                    "stage_role": result["vulnerable"].get("stage_role"),
+                    "diagnosis_mode": result["vulnerable"].get("diagnosis_mode"),
+                    "diagnosis_id": ((result["vulnerable"].get("diagnosis") or {}).get("diagnosis_id")),
+                },
+                "fixed": None,
+            }, ensure_ascii=False, indent=2))
+            return 0
         progress("vulnerable stage saved; running fixed control replay without Analyzer")
         result["fixed"] = run_stage(
             remote, None, stage="fixed", revision=FIXED_REVISION,

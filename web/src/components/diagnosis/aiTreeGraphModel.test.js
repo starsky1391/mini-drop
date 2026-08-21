@@ -19,7 +19,7 @@ const candidate = (overrides) => ({
   ...overrides,
 });
 
-test("inconclusive candidate remains unresolved and stop node is not a formal conclusion", () => {
+test("inconclusive candidate remains unresolved and the graph does not invent a global stop", () => {
   const graph = buildControlledAITreeGraph({
     final_supported_level: "line",
     final_primary_causes: [],
@@ -36,12 +36,10 @@ test("inconclusive candidate remains unresolved and stop node is not a formal co
   });
 
   const unresolved = graph.nodes.find((node) => node.data?.candidate?.candidate_id === "possible-retention");
-  const stop = graph.nodes.find((node) => node.id === "tree_stop");
 
   assert.equal(unresolved.data.role, "unknown");
   assert.equal(unresolved.data.candidate.causal_status, "inconclusive");
-  assert.match(stop.data.title, /^当前证据边界/);
-  assert.ok(stop.data.badges.includes("未形成最终根因"));
+  assert.equal(graph.nodes.some((node) => node.id === "tree_stop"), false);
 });
 
 test("explicit counterevidence remains a rejected grey-node candidate", () => {
@@ -96,12 +94,11 @@ test("legacy forbidden boundary is rendered unresolved even with stale contradic
   assert.equal(boundary.data.candidate.status, "forbidden");
 });
 
-test("mechanism nodes keep their parent and stop edge avoids boundary nodes", () => {
+test("mechanism and stop nodes keep their explicit local parents", () => {
   const graph = buildControlledAITreeGraph({
     final_supported_level: "line",
     final_primary_causes: [],
     final_unknown_causes: ["base-retention", "mechanism-child", "gap-python_heap_reference"],
-    stop_source_candidate_ids: ["base-retention"],
     layers: [
       {
         layer_id: "layer-0",
@@ -135,11 +132,21 @@ test("mechanism nodes keep their parent and stop edge avoids boundary nodes", ()
         layer_id: "layer-2",
         depth: 2,
         generated_by: "ai_guarded",
-        unknown_causes: [candidate({
-          candidate_id: "gap-python_heap_reference",
-          parent_candidate_ids: ["base-retention"],
-          depth_kind: "boundary",
-        })],
+        unknown_causes: [
+          candidate({
+            candidate_id: "gap-python_heap_reference",
+            parent_candidate_ids: ["base-retention"],
+            node_type: "stop_boundary",
+            depth_kind: "boundary",
+          }),
+          candidate({
+            candidate_id: "stop-base-retention",
+            parent_candidate_ids: ["base-retention"],
+            node_type: "stop_boundary",
+            depth_kind: "boundary",
+            claim: "当前分支停在 base-retention。",
+          }),
+        ],
       },
     ],
     probe_edges: [],
@@ -148,17 +155,17 @@ test("mechanism nodes keep their parent and stop edge avoids boundary nodes", ()
   const mechanismNode = graph.nodes.find((node) => node.data?.candidate?.candidate_id === "mechanism-child");
   const baseToMechanism = graph.edges.find((edge) => edge.source.endsWith("__base-retention") && edge.target.endsWith("__mechanism-child"));
   const coarseToMechanism = graph.edges.find((edge) => edge.source.endsWith("__coarse-python-memory") && edge.target.endsWith("__mechanism-child"));
-  const stopEdges = graph.edges.filter((edge) => edge.target === "tree_stop");
+  const localStopEdge = graph.edges.find((edge) => edge.source.endsWith("__base-retention") && edge.target.endsWith("__stop-base-retention"));
 
   assert.ok(mechanismNode.data.badges.includes("机制链"));
   assert.ok(graph.nodes.some((node) => node.id.endsWith("__coarse-python-memory")));
   assert.ok(baseToMechanism);
   assert.equal(coarseToMechanism, undefined);
-  assert.equal(stopEdges.length, 1);
-  assert.ok(stopEdges[0].source.endsWith("__base-retention"));
+  assert.ok(localStopEdge);
+  assert.equal(graph.nodes.some((node) => node.id === "tree_stop"), false);
 });
 
-test("stop node does not infer a source when the backend omits one", () => {
+test("stop boundary does not infer a source when the backend omits one", () => {
   const graph = buildControlledAITreeGraph({
     final_supported_level: "line",
     final_primary_causes: [],
@@ -170,7 +177,35 @@ test("stop node does not infer a source when the backend omits one", () => {
     probe_edges: [],
   });
 
-  assert.equal(graph.edges.filter((edge) => edge.target === "tree_stop").length, 0);
+  assert.equal(graph.nodes.some((node) => node.id === "tree_stop"), false);
+  assert.equal(graph.edges.length, 0);
+});
+
+test("missing parent renders an orphan marker instead of attaching to index zero", () => {
+  const graph = buildControlledAITreeGraph({
+    final_supported_level: "process",
+    final_primary_causes: [],
+    layers: [{
+      layer_id: "layer-0",
+      depth: 0,
+      unknown_causes: [
+        candidate({ candidate_id: "first-node", supported_level: "resource" }),
+        candidate({
+          candidate_id: "child-with-missing-parent",
+          parent_candidate_ids: ["missing-parent"],
+          supported_level: "process",
+        }),
+      ],
+    }],
+    probe_edges: [],
+  });
+
+  const orphan = graph.nodes.find((node) => node.data?.nodeKind === "orphan");
+  const guessedEdge = graph.edges.find((edge) => edge.source.endsWith("__first-node") && edge.target.endsWith("__child-with-missing-parent"));
+
+  assert.ok(orphan);
+  assert.equal(orphan.data.role, "orphan");
+  assert.equal(guessedEdge, undefined);
 });
 
 test("layer zero is the rendered root and the graph does not invent a start node", () => {
@@ -191,7 +226,6 @@ test("layer zero is the rendered root and the graph does not invent a start node
 test("parent candidate id 0 is a real parent and rollback uses the explicit origin", () => {
   const graph = buildControlledAITreeGraph({
     final_primary_causes: [],
-    stop_source_candidate_ids: ["0"],
     layers: [
       {
         layer_id: "layer-0",
@@ -227,6 +261,6 @@ test("parent candidate id 0 is a real parent and rollback uses the explicit orig
   assert.equal(rollback.target.endsWith("__0"), true);
   assert.equal(graph.layoutEdges.length, 1);
   assert.ok(graph.layoutEdges.every((edge) => edge.data?.layoutRole === "tree"));
-  assert.equal(graph.nodes.find((node) => node.id === "tree_stop").data.layoutRole, "annotation");
-  assert.ok(graph.edges.filter((edge) => edge.data?.layoutRole === "annotation").length >= 2);
+  assert.equal(graph.nodes.some((node) => node.id === "tree_stop"), false);
+  assert.ok(graph.edges.filter((edge) => edge.data?.layoutRole === "annotation").length >= 1);
 });

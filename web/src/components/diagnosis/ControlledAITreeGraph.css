@@ -111,6 +111,25 @@
   background: #fffbe6;
 }
 
+.ai-tree-node-depth-stop_boundary {
+  border-color: #ffd666;
+  border-style: dashed;
+  background: #fffbe6;
+}
+
+.ai-tree-node-depth-mechanism_explanation:not(.ai-tree-node-muted) {
+  border-color: #73d13d;
+  border-style: solid;
+  background: #f6ffed;
+}
+
+.ai-tree-node-orphan,
+.ai-tree-node-depth-orphan {
+  border-color: #cf1322;
+  border-style: dashed;
+  background: #fff1f0;
+}
+
 .ai-tree-node-highlighted {
   outline: 3px solid rgba(22, 119, 255, 0.26);
   outline-offset: 4px;

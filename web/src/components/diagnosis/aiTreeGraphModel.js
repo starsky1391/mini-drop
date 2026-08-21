@@ -30,7 +30,6 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
   const layerIndex = new Map();
   const edgeKeys = new Set();
   const finalLevel = tree.final_supported_level || "resource";
-  const observedLevels = [];
 
   const pushEdge = (edge) => {
     if (!edge.source || !edge.target || edge.source === edge.target) return false;
@@ -47,10 +46,11 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
     for (const candidate of candidates) {
       const visualRole = candidate.role === "rejected" || ["contradicted", "rejected"].includes(candidate.status)
         ? "rejected"
+        : candidate.node_type === "stop_boundary" || candidate.depth_kind === "boundary"
+          ? "unknown"
         : candidate.conclusion_eligible
           ? candidate.role
           : "unknown";
-      observedLevels.push(candidate.supported_level);
       const outsideFinalBoundary = isDeeperLevel(candidate.supported_level, finalLevel);
       const nodeId = nodeIdFor(layer.layer_id, candidate.candidate_id);
       if (candidateIndex.has(candidate.candidate_id)) {
@@ -74,12 +74,13 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
           layerSummary: layer.summary,
           candidate,
           role: visualRole,
+          nodeType: candidate.node_type || nodeTypeForDepth(candidate.depth_kind, candidate.supported_level, visualRole),
           title: candidate.candidate_id,
           claim: candidate.claim,
           level: candidate.supported_level,
           confidence: candidate.confidence || 0,
           status: candidate.status,
-          layoutBand: candidate.depth_kind || "base",
+          layoutBand: candidate.node_type || candidate.depth_kind || "base",
           outsideFinalBoundary,
           highlighted: highlighted.has(candidate.candidate_id),
           badges: [
@@ -89,7 +90,7 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
             candidate.claim_type,
             candidate.conclusion_eligible ? "可进入结论" : "未过门禁",
             candidate.causal_status === "inconclusive" ? "探针未决" : candidate.causal_status,
-            candidate.depth_kind === "mechanism" ? "机制链" : candidate.depth_kind === "boundary" ? "边界" : "基础定位",
+            candidate.node_type === "stop_boundary" ? "局部STOP" : candidate.node_type === "mechanism_explanation" || candidate.depth_kind === "mechanism" ? "机制链" : candidate.depth_kind === "boundary" ? "边界" : "基础定位",
             outsideFinalBoundary ? "已观察/未入终态" : "终态边界内",
             layer.generated_by === "ai_guarded" ? "AI" : "fallback",
           ],
@@ -106,7 +107,10 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
       for (const parentId of parentIds) {
         if (ambiguousCandidateIds.has(parentId)) continue;
         const parent = candidateIndex.get(parentId);
-        if (!parent) continue;
+        if (!parent) {
+          graphNodes.push(orphanNodeFor(layer, candidate, parentId));
+          continue;
+        }
         const depthKind = candidate.depth_kind || "base";
         if (
           depthKind === "mechanism"
@@ -170,43 +174,8 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
   const hasEligiblePrimary = (tree.final_primary_causes || [])
     .map((candidateId) => candidateIndex.get(candidateId))
     .some((item) => item?.candidate?.depth_kind === "base" && item.candidate.conclusion_eligible);
-  const stopSources = (tree.stop_source_candidate_ids || [])
-    .filter((candidateId) => !ambiguousCandidateIds.has(candidateId))
-    .map((candidateId) => candidateIndex.get(candidateId))
-    .filter(Boolean);
 
-  graphNodes.push({
-    id: "tree_stop",
-    type: "aiTreeNode",
-    data: {
-      nodeKind: "stop",
-      layoutRole: "annotation",
-      role: "stop",
-      title: hasEligiblePrimary ? `正式结论停在 ${finalLevel}` : `当前证据边界停在 ${finalLevel}`,
-      claim: boundaryClaim(tree.stop_reason, deepestLevel(observedLevels), finalLevel),
-      level: finalLevel,
-      confidence: levelProgress(finalLevel),
-      layoutBand: "stop",
-      badges: [hasEligiblePrimary ? "正式结论" : "未形成最终根因", finalLevel],
-    },
-  });
-  for (const source of stopSources) {
-    pushEdge({
-      id: `stop-${source.nodeId}`,
-      source: source.nodeId,
-      target: "tree_stop",
-      type: "smoothstep",
-      label: "停止边界",
-      data: {
-        kind: "boundary",
-        layoutRole: "annotation",
-        effect: "stop",
-        reason: tree.stop_reason,
-      },
-    });
-  }
-
-  return { nodes: graphNodes, edges: graphEdges, layoutEdges };
+  return { nodes: graphNodes, edges: graphEdges, layoutEdges, hasEligiblePrimary };
 }
 
 export function flattenLayerCandidates(layer = {}) {
@@ -236,14 +205,42 @@ export function deepestLevel(levels = []) {
   );
 }
 
-function boundaryClaim(reason, observedLevel, finalLevel) {
-  const detail = reason || "当前证据边界不支持继续下钻。";
-  if (!isDeeperLevel(observedLevel, finalLevel)) return detail;
-  return `${detail} 已观察到的 ${observedLevel} 节点仍保留在树中，但未进入正式结论。`;
-}
-
 function nodeIdFor(layerId, candidateId) {
   return `${layerId}__${candidateId}`;
+}
+
+function nodeTypeForDepth(depthKind, level, role) {
+  if (depthKind === "mechanism") return "mechanism_explanation";
+  if (depthKind === "boundary") return "stop_boundary";
+  if (role === "rejected") return "rejected_candidate";
+  if (level === "line") return "line_anchor";
+  if (level === "call_path") return "call_path_context";
+  return "base_cause";
+}
+
+function orphanNodeFor(layer, candidate, missingParentId) {
+  const id = `${nodeIdFor(layer.layer_id, candidate.candidate_id)}__missing_parent_${missingParentId}`;
+  return {
+    id,
+    type: "aiTreeNode",
+    data: {
+      nodeKind: "orphan",
+      layoutRole: "tree",
+      layerId: layer.layer_id,
+      layerDepth: layer.depth,
+      generatedBy: layer.generated_by,
+      layerSummary: layer.summary,
+      role: "orphan",
+      nodeType: "orphan",
+      title: `missing parent: ${missingParentId}`,
+      claim: `后端声明的父节点 ${missingParentId} 不存在，未把该节点挂到 index 0。`,
+      level: candidate.supported_level,
+      confidence: 0,
+      status: "missing_parent",
+      layoutBand: "orphan",
+      badges: ["orphan", `child=${candidate.candidate_id}`],
+    },
+  };
 }
 
 function resolveEdgeCandidates(candidateIds, layerId, layerIndex, candidateIndex) {

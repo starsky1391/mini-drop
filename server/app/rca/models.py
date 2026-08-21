@@ -220,8 +220,22 @@ class AITreeCandidateNode(BaseModel):
 
     candidate_id: str
     lineage_id: Optional[str] = None
+    cluster_id: str = ""
+    branch_id: str = ""
     parent_candidate_ids: list[str] = Field(default_factory=list)
     origin_parent_candidate_id: Optional[str] = None
+    node_type: Literal[
+        "cluster_root",
+        "coarse_candidate",
+        "base_cause",
+        "line_anchor",
+        "call_path_context",
+        "mechanism_explanation",
+        "stop_boundary",
+        "evidence_gap",
+        "rejected_candidate",
+        "observation",
+    ] = "base_cause"
     role: Literal["primary", "secondary", "rejected", "unknown"]
     claim: str
     supported_level: Literal["resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"] = "resource"
@@ -234,6 +248,8 @@ class AITreeCandidateNode(BaseModel):
         "contradicted",
         "rejected",
         "unknown",
+        "blocked",
+        "partial",
     ] = "unknown"
     claim_type: Literal[
         "root_cause",
@@ -260,6 +276,8 @@ class AITreeCandidateNode(BaseModel):
     depth_kind: Literal["base", "mechanism", "boundary"] = "base"
     conclusion_eligible: bool = False
     eligibility_reason: str = ""
+    stop_reason: str = ""
+    blocked_probe: str = ""
     evidence_refs: list[str] = Field(default_factory=list)
     self_challenge: AITreeSelfChallenge = Field(default_factory=AITreeSelfChallenge)
 

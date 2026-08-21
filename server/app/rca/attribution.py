@@ -1730,10 +1730,10 @@ def _derive_controlled_ai_tree(
         depth=0,
         generated_by="analyzer_fallback",
         summary="基于当前结构化证据形成粗候选集合，并按证据支持度分组。",
-        primary_causes=[item for item in candidates if item.role == "primary"][:1],
-        secondary_causes=[item for item in candidates if item.role == "secondary"][:3],
-        rejected_causes=[item for item in candidates if item.role == "rejected"][:4],
-        unknown_causes=[item for item in candidates if item.role == "unknown"][:4],
+        primary_causes=[_controlled_tree_node(item) for item in candidates if item.role == "primary"],
+        secondary_causes=[_controlled_tree_node(item) for item in candidates if item.role == "secondary"],
+        rejected_causes=[_controlled_tree_node(item) for item in candidates if item.role == "rejected"],
+        unknown_causes=[_controlled_tree_node(item) for item in candidates if item.role == "unknown"],
     )
     if not layer0.primary_causes and layer0.secondary_causes:
         promoted = layer0.secondary_causes[0].model_copy(update={"role": "primary"})
@@ -1745,7 +1745,30 @@ def _derive_controlled_ai_tree(
     layers = [layer0]
     edges: list[AITreeProbeEdge] = []
     layer0_candidate_ids = _tree_layer_candidate_ids(layer0)
+    boundary_nodes = [
+        _controlled_stop_boundary_node(
+            source.candidate_id,
+            boundary.max_supported_level,
+            boundary.reason,
+            source.evidence_refs,
+        )
+        for source in [*layer0.primary_causes, *layer0.secondary_causes]
+    ]
     if next_requests:
+        request_boundary_nodes = [
+            _controlled_stop_boundary_node(
+                candidate_id=f"gap_{gap}_{source_id}",
+                supported_level=boundary.max_supported_level,
+                stop_reason=f"需要补充 {gap} 后才能继续收敛候选。",
+                evidence_refs=[],
+                parent_candidate_id=source_id,
+                blocked_probe=gap,
+                status="missing_evidence",
+            )
+            for gap in next_requests
+            for source_id in layer0_candidate_ids
+        ]
+        boundary_nodes.extend(request_boundary_nodes)
         layer1 = AITreeLayer(
             layer_id="layer_1_requested_evidence_boundary",
             depth=1,
@@ -1754,23 +1777,7 @@ def _derive_controlled_ai_tree(
             primary_causes=[],
             secondary_causes=[],
             rejected_causes=[],
-            unknown_causes=[
-                AITreeCandidateNode(
-                    candidate_id=f"gap_{gap}",
-                    lineage_id=f"gap_{gap}",
-                    parent_candidate_ids=layer0_candidate_ids,
-                    role="unknown",
-                    claim=f"需要补充 {gap} 后才能继续收敛候选。",
-                    supported_level=boundary.max_supported_level,
-                    confidence=max(0.0, min(0.45, stability_score)),
-                    status="missing_evidence",
-                    self_challenge=AITreeSelfChallenge(
-                        missing_evidence=[gap],
-                        what_would_change_my_mind=f"{gap} 产生同窗结构化证据并引用到 evidence_refs。",
-                    ),
-                )
-                for gap in next_requests[:3]
-            ],
+            unknown_causes=boundary_nodes,
         )
         layers.append(layer1)
         edges.append(AITreeProbeEdge(
@@ -1792,6 +1799,29 @@ def _derive_controlled_ai_tree(
             effect="pending",
             reason="当前证据存在缺口，优先补最小必要证据而不是直接给更细结论。",
         ))
+    elif boundary_nodes:
+        layer1 = AITreeLayer(
+            layer_id="layer_1_local_stop_boundaries",
+            depth=1,
+            generated_by="analyzer_fallback",
+            summary="STOP 是局部分支的停止/边界说明节点，不代表整棵树的共同终点。",
+            unknown_causes=boundary_nodes,
+        )
+        layers.append(layer1)
+        for node in boundary_nodes:
+            edges.append(AITreeProbeEdge(
+                edge_id=f"edge_{node.candidate_id}",
+                from_layer_id=layer0.layer_id,
+                to_layer_id=layer1.layer_id,
+                from_candidate_ids=list(node.parent_candidate_ids),
+                to_candidate_ids=[node.candidate_id],
+                probe_requests=[],
+                status="completed",
+                reuse_status="not_checked",
+                effect="no_change",
+                transition_type="boundary",
+                reason="当前分支停在证据支持边界；STOP 只解释该来源父节点。",
+            ))
 
     if conflict_branch is not None:
         conflict_layer = AITreeLayer(
@@ -1839,7 +1869,7 @@ def _derive_controlled_ai_tree(
         source_context_hash=source_context_hash,
         final_supported_level=boundary.max_supported_level,
         stop_reason=boundary.reason,
-        stop_source_candidate_ids=list(dict.fromkeys(final_primary + final_secondary or layer0_candidate_ids)),
+        stop_source_candidate_ids=[],
         budget=AITreeBudgetSnapshot(
             used_ai_rounds=len(layers),
             used_probe_requests=len(next_requests),
@@ -1891,6 +1921,8 @@ def _controlled_candidate(
     return AITreeCandidateNode(
         candidate_id=attribution.candidate_id,
         lineage_id=attribution.candidate_id,
+        cluster_id=attribution.candidate_id,
+        branch_id=attribution.candidate_id,
         role=role,
         claim=(
             f"候选机制 {attribution.candidate_id} 可能作用于 {target}。"
@@ -1913,6 +1945,67 @@ def _controlled_candidate(
             opposing_evidence_refs=opposing_refs,
             missing_evidence=missing,
             what_would_change_my_mind="新增同目标、同窗口、已结构化的反向证据，或补齐缺失探针后主证据不再成立。",
+        ),
+    )
+
+
+def _controlled_tree_node(node: AITreeCandidateNode) -> AITreeCandidateNode:
+    if node.role == "rejected" or node.status in {"contradicted", "rejected", "forbidden"}:
+        node_type = "rejected_candidate"
+    elif node.supported_level == "line":
+        node_type = "line_anchor"
+    elif node.supported_level == "call_path":
+        node_type = "call_path_context"
+    elif node.role == "unknown":
+        node_type = "coarse_candidate"
+    else:
+        node_type = "base_cause"
+    return node.model_copy(update={
+        "node_type": node_type,
+        "cluster_id": node.cluster_id or node.candidate_id,
+        "branch_id": node.branch_id or node.candidate_id,
+    })
+
+
+def _controlled_stop_boundary_node(
+    candidate_id: str,
+    supported_level: str,
+    stop_reason: str,
+    evidence_refs: list[str],
+    *,
+    parent_candidate_id: str | None = None,
+    blocked_probe: str = "",
+    status: str = "supported",
+) -> AITreeCandidateNode:
+    parent_id = parent_candidate_id or candidate_id
+    node_id = candidate_id if parent_candidate_id else f"stop_boundary_{candidate_id}"
+    return AITreeCandidateNode(
+        candidate_id=node_id,
+        lineage_id=node_id,
+        cluster_id=parent_id,
+        branch_id=parent_id,
+        parent_candidate_ids=[parent_id],
+        origin_parent_candidate_id=parent_id,
+        node_type="stop_boundary",
+        role="unknown",
+        claim=stop_reason or "当前分支已停在证据支持边界。",
+        supported_level=supported_level,  # type: ignore[arg-type]
+        confidence=0.2,
+        status=status,  # type: ignore[arg-type]
+        claim_type="partial_localization",
+        causal_status="inconclusive",
+        decision="backtrack",
+        depth_kind="boundary",
+        conclusion_eligible=False,
+        eligibility_reason="STOP 是局部分支的停止/边界说明节点，不能进入最终主因或次因。",
+        stop_reason=stop_reason,
+        blocked_probe=blocked_probe,
+        evidence_refs=evidence_refs,
+        self_challenge=AITreeSelfChallenge(
+            why_this_claim=stop_reason,
+            supporting_evidence_refs=evidence_refs,
+            missing_evidence=[blocked_probe] if blocked_probe else [],
+            what_would_change_my_mind="补充同窗结构化证据后重新评估该分支。",
         ),
     )
 

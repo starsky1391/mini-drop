@@ -17,10 +17,12 @@ except ImportError:  # pragma: no cover - standard library on supported runtimes
 from celery import Celery
 
 
-app = Celery("failure_workload", broker=os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/0"))
+app = Celery(
+    "failure_workload",
+    broker=os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/0"),
+)
 app.conf.update(
     task_ignore_result=True,
-    task_store_errors_even_if_ignored=False,
     task_acks_late=False,
     worker_prefetch_multiplier=1,
     task_default_queue="failure-workload",
@@ -30,6 +32,12 @@ EVIDENCE = Path(os.environ.get("CELERY_EVIDENCE_DIR", "/evidence"))
 TASK_OBSERVATIONS = EVIDENCE / "task_observations.ndjson"
 if os.environ.get("CELERY_ENABLE_TRACEMALLOC", "0") == "1" and tracemalloc is not None:
     tracemalloc.start(10)
+
+
+class LocalStateFailure(Exception):
+    def __init__(self, sequence: int):
+        super().__init__(f"unhandled-task-failure-{sequence}")
+        self.unpickleable_callback = lambda: sequence
 
 
 def _emit_task_observation(event: str, **fields: object) -> dict[str, object]:
@@ -77,8 +85,12 @@ def unhandled_failure(sequence: int) -> None:
 
 def _raise_from_nested_frame(sequence: int, payload: str) -> None:
     if not payload:
-        raise RuntimeError("empty failure payload")
-    raise RuntimeError(f"unhandled-task-failure-{sequence}")
+        raise LocalStateFailure(sequence)
+    local_blob = [payload, bytearray(payload.encode("utf-8"))]
+    local_marker = {"sequence": sequence, "blob_count": len(local_blob)}
+    if local_marker["blob_count"] < 1:
+        return
+    raise LocalStateFailure(sequence)
 
 
 @app.task(name="celery_case_tasks.control_success", ignore_result=True)
@@ -90,7 +102,7 @@ def control_success(sequence: int) -> dict[str, int]:
 def batch_barrier(batch: int, submitted_failures: int) -> None:
     """Run after a submitted batch and record a worker-side measurement boundary."""
 
-    collected = gc.collect()
+    collected = gc.collect() if os.environ.get("CELERY_BARRIER_GC_COLLECT", "0") == "1" else 0
     _emit_task_observation(
         "failure_batch_barrier",
         batch=batch,
@@ -102,7 +114,8 @@ def batch_barrier(batch: int, submitted_failures: int) -> None:
 
 @app.task(name="celery_case_tasks.warmup_barrier", ignore_result=True)
 def warmup_barrier(submitted_controls: int) -> None:
-    gc.collect()
+    if os.environ.get("CELERY_BARRIER_GC_COLLECT", "0") == "1":
+        gc.collect()
     _emit_task_observation(
         "warmup_barrier",
         submitted_controls=submitted_controls,
