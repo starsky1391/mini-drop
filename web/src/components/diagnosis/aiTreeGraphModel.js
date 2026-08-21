@@ -90,7 +90,7 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
             candidate.claim_type,
             candidate.conclusion_eligible ? "可进入结论" : "未过门禁",
             candidate.causal_status === "inconclusive" ? "探针未决" : candidate.causal_status,
-            candidate.node_type === "stop_boundary" ? "局部STOP" : candidate.node_type === "mechanism_explanation" || candidate.depth_kind === "mechanism" ? "机制链" : candidate.depth_kind === "boundary" ? "边界" : "基础定位",
+            candidate.node_type === "stop_boundary" ? "局部STOP" : candidate.node_type === "observation" ? "观察上下文" : candidate.node_type === "mechanism_explanation" || candidate.depth_kind === "mechanism" ? "机制链" : candidate.depth_kind === "boundary" ? "边界" : "基础定位",
             outsideFinalBoundary ? "已观察/未入终态" : "终态边界内",
             layer.generated_by === "ai_guarded" ? "AI" : "fallback",
           ],
@@ -136,9 +136,18 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
     }
   }
 
+  const lineagePairs = new Set(
+    graphEdges
+      .filter((edge) => edge.data?.kind === "lineage" || edge.data?.kind === "mechanism" || edge.data?.kind === "boundary")
+      .map((edge) => `${edge.source}->${edge.target}`),
+  );
+
   for (const probeEdge of tree.probe_edges || []) {
     const fromNodes = resolveEdgeCandidates(probeEdge.from_candidate_ids, probeEdge.from_layer_id, layerIndex, candidateIndex);
     const toNodes = resolveEdgeCandidates(probeEdge.to_candidate_ids, probeEdge.to_layer_id, layerIndex, candidateIndex);
+    if (!shouldRenderProbeEdge(probeEdge, fromNodes, toNodes, lineagePairs)) {
+      continue;
+    }
     for (const source of fromNodes) {
       for (const target of toNodes) {
         pushEdge({
@@ -148,9 +157,11 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
           type: "smoothstep",
           label: probeEdge.transition_type === "backtrack" || probeEdge.effect === "rollback"
             ? "回溯转查"
+            : probeEdge.transition_type === "boundary"
+              ? "证据边界"
             : probeEdge.probe_requests?.join(" + ") || "探针补证",
           data: {
-            kind: probeEdge.transition_type === "backtrack" || probeEdge.effect === "rollback" ? "backtrack" : "probe",
+            kind: probeEdge.transition_type === "backtrack" || probeEdge.effect === "rollback" ? "backtrack" : probeEdge.transition_type === "boundary" ? "boundary" : "probe",
             layoutRole: "annotation",
             edgeId: probeEdge.edge_id,
             status: probeEdge.status,
@@ -176,6 +187,21 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
     .some((item) => item?.candidate?.depth_kind === "base" && item.candidate.conclusion_eligible);
 
   return { nodes: graphNodes, edges: graphEdges, layoutEdges, hasEligiblePrimary };
+}
+
+function isRedundantRefineProbeEdge(probeEdge, fromNodes, toNodes, lineagePairs) {
+  if (probeEdge.transition_type !== "refine" && probeEdge.effect !== "refined") return false;
+  if (!fromNodes.length || !toNodes.length) return false;
+  return toNodes.every((target) => (
+    fromNodes.some((source) => lineagePairs.has(`${source.nodeId}->${target.nodeId}`))
+  ));
+}
+
+function shouldRenderProbeEdge(probeEdge, fromNodes, toNodes, lineagePairs) {
+  if (isRedundantRefineProbeEdge(probeEdge, fromNodes, toNodes, lineagePairs)) return false;
+  return probeEdge.transition_type === "backtrack"
+    || probeEdge.effect === "rollback"
+    || probeEdge.transition_type === "boundary";
 }
 
 export function flattenLayerCandidates(layer = {}) {

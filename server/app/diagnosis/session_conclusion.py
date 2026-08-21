@@ -282,20 +282,21 @@ def build_fallback_explanation(
         else:
             cluster.role = "independent"
             cluster.relation_to_primary = "该异常与主因同窗独立成立，但现有证据未证明它影响目标服务。"
-    headline = (
-        primary.claim
-        if primary
-        else f"可能根因：{possible.claim}"
-        if possible
-        else str(assessment.get("summary") or "当前证据不足以形成根因结论。")
-    )
-    why = (
-        primary.why_it_happened
-        if primary
-        else f"{possible.why_it_happened} 当前深探尚未闭环，因此该机制保留为待验证候选。"
-        if possible
-        else "当前只有观察事实，尚未建立可引用证据支持的因果机制。"
-    )
+    if primary:
+        headline = primary.claim
+        why = primary.why_it_happened
+    else:
+        boundary_level = str(
+            assessment.get("supported_level")
+            or assessment.get("max_supported_level")
+            or "观察"
+        )
+        headline = f"未形成正式根因；当前证据只支持停在 {boundary_level} 层的局部定位。"
+        if possible:
+            why = f"{possible.why_it_happened} 当前深探尚未闭环，因此该机制保留为待验证候选。"
+        else:
+            reason = str(assessment.get("eligibility_reason") or "").strip()
+            why = reason or "当前只有观察事实，尚未建立可引用证据支持的因果机制。"
     residual = _unique(
         item
         for cluster in clusters

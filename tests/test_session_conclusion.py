@@ -397,7 +397,8 @@ def test_ineligible_memory_fallback_is_possible_cause_not_confirmed_root():
 
     assert explanation["root_cause_clusters"][0].qualification == "possible_root_cause"
     assert explanation["root_cause_clusters"][0].role == "independent"
-    assert explanation["headline"].startswith("可能根因：")
+    assert explanation["headline"].startswith("未形成正式根因")
+    assert assessment["diagnostic_claim"] not in explanation["headline"]
     assert explanation["confidence_level"] == "低"
     assert explanation["abstained"] is True
 

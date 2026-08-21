@@ -4861,7 +4861,7 @@ def _build_session_controlled_ai_tree(
         else:
             unknown_nodes.append(node)
 
-    if not primary_nodes and cluster_assessment.get("classification") and not any(
+    if not primary_nodes and not candidates and cluster_assessment.get("classification") and not any(
         node.candidate_id == str(cluster_assessment.get("root_entity") or cluster_assessment.get("classification"))
         for node in [*secondary_nodes, *rejected_nodes, *unknown_nodes]
     ):
@@ -5285,6 +5285,15 @@ def _build_session_controlled_ai_tree(
         _attach_coarse_parent_if_missing(_classify_tree_node(node), coarse_id)
         for node in unknown_nodes
     ]
+    observation_nodes, unknown_nodes = _split_observation_context_nodes(unknown_nodes)
+    base_context_parent_id = _base_context_parent_id(
+        [*primary_nodes, *secondary_nodes, *unknown_nodes],
+        coarse_id,
+    )
+    observation_nodes = [
+        _attach_observation_parent(node, base_context_parent_id)
+        for node in observation_nodes
+    ]
 
     layer0 = AITreeLayer(
         layer_id="session_layer_0_coarse_assessment",
@@ -5305,10 +5314,20 @@ def _build_session_controlled_ai_tree(
     )
 
     layers = [layer0, layer1]
-    if mechanism_nodes or rejected_mechanism_nodes:
-        layers.append(AITreeLayer(
-            layer_id="session_layer_2_mechanism_branch",
+    if observation_nodes:
+        observation_layer = AITreeLayer(
+            layer_id="session_layer_2_observation_context",
             depth=2,
+            generated_by=generated_by,
+            summary="采样热点、运行时栈和调用链只作为基础定位后的观察上下文，不单独进入正式主因。",
+            unknown_causes=observation_nodes,
+        )
+        layers.append(observation_layer)
+    if mechanism_nodes or rejected_mechanism_nodes:
+        mechanism_depth = 3 if observation_nodes else 2
+        layers.append(AITreeLayer(
+            layer_id=f"session_layer_{mechanism_depth}_mechanism_branch",
+            depth=mechanism_depth,
             generated_by=generated_by,
             summary="机制链只解释已验证代码行后的对象调用或持有路径，不改变基础定位和最终结论资格。",
             rejected_causes=[_classify_tree_node(node) for node in rejected_mechanism_nodes],
@@ -5393,8 +5412,12 @@ def _build_session_controlled_ai_tree(
     if not local_stop_sources:
         local_stop_sources = [
             node for node in layer1.unknown_causes
-            if node.depth_kind == "base" and node.status not in {"contradicted", "rejected"}
+            if node.depth_kind == "base"
+            and node.node_type != "observation"
+            and node.status not in {"contradicted", "rejected"}
         ][:1]
+    if not local_stop_sources:
+        local_stop_sources = [coarse_node]
     for source_node in local_stop_sources:
         stop_id = f"stop_boundary_{source_node.candidate_id}"
         boundary_nodes.append(_stop_boundary_node(
@@ -5458,7 +5481,7 @@ def _build_session_controlled_ai_tree(
                     boundary_probe_candidates[node_id] = candidate_id
         if blocked_upgrade_node is not None:
             boundary_nodes.append(_classify_tree_node(blocked_upgrade_node))
-        boundary_depth = 3 if mechanism_nodes or rejected_mechanism_nodes else 2
+        boundary_depth = 2 + int(bool(observation_nodes)) + int(bool(mechanism_nodes or rejected_mechanism_nodes))
         layer2 = AITreeLayer(
             layer_id=f"session_layer_{boundary_depth}_remaining_evidence",
             depth=boundary_depth,
@@ -5469,9 +5492,10 @@ def _build_session_controlled_ai_tree(
         layers.append(layer2)
         for node in local_stop_sources:
             stop_node_id = f"stop_boundary_{node.candidate_id}"
+            stop_from_layer_id = layer0.layer_id if node.candidate_id == coarse_id else layer1.layer_id
             edges.append(AITreeProbeEdge(
                 edge_id=f"session_stop_{node.candidate_id}",
-                from_layer_id=layer1.layer_id,
+                from_layer_id=stop_from_layer_id,
                 to_layer_id=layer2.layer_id,
                 from_candidate_ids=[node.candidate_id],
                 to_candidate_ids=[stop_node_id],
@@ -5529,7 +5553,7 @@ def _build_session_controlled_ai_tree(
             edges.append(AITreeProbeEdge(
                 edge_id=f"rollback_{node.candidate_id}_to_{origin}",
                 from_layer_id=layer2.layer_id if node in boundary_nodes else (
-                    "session_layer_2_mechanism_branch"
+                    f"session_layer_{3 if observation_nodes else 2}_mechanism_branch"
                     if node in [*mechanism_nodes, *rejected_mechanism_nodes]
                     else layer1.layer_id
                 ),
@@ -5582,8 +5606,73 @@ def _attach_coarse_parent_if_missing(node: AITreeCandidateNode, coarse_id: str) 
     })
 
 
+def _split_observation_context_nodes(
+    nodes: list[AITreeCandidateNode],
+) -> tuple[list[AITreeCandidateNode], list[AITreeCandidateNode]]:
+    observation_nodes: list[AITreeCandidateNode] = []
+    base_nodes: list[AITreeCandidateNode] = []
+    for node in nodes:
+        if node.candidate_id in {
+            "python_runtime_stack_hotspot",
+            "python_userland_hotspot",
+            "off_cpu_wait_hotspot",
+        }:
+            observation_nodes.append(node.model_copy(update={
+                "node_type": "observation",
+                "claim_type": "observation_only",
+                "conclusion_eligible": False,
+                "eligibility_reason": "该节点只是采样热点或运行时栈观察，必须挂在基础定位之后作为上下文。",
+            }))
+        else:
+            base_nodes.append(node)
+    return observation_nodes, base_nodes
+
+
+def _base_context_parent_id(nodes: list[AITreeCandidateNode], coarse_id: str) -> str:
+    candidates = [
+        node for node in nodes
+        if node.depth_kind == "base"
+        and node.node_type != "observation"
+        and node.status not in {"contradicted", "rejected"}
+    ]
+    if not candidates:
+        return coarse_id
+    level_rank = {
+        "line": 0,
+        "call_path": 1,
+        "function": 2,
+        "endpoint": 3,
+        "service": 4,
+        "dependency": 5,
+        "syscall": 6,
+        "thread": 7,
+        "process": 8,
+        "host": 9,
+        "resource": 10,
+    }
+    return min(
+        candidates,
+        key=lambda node: (
+            str(node.candidate_id).startswith("unknown_"),
+            level_rank.get(str(node.supported_level), 99),
+            -float(node.confidence or 0.0),
+        ),
+    ).candidate_id
+
+
+def _attach_observation_parent(node: AITreeCandidateNode, parent_id: str) -> AITreeCandidateNode:
+    return node.model_copy(update={
+        "parent_candidate_ids": [parent_id],
+        "origin_parent_candidate_id": parent_id,
+        "cluster_id": parent_id,
+        "branch_id": parent_id,
+    })
+
+
 def _classify_tree_node(node: AITreeCandidateNode) -> AITreeCandidateNode:
-    if node.depth_kind == "mechanism":
+    if node.node_type == "observation":
+        node_type = "observation"
+    elif node.depth_kind == "mechanism":
         node_type = "mechanism_explanation"
     elif node.depth_kind == "boundary":
         node_type = node.node_type if node.node_type in {"stop_boundary", "evidence_gap"} else "stop_boundary"

@@ -208,6 +208,102 @@ test("missing parent renders an orphan marker instead of attaching to index zero
   assert.equal(guessedEdge, undefined);
 });
 
+test("coarse refine probe edge is hidden when parent-child edges already show the tree", () => {
+  const graph = buildControlledAITreeGraph({
+    final_supported_level: "call_path",
+    layers: [
+      {
+        layer_id: "layer-0",
+        depth: 0,
+        unknown_causes: [candidate({ candidate_id: "coarse-root", supported_level: "resource" })],
+      },
+      {
+        layer_id: "layer-1",
+        depth: 1,
+        unknown_causes: [
+          candidate({
+            candidate_id: "branch-a",
+            parent_candidate_ids: ["coarse-root"],
+            supported_level: "call_path",
+          }),
+          candidate({
+            candidate_id: "branch-b",
+            parent_candidate_ids: ["coarse-root"],
+            supported_level: "service",
+          }),
+        ],
+      },
+    ],
+    probe_edges: [{
+      edge_id: "session_edge_coarse_to_supported_causes",
+      from_layer_id: "layer-0",
+      to_layer_id: "layer-1",
+      from_candidate_ids: ["coarse-root"],
+      to_candidate_ids: ["branch-a", "branch-b"],
+      probe_requests: ["memory_map", "log_scan", "python_runtime_profile"],
+      status: "completed",
+      effect: "refined",
+      transition_type: "refine",
+    }],
+  });
+
+  assert.ok(graph.edges.some((edge) => edge.source.endsWith("__coarse-root") && edge.target.endsWith("__branch-a")));
+  assert.ok(graph.edges.some((edge) => edge.source.endsWith("__coarse-root") && edge.target.endsWith("__branch-b")));
+  assert.equal(graph.edges.some((edge) => edge.data?.edgeId === "session_edge_coarse_to_supported_causes"), false);
+});
+
+test("ordinary probe edges are hidden from the main graph while rollback and boundary remain", () => {
+  const graph = buildControlledAITreeGraph({
+    final_supported_level: "call_path",
+    layers: [
+      {
+        layer_id: "layer-0",
+        depth: 0,
+        unknown_causes: [candidate({ candidate_id: "base-root", supported_level: "resource" })],
+      },
+      {
+        layer_id: "layer-1",
+        depth: 1,
+        unknown_causes: [candidate({
+          candidate_id: "base-child",
+          parent_candidate_ids: ["base-root"],
+          supported_level: "call_path",
+        })],
+      },
+    ],
+    probe_edges: [
+      {
+        edge_id: "probe-pending",
+        from_candidate_ids: ["base-root"],
+        to_candidate_ids: ["base-child"],
+        transition_type: "probe",
+        effect: "pending",
+        status: "not_started",
+      },
+      {
+        edge_id: "boundary-edge",
+        from_candidate_ids: ["base-child"],
+        to_candidate_ids: ["base-root"],
+        transition_type: "boundary",
+        effect: "no_change",
+        status: "completed",
+      },
+      {
+        edge_id: "rollback-edge",
+        from_candidate_ids: ["base-child"],
+        to_candidate_ids: ["base-root"],
+        transition_type: "backtrack",
+        effect: "rollback",
+        status: "blocked",
+      },
+    ],
+  });
+
+  assert.equal(graph.edges.some((edge) => edge.data?.edgeId === "probe-pending"), false);
+  assert.equal(graph.edges.some((edge) => edge.data?.edgeId === "boundary-edge" && edge.data.kind === "boundary"), true);
+  assert.equal(graph.edges.some((edge) => edge.data?.edgeId === "rollback-edge"), true);
+});
+
 test("layer zero is the rendered root and the graph does not invent a start node", () => {
   const graph = buildControlledAITreeGraph({
     layers: [{

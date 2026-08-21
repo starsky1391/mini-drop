@@ -111,6 +111,12 @@
   background: #fffbe6;
 }
 
+.ai-tree-node-depth-observation {
+  border-color: #69b1ff;
+  border-style: dashed;
+  background: #f0f7ff;
+}
+
 .ai-tree-node-depth-stop_boundary {
   border-color: #ffd666;
   border-style: dashed;

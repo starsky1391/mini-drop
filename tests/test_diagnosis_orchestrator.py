@@ -607,9 +607,10 @@ def test_session_controlled_tree_keeps_unproven_function_localization_out_of_fin
     assert tree is not None
     assert tree.final_supported_level == "function"
     node = next(
-        item for item in tree.layers[1].unknown_causes
+        item for layer in tree.layers for item in layer.unknown_causes
         if item.candidate_id == "off_cpu_wait_hotspot"
     )
+    assert node.node_type == "observation"
     assert node.supported_level == "function"
     assert node.conclusion_eligible is False
     assert tree.final_primary_causes == []
@@ -667,7 +668,12 @@ def test_session_controlled_tree_contains_rejected_unknown_and_blocked_branches(
     assert tree is not None
     layer1 = tree.layers[1]
     assert layer1.primary_causes == []
-    assert any(node.candidate_id == "off_cpu_wait_hotspot" for node in layer1.unknown_causes)
+    assert not any(node.candidate_id == "off_cpu_wait_hotspot" for node in layer1.unknown_causes)
+    assert any(
+        node.candidate_id == "off_cpu_wait_hotspot" and node.node_type == "observation"
+        for layer in tree.layers
+        for node in layer.unknown_causes
+    )
     assert any(node.candidate_id == "rejected_same_host_noisy_neighbor" for node in layer1.rejected_causes)
     assert any(node.candidate_id == "unknown_downstream_dependency" for node in layer1.unknown_causes)
     assert any(edge.transition_type == "backtrack" for edge in tree.probe_edges)
@@ -751,6 +757,60 @@ def test_session_tree_uses_local_stop_boundaries_without_truncating_branches():
     assert stop_node.conclusion_eligible is False
     assert stop_node.candidate_id not in tree.final_primary_causes
     assert sum(1 for node in all_nodes if node.candidate_id.startswith("unknown_alt_")) == 6
+
+
+def test_session_tree_places_runtime_observations_under_base_candidate():
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag_observation_context",
+        cluster_assessment={
+            "classification": "self_code_or_process_pressure",
+            "summary": "调用路径热点只支持局部定位。",
+            "supported_level": "call_path",
+            "confidence": 0.49,
+            "evidence_refs": ["ev_stack", "ev_runtime"],
+        },
+        candidates=[
+            {
+                "candidate_id": "python_runtime_stack_hotspot",
+                "rank": 1,
+                "description": "Python 运行时采样产出非空调用栈。",
+                "evidence_refs": ["ev_stack"],
+                "max_supported_level": "call_path",
+            },
+            {
+                "candidate_id": "python_userland_hotspot",
+                "rank": 2,
+                "description": "Python 用户态函数热点。",
+                "evidence_refs": ["ev_runtime"],
+                "max_supported_level": "call_path",
+            },
+            {
+                "candidate_id": "celery-worker",
+                "rank": 3,
+                "description": "热点集中在 celery worker 的调用路径。",
+                "evidence_refs": ["ev_stack"],
+                "max_supported_level": "call_path",
+            },
+        ],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+    )
+
+    assert tree is not None
+    layer1 = tree.layers[1]
+    assert [node.candidate_id for node in layer1.unknown_causes] == ["celery-worker"]
+    observation_layer = next(layer for layer in tree.layers if layer.layer_id == "session_layer_2_observation_context")
+    observations = {node.candidate_id: node for node in observation_layer.unknown_causes}
+    assert observations["python_runtime_stack_hotspot"].node_type == "observation"
+    assert observations["python_runtime_stack_hotspot"].parent_candidate_ids == ["celery-worker"]
+    assert observations["python_userland_hotspot"].parent_candidate_ids == ["celery-worker"]
+    stop_node = next(
+        node for layer in tree.layers for node in layer.unknown_causes
+        if node.candidate_id == "stop_boundary_celery-worker"
+    )
+    assert stop_node.parent_candidate_ids == ["celery-worker"]
+    assert "stop_boundary_python_runtime_stack_hotspot" not in tree.final_unknown_causes
 
 
 def test_audit_structured_evidence_merges_task_families_without_last_empty_task_erasing_signals():

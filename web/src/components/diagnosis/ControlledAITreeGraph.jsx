@@ -131,8 +131,10 @@ function AITreeNode({ data }) {
   const isUnresolved = candidate.causal_status === "inconclusive"
     || (data.role === "unknown" && candidate.status === "missing_evidence");
   const isForbidden = candidate.status === "forbidden" || data.status === "forbidden";
-  const depthKind = candidate.depth_kind || data.layoutBand || "base";
-  const roleLabel = depthKind === "mechanism"
+  const depthKind = candidate.node_type === "observation" ? "observation" : candidate.depth_kind || data.layoutBand || "base";
+  const roleLabel = depthKind === "observation"
+    ? "观察上下文"
+    : depthKind === "mechanism"
     ? "机制分支"
     : depthKind === "boundary"
       ? "证据边界"
@@ -189,8 +191,10 @@ function TreeDetailDrawer({ selected, evidenceMap, onClose }) {
   const value = selected?.value || {};
   const candidate = value.candidate || {};
   const challenge = candidate.self_challenge || {};
-  const depthKind = candidate.depth_kind || value.layoutBand || "base";
-  const roleLabel = depthKind === "mechanism"
+  const depthKind = candidate.node_type === "observation" ? "observation" : candidate.depth_kind || value.layoutBand || "base";
+  const roleLabel = depthKind === "observation"
+    ? "观察上下文"
+    : depthKind === "mechanism"
     ? "机制分支"
     : depthKind === "boundary"
       ? "证据边界"
