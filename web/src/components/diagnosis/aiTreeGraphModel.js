@@ -104,9 +104,12 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
 
   for (const layer of layers) {
     for (const candidate of layerIndex.get(layer.layer_id) || []) {
-      const parentIds = Array.isArray(candidate.parent_candidate_ids)
+      const declaredParentIds = Array.isArray(candidate.parent_candidate_ids)
         ? candidate.parent_candidate_ids
         : [];
+      const parentIds = candidate.origin_parent_candidate_id
+        ? [candidate.origin_parent_candidate_id]
+        : declaredParentIds;
       for (const parentId of parentIds) {
         if (ambiguousCandidateIds.has(parentId)) continue;
         const parent = candidateIndex.get(parentId);
@@ -277,8 +280,5 @@ function resolveEdgeCandidates(candidateIds, layerId, layerIndex, candidateIndex
     .map((candidateId) => candidateIndex.get(candidateId))
     .filter(Boolean);
   if (explicit.length) return explicit;
-  if (!layerId) return [];
-  return (layerIndex.get(layerId) || [])
-    .map((candidate) => candidateIndex.get(candidate.candidate_id))
-    .filter(Boolean);
+  return [];
 }

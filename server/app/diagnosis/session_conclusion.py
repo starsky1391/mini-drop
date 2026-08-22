@@ -297,6 +297,11 @@ def build_retained_conclusion(
         ),
     )
     selected_cluster = ordered_clusters[0] if ordered_clusters else None
+    if selected_cluster is not None and (
+        not selected_cluster.conclusion_eligible
+        and str(selected_cluster.cause_level or "") in {"observation", "call_path"}
+    ):
+        selected_cluster = None
     if selected_node is None and selected_cluster is not None:
         cluster_ids = _unique([
             *selected_cluster.source_tree_candidate_ids,
@@ -459,6 +464,12 @@ def _tree_base_nodes(tree: dict[str, Any] | None) -> list[dict[str, Any]]:
                     continue
                 if node.get("status") in {"contradicted", "rejected", "forbidden"}:
                     continue
+                if (
+                    node.get("node_type") in {"cluster_root", "coarse_candidate", "call_path_context", "orphan"}
+                    or node.get("supported_level") == "call_path"
+                    or not node.get("candidate_id")
+                ):
+                    continue
                 result.append(node)
     return result
 
@@ -477,7 +488,14 @@ def build_fallback_explanation(
 ) -> dict[str, Any]:
     eligible = [cluster for cluster in clusters if cluster.conclusion_eligible]
     primary = eligible[0] if eligible else None
-    possible = next((cluster for cluster in clusters if cluster.qualification in {"possible_root_cause", "partial_localization"}), None)
+    possible = next(
+        (
+            cluster for cluster in clusters
+            if cluster.qualification in {"possible_root_cause", "partial_localization"}
+            and str(cluster.cause_level or "") not in {"observation", "call_path"}
+        ),
+        None,
+    )
     if primary:
         primary.role = "primary"
         primary.causal_status = "primary"
@@ -500,7 +518,19 @@ def build_fallback_explanation(
     )
     if primary:
         retained = retained or build_retained_conclusion(clusters, assessment, session_tree)
-    headline = str((retained or {}).get("claim") or "当前没有可继承的证据支持结论。")
+    # For observation-only assessments, the latest structured anchor is the
+    # useful retained explanation. A stale tree candidate may still contain
+    # the earlier generic process-level wording, so do not let it overwrite
+    # the more specific assessment claim.
+    assessment_claim = str(assessment.get("diagnostic_claim") or "").strip()
+    if not primary and assessment.get("claim_type") == "observation_only" and assessment_claim:
+        headline = assessment_claim
+    else:
+        headline = str(
+            (retained or {}).get("claim")
+            or assessment_claim
+            or "当前没有可继承的证据支持结论。"
+        )
     if primary:
         why = primary.why_it_happened
     elif possible:

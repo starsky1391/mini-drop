@@ -1105,3 +1105,38 @@ This group supersedes the old qualification wording in BJ001-BJ002; remaining im
 **Acceptance record required**: Save the diagnosis detail, audit bundle, probe parameters, CodeQL query and segment coverage, PyHeap reference result when requested, final tree and frontend production build result under a timestamped `reports/eval/real-open-source/werkzeug-1521-*` directory. A probe failure is acceptable only when it remains `blocked/inconclusive`, preserves the parent candidate and produces a truthful non-final session status.
 
 **Outcome**: Deep investigation refines or refutes an existing candidate instead of erasing it. Tool failure means “not verified”, explicit counterevidence means “refuted”, and every backend/API/frontend completion and confidence field agrees with the same final-cause eligibility decision.
+
+### Task Group BZ - 真实父节点闭环与低质量候选隔离
+
+**Purpose**: 修复 `diag_session_20260822_032023_9241046c` 暴露的候选先错分类、line 错挂 coarse、低质量 call_path 被 fallback 继承以及 probe 完成状态冒充有效源码锚点的问题。
+
+- [x] BZ001 在 `server/app/diagnosis/orchestrator.py` 增加统一 emitted candidate index 和父节点校验，要求所有 `parent_candidate_ids` 与 `origin_parent_candidate_id` 指向当前树中真实存在的 canonical candidate；缺失来源的 refinement、observation、mechanism、boundary 标记为 orphan，不使用 coarse、rank 或数组顺序猜父节点。
+- [x] BZ002 调整 `_build_session_controlled_ai_tree()` 的处理顺序，在 coarse 兜底前先分类 observation、call_path_context、line_anchor、mechanism 和 boundary；仅允许明确独立的 alternative/rejected_alternative 进入 coarse parent 处理。
+- [x] BZ003 修复 line anchor 归一化，使 `coarse_insufficient_evidence` 等概念父 ID 映射到当前 emitted coarse 或真实基础定位节点；line 节点必须挂到真实基础父节点，无法解析时生成 orphan/missing_provenance，不生成伪 line。
+- [x] BZ004 修复 runtime profile 质量门禁和候选转换：low quality、idle loop、poll/select、单样本尾帧和无效超大样本只能生成 observation；不得生成 function/call_path/line 主因、source tree candidate 或 retained candidate。
+- [x] BZ005 修复 source snapshot 语义，区分 probe execution completed 与 verified line anchor；缺少有效 revision、file、line 或 source hash 时只生成 source boundary，不能为低质量 runtime candidate 背书。
+- [x] BZ006 修复 heap `FAILED`、`blocked`、`memray_attach_failed`、`target_exit` 和 timeout 的树映射，生成挂在真实来源父节点下的 heap boundary；不得生成 heap root cause，也不得把失败节点作为 fallback 父结论。
+- [x] BZ007 收紧 `build_retained_conclusion()` 和 `build_fallback_explanation()`，禁止 observation、call_path_context、mechanism、boundary、orphan、无效 anchor 和无资格 cluster 成为 retained conclusion；深探失败只继承最近合法基础父节点，若不存在则返回 abstention。
+- [x] BZ008 统一最终结论状态，确保 `formal_root_cause`、`root_cause_candidates`、`final_primary_causes`、`headline`、`abstained` 和 confidence 来自同一 eligibility 结果；无 eligible 主因时不得保留高置信 call_path 结论。
+- [x] BZ009 修改 `web/src/components/diagnosis/aiTreeGraphModel.js`，主树仅使用 canonical 显性 lineage；probe/refine 总览边只作为注释，缺失父节点显示 orphan，不使用 index 0、layer 顺序或 coarse probe 边补骨架。
+- [x] BZ010 [P] 在 `tests/test_diagnosis_orchestrator.py` 增加真实会话回归 fixture，覆盖 runtime observation 先分类、line 真实父节点、概念 coarse 映射、无效 source snapshot、heap failure boundary、call_path fallback 禁止和 orphan。
+- [x] BZ011 [P] 在 `tests/test_session_conclusion.py` 增加 retained candidate eligibility、父结论继承、无合法父节点 abstention、child failure 不影响 parent、parent contradiction 才回退等测试。
+- [x] BZ012 [P] 在 `web/src/components/diagnosis/aiTreeGraphModel.test.js` 增加显性父子边、probe 边隔离、orphan、boundary/observation 非反证、无 index 0 自动连接和多分支父节点测试。
+- [x] BZ013 运行后端相关回归测试和前端生产构建，检查任务会话输出中所有 parent ID 均存在、没有重复 canonical ID，并将本任务组状态更新为完成。
+- [x] BZ014 使用已有 `diag_session_20260822_032023_9241046c` 数据做离线契约检查，确认修复前的极长 call_path 不再成为 retained parent；仅在代码与回归测试通过后，再安排新的真实 case 验收。
+
+**Execution order**: BZ001 -> BZ002-BZ003 -> BZ004-BZ006 -> BZ007-BZ008 -> BZ009 -> BZ010-BZ012 -> BZ013-BZ014. BZ010、BZ011、BZ012 可在对应契约稳定后并行。
+
+**Acceptance criteria**:
+
+```text
+所有非 root 节点的 parent 都指向当前 emitted candidate
+runtime observation 不再先被挂到 coarse 后再改类型
+line parent 不使用概念 ID、root_entity 或 index 0
+无效 source snapshot 不生成 verified line
+heap failure 只生成 boundary
+fallback 不继承 call_path/observation/mechanism/boundary
+无合法基础父节点时明确 abstain/orphan
+probe edge 不参与主树布局
+最终结论字段与 eligibility 一致
+```

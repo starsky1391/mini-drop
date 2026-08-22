@@ -244,6 +244,7 @@ class AITreeCandidateNode(BaseModel):
         "evidence_gap",
         "rejected_candidate",
         "observation",
+        "orphan",
     ] = "base_cause"
     role: Literal["primary", "secondary", "rejected", "unknown"]
     claim: str

@@ -610,7 +610,7 @@ def test_session_controlled_tree_keeps_unproven_function_localization_out_of_fin
         item for layer in tree.layers for item in layer.unknown_causes
         if item.candidate_id == "off_cpu_wait_hotspot"
     )
-    assert node.node_type == "observation"
+    assert node.node_type == "orphan"
     assert node.supported_level == "function"
     assert node.conclusion_eligible is False
     assert tree.final_primary_causes == []
@@ -670,7 +670,7 @@ def test_session_controlled_tree_contains_rejected_unknown_and_blocked_branches(
     assert layer1.primary_causes == []
     assert not any(node.candidate_id == "off_cpu_wait_hotspot" for node in layer1.unknown_causes)
     assert any(
-        node.candidate_id == "off_cpu_wait_hotspot" and node.node_type == "observation"
+        node.candidate_id == "off_cpu_wait_hotspot" and node.node_type == "orphan"
         for layer in tree.layers
         for node in layer.unknown_causes
     )
@@ -2722,10 +2722,11 @@ def test_session_tree_ignores_non_source_analyzer_hashes_for_line_boundary():
 
 def test_source_snapshot_hashes_only_include_valid_source_artifacts():
     hashes = orchestrator_module._source_snapshot_hashes([
-        {"source_snapshot": {
-            "source_context_hash": "sha256:one",
-            "evidence_validity": {"evidence_status": "valid"},
-        }},
+            {"source_snapshot": {
+                "source_context_hash": "sha256:one",
+                "revision": "abc123",
+                "evidence_validity": {"evidence_status": "valid"},
+            }},
         {"source_snapshot": {
             "source_context_hash": "sha256:blocked",
             "evidence_validity": {"evidence_status": "blocked"},
@@ -3488,7 +3489,7 @@ def test_session_tree_rebuilds_supported_and_refuted_codeql_candidates():
     assert nodes["python_memory_retention"].role == "unknown"
     assert nodes["python_memory_retention"].conclusion_eligible is False
     assert all(node.depth_kind != "mechanism" for node in nodes.values())
-    assert nodes["python_memory_retention"].node_type == "line_anchor"
+    assert nodes["python_memory_retention"].node_type == "orphan"
     assert nodes["python_memory_retention"].parent_candidate_ids == []
 
 
@@ -3560,7 +3561,7 @@ def test_partial_codeql_chain_keeps_existing_candidate_unresolved_and_backtracks
     assert unresolved[0].causal_status == "unproven"
     assert unresolved[0].decision == "continue_probe"
     assert unresolved[0].depth_kind == "base"
-    assert unresolved[0].node_type == "observation"
+    assert unresolved[0].node_type == "orphan"
     assert unresolved[0].origin_parent_candidate_id is None
     assert "python_runtime_stack_hotspot" not in tree.final_primary_causes
     assert all(node.depth_kind != "mechanism" for layer in tree.layers for node in [
