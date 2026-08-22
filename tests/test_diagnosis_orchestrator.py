@@ -676,7 +676,7 @@ def test_session_controlled_tree_contains_rejected_unknown_and_blocked_branches(
     )
     assert any(node.candidate_id == "rejected_same_host_noisy_neighbor" for node in layer1.rejected_causes)
     assert any(node.candidate_id == "unknown_downstream_dependency" for node in layer1.unknown_causes)
-    assert any(edge.transition_type == "backtrack" for edge in tree.probe_edges)
+    assert not any(edge.transition_type == "backtrack" for edge in tree.probe_edges)
     assert not any(
         node.candidate_id == "blocked_line_upgrade"
         for layer in tree.layers

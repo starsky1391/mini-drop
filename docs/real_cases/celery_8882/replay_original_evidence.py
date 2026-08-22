@@ -72,11 +72,17 @@ def _tree_summary(tree: dict[str, Any] | None) -> dict[str, Any]:
             "ai_candidate_ids": [],
             "fallback_or_observation_ids": [],
             "missing_parent_ids": [],
+            "orphan_node_ids": [],
+            "line_node_ids": [],
+            "nodes": [],
         }
     ai_ids: list[str] = []
     fallback_ids: list[str] = []
     known_ids: set[str] = set()
     parent_refs: list[tuple[str, str]] = []
+    node_summaries: list[dict[str, Any]] = []
+    orphan_nodes: list[str] = []
+    line_nodes: list[str] = []
     for layer in tree.get("layers", []):
         if not isinstance(layer, dict):
             continue
@@ -99,6 +105,26 @@ def _tree_summary(tree: dict[str, Any] | None) -> dict[str, Any]:
                     "fallback_observation",
                 }:
                     fallback_ids.append(candidate_id)
+                parents = [str(value) for value in node.get("parent_candidate_ids", []) if str(value)]
+                origin = str(node.get("origin_parent_candidate_id") or "")
+                node_summaries.append({
+                    "candidate_id": candidate_id,
+                    "generated_by": node.get("generated_by"),
+                    "relation": node.get("relation"),
+                    "node_type": node.get("node_type"),
+                    "supported_level": node.get("supported_level"),
+                    "status": node.get("status"),
+                    "causal_status": node.get("causal_status"),
+                    "parent_candidate_ids": parents,
+                    "origin_parent_candidate_id": origin,
+                    "conclusion_eligible": bool(node.get("conclusion_eligible")),
+                })
+                if node.get("node_type") == "orphan" or (
+                    node.get("relation") not in {None, "root"} and not parents
+                ):
+                    orphan_nodes.append(candidate_id)
+                if node.get("supported_level") == "line" or node.get("node_type") == "line_anchor":
+                    line_nodes.append(candidate_id)
                 for parent_id in node.get("parent_candidate_ids", []):
                     parent_refs.append((candidate_id, str(parent_id)))
     missing_parent_ids = sorted({
@@ -113,6 +139,9 @@ def _tree_summary(tree: dict[str, Any] | None) -> dict[str, Any]:
         "ai_candidate_ids": sorted(set(ai_ids)),
         "fallback_or_observation_ids": sorted(set(fallback_ids)),
         "missing_parent_ids": missing_parent_ids,
+        "orphan_node_ids": sorted(set(orphan_nodes)),
+        "line_node_ids": sorted(set(line_nodes)),
+        "nodes": node_summaries[:256],
     }
 
 
@@ -127,6 +156,13 @@ def replay_report(report: dict[str, Any]) -> dict[str, Any]:
     assessment = latest.get("cluster_assessment") if isinstance(latest.get("cluster_assessment"), dict) else {}
     anchor = assessment.get("primary_anchor") if isinstance(assessment.get("primary_anchor"), dict) else {}
     candidate_review = latest.get("candidate_review") if isinstance(latest.get("candidate_review"), dict) else {}
+    candidate_validation = (
+        latest.get("candidate_validation_diagnostics")
+        if isinstance(latest.get("candidate_validation_diagnostics"), list)
+        else candidate_review.get("validation_diagnostics", [])
+        if isinstance(candidate_review.get("validation_diagnostics"), list)
+        else []
+    )
     tree = latest.get("controlled_ai_tree") if isinstance(latest.get("controlled_ai_tree"), dict) else None
     probes = detail.get("probes") if isinstance(detail.get("probes"), list) else []
 
@@ -144,18 +180,22 @@ def replay_report(report: dict[str, Any]) -> dict[str, Any]:
     })
     heap_available = any(status in {"valid", "partial"} for status in heap_statuses)
     line_anchor_present = bool(anchor.get("file")) and int(anchor.get("line") or 0) > 0
-    ai_candidate_ids = _tree_summary(tree)["ai_candidate_ids"]
+    tree_summary = _tree_summary(tree)
+    ai_candidate_ids = tree_summary["ai_candidate_ids"]
 
     gate_failures = []
     if not ai_candidate_ids:
         gate_failures.append({
             "gate": "ai_candidate_generation",
             "status": "failed",
-            "reason": "旧报告没有可用 AI candidate；candidate_review 只记录了失败状态，未保存当时的字段级诊断。",
+            "reason": "旧报告没有可用 AI candidate；以下保留报告中可见的候选生成状态、输出摘要和字段级门禁信息。",
             "observed": {
                 "ai_review_status": candidate_review.get("ai_review_status"),
                 "ai_review_error": candidate_review.get("ai_review_error"),
                 "candidate_proposals": candidate_review.get("candidate_proposals", []),
+                "candidate_generation_attempts": candidate_review.get("candidate_generation_attempts", []),
+                "validation_diagnostics": candidate_validation,
+                "initial_evidence_context": candidate_review.get("initial_evidence_context", {}),
             },
         })
     if not heap_available:
@@ -211,7 +251,44 @@ def replay_report(report: dict[str, Any]) -> dict[str, Any]:
             },
         },
         "probe_summary": _probe_summary(probes),
-        "ai_tree": _tree_summary(tree),
+        "ai_tree": tree_summary,
+        "candidate_generation": {
+            "status": candidate_review.get("ai_review_status"),
+            "attempts": candidate_review.get("candidate_generation_attempts", []),
+            "validation_diagnostics": candidate_validation,
+            "initial_evidence_context": candidate_review.get("initial_evidence_context", {}),
+            "candidate_proposals": candidate_review.get("candidate_proposals", []),
+        },
+        "line_probe": [
+            {
+                "probe_id": item.get("probe_id"),
+                "status": item.get("status"),
+                "evidence_status": item.get("evidence_status"),
+                "reason": item.get("reason"),
+                "evidence_reason": item.get("evidence_reason"),
+                "parameters": {
+                    key: item.get("parameters", {}).get(key)
+                    for key in (
+                        "candidate_id",
+                        "origin_parent_candidate_id",
+                        "evidence_gap",
+                        "source_root",
+                        "repo_revision",
+                    )
+                    if isinstance(item.get("parameters"), dict) and item.get("parameters", {}).get(key)
+                },
+            }
+            for item in probes
+            if isinstance(item, dict)
+            and (
+                str(item.get("probe_id") or "").lower() in {
+                    "source_snapshot",
+                    "source_mechanism_query",
+                    "line_level_profile",
+                }
+                or "codeql" in str(item.get("probe_id") or "").lower()
+            )
+        ],
         "gate_failures": gate_failures,
         "final_state": {
             "diagnosis_status": detail.get("status"),

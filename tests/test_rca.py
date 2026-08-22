@@ -122,7 +122,7 @@ def test_session_candidate_review_keeps_valid_candidates_when_one_candidate_is_i
                 "mechanism": "bad",
                 "target": "worker",
                 "supported_level": "process",
-                "decision": "backtrack",
+                "decision": "not-a-decision",
                 "causal_status": "needs_more_evidence",
                 "evidence_refs": ["ev-top"],
                 "parent_candidate_ids": [parent_id],
@@ -154,6 +154,8 @@ def test_session_candidate_review_keeps_valid_candidates_when_one_candidate_is_i
     assert result["ai_review_status"] == "succeeded"
     assert [item["candidate_id"] for item in result["candidate_proposals"]] == ["ai_candidate_valid"]
     assert result["validation_diagnostics"][0]["failure_code"] == "invalid_decision"
+    assert result["candidate_generation_attempts"][0]["accepted_candidate_count"] == 1
+    assert result["candidate_generation_attempts"][0]["rejected_candidate_count"] == 1
 
 
 def test_session_candidate_review_limits_active_investigation_to_three_deduplicated_candidates():
@@ -228,7 +230,7 @@ def test_session_candidate_review_rejects_hint_id_and_unknown_evidence():
     assert result["validation_diagnostics"][0]["candidate_count"] == 1
 
 
-def test_session_candidate_review_reports_invalid_decision_with_initial_evidence_context():
+def test_session_candidate_review_accepts_investigation_backtrack_alias():
     evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
     analysis = analyze_evidence(evidence, [])
     parent_id = next(
@@ -260,13 +262,12 @@ def test_session_candidate_review_reports_invalid_decision_with_initial_evidence
             evidence_catalog=[{"evidence_id": "ev_top"}],
             probe_manifest=build_probe_manifest(),
         )
-    assert result["ai_review_status"] == "failed"
-    diagnostic = result["validation_diagnostics"][0]
-    assert diagnostic["failure_code"] == "invalid_decision"
-    assert diagnostic["failure_path"] == "candidates[].decision"
-    assert diagnostic["actual_value"] == "backtrack"
-    assert diagnostic["valid_evidence_ref_count"] == 1
-    assert parent_id in diagnostic["known_candidate_ids"]
+    assert result["ai_review_status"] == "succeeded"
+    assert result["candidate_proposals"][0]["decision"] == "needs_more_evidence"
+    assert result["candidate_proposals"][0]["causal_status"] == "needs_more_evidence"
+    assert result["candidate_proposals"][0]["origin_parent_candidate_id"] == parent_id
+    assert result["candidate_generation_attempts"][0]["status"] == "succeeded"
+    assert result["initial_evidence_context"]["evidence_snapshots"]["ev_top"]["family"] == "unknown"
 
 
 def test_session_investigation_review_selects_registered_probe_and_guarded_proposal():

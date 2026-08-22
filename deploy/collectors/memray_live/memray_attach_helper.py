@@ -300,8 +300,18 @@ def main() -> int:
             except OSError:
                 pass
     if result.returncode != 0:
+        if result.stdout:
+            print(
+                "memray_attach_stdout:\n"
+                + result.stdout.decode("utf-8", errors="replace")[-2000:],
+                flush=True,
+            )
         if result.stderr:
-            print(result.stderr.decode("utf-8", errors="replace")[-1000:], flush=True)
+            print(
+                "memray_attach_stderr:\n"
+                + result.stderr.decode("utf-8", errors="replace")[-2000:],
+                flush=True,
+            )
         return result.returncode or 8
     if not output.is_file() or output.stat().st_size <= 0:
         print("memray_attach_output_missing", flush=True)

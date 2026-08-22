@@ -9,7 +9,7 @@ import {
   ReactFlow,
   ReactFlowProvider,
 } from "@xyflow/react";
-import { Drawer, Empty, Popover, Progress, Space, Tag, Typography } from "antd";
+import { Alert, Drawer, Empty, Popover, Progress, Space, Tag, Typography } from "antd";
 import "@xyflow/react/dist/style.css";
 import "./ControlledAITreeGraph.css";
 import { buildControlledAITreeGraph, ROLE_LABELS } from "./aiTreeGraphModel";
@@ -84,6 +84,24 @@ function ControlledAITreeGraphInner({ tree, evidenceMap, highlightedCandidateIds
           Hover 看节点反问，点击节点或探针边查看完整证据。
         </Typography.Text>
       </div>
+      {sourceGraph.orphanNodes?.length > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          message={`发现 ${sourceGraph.orphanNodes.length} 个未接入主树的节点`}
+          description={(
+            <Space direction="vertical" size={2}>
+              {sourceGraph.orphanNodes.map((node) => (
+                <Typography.Text key={node.id}>
+                  {node.data?.candidate?.candidate_id || node.data?.title}：
+                  {node.data?.claim || "缺少显式来源父节点"}
+                </Typography.Text>
+              ))}
+            </Space>
+          )}
+          style={{ marginBottom: 12 }}
+        />
+      )}
       <div className="ai-tree-canvas">
         <ReactFlow
           nodes={nodes}

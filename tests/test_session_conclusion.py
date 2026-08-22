@@ -8,6 +8,7 @@ from server.app.diagnosis.session_conclusion import (
     build_fallback_explanation,
     build_retained_conclusion,
     build_root_cause_clusters,
+    collect_candidate_generation_gate_failures,
     collect_ai_gate_failures,
     derive_root_cause_clusters_from_ai_tree,
     classify_cluster_set,
@@ -68,6 +69,37 @@ def test_ai_gate_failure_is_exposed_and_not_derived_as_formal_cluster():
     assert failures[0]["candidate_id"] == "ai_candidate_unproven"
     assert failures[0]["failure_code"] == "eligibility_gate"
     assert derive_root_cause_clusters_from_ai_tree(tree, valid_evidence_refs={"ev-rss"}) == []
+
+
+def test_candidate_generation_failure_is_exposed_with_initial_evidence():
+    failures = collect_candidate_generation_gate_failures({
+        "ai_review_status": "failed",
+        "ai_review_error": "AI 未生成任何通过结构校验的候选",
+        "candidate_generation_attempts": [{
+            "attempt": 1,
+            "status": "failed",
+            "parsed_candidate_count": 1,
+            "accepted_candidate_count": 0,
+        }],
+        "validation_diagnostics": [{
+            "candidate_id": "ai_candidate_bad",
+            "failure_code": "invalid_evidence_ref",
+            "failure_path": "candidates[0].evidence_refs",
+            "actual_value": ["ev-missing"],
+            "candidate_evidence_refs": ["ev-missing"],
+            "initial_evidence_refs": ["ev-rss"],
+            "missing_initial_evidence_refs": ["ev-missing"],
+        }],
+        "initial_evidence_context": {
+            "evidence_refs": ["ev-rss"],
+            "evidence_snapshots": {"ev-rss": {"family": "memory_smaps", "status": "valid"}},
+        },
+    })
+
+    assert failures[0]["failure_code"] == "invalid_evidence_ref"
+    assert failures[0]["initial_evidence_refs"] == ["ev-rss"]
+    assert failures[1]["failure_code"] == "no_usable_ai_candidate"
+    assert failures[1]["attempts"][0]["accepted_candidate_count"] == 0
 
 
 def test_compact_source_evidence_keeps_enclosing_source_text():
@@ -506,6 +538,24 @@ def test_blocked_deep_probe_retains_parent_claim_and_separates_boundary():
     assert boundary["status"] == "blocked"
     assert boundary["origin_parent_candidate_id"] == "worker-runtime-pressure"
     assert "heap-probe" not in retained["claim"]
+
+
+def test_source_line_boundary_explains_why_line_upgrade_did_not_start():
+    boundary = build_qualification_boundary(
+        {
+            "supported_level": "function",
+            "primary_anchor": {
+                "supported_level": "function",
+                "blocked_upgrade_reason": "缺少源码符号映射或行级采样证据。",
+            },
+        },
+        origin_parent_candidate_id="worker-runtime-pressure",
+    )
+
+    assert boundary["status"] == "inconclusive"
+    assert "source_context" in boundary["missing_evidence"]
+    assert "line_level_profile" in boundary["missing_evidence"]
+    assert "源码行探测未进入正式升级" in boundary["message"]
 
 
 def test_child_contradiction_keeps_parent_as_retained_candidate():

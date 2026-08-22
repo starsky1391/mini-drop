@@ -62,6 +62,7 @@ from server.app.diagnosis.session_conclusion import (
     build_fallback_explanation,
     build_retained_conclusion,
     build_root_cause_clusters,
+    collect_candidate_generation_gate_failures,
     collect_ai_gate_failures,
     derive_root_cause_clusters_from_ai_tree,
 )
@@ -1517,10 +1518,13 @@ class DiagnosisOrchestrator:
             tree_payload,
             valid_evidence_refs=valid_session_evidence_refs,
         )
-        ai_gate_failures = collect_ai_gate_failures(
-            tree_payload,
-            valid_evidence_refs=valid_session_evidence_refs,
-        )
+        ai_gate_failures = [
+            *collect_candidate_generation_gate_failures(candidate_review),
+            *collect_ai_gate_failures(
+                tree_payload,
+                valid_evidence_refs=valid_session_evidence_refs,
+            ),
+        ]
         session_tree_payload = session_controlled_tree.model_dump(mode="json") if session_controlled_tree else None
         retained_conclusion = build_retained_conclusion(
             root_cause_clusters,
@@ -4989,7 +4993,7 @@ def _build_session_controlled_ai_tree(
         candidate_origin_parent = str(
             item.get("origin_parent_candidate_id")
             or item.get("source_candidate_id")
-            or (candidate_parent_ids[0] if len(candidate_parent_ids) == 1 else "")
+            or _single_parent_id(candidate_parent_ids)
         ).strip()
         if candidate_origin_parent == "coarse_insufficient_evidence":
             candidate_origin_parent = coarse_id
@@ -5262,7 +5266,7 @@ def _build_session_controlled_ai_tree(
         if line_node is None and len(matching_line_nodes) == 1 and not declared_line_origins:
             line_node = matching_line_nodes[0]
         if line_node is not None:
-            if not line_node.parent_candidate_ids and resolved_coarse_parent_id:
+            if resolved_coarse_parent_id:
                 line_node = line_node.model_copy(update={
                     "parent_candidate_ids": [resolved_coarse_parent_id],
                     "origin_parent_candidate_id": resolved_coarse_parent_id,
@@ -5280,54 +5284,7 @@ def _build_session_controlled_ai_tree(
                 *primary_anchor.get("source_evidence_refs", []),
                 *primary_anchor.get("evidence_refs", []),
             ])
-            emitted_base_nodes = [
-                node
-                for node in [*primary_nodes, *secondary_nodes, *unknown_nodes]
-                if node.depth_kind == "base"
-                and node.node_type not in {
-                    "observation", "orphan", "line_anchor", "call_path_context",
-                }
-                and node.candidate_id not in {
-                    "python_runtime_stack_hotspot",
-                    "python_userland_hotspot",
-                    "off_cpu_wait_hotspot",
-                }
-            ]
-            retained_id = str(
-                cluster_assessment.get("active_retained_candidate_id")
-                or cluster_assessment.get("retained_candidate_id")
-                or ""
-            ).strip()
-            explicit_parent = next(
-                (
-                    node.candidate_id
-                    for node in emitted_base_nodes
-                    if node.candidate_id in declared_line_origins
-                ),
-                "",
-            )
-            retained_parent = next(
-                (
-                    node.candidate_id
-                    for node in emitted_base_nodes
-                    if node.candidate_id == retained_id
-                ),
-                "",
-            )
-            unique_non_line_parent = next(
-                (
-                    node.candidate_id
-                    for node in emitted_base_nodes
-                    if node.supported_level != "line"
-                ),
-                "",
-            ) if sum(node.supported_level != "line" for node in emitted_base_nodes) == 1 else ""
-            source_parent_id = (
-                explicit_parent
-                or retained_parent
-                or unique_non_line_parent
-                or resolved_coarse_parent_id
-            )
+            source_parent_id = resolved_coarse_parent_id
             line_node = AITreeCandidateNode(
                 candidate_id=line_candidate_id,
                 lineage_id=line_candidate_id,
@@ -5524,10 +5481,7 @@ def _build_session_controlled_ai_tree(
         _attach_coarse_parent_if_missing(node, coarse_id)
         for node in unknown_nodes
     ]
-    observation_nodes = [
-        _attach_observation_parent(node, node.origin_parent_candidate_id)
-        for node in observation_nodes
-    ]
+    observation_nodes = [_ensure_explicit_origin(node) for node in observation_nodes]
     if has_verified_line_anchor:
         emitted_line_parent = next(
             (
@@ -5540,10 +5494,7 @@ def _build_session_controlled_ai_tree(
             "",
         )
         if emitted_line_parent:
-            observation_nodes = [
-                node if node.parent_candidate_ids else _attach_observation_parent(node, emitted_line_parent)
-                for node in observation_nodes
-            ]
+            observation_nodes = [_ensure_explicit_origin(node) for node in observation_nodes]
 
     layer0 = AITreeLayer(
         layer_id="session_layer_0_coarse_assessment",
@@ -5573,26 +5524,14 @@ def _build_session_controlled_ai_tree(
             generated_by=generated_by,
             summary="已验证源码行只作为来源锚点和细化候选，不与 service/function 级粗候选并列。",
             primary_causes=[
-                _classify_tree_node(
-                    _attach_observation_parent(
-                        node,
-                        node.origin_parent_candidate_id
-                        or (node.parent_candidate_ids[0] if len(node.parent_candidate_ids) == 1 else ""),
-                    )
-                )
+                _classify_tree_node(_ensure_explicit_origin(node))
                 for node in line_refinement_nodes
                 if node.supported_level == "line" and node.conclusion_eligible
             ],
             secondary_causes=[],
             rejected_causes=[],
             unknown_causes=[
-                _classify_tree_node(
-                    _attach_observation_parent(
-                        node,
-                        node.origin_parent_candidate_id
-                        or (node.parent_candidate_ids[0] if len(node.parent_candidate_ids) == 1 else ""),
-                    )
-                )
+                _classify_tree_node(_ensure_explicit_origin(node))
                 for node in line_refinement_nodes
                 if not node.conclusion_eligible
             ],
@@ -5663,33 +5602,32 @@ def _build_session_controlled_ai_tree(
             reason="已完成的结构化证据把粗粒度候选收敛为当前会话级结论。",
         )
     ]
-    next_candidates = [*layer1.primary_causes, *layer1.secondary_causes, *layer1.unknown_causes]
-    if next_candidates:
-        next_candidate = next_candidates[0]
-        for rejected in layer1.rejected_causes:
-            requested = [
-                request for request in next_candidate.self_challenge.missing_evidence
-                if request in followup_requests
-            ][:3]
-            edges.append(AITreeProbeEdge(
-                edge_id=f"session_backtrack_{rejected.candidate_id}_to_{next_candidate.candidate_id}",
-                from_layer_id=layer1.layer_id,
-                to_layer_id=layer1.layer_id,
-                from_candidate_ids=[rejected.candidate_id],
-                to_candidate_ids=[next_candidate.candidate_id],
-                probe_requests=requested,
-                probe_results=_probe_results_for_requests(requested, probes),
-                status=_edge_status_for_requests(requested, probes) if requested else "completed",
-                evidence_refs=_unique_strings([
-                    *rejected.evidence_refs,
-                    *next_candidate.evidence_refs,
-                ]),
-                effect="rollback",
-                transition_type="backtrack",
-                reason=(
-                    f"{rejected.candidate_id} 被反证后保留为灰色分支；回退并转查 {next_candidate.candidate_id}。"
-                ),
-            ))
+    emitted_candidate_ids = {
+        node.candidate_id
+        for layer in layers
+        for node in _layer_nodes_for_validation(layer)
+    }
+    for rejected in layer1.rejected_causes:
+        backtrack_target = str(rejected.origin_parent_candidate_id or "").strip()
+        if not backtrack_target or backtrack_target not in emitted_candidate_ids:
+            continue
+        edges.append(AITreeProbeEdge(
+            edge_id=f"session_backtrack_{rejected.candidate_id}_to_{backtrack_target}",
+            from_layer_id=layer1.layer_id,
+            to_layer_id=layer1.layer_id,
+            from_candidate_ids=[rejected.candidate_id],
+            to_candidate_ids=[backtrack_target],
+            probe_requests=[],
+            probe_results=[],
+            status="completed",
+            evidence_refs=_unique_strings(rejected.evidence_refs),
+            effect="rollback",
+            transition_type="backtrack",
+            reason=(
+                f"{rejected.candidate_id} 被反证后保留为灰色分支；"
+                f"按其来源父节点回退到 {backtrack_target}。"
+            ),
+        ))
     source_hashes = sorted(set(_unique_strings(source_snapshot_hashes or [])))
     source_context_hash = source_hashes[0] if len(source_hashes) == 1 else None
     stop_reason = _session_tree_stop_reason(cluster_assessment, followup_requests, final_level)
@@ -5898,6 +5836,11 @@ def _build_session_controlled_ai_tree(
     tree = ControlledAITree(
         tree_id=f"session_controlled_ai_tree_{hashlib.sha256(f'{diagnosis_id}:{final_primary}:{followup_requests}'.encode()).hexdigest()[:16]}",
         final_supported_level=final_level,
+        emitted_coarse_ids=[coarse_id],
+        coarse_aliases={
+            "coarse_insufficient_evidence": coarse_id,
+            coarse_id: coarse_id,
+        },
         source_context_hash=source_context_hash,
         stop_reason=stop_reason,
         stop_source_candidate_ids=[],
@@ -5947,6 +5890,34 @@ def _attach_coarse_parent_if_missing(node: AITreeCandidateNode, coarse_id: str) 
     })
 
 
+def _single_parent_id(parent_ids: list[str]) -> str:
+    unique = _unique_strings(parent_ids)
+    return unique[0] if len(unique) == 1 else ""
+
+
+def _ensure_explicit_origin(node: AITreeCandidateNode) -> AITreeCandidateNode:
+    """Keep explicit provenance and never choose a global or ranked parent."""
+    parent_ids = _unique_strings(node.parent_candidate_ids)
+    origin = str(node.origin_parent_candidate_id or "").strip()
+    if origin and origin in parent_ids:
+        return node.model_copy(update={
+            "parent_candidate_ids": parent_ids,
+            "origin_parent_candidate_id": origin,
+        })
+    if len(parent_ids) == 1:
+        return node.model_copy(update={
+            "parent_candidate_ids": parent_ids,
+            "origin_parent_candidate_id": _single_parent_id(parent_ids),
+        })
+    return node.model_copy(update={
+        "parent_candidate_ids": parent_ids,
+        "origin_parent_candidate_id": None,
+        "node_type": "orphan",
+        "conclusion_eligible": False,
+        "eligibility_reason": node.eligibility_reason or "节点缺少唯一来源父节点，未自动接入主树。",
+    })
+
+
 def _tree_localization_chain(
     layers: list[AITreeLayer],
     retained_candidate_id: str,
@@ -5963,10 +5934,8 @@ def _tree_localization_chain(
         visited.add(current_id)
         node = nodes[current_id]
         ordered.append(node)
-        current_id = next(
-            (parent_id for parent_id in node.parent_candidate_ids if parent_id in nodes),
-            "",
-        )
+        origin = str(node.origin_parent_candidate_id or "").strip()
+        current_id = origin if origin in nodes else ""
     ordered.reverse()
     return [
         CausalExplanationStep(
@@ -6078,6 +6047,8 @@ def _validate_tree_lineage(layers: list[AITreeLayer]) -> list[AITreeLayer]:
                         "eligibility_reason": "缺少指向当前树已发出节点的显式来源父节点。",
                     })
                 else:
+                    if origin is None and len(parent_ids) == 1:
+                        origin = _single_parent_id(parent_ids)
                     node = node.model_copy(update={
                         "parent_candidate_ids": parent_ids,
                         "origin_parent_candidate_id": origin,
@@ -6499,11 +6470,15 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
         if role not in {"primary", "secondary", "rejected", "unknown"}:
             role = "unknown"
         nodes.append(AITreeCandidateNode(
-            candidate_id=str(item["candidate_id"]),
-            generated_by="ai_candidate",
-            lineage_id=str(item["candidate_id"]),
-            parent_candidate_ids=parent_ids,
-            origin_parent_candidate_id=parent_ids[0] if len(parent_ids) == 1 else None,
+                candidate_id=str(item["candidate_id"]),
+                generated_by="ai_candidate",
+                lineage_id=str(item["candidate_id"]),
+                parent_candidate_ids=parent_ids,
+                origin_parent_candidate_id=str(
+                    item.get("origin_parent_candidate_id")
+                    or _single_parent_id(parent_ids)
+                    or ""
+                ) or None,
             relation=relation,
             role=role,
             claim=str(item["claim"]),
@@ -7318,7 +7293,7 @@ def _root_cause_cluster_candidates(clusters, session: dict[str, Any]) -> list[di
             "cause_level": cluster.cause_level,
             "role": cluster.role,
             "parent_candidate_ids": parent_ids,
-            "origin_parent_candidate_id": parent_ids[0] if parent_ids else "",
+            "origin_parent_candidate_id": _single_parent_id(parent_ids),
         })
     return candidates
 

@@ -60,8 +60,46 @@ def test_memray_attach_failure_is_failed_after_one_light_retry(tmp_path):
     assert validity["reason"] == "memray_attach_failed"
     assert validity["failure_type"] == "permission_denied"
     assert validity["retry_attempted"] is True
+    assert validity["stdout_excerpt"] == ""
     assert payload["retained_allocation_hotspots"] == []
     assert "attach_preflight" in payload
+
+
+def test_memray_attach_failure_preserves_stdout_for_diagnosis(tmp_path, monkeypatch):
+    collector = PythonHeapCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    helper = tmp_path / "memray-helper"
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    helper.chmod(0o755)
+    monkeypatch.setenv("MINI_DROP_MEMRAY_HELPER", str(helper))
+    task = CollectorTask(
+        id="heap-helper-output",
+        collector_type="python_heap_profile",
+        target_pid=1234,
+        sample_rate=1,
+        duration_sec=5,
+        options={},
+    )
+
+    def fake_run(command, **_kwargs):
+        if command[0] == str(helper):
+            return mock.MagicMock(
+                returncode=1,
+                stdout=b"target process couldn't open the memray shared library",
+                stderr=b"",
+            )
+        return mock.MagicMock(returncode=1, stdout=b"", stderr=b"")
+
+    with mock.patch("shutil.which", return_value="/usr/bin/memray"), mock.patch.object(
+        collector, "_pid_exists", return_value=True
+    ), mock.patch("subprocess.run", side_effect=fake_run):
+        result = collector.collect(task)
+
+    payload = result.artifacts[0]["metadata"]["data"]
+    validity = payload["evidence_validity"]
+    assert validity["failure_type"] == "collector_exit_nonzero"
+    assert "target process couldn't open" in validity["stdout_excerpt"]
+    assert "target process couldn't open" in validity["detail"]
 
 
 def test_attach_preflight_records_managed_helper_availability(tmp_path):

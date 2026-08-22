@@ -114,9 +114,12 @@ class PythonHeapCollector:
                         self._failure_detail(result, "Memray attach 未产出数据"),
                         failure_type=self._failure_type(result, capture),
                         exit_code=result.returncode,
+                        stdout_excerpt=self._stdout_excerpt(result),
                         stderr_excerpt=self._stderr_excerpt(result),
                         retry_attempted=True,
                         retry_exit_code=retry.returncode,
+                        retry_stdout_excerpt=self._stdout_excerpt(retry),
+                        retry_stderr_excerpt=self._stderr_excerpt(retry),
                         preflight=preflight,
                     )
 
@@ -141,6 +144,7 @@ class PythonHeapCollector:
                     self._failure_detail(stats, "Memray stats 未产出 JSON"),
                     failure_type=self._failure_type(stats, stats_path),
                     exit_code=stats.returncode,
+                    stdout_excerpt=self._stdout_excerpt(stats),
                     stderr_excerpt=self._stderr_excerpt(stats),
                 )
         official: dict[str, Any] = {}
@@ -203,11 +207,17 @@ class PythonHeapCollector:
         try:
             return subprocess.run(command, capture_output=True, timeout=timeout)
         except (OSError, subprocess.TimeoutExpired) as exc:
+            stdout = getattr(exc, "stdout", b"") or b""
+            stderr = getattr(exc, "stderr", b"") or b""
+            if isinstance(stdout, str):
+                stdout = stdout.encode()
+            if isinstance(stderr, str):
+                stderr = stderr.encode()
             return subprocess.CompletedProcess(
                 command,
                 124 if isinstance(exc, subprocess.TimeoutExpired) else 127,
-                stdout=b"",
-                stderr=str(exc).encode(),
+                stdout=stdout,
+                stderr=stderr + str(exc).encode(),
             )
 
     @staticmethod
@@ -281,9 +291,12 @@ class PythonHeapCollector:
                 self._failure_detail(attach_failure, "Memray attach 与 native live helper 均未产出数据"),
                 failure_type=self._failure_type(result, raw_path),
                 exit_code=result.returncode,
+                stdout_excerpt=self._stdout_excerpt(result),
                 stderr_excerpt=self._stderr_excerpt(result) or self._stderr_excerpt(retry_failure),
                 retry_attempted=True,
                 retry_exit_code=retry_failure.returncode,
+                retry_stdout_excerpt=self._stdout_excerpt(retry_failure),
+                retry_stderr_excerpt=self._stderr_excerpt(retry_failure),
                 preflight={
                     **preflight,
                     "native_live_attempted": True,
@@ -308,6 +321,8 @@ class PythonHeapCollector:
                 "reason": "native_allocator_observation_only",
                 "detail": "Python heap attach 不可用，已降级为 native allocator 现场观察；不能证明 Python 对象 retention。",
                 "attach_preflight": preflight,
+                "attach_failure_output": self._combined_output_excerpt(attach_failure),
+                "retry_failure_output": self._combined_output_excerpt(retry_failure),
                 "attach_failure_reason": self._stderr_excerpt(attach_failure),
                 "retry_failure_reason": self._stderr_excerpt(retry_failure),
             },
@@ -398,23 +413,38 @@ class PythonHeapCollector:
         return bool(pid) and os.path.isdir(f"/proc/{pid}")
 
     @staticmethod
+    def _stdout_excerpt(result: subprocess.CompletedProcess) -> str:
+        return result.stdout.decode("utf-8", errors="replace").strip()[:600]
+
+    @staticmethod
     def _stderr_excerpt(result: subprocess.CompletedProcess) -> str:
-        return result.stderr.decode("utf-8", errors="replace").strip()[:300]
+        return result.stderr.decode("utf-8", errors="replace").strip()[:600]
+
+    @classmethod
+    def _combined_output_excerpt(cls, result: subprocess.CompletedProcess) -> str:
+        parts = []
+        stdout = cls._stdout_excerpt(result)
+        stderr = cls._stderr_excerpt(result)
+        if stdout:
+            parts.append(f"stdout: {stdout}")
+        if stderr:
+            parts.append(f"stderr: {stderr}")
+        return "\n".join(parts)[:1200]
 
     @classmethod
     def _failure_detail(cls, result: subprocess.CompletedProcess, fallback: str) -> str:
-        return cls._stderr_excerpt(result) or fallback
+        return cls._combined_output_excerpt(result) or fallback
 
     @classmethod
     def _failure_type(cls, result: subprocess.CompletedProcess, output_path: Path) -> str:
-        stderr = cls._stderr_excerpt(result).lower()
-        if result.returncode == 124 or "timeout" in stderr or "timed out" in stderr:
+        output = cls._combined_output_excerpt(result).lower()
+        if result.returncode == 124 or "timeout" in output or "timed out" in output:
             return "timeout"
-        if any(token in stderr for token in ("permission denied", "operation not permitted", "ptrace")):
+        if any(token in output for token in ("permission denied", "operation not permitted", "ptrace")):
             return "permission_denied"
-        if any(token in stderr for token in ("namespace", "container", "pid namespace")):
+        if any(token in output for token in ("namespace", "container", "pid namespace")):
             return "namespace_inaccessible"
-        if any(token in stderr for token in ("incompatible", "unsupported", "not compatible")):
+        if any(token in output for token in ("incompatible", "unsupported", "not compatible")):
             return "incompatible_runtime"
         if result.returncode != 0:
             return "collector_exit_nonzero"
@@ -606,9 +636,12 @@ class PythonHeapCollector:
         *,
         failure_type: str,
         exit_code: int | None = None,
+        stdout_excerpt: str = "",
         stderr_excerpt: str = "",
         retry_attempted: bool = False,
         retry_exit_code: int | None = None,
+        retry_stdout_excerpt: str = "",
+        retry_stderr_excerpt: str = "",
         preflight: dict[str, Any] | None = None,
     ) -> CollectorResult:
         payload = {
@@ -630,9 +663,12 @@ class PythonHeapCollector:
                 "detail": detail,
                 "failure_type": failure_type,
                 "exit_code": exit_code,
+                "stdout_excerpt": stdout_excerpt,
                 "stderr_excerpt": stderr_excerpt,
                 "retry_attempted": retry_attempted,
                 "retry_exit_code": retry_exit_code,
+                "retry_stdout_excerpt": retry_stdout_excerpt,
+                "retry_stderr_excerpt": retry_stderr_excerpt,
             },
         }
         return self._write_status_result(output_dir, task, payload, detail)

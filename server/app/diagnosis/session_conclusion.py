@@ -380,6 +380,70 @@ def collect_ai_gate_failures(
     return failures
 
 
+def collect_candidate_generation_gate_failures(
+    candidate_review: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Expose why the first AI candidate round could not produce usable candidates."""
+    if not isinstance(candidate_review, dict):
+        return []
+    diagnostics = candidate_review.get("validation_diagnostics")
+    diagnostics = diagnostics if isinstance(diagnostics, list) else []
+    initial_context = (
+        candidate_review.get("initial_evidence_context")
+        if isinstance(candidate_review.get("initial_evidence_context"), dict)
+        else {}
+    )
+    failures: list[dict[str, Any]] = []
+    for diagnostic in diagnostics:
+        if not isinstance(diagnostic, dict):
+            continue
+        failures.append({
+            "stage": "candidate_generation",
+            "candidate_id": str(diagnostic.get("candidate_id") or ""),
+            "failure_code": str(diagnostic.get("failure_code") or "validation_error"),
+            "failure_path": str(diagnostic.get("failure_path") or ""),
+            "reason": str(
+                diagnostic.get("reason")
+                or diagnostic.get("actual_value")
+                or "候选没有通过首轮结构校验。"
+            )[:500],
+            "actual_value": diagnostic.get("actual_value"),
+            "expected_values": diagnostic.get("expected_values") or [],
+            "candidate_evidence_refs": list(diagnostic.get("candidate_evidence_refs") or []),
+            "initial_evidence_refs": list(
+                diagnostic.get("initial_evidence_refs")
+                or initial_context.get("evidence_refs")
+                or []
+            ),
+            "initial_evidence_context": initial_context,
+            "missing_initial_evidence_refs": list(
+                diagnostic.get("missing_initial_evidence_refs") or []
+            ),
+            "parent_candidate_ids": list(diagnostic.get("candidate_parent_candidate_ids") or []),
+            "missing_parent_candidate_ids": list(
+                diagnostic.get("missing_parent_candidate_ids") or []
+            ),
+        })
+    proposals = candidate_review.get("candidate_proposals")
+    proposals = proposals if isinstance(proposals, list) else []
+    status = str(candidate_review.get("ai_review_status") or "")
+    if not proposals and status in {"failed", "fallback"}:
+        failures.append({
+            "stage": "candidate_generation",
+            "candidate_id": "",
+            "failure_code": "no_usable_ai_candidate",
+            "failure_path": "candidates",
+            "reason": str(
+                candidate_review.get("ai_review_error")
+                or "首轮 AI 没有形成任何通过结构校验的候选，已退回 Analyzer fallback 调查方向。"
+            )[:500],
+            "attempts": candidate_review.get("candidate_generation_attempts") or [],
+            "initial_evidence_context": initial_context,
+            "initial_evidence_refs": list(initial_context.get("evidence_refs") or []),
+        })
+    return failures
+
+
 def classify_cluster_set(clusters: Iterable[RootCauseCluster]) -> str:
     eligible = [cluster for cluster in clusters if cluster.conclusion_eligible]
     independent_keys = {(cluster.mechanism, cluster.target) for cluster in eligible}
@@ -550,6 +614,16 @@ def build_qualification_boundary(
         *(assessment.get("missing_evidence") or []),
         *followup_requests,
     ])
+    anchor = assessment.get("primary_anchor")
+    if isinstance(anchor, dict):
+        anchor_reason = str(anchor.get("blocked_upgrade_reason") or "").strip()
+        anchor_level = str(anchor.get("supported_level") or assessment.get("supported_level") or "")
+        if anchor_reason and anchor_level != "line":
+            missing = _unique([
+                *missing,
+                "source_context",
+                "line_level_profile",
+            ])
     statuses = {
         str(probe.get("evidence_status") or probe.get("status") or "").lower()
         for probe in probes
@@ -564,6 +638,8 @@ def build_qualification_boundary(
     elif missing:
         status = "inconclusive"
         message = "当前仍缺少必要补证，来源父结论继续有效；暂不能升级到更细定位。"
+        if isinstance(anchor, dict) and anchor.get("blocked_upgrade_reason"):
+            message += f" 源码行探测未进入正式升级：{str(anchor['blocked_upgrade_reason'])[:240]}"
     else:
         status = "none"
         message = ""

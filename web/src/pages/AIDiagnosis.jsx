@@ -578,6 +578,8 @@ function DiagnosisDetail({ detail }) {
   const retainedConclusion = conclusion?.retained_conclusion || {};
   const formalRootCause = conclusion?.formal_root_cause || null;
   const qualificationBoundary = conclusion?.qualification_boundary || {};
+  const candidateReview = conclusion?.candidate_review || {};
+  const candidateGenerationAttempts = candidateReview.candidate_generation_attempts || [];
   const displayedConclusion = retainedConclusion.claim || formalRootCause?.claim || conclusion?.headline || conclusion?.summary;
   const displayedLevel = retainedConclusion.supported_level || conclusion?.cluster_assessment?.supported_level;
   const displayedQualification = retainedConclusion.qualification || (
@@ -657,6 +659,27 @@ function DiagnosisDetail({ detail }) {
                       候选 {item.candidate_count ?? 0} 个，合法证据引用 {item.valid_evidence_ref_count ?? 0} 个；
                       初始证据缺失 {item.missing_initial_evidence_refs?.join(", ") || "无"}；
                       缺失父节点 {item.missing_parent_candidate_ids?.join(", ") || "无"}。
+                    </Typography.Text>
+                  ))}
+                </Space>
+              )}
+              style={{ marginBottom: 12 }}
+            />
+          )}
+          {candidateGenerationAttempts.length > 0 && (
+            <Alert
+              type={candidateReview.ai_review_status === "succeeded" ? "info" : "warning"}
+              showIcon
+              message={`AI 首轮候选生成尝试：${candidateGenerationAttempts.length} 次`}
+              description={(
+                <Space direction="vertical" size={4}>
+                  {candidateGenerationAttempts.map((item) => (
+                    <Typography.Text key={`candidate-attempt-${item.attempt}`}>
+                      第 {item.attempt} 次：{item.status}；
+                      实际解析 {item.parsed_candidate_count ?? 0} 个，
+                      接受 {item.accepted_candidate_count ?? 0} 个，
+                      拒绝 {item.rejected_candidate_count ?? 0} 个；
+                      输出摘要：{item.response_excerpt || "无可展示输出"}。
                     </Typography.Text>
                   ))}
                 </Space>

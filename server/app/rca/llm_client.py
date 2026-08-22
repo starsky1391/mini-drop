@@ -45,6 +45,7 @@ def _validation_diagnostic(
     attempt: int,
     error: str,
     raw: str,
+    candidate_id: str = "",
     candidate_count: int,
     valid_evidence_ref_count: int,
     known_candidate_ids: set[str] | None = None,
@@ -53,6 +54,7 @@ def _validation_diagnostic(
     initial_evidence_statuses: dict[str, str] | None = None,
     candidate_evidence_refs: list[str] | None = None,
     candidate_parent_candidate_ids: list[str] | None = None,
+    candidate_origin_parent_candidate_id: str = "",
 ) -> dict:
     """Return a bounded explanation of a rejected model response."""
     message = str(error or "")
@@ -84,11 +86,27 @@ def _validation_diagnostic(
     return {
         "stage": stage,
         "attempt": attempt,
+        "candidate_id": candidate_id,
         "failure_code": failure_code,
         "failure_path": failure_path,
         "expected_values": {
-            "decision": ["needs_more_evidence", "conclude", "reject"],
-            "causal_status": ["supported", "needs_more_evidence", "contradicted", "rejected"],
+            "decision": [
+                "needs_more_evidence",
+                "continue_probe",
+                "conclude",
+                "reject",
+                "reject_candidate",
+                "backtrack",
+                "abstain",
+            ],
+            "causal_status": [
+                "supported",
+                "needs_more_evidence",
+                "unproven",
+                "inconclusive",
+                "contradicted",
+                "rejected",
+            ],
         } if failure_code in {"invalid_decision", "invalid_causal_status"} else [],
         "actual_value": _redact_excerpt(actual_value, 240),
         "candidate_count": candidate_count,
@@ -102,6 +120,7 @@ def _validation_diagnostic(
             ref for ref in candidate_refs if ref not in initial_refs
         ][:128],
         "candidate_parent_candidate_ids": candidate_parents[:64],
+        "candidate_origin_parent_candidate_id": str(candidate_origin_parent_candidate_id or ""),
         "missing_parent_candidate_ids": [
             parent_id
             for parent_id in candidate_parents
@@ -116,6 +135,7 @@ def _initial_evidence_context(evidence_catalog: list[dict], valid_refs: set[str]
     """Keep a bounded, answer-free snapshot of the evidence available to AI."""
     families: dict[str, str] = {}
     statuses: dict[str, str] = {}
+    snapshots: dict[str, dict[str, str]] = {}
     for item in evidence_catalog:
         if not isinstance(item, dict):
             continue
@@ -153,10 +173,44 @@ def _initial_evidence_context(evidence_catalog: list[dict], valid_refs: set[str]
                 if isinstance(quality, dict)
                 else ""
             ) or "unknown"
+        observed_excerpt = _redact_excerpt(
+            json.dumps(item.get("observed_value") or {}, ensure_ascii=False, sort_keys=True, default=str),
+            500,
+        )
+        snapshots[ref] = {
+            "family": families[ref],
+            "status": statuses[ref],
+            "observed_excerpt": observed_excerpt,
+        }
     return {
         "evidence_refs": sorted(valid_refs)[:256],
         "evidence_families": dict(sorted(families.items())[:128]),
         "evidence_statuses": dict(sorted(statuses.items())[:128]),
+        "evidence_snapshots": dict(sorted(snapshots.items())[:128]),
+    }
+
+
+def _candidate_generation_attempt_record(
+    *,
+    attempt: int,
+    raw: str,
+    parsed_candidate_count: int,
+    accepted_candidate_count: int,
+    validation_diagnostic_count: int,
+    status: str,
+) -> dict:
+    redacted = _redact_excerpt(raw, 1200)
+    return {
+        "attempt": attempt,
+        "status": status,
+        "response_hash": hashlib.sha256(
+            redacted.encode("utf-8", errors="replace")
+        ).hexdigest() if redacted else "",
+        "response_excerpt": redacted,
+        "parsed_candidate_count": parsed_candidate_count,
+        "accepted_candidate_count": accepted_candidate_count,
+        "rejected_candidate_count": max(0, parsed_candidate_count - accepted_candidate_count),
+        "validation_diagnostic_count": validation_diagnostic_count,
     }
 
 
@@ -168,7 +222,7 @@ def _active_candidate_ids(proposals: list[dict], max_active: int = 3) -> tuple[l
         candidate_id = str(item.get("candidate_id") or "")
         if not candidate_id:
             continue
-        if str(item.get("decision") or "") == "reject" or str(item.get("causal_status") or "") == "rejected":
+        if str(item.get("decision") or "") in {"reject", "reject_candidate", "abstain"} or str(item.get("causal_status") or "") in {"rejected", "contradicted"}:
             continue
         key = (str(item.get("mechanism") or "").strip(), str(item.get("target") or "").strip())
         if key in seen_keys:
@@ -186,6 +240,34 @@ def _active_candidate_ids(proposals: list[dict], max_active: int = 3) -> tuple[l
         if str(item.get("candidate_id") or "") and str(item.get("candidate_id")) not in active_set
     ]
     return active, deferred
+
+
+def _normalize_initial_candidate_decision(value: Any) -> str:
+    """Normalize common model vocabulary without granting conclusion eligibility."""
+    decision = str(value or "").strip().lower()
+    if decision in {"needs_more_evidence", "continue_probe", "backtrack", "abstain", "unknown"}:
+        return "needs_more_evidence"
+    if decision in {"reject", "reject_candidate", "rejected"}:
+        return "reject"
+    if decision in {"conclude", "supported", "approve"}:
+        return "conclude"
+    return ""
+
+
+def _normalize_initial_candidate_status(value: Any) -> str:
+    status = str(value or "").strip().lower()
+    if status in {"needs_more_evidence", "unproven", "inconclusive", "unknown"}:
+        return "needs_more_evidence"
+    if status in {"supported", "conclude"}:
+        return "supported"
+    if status in {"contradicted", "rejected"}:
+        return "rejected"
+    return ""
+
+
+def _single_explicit_parent(parent_ids: list[str]) -> str:
+    unique = list(dict.fromkeys(str(value) for value in parent_ids if str(value)))
+    return unique[0] if len(unique) == 1 else ""
 
 
 def generate_session_candidate_review(
@@ -208,6 +290,7 @@ def generate_session_candidate_review(
         "selected_evidence_families": [],
         "probe_inputs": {},
         "validation_diagnostics": [],
+        "candidate_generation_attempts": [],
     }
     if not is_feature_enabled("rca"):
         return {
@@ -244,8 +327,10 @@ def generate_session_candidate_review(
                 "你是 Mini-Drop 首轮候选生成器，只输出 JSON。Analyzer 只提供事实、观察、定位边界和未证实提示；"
                 "你必须生成可证伪的 AI 候选，不能把 Analyzer hint 直接当成根因。"
                 "候选字段为 candidate_id、claim、mechanism、target、supported_level、decision、causal_status、"
-                "evidence_refs、missing_evidence、parent_candidate_ids、probe_requests、role。"
+                "evidence_refs、missing_evidence、parent_candidate_ids、origin_parent_candidate_id、probe_requests、role。"
                 "candidate_id 必须以 ai_candidate_ 开头；evidence_refs 只能使用 valid_evidence_refs；"
+                "parent_candidate_ids 只能逐字选择 current_ai_tree 中已有 candidate_id；"
+                "origin_parent_candidate_id 必须是其中唯一来源父节点（只有一个父节点时可直接使用该节点）；"
                 "probe_requests 只能使用 probe_manifest 中注册的 evidence_family；role 只能是 primary、secondary、unknown 或 rejected。"
             ),
         },
@@ -254,9 +339,11 @@ def generate_session_candidate_review(
     attempt_limit = max(1, min(int(max_attempts), MAX_RETRIES + 1))
     last_error = ""
     validation_diagnostics = []
+    candidate_generation_attempts = []
     for attempt in range(1, attempt_limit + 1):
         raw = ""
         current_item: dict | None = None
+        diagnostic_count_before = len(validation_diagnostics)
         try:
             raw = _call_deepseek(messages, model_name)
             data = json.loads(_extract_json(raw) or "{}")
@@ -282,13 +369,13 @@ def generate_session_candidate_review(
                     relation = str(item.get("relation") or "").strip()
                     if not parent_ids and relation != "root":
                         raise ValueError("candidate parent_candidate_ids 缺少显式来源父节点")
-                    decision = str(item.get("decision") or "needs_more_evidence")
-                    causal_status = str(item.get("causal_status") or "needs_more_evidence")
+                    decision = _normalize_initial_candidate_decision(item.get("decision"))
+                    causal_status = _normalize_initial_candidate_status(item.get("causal_status"))
+                    if not decision:
+                        raise ValueError(f"candidate decision 非法: {item.get('decision')}")
+                    if not causal_status:
+                        raise ValueError(f"candidate causal_status 非法: {item.get('causal_status')}")
                     supported_level = str(item.get("supported_level") or "resource")
-                    if decision not in {"needs_more_evidence", "conclude", "reject"}:
-                        raise ValueError(f"candidate decision 非法: {decision}")
-                    if causal_status not in {"supported", "needs_more_evidence", "contradicted", "rejected"}:
-                        raise ValueError(f"candidate causal_status 非法: {causal_status}")
                     if supported_level not in {"resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"}:
                         raise ValueError(f"candidate supported_level 非法: {supported_level}")
                     role = str(item.get("role") or "unknown")
@@ -296,6 +383,13 @@ def generate_session_candidate_review(
                         raise ValueError(f"candidate role 非法: {role}")
                     if relation and relation not in {"root", "alternative", "refinement", "causal_convergence", "shared_evidence"}:
                         raise ValueError(f"candidate relation 非法: {relation}")
+                    origin_parent = str(item.get("origin_parent_candidate_id") or "").strip()
+                    if origin_parent and origin_parent not in parent_ids:
+                        raise ValueError("candidate origin_parent_candidate_id 不属于 parent_candidate_ids")
+                    if not origin_parent:
+                        origin_parent = _single_explicit_parent(parent_ids)
+                    if len(parent_ids) > 1 and not origin_parent:
+                        raise ValueError("candidate origin_parent_candidate_id 缺少显式来源父节点")
                     for field in ("claim", "mechanism", "target"):
                         if not str(item.get(field) or "").strip():
                             raise ValueError(f"candidate 缺少 {field}")
@@ -313,6 +407,7 @@ def generate_session_candidate_review(
                         "evidence_refs": refs,
                         "missing_evidence": [str(value) for value in item.get("missing_evidence", []) if str(value)],
                         "parent_candidate_ids": parent_ids,
+                        "origin_parent_candidate_id": origin_parent or None,
                         "probe_requests": probe_requests,
                     })
                     seen.add(candidate_id)
@@ -322,6 +417,7 @@ def generate_session_candidate_review(
                         attempt=attempt,
                         error=str(exc),
                         raw=raw,
+                        candidate_id=str(current_item.get("candidate_id") or "") if current_item else "",
                         candidate_count=len(candidates),
                         valid_evidence_ref_count=len(valid_refs),
                         known_candidate_ids=known_candidate_ids,
@@ -337,6 +433,11 @@ def generate_session_candidate_review(
                             [str(value) for value in current_item.get("parent_candidate_ids", []) if str(value)]
                             if current_item
                             else []
+                        ),
+                        candidate_origin_parent_candidate_id=(
+                            str(current_item.get("origin_parent_candidate_id") or "")
+                            if current_item
+                            else ""
                         ),
                     ))
                     continue
@@ -382,6 +483,7 @@ def generate_session_candidate_review(
                             attempt=attempt,
                             error=f"probe_requests 包含未注册证据族: {', '.join(invalid)}",
                             raw=raw,
+                            candidate_id=str(item.get("candidate_id") or ""),
                             candidate_count=len(candidates),
                             valid_evidence_ref_count=len(valid_refs),
                             known_candidate_ids=known_candidate_ids,
@@ -407,6 +509,14 @@ def generate_session_candidate_review(
                     for value in item["probe_requests"]
                 ),
             ]))
+            candidate_generation_attempts.append(_candidate_generation_attempt_record(
+                attempt=attempt,
+                raw=raw,
+                parsed_candidate_count=len(candidates),
+                accepted_candidate_count=len(normalized),
+                validation_diagnostic_count=len(validation_diagnostics) - diagnostic_count_before,
+                status="succeeded",
+            ))
             return {
                 **base,
                 "ai_review_status": "succeeded",
@@ -417,6 +527,7 @@ def generate_session_candidate_review(
                 "active_candidate_ids": active_ids,
                 "deferred_candidate_ids": deferred_ids,
                 "validation_diagnostics": validation_diagnostics,
+                "candidate_generation_attempts": candidate_generation_attempts,
             }
         except Exception as exc:
             last_error = str(exc)
@@ -441,6 +552,19 @@ def generate_session_candidate_review(
                     if current_item
                     else []
                 ),
+                candidate_origin_parent_candidate_id=(
+                    str(current_item.get("origin_parent_candidate_id") or "")
+                    if current_item
+                    else ""
+                ),
+            ))
+            candidate_generation_attempts.append(_candidate_generation_attempt_record(
+                attempt=attempt,
+                raw=raw,
+                parsed_candidate_count=len(candidates) if isinstance(locals().get("candidates"), list) else 0,
+                accepted_candidate_count=0,
+                validation_diagnostic_count=len(validation_diagnostics) - diagnostic_count_before,
+                status="failed",
             ))
             if attempt < attempt_limit:
                 messages.extend([
@@ -453,6 +577,7 @@ def generate_session_candidate_review(
         "ai_review_attempts": attempt_limit,
         "ai_review_error": last_error[:500],
         "validation_diagnostics": validation_diagnostics,
+        "candidate_generation_attempts": candidate_generation_attempts,
     }
 
 

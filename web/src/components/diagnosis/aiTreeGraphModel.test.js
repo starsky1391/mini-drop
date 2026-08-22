@@ -235,11 +235,12 @@ test("missing parent renders an orphan marker instead of attaching to index zero
     probe_edges: [],
   });
 
-  const orphan = graph.nodes.find((node) => node.data?.nodeKind === "orphan");
+  const orphan = graph.orphanNodes.find((node) => node.data?.nodeKind === "orphan");
   const guessedEdge = graph.edges.find((edge) => edge.source.endsWith("__first-node") && edge.target.endsWith("__child-with-missing-parent"));
 
   assert.ok(orphan);
   assert.equal(orphan.data.role, "orphan");
+  assert.equal(graph.nodes.some((node) => node.data?.candidate?.candidate_id === "child-with-missing-parent"), false);
   assert.equal(guessedEdge, undefined);
 });
 
