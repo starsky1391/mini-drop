@@ -395,3 +395,65 @@ test("parent candidate id 0 is a real parent and rollback uses the explicit orig
   assert.equal(graph.nodes.some((node) => node.id === "tree_stop"), false);
   assert.ok(graph.edges.filter((edge) => edge.data?.layoutRole === "annotation").length >= 1);
 });
+
+test("source labels and observation lineage remain visible in the canonical tree", () => {
+  const graph = buildControlledAITreeGraph({
+    final_supported_level: "line",
+    layers: [
+      {
+        layer_id: "layer-0",
+        depth: 0,
+        generated_by: "fallback_observation",
+        unknown_causes: [candidate({
+          candidate_id: "coarse-root",
+          supported_level: "resource",
+          node_type: "cluster_root",
+          relation: "root",
+        })],
+      },
+      {
+        layer_id: "layer-1",
+        depth: 1,
+        generated_by: "analyzer_observation",
+        unknown_causes: [candidate({
+          candidate_id: "verified-line",
+          parent_candidate_ids: ["coarse-root"],
+          origin_parent_candidate_id: "coarse-root",
+          supported_level: "line",
+          node_type: "line_anchor",
+        })],
+      },
+      {
+        layer_id: "layer-2",
+        depth: 2,
+        generated_by: "ai_guarded",
+        unknown_causes: [candidate({
+          candidate_id: "runtime-observation",
+          parent_candidate_ids: ["verified-line"],
+          origin_parent_candidate_id: "verified-line",
+          supported_level: "line",
+          node_type: "observation",
+          claim_type: "observation_only",
+        })],
+      },
+    ],
+    probe_edges: [{
+      edge_id: "coarse-overview",
+      from_candidate_ids: ["coarse-root"],
+      to_candidate_ids: ["verified-line"],
+      transition_type: "refine",
+      effect: "refined",
+      status: "completed",
+    }],
+  });
+
+  const root = graph.nodes.find((node) => node.data?.candidate?.candidate_id === "coarse-root");
+  const line = graph.nodes.find((node) => node.data?.candidate?.candidate_id === "verified-line");
+  const observation = graph.nodes.find((node) => node.data?.candidate?.candidate_id === "runtime-observation");
+  assert.ok(root.data.badges.includes("fallback"));
+  assert.ok(line.data.badges.includes("fallback"));
+  assert.ok(observation.data.badges.includes("AI"));
+  assert.ok(graph.edges.some((edge) => edge.source.endsWith("__coarse-root") && edge.target.endsWith("__verified-line")));
+  assert.ok(graph.edges.some((edge) => edge.source.endsWith("__verified-line") && edge.target.endsWith("__runtime-observation")));
+  assert.equal(graph.edges.some((edge) => edge.data?.edgeId === "coarse-overview"), false);
+});

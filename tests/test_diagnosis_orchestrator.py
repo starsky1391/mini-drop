@@ -738,7 +738,7 @@ def test_session_tree_uses_local_stop_boundaries_without_truncating_branches():
     )
 
     assert tree is not None
-    assert tree.final_primary_causes == ["process_worker_memory_growth"]
+    assert tree.final_primary_causes == []
     assert tree.stop_source_candidate_ids == []
     all_nodes = [
         node
@@ -1275,9 +1275,10 @@ def test_runtime_stall_with_same_window_signal_becomes_direct_root_cause(client:
     assert assessment["origin_unknown"] is True
     assert assessment["runtime_control_event"]["actor"]["comm"] == "bash"
     assert "上游来源证据" in conclusion["summary"]
-    assert conclusion["abstained"] is False
-    assert conclusion["root_cause_candidates"][0]["candidate_id"] == "runtime_control_process_suspended"
-    assert conclusion["controlled_ai_tree"]["final_primary_causes"] == ["runtime_control_process_suspended"]
+    assert conclusion["abstained"] is True
+    assert conclusion["root_cause_candidates"] == []
+    assert conclusion["causal_chain"] == []
+    assert conclusion["formal_root_cause"] is None
 
 
 def test_runtime_stall_with_source_provenance_becomes_complete_source_root_cause(client: TestClient):
@@ -1615,16 +1616,12 @@ class TestDiagnosisSessionAPI:
         detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
         assert detail["status"] in {"COLLECTING", "WAITING_APPROVAL"}
         assert detail["latest_conclusion"]["root_cause_candidates"] == []
-        assert detail["latest_conclusion"]["possible_root_causes"]
+        assert detail["latest_conclusion"]["possible_root_causes"] == []
         assert detail["latest_conclusion"]["cluster_assessment"]["evidence_refs"]
         assert detail["latest_conclusion"]["diagnostic_commands"]
         assert all(cmd["auto_execute"] is False for cmd in detail["latest_conclusion"]["diagnostic_commands"])
-        candidate = detail["latest_conclusion"]["possible_root_causes"][0]
-        assert candidate["qualification"] in {"possible_root_cause", "partial_localization"}
-        assert candidate["confidence"] <= 0.49
-        assert candidate["evidence_refs"]
         evidence_ids = {item["evidence_id"] for item in detail["evidence"]}
-        assert set(candidate["evidence_refs"]).issubset(evidence_ids)
+        assert set(detail["latest_conclusion"]["cluster_assessment"]["evidence_refs"]).issubset(evidence_ids)
         assert all(item["integrity_hash"].startswith("sha256:") for item in detail["evidence"])
         assert any(item.get("task_id") == task_id for item in detail["probes"])
 
@@ -1820,7 +1817,7 @@ class TestDiagnosisSessionAPI:
         assessment = detail["latest_conclusion"]["cluster_assessment"]
         assert detail["status"] in {"COMPLETED", "COLLECTING", "WAITING_APPROVAL"}
         assert assessment["classification"] == "same_host_noisy_neighbor"
-        assert assessment["confidence_level"] == "低"
+        assert assessment["confidence_level"] == "不可判断"
         assert assessment["observation_confidence"] >= assessment["confidence"]
         assert len(assessment["compared_targets"]) == 2
         evidence_ids = {item["evidence_id"] for item in detail["evidence"]}
@@ -2316,15 +2313,12 @@ def test_redis_dependency_session_tree_matches_cluster_conclusion(client: TestCl
 
     assert conclusion["cluster_assessment"]["classification"] == "downstream_dependency"
     assert conclusion["cluster_assessment"]["root_entity"] == "redis-cart"
-    assert detail["status"] == "COMPLETED"
+    assert detail["status"] == "INSUFFICIENT_EVIDENCE"
     assert tree["final_supported_level"] == "service"
-    assert any("redis" in item for item in primary_ids)
+    assert primary_ids == []
     assert tree["layers"][0]["primary_causes"] == []
     assert tree["layers"][0]["unknown_causes"]
-    assert any(
-        "redis" in node["candidate_id"]
-        for node in tree["layers"][1]["primary_causes"]
-    )
+    assert any("redis" in node["candidate_id"] for node in tree["layers"][1]["unknown_causes"])
     assert "insufficient_data" not in primary_ids
     assert pending_requests.isdisjoint({"cpu_profile", "off_cpu_wait_profile", "trace_endpoint_profile", "baseline_window_profile"})
 
@@ -3489,8 +3483,8 @@ def test_session_tree_rebuilds_supported_and_refuted_codeql_candidates():
     assert nodes["python_memory_retention"].role == "unknown"
     assert nodes["python_memory_retention"].conclusion_eligible is False
     assert all(node.depth_kind != "mechanism" for node in nodes.values())
-    assert nodes["python_memory_retention"].node_type == "orphan"
-    assert nodes["python_memory_retention"].parent_candidate_ids == []
+    assert nodes["python_memory_retention"].node_type == "line_anchor"
+    assert nodes["python_memory_retention"].parent_candidate_ids == ["coarse_python_memory_retention"]
 
 
 def test_partial_codeql_chain_keeps_existing_candidate_unresolved_and_backtracks():
@@ -4349,6 +4343,66 @@ def test_multiple_lineage_parents_collapse_to_the_single_origin_for_mechanism():
     rollback = next(edge for edge in tree.probe_edges if edge.effect == "rollback")
     assert rollback.to_candidate_ids == ["line_rule_compile"]
     assert tree.final_primary_causes == []
+
+
+def test_investigation_review_updates_existing_parent_and_appends_rollback_provenance():
+    tree = _origin_backtrack_tree()
+    tree = tree.model_copy(update={
+        "budget": tree.budget.model_copy(update={"max_tree_depth": 6}),
+    })
+    review = {
+        "selected_evidence_families": ["source_mechanism_query"],
+        "candidate_updates": {
+            "line_rule_compile": {
+                "claim": "源码行父结论继续保留，深探尚未闭合。",
+                "status": "partial",
+                "causal_status": "inconclusive",
+                "decision": "backtrack",
+                "missing_evidence": ["source_mechanism_query"],
+            },
+        },
+        "candidate_proposals": [{
+            "candidate_id": "ai_proposal_followup_mechanism",
+            "parent_candidate_ids": ["line_rule_compile"],
+            "origin_parent_candidate_id": "line_rule_compile",
+            "relation": "refinement",
+            "claim": "异常路径可能保留 traceback 引用。",
+            "mechanism": "traceback_reference_retention",
+            "target": "celery/app/trace.py:844",
+            "evidence_refs": ["ev-source"],
+            "missing_evidence": ["source_mechanism_query"],
+            "what_would_change_my_mind": "源码机制证据不支持该传播路径。",
+        }],
+        "rollback_edges": [{
+            "edge_id": "rollback-followup-parent",
+            "from_candidate_ids": ["ai_proposal_followup_mechanism"],
+            "to_candidate_ids": ["line_rule_compile"],
+            "transition_type": "backtrack",
+            "effect": "rollback",
+            "status": "blocked",
+            "reason": "深探未完成，保留来源父结论。",
+        }],
+    }
+
+    updated = orchestrator_module._apply_investigation_review(tree, review)
+    nodes = {
+        node.candidate_id: node
+        for layer in updated.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    }
+    assert nodes["line_rule_compile"].claim == "源码行父结论继续保留，深探尚未闭合。"
+    assert nodes["line_rule_compile"].status == "partial"
+    assert nodes["ai_proposal_followup_mechanism"].generated_by == "ai_guarded"
+    assert nodes["ai_proposal_followup_mechanism"].parent_candidate_ids == ["line_rule_compile"]
+    rollback = next(edge for edge in updated.probe_edges if edge.edge_id == "rollback-followup-parent")
+    assert rollback.from_candidate_ids == ["ai_proposal_followup_mechanism"]
+    assert rollback.to_candidate_ids == ["line_rule_compile"]
+    assert rollback.status == "blocked"
 
 
 def test_supported_mechanism_is_additional_and_cannot_replace_base_primary():

@@ -298,6 +298,15 @@ def _normalize_conclusion(latest: dict[str, Any]) -> dict[str, Any]:
         "ai_review_attempts": latest.get("ai_review_attempts", 0),
         "ai_review_model": latest.get("ai_review_model", ""),
         "ai_review_error": latest.get("ai_review_error", ""),
+        "candidate_review": latest.get("candidate_review"),
+        "candidate_sources": sorted({
+            str(node.get("generated_by"))
+            for layer in (latest.get("controlled_ai_tree") or {}).get("layers", [])
+            if isinstance(layer, dict)
+            for group in ("primary_causes", "secondary_causes", "rejected_causes", "unknown_causes")
+            for node in (layer.get(group) or [])
+            if isinstance(node, dict) and node.get("generated_by")
+        }),
         "confidence_level": confidence_level,
         "location_type": assessment.get("location_type") or primary.get("location_type"),
         "domain_type": assessment.get("domain_type") or primary.get("domain_type"),

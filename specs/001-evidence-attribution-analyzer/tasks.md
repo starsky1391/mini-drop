@@ -1154,3 +1154,121 @@ fallback 不继承 call_path/observation/mechanism/boundary
 probe edge 不参与主树布局
 最终结论字段与 eligibility 一致
 ```
+
+### Task Group CB - AI 主导候选生成与事实层边界收口
+
+**Purpose**: 将 Analyzer 从“提前生成根因”的裁决者收回到事实、观察和定位边界提供者；由 AI 首轮生成候选、按证据推进候选 DAG，再由工程门禁从合法 AI 节点派生正式根因结论。本任务组建立在 CA/BZ 的 canonical DAG 和父子关系修复之上，不重新引入节点复制或隐式树补边。
+
+**Current code alignment**:
+
+```text
+orchestrator.py:1391-1429  当前先建树/建 clusters，再做会话级 AI 审核
+orchestrator.py:4837       当前 _build_session_controlled_ai_tree() 可用 analyzer_fallback 包装候选
+session_conclusion.py:21   当前 build_root_cause_clusters() 直接消费 Analyzer/cluster_assessment
+llm_client.py:35           当前已有 investigation review 入口，但缺少首轮候选生成契约
+models.py:218              当前 AITreeCandidateNode 缺少完整来源和候选状态边界
+```
+
+#### CB001 事实层输入契约与候选提示模型
+
+- [x] 在 `server/app/rca/models.py` 定义或补齐 `AnalyzerFactContext`、`CandidateHint`、`EvidenceQuality` 和 `LocalizationBoundary`，字段覆盖 `facts`、`observations`、`evidence_refs`、证据质量、定位边界、缺失证据、可用探针和候选提示。
+- [x] 明确 `CandidateHint` 只能表达 `unproven`/待调查方向，不能包含 `primary`、`secondary`、`root_cause_cluster`、`causal_chain` 或 `primary/contributing/independent` 裁决字段。
+- [x] 为事实层字段定义向后兼容的 JSON 读写规则，确保已有诊断会话仍可读取，但新流程不会把旧 `cluster_assessment` 当成 AI 裁决结果。
+- [x] 在 RCA 模型测试中验证候选提示可以保留真实 `evidence_refs` 和定位边界，且无法通过模型转换直接成为正式根因。
+
+#### CB002 Analyzer 输出隔离与事实转换
+
+- [ ] 修改 `server/app/diagnosis/orchestrator.py` 和 `server/app/diagnosis/session_conclusion.py`，将 Analyzer 的 `diagnostic_claim` 转换为 observation/localization，将 Analyzer 的 `mechanism` 转换为 `CandidateHint`，不得直接写入正式 root-cause candidate 或 cluster。
+- [ ] 移除 `cluster_assessment.conclusion_eligible` 对最终根因资格的直接影响；该字段只能作为历史 Analyzer 信息或事实质量输入保存，不能单独提升 `conclusion_eligible`。
+- [ ] 检查 `_root_cause_cluster_candidates()`、`build_root_cause_clusters()` 和 `_compound_location_fields()` 的调用方，阻止 Analyzer candidate、hint、observation 进入正式 cluster 输入。
+- [ ] 保留 Analyzer 的证据引用、定位边界、缺证原因和可用探针，供 AI 首轮调用使用；禁止在此转换阶段生成 `causal_chain`。
+- [ ] 在 `tests/test_diagnosis_orchestrator.py` 和 `tests/test_session_conclusion.py` 增加断言：同一 Analyzer 输出只能产生事实/观察/提示节点，不能产生 `primary` 或正式 cluster。
+
+#### CB003 AI 首轮候选生成接口
+
+- [x] 在 `server/app/rca/llm_client.py` 新增 `generate_session_candidate_review(...)`，输入 `AnalyzerFactContext`、probe manifest、现有合法 AI DAG 和证据摘要，输出结构化首轮候选审查结果。
+- [ ] 规定首轮输出字段：`candidate_id`、`claim`、`mechanism`、`target`、`supported_level`、`decision`、`causal_status`、`evidence_refs`、`missing_evidence`、`parent_candidate_ids`、`probe_requests`；`decision` 至少支持 `needs_more_evidence`、`conclude`、`reject`，`causal_status` 至少支持 `supported`、`needs_more_evidence`、`contradicted`、`rejected`。
+- [x] 在 prompt 和解析校验中限制 AI 只能引用输入中的 evidence ref，只能请求注册 probe，不能把 Analyzer hint 的 ID 冒充为 AI candidate ID。
+- [x] 让 AI 首轮结果携带可审计的 review 状态、模型调用失败原因和原始结构化响应摘要；异常时不得合成根因候选。
+- [x] 在 `tests/test_rca.py` 覆盖有效响应、非法 evidence ref、未知 probe、缺少机制/目标和解析失败。
+
+#### CB004 调整首轮调用顺序与树来源
+
+- [ ] 在 `server/app/diagnosis/orchestrator.py` 重排会话流程：先构造事实上下文，再调用 `generate_session_candidate_review()`，然后执行合法 probe 请求，之后调用 investigation review 更新 DAG，最后才派生 clusters 和最终解释。
+- [ ] 将现有 `_build_session_controlled_ai_tree()` 拆分为 `_build_ai_tree_from_review()` 与 `_build_fallback_observation_tree()`；首轮 Analyzer candidate 不得通过 `analyzer_fallback` 包装为 AI 节点。
+- [ ] AI 生成的节点使用 `generated_by="ai_candidate"`，通过工程门禁后的节点使用 `generated_by="ai_guarded"`；事实和 fallback 节点分别使用 `analyzer_observation` 与 `fallback_observation`。
+- [ ] 保留上一轮已经通过门禁的 AI 节点及其 canonical ID、父子边和解释；本轮 Analyzer hint 只能作为新一轮 AI 输入，不能覆盖或复制既有节点。
+- [ ] 增加调用顺序测试，确认 `build_root_cause_clusters()` 不会在首轮 AI 候选生成和门禁校验之前执行。
+
+#### CB005 证据回流后的 AI DAG 更新
+
+- [x] 扩展 `generate_session_investigation_review()` 的输入输出，使其接收当前 AnalyzerFactContext、已有 AI DAG、探针结果和证据缺口，返回候选状态更新、增量节点、`parent_candidate_ids`、`child_candidate_ids`、rollback 边和下一步 probe 请求。
+- [x] 仅允许 AI review 创建或更新候选节点；Analyzer 新事实只能追加 evidence refs、observation 或 hint，不能直接改变候选的 role、causal_status 或结论资格。
+- [x] 保留 `rejected`/`contradicted` 分支及其证据；探针失败、缺能力、超时和目标退出统一表示为 `blocked`/`inconclusive`，不得当作反证覆盖父候选。
+- [x] 对多父节点要求明确 `relation`（`causal_convergence`、`shared_evidence` 或 `alternative`）和独立证据；没有关系类型或证据不足时拒绝该边。
+- [x] 复用 CA/BZ 的 canonical index 和双向边校验，确保父节点已真实发出，已有 resource/function/line 节点解释不被子节点更新覆盖。
+- [x] 在 `tests/test_diagnosis_orchestrator.py` 覆盖候选继续下钻、父节点继承、拒绝/回溯、探针失败不反证、多父汇合和父解释保持不变。
+
+#### CB006 AI 资格门禁与根因簇派生
+
+- [x] 在 `server/app/rca/controlled_tree.py` 增加明确的 `qualify_ai_candidate(...)` 或等价门禁入口，统一计算 `conclusion_eligible`，不读取 Analyzer 的同名字段作为授权结果。
+- [ ] 门禁校验候选来源是 AI、candidate ID 合法、evidence refs 存在且属于当前会话、目标和时间窗口正确、机制具体、定位层级未越界、必要补证完成、`causal_status=supported`、`decision=conclude`、因果链闭合且 DAG 父节点真实存在。
+- [x] 将 `build_root_cause_clusters()` 重构为从已通过门禁的 AI DAG 派生 clusters；禁止 `analyzer_observation`、`candidate_hint`、`fallback_observation`、`observation`、`mechanism`、`boundary`、`orphan`、`missing_evidence`、`rejected` 和 `contradicted` 节点进入正式 clusters。
+- [ ] 正式 cluster 的 `role` 只能来自 AI 的 `primary`、`contributing` 或 `independent` 裁决，并保留对应 candidate ID、证据引用和完整因果链。
+- [ ] 增加门禁失败原因的结构化记录，区分非法引用、证据不足、层级越界、关系非法和明确反证，供审计和前端展示。
+- [ ] 在 `tests/test_session_conclusion.py` 和 `tests/test_rca.py` 覆盖 Analyzer eligible 欺骗、非法 evidence ref、未闭合因果链、合法 AI 主因和 AI 多父整合。
+
+#### CB007 fallback 与最终结论字段收口
+
+- [x] 修改 `server/app/diagnosis/session_conclusion.py` 和 `orchestrator.py`：AI 首轮或回流失败时只生成事实/观察/定位/证据缺口展示，设置 `abstained=true`、`root_cause_clusters=[]`、`causal_chain=[]`、`formal_root_cause=null`。
+- [x] 允许 `localization_chain` 按 CA 的实际 DAG 祖先拓扑保留，但禁止使用 Analyzer hint、fallback 节点或 `line_id_aliases` 拼接正式因果链。
+- [ ] 允许继承上一轮合法且仍有效的 AI 节点；禁止把本轮 Analyzer hint 升级为 AI 根因，禁止 fallback 文本覆盖合法父候选解释。
+- [ ] 统一 `formal_root_cause`、`root_cause_candidates`、`final_primary_causes`、`headline`、`abstained`、confidence 和 `causal_chain` 的来源，全部由同一个 eligibility 结果派生。
+- [ ] 在 `tests/test_session_conclusion.py` 增加 AI 失败、无合法 AI 节点、保留定位链、继承上一轮合法节点和无高置信根因的回归测试。
+
+#### CB008 节点来源与兼容字段迁移
+
+- [x] 在 `server/app/rca/models.py` 扩展 `AITreeCandidateNode.generated_by` 至 `analyzer_observation`、`ai_candidate`、`ai_guarded`、`fallback_observation`，并保留历史 `analyzer_fallback` 的读取兼容和迁移映射。
+- [x] 同步扩展 `AITreeLayer.generated_by` 和相关持久化/API/audit bundle 序列化，不改变 CA 的 `parent_candidate_ids`/`child_candidate_ids` canonical 关系。
+- [ ] 更新 `server/app/rca/controlled_tree.py`、`orchestrator.py` 和前端 graph model 的来源判断，避免旧值被当成正式 AI 节点或被错误渲染为已确认根因。
+- [ ] 为历史会话读取增加兼容测试：旧 `analyzer_fallback` 只能迁移为 observation/fallback 展示，不能获得新的 `conclusion_eligible`。
+
+#### CB009 结论审计和 API 契约
+
+- [ ] 在 `server/app/diagnosis/audit_bundle.py` 及相关 API 输出中记录 AnalyzerFactContext、AI review 阶段、模型状态、candidate 来源、资格门禁结果、拒绝原因和 fallback/abstention 状态。
+- [ ] 确保审计中可以区分“Analyzer 观察到什么”“AI 提出了什么”“门禁通过了什么”“最终输出了什么”，并保留每个 evidence ref 的来源。
+- [ ] 保持前端已有 retained conclusion、qualification boundary、formal root cause 和 localization chain 字段兼容；只补充来源/状态字段，不让展示层推导根因资格。
+- [ ] 增加 API/audit 序列化测试，确认 AI 失败时 clusters 和 causal chain 为空但 localization chain 可存在。
+
+#### CB010 单元与集成回归
+
+- [ ] 新增或更新 `tests/test_diagnosis_orchestrator.py`、`tests/test_session_conclusion.py`、`tests/test_rca.py` 和 `tests/test_llm_client.py`，覆盖 Analyzer 事实隔离、AI 首轮候选、证据回流、多父 DAG、父解释不覆盖、门禁和 fallback。
+- [x] 更新前端 `web/src/components/diagnosis/aiTreeGraphModel.test.js`，覆盖来源标签、显式父子边、blocked/inconclusive 分支、orphan、fallback observation 和无正式 causal chain 展示。
+- [ ] 运行后端 RCA/diagnosis 回归和前端生产构建，确认 CA/BZ 已有父子关系、节点身份稳定性和 fallback 定位链测试仍通过。
+
+#### CB011 Celery VM 真实验收
+
+- [ ] 使用 `docs/real_cases/celery_8882/run_case_vm.py` 运行真实 case；确认 VM runtime、首轮 Analyzer 输入和 probe 输入均不包含离线 Oracle 或预期根因答案。
+- [ ] AI 成功时验收日志能证明真实首轮候选生成、probe 选择、证据回流、候选更新、门禁结果和 causal chain 引用，而不是由 Analyzer candidate 直接包装生成。
+- [ ] AI 失败或 DeepSeek 不可用时验收结果必须为 fallback/abstention：正式 clusters 为空、`causal_chain=[]`、`formal_root_cause=null`，但事实、局部定位和证据缺口可保留。
+- [ ] Oracle 只能由 `evaluate_case.py` 在诊断完成后离线读取；将诊断详情、audit bundle、最终 DAG、AI review 状态和测试结果写入 `reports/eval/real-open-source/celery-8882-*` 时间戳目录。
+- [ ] 只有代码、单测、集成测试和 VM 契约验收全部通过后，才将 CB 任务组标记为完成；失败时记录具体阶段和阻断原因，不将部分定位标记为正式根因。
+
+**Execution order**: CB001 -> CB002 -> CB003 -> CB004 -> CB005 -> CB006 -> CB007-CB009 -> CB010 -> CB011. CB008/CB009 可在 CB006 的数据契约稳定后并行；CB010 必须等待后端契约和来源迁移完成。
+
+**Acceptance criteria**:
+
+```text
+Analyzer 只产生 facts/observations/localization boundary/candidate hints
+Analyzer hint 和 cluster_assessment.conclusion_eligible 不得直接产生正式 root cause
+首轮 AI 真实生成 candidate，不能由 analyzer_fallback 伪造
+AI 才能请求 probe、更新候选、建立 causal DAG 和裁决 role
+正式 clusters 只能从通过统一门禁的 AI 节点派生
+父子边、多父关系和父节点解释遵守 CA/BZ canonical DAG
+探针失败/缺能力是 blocked 或 inconclusive，不是自动反证
+AI 失败时 clusters/causal_chain/formal_root_cause 为空或 null，abstained=true
+fallback 仍可保留事实、定位链和证据缺口
+VM runtime 和首轮输入不含 Oracle，Oracle 仅离线评估
+```
+
+**Outcome**: Analyzer 只回答“观察到什么、定位到哪里、还缺什么”；AI 才回答“候选是什么、下一步查什么、哪些候选成立以及如何形成因果链”。在 AI 不可用时，系统诚实停在事实/定位层，不再把 Analyzer 候选或局部定位伪装成正式根因。

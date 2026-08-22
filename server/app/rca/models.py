@@ -100,6 +100,47 @@ class AnalysisLocalization(BaseModel):
     evidence_refs: list[str] = Field(default_factory=list)
 
 
+class EvidenceQuality(BaseModel):
+    """事实证据的质量摘要，不表达因果裁决。"""
+
+    evidence_ref: str
+    quality: Literal["high", "medium", "low", "blocked", "unknown"] = "unknown"
+    reason: str = ""
+
+
+class LocalizationBoundary(BaseModel):
+    """Analyzer 当前能够支持的最大定位范围。"""
+
+    level: Literal["resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"] = "resource"
+    target: Optional[str] = None
+    reason: str = ""
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class CandidateHint(BaseModel):
+    """值得调查的方向；不能直接成为根因候选。"""
+
+    hint_id: str
+    hint_type: Literal["observation", "mechanism", "localization"] = "observation"
+    statement: str
+    status: Literal["unproven"] = "unproven"
+    evidence_refs: list[str] = Field(default_factory=list)
+    missing_evidence: list[str] = Field(default_factory=list)
+
+
+class AnalyzerFactContext(BaseModel):
+    """传给 AI 的 Analyzer 事实层上下文，不包含根因裁决。"""
+
+    facts: list[dict[str, Any]] = Field(default_factory=list)
+    observations: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    evidence_quality: list[EvidenceQuality] = Field(default_factory=list)
+    localization_boundary: Optional[LocalizationBoundary] = None
+    missing_evidence: list[str] = Field(default_factory=list)
+    available_probes: list[str] = Field(default_factory=list)
+    candidate_hints: list[CandidateHint] = Field(default_factory=list)
+
+
 class AnalysisTreeDecision(BaseModel):
     """AI 树中的单个门控或叶子决策。"""
 
@@ -219,6 +260,13 @@ class AITreeCandidateNode(BaseModel):
     """受控 AI 树某一层里的候选结论。"""
 
     candidate_id: str
+    generated_by: Literal[
+        "analyzer_observation",
+        "ai_candidate",
+        "ai_guarded",
+        "fallback_observation",
+        "analyzer_fallback",
+    ] = "ai_guarded"
     lineage_id: Optional[str] = None
     cluster_id: str = ""
     branch_id: str = ""
@@ -376,7 +424,13 @@ class AITreeLayer(BaseModel):
 
     layer_id: str
     depth: int
-    generated_by: Literal["ai_guarded", "analyzer_fallback"] = "analyzer_fallback"
+    generated_by: Literal[
+        "analyzer_observation",
+        "ai_candidate",
+        "ai_guarded",
+        "fallback_observation",
+        "analyzer_fallback",
+    ] = "ai_guarded"
     summary: str = ""
     primary_causes: list[AITreeCandidateNode] = Field(default_factory=list)
     secondary_causes: list[AITreeCandidateNode] = Field(default_factory=list)

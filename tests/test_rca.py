@@ -23,6 +23,7 @@ from server.app.rca.llm_client import (
     _ref_exists,
     _validate_and_parse,
     generate_controlled_ai_tree,
+    generate_session_candidate_review,
     generate_session_investigation_review,
 )
 from server.app.diagnosis.probe_registry import build_probe_manifest
@@ -67,6 +68,67 @@ def test_forbidden_upgrade_boundary_is_inconclusive_not_counterevidence():
     assert node.candidate_id not in guarded.final_rejected_causes
 
 
+def test_session_candidate_review_accepts_only_real_refs_and_canonical_parents():
+    evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
+    analysis = analyze_evidence(evidence, [])
+    parent_id = next(
+        node.candidate_id
+        for layer in analysis.controlled_ai_tree.layers
+        for node in [*layer.primary_causes, *layer.secondary_causes, *layer.unknown_causes, *layer.rejected_causes]
+    )
+    response = {
+        "probe_requests": [],
+        "candidates": [{
+            "candidate_id": "ai_candidate_rule_compile",
+            "claim": "规则编译路径造成目标进程内存保留",
+            "mechanism": "retained_allocation_during_rule_compilation",
+            "target": "Rule.compile",
+            "supported_level": "function",
+            "decision": "needs_more_evidence",
+            "causal_status": "needs_more_evidence",
+            "evidence_refs": ["ev_top"],
+            "parent_candidate_ids": [parent_id],
+        }],
+    }
+    with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key", "MINI_DROP_AI_ENABLED": "1"}), mock.patch(
+        "server.app.rca.llm_client._call_deepseek", return_value=json.dumps(response)
+    ):
+        result = generate_session_candidate_review(
+            diagnosis_id="diag-1",
+            fact_context={"candidate_hints": [{"hint_id": "memory_hint"}]},
+            session_tree=analysis.controlled_ai_tree,
+            evidence_catalog=[{"evidence_id": "ev_top"}],
+            probe_manifest=build_probe_manifest(),
+        )
+    assert result["ai_review_status"] == "succeeded"
+    assert result["candidate_proposals"][0]["candidate_id"] == "ai_candidate_rule_compile"
+    assert result["candidate_proposals"][0]["parent_candidate_ids"] == [parent_id]
+
+
+def test_session_candidate_review_rejects_hint_id_and_unknown_evidence():
+    response = {
+        "probe_requests": [],
+        "candidates": [{
+            "candidate_id": "memory_hint",
+            "claim": "hint",
+            "mechanism": "unknown",
+            "target": "worker",
+            "evidence_refs": ["ev_missing"],
+        }],
+    }
+    with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key", "MINI_DROP_AI_ENABLED": "1"}), mock.patch(
+        "server.app.rca.llm_client._call_deepseek", return_value=json.dumps(response)
+    ):
+        result = generate_session_candidate_review(
+            diagnosis_id="diag-1",
+            fact_context={"candidate_hints": [{"hint_id": "memory_hint"}]},
+            session_tree=None,
+            evidence_catalog=[{"evidence_id": "ev_real"}],
+            probe_manifest=build_probe_manifest(),
+        )
+    assert result["ai_review_status"] == "failed"
+
+
 def test_session_investigation_review_selects_registered_probe_and_guarded_proposal():
     evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
     analysis = analyze_evidence(
@@ -93,6 +155,23 @@ def test_session_investigation_review_selects_registered_probe_and_guarded_propo
             "missing_evidence": ["python_heap_profile"],
             "what_would_change_my_mind": "Memray 未显示该调用路径存在持续或保留分配。",
         }],
+        "candidate_updates": {
+            parent_id: {
+                "status": "partial",
+                "causal_status": "inconclusive",
+                "decision": "backtrack",
+                "missing_evidence": ["python_heap_profile"],
+            },
+        },
+        "rollback_edges": [{
+            "edge_id": "rollback-retained-parent",
+            "from_candidate_ids": ["ai_proposal_retained_rule_builder"],
+            "to_candidate_ids": [parent_id],
+            "transition_type": "backtrack",
+            "effect": "rollback",
+            "status": "blocked",
+            "reason": "补证未完成，保留来源父节点。",
+        }],
     }
     with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key", "MINI_DROP_AI_ENABLED": "1"}), mock.patch(
         "server.app.rca.llm_client._call_deepseek", return_value=json.dumps(response)
@@ -107,6 +186,8 @@ def test_session_investigation_review_selects_registered_probe_and_guarded_propo
     assert result["ai_review_status"] == "succeeded"
     assert result["selected_evidence_families"] == ["python_heap_profile"]
     assert result["candidate_proposals"][0]["candidate_id"].startswith("ai_proposal_")
+    assert result["candidate_updates"][parent_id]["status"] == "partial"
+    assert result["rollback_edges"][0]["status"] == "blocked"
 
 
 def test_session_investigation_review_rejects_unregistered_probe():

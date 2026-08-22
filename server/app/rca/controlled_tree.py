@@ -87,7 +87,9 @@ def _guard_candidate(node: AITreeCandidateNode) -> AITreeCandidateNode:
         *node.self_challenge.supporting_evidence_refs,
     ]))
     reason = ""
-    eligible = True
+    eligible = node.generated_by in {"ai_candidate", "ai_guarded"}
+    if not eligible:
+        reason = "只有 AI 生成并通过当前门禁的候选可以进入正式根因结论。"
     observational_candidate = (
         node.candidate_id in _OBSERVATIONAL_CANDIDATE_IDS
         or node.mechanism in _OBSERVATIONAL_CANDIDATE_IDS
@@ -154,6 +156,27 @@ def _guard_candidate(node: AITreeCandidateNode) -> AITreeCandidateNode:
         "conclusion_eligible": eligible,
         "eligibility_reason": reason or "机制、目标、因果状态和证据引用满足结论资格门禁。",
     })
+
+
+def qualify_ai_candidate(
+    node: AITreeCandidateNode,
+    *,
+    valid_evidence_refs: set[str] | None = None,
+    known_candidate_ids: set[str] | None = None,
+) -> tuple[bool, str]:
+    """Return the single eligibility decision used by formal conclusions."""
+    if node.generated_by not in {"ai_candidate", "ai_guarded"}:
+        return False, "candidate 来源不是 AI。"
+    if known_candidate_ids is not None and node.candidate_id not in known_candidate_ids:
+        return False, "candidate ID 不属于当前 AI DAG。"
+    if valid_evidence_refs is not None and any(ref not in valid_evidence_refs for ref in node.evidence_refs):
+        return False, "candidate 包含当前会话不存在的 evidence ref。"
+    guarded = _guard_candidate(node)
+    if not guarded.conclusion_eligible:
+        return False, guarded.eligibility_reason
+    if guarded.decision != "conclude" or guarded.causal_status != "supported":
+        return False, "AI 候选尚未以 supported/conclude 状态闭合。"
+    return True, guarded.eligibility_reason
 
 
 def _layer_nodes(layer: AITreeLayer) -> list[AITreeCandidateNode]:

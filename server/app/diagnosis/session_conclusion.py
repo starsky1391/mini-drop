@@ -244,6 +244,57 @@ def build_root_cause_clusters(
     return clusters
 
 
+def derive_root_cause_clusters_from_ai_tree(
+    session_tree: dict[str, Any] | None,
+    *,
+    valid_evidence_refs: set[str] | None = None,
+) -> list[RootCauseCluster]:
+    """Derive formal clusters only from qualified AI nodes in the DAG."""
+    if not isinstance(session_tree, dict):
+        return []
+    nodes = []
+    for layer in session_tree.get("layers", []):
+        if not isinstance(layer, dict):
+            continue
+        for key in ("primary_causes", "secondary_causes", "rejected_causes", "unknown_causes"):
+            nodes.extend(item for item in layer.get(key, []) if isinstance(item, dict))
+    clusters: list[RootCauseCluster] = []
+    for node in nodes:
+        if node.get("generated_by") not in {"ai_candidate", "ai_guarded"}:
+            continue
+        refs = _unique(node.get("evidence_refs", []))
+        if valid_evidence_refs is not None and any(ref not in valid_evidence_refs for ref in refs):
+            continue
+        if not node.get("conclusion_eligible") or node.get("causal_status") != "supported" or node.get("decision") != "conclude":
+            continue
+        role = node.get("role")
+        if role not in {"primary", "secondary"}:
+            continue
+        cluster_id = f"rc_cluster_ai_{node['candidate_id']}"
+        clusters.append(RootCauseCluster(
+            cluster_id=cluster_id,
+            candidate_ids=[str(node["candidate_id"])],
+            source_tree_candidate_ids=[str(node["candidate_id"])],
+            role="primary" if role == "primary" else "contributing",
+            causal_status="primary" if role == "primary" else "contributing",
+            cause_level="complete_source_root_cause" if node.get("claim_type") == "complete_source_root_cause" else "direct_root_cause",
+            mechanism=str(node.get("mechanism") or ""),
+            target=str(node.get("target") or ""),
+            claim=str(node.get("claim") or ""),
+            why_it_happened=str((node.get("self_challenge") or {}).get("why_this_claim") or ""),
+            causal_chain=[CausalExplanationStep(
+                step_id=f"{cluster_id}_step_1",
+                statement=str(node.get("claim") or ""),
+                evidence_refs=refs,
+            )],
+            evidence_refs=refs,
+            confidence=float(node.get("confidence") or 0.0),
+            conclusion_eligible=True,
+            qualification="confirmed_root_cause",
+        ))
+    return clusters
+
+
 def classify_cluster_set(clusters: Iterable[RootCauseCluster]) -> str:
     eligible = [cluster for cluster in clusters if cluster.conclusion_eligible]
     independent_keys = {(cluster.mechanism, cluster.target) for cluster in eligible}
