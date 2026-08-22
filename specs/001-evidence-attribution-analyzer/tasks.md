@@ -1535,34 +1535,53 @@ runner。
 
 ### CE011 提交、部署与 Worker1 Heap Smoke
 
-- [ ] 代码和测试通过后提交并推送 mini-drop 仓库，不提交本地报告、密钥、临时
+- [x] 代码和测试通过后提交并推送 mini-drop 仓库，不提交本地报告、密钥、临时
   回放文件或 VM 私有配置。
-- [ ] Control 执行 `git pull` 并 rebuild mini-drop；Worker1 执行 `git pull` 并
+- [x] Control 执行 `git pull` 并 rebuild mini-drop；Worker1 执行 `git pull` 并
   rebuild Agent/采集器相关容器；保留并核对 worker 原有未提交 helper 改动。
-- [ ] Worker1 使用未预加载 Memray 的受控长寿命 Python 目标执行 heap smoke，
+- [x] Worker1 使用未预加载 Memray 的受控长寿命 Python 目标执行 heap smoke，
   保存 preflight、helper、产物和结构化 evidence；确认目标运行期间完成 attach。
-- [ ] Heap smoke 失败时只记录具体 capability/namespace/permission 原因，不能
+- [x] Heap smoke 失败时只记录具体 capability/namespace/permission 原因，不能
   把失败写成 heap retention 成功。
 
 ### CE012 Vulnerable-only Celery 600s 真实验收
 
-- [ ] VM 内使用完整 Celery checkout、真实 Redis、Celery worker 和原生
+- [x] VM 内使用完整 Celery checkout、真实 Redis、Celery worker 和原生
   `apply_async()` producer；runner 只运行 vulnerable workload，持续 600 秒覆盖
   诊断窗口。
-- [ ] 不运行 fixed replay、Oracle 或 `evaluate_case.py`；普通跑测不重复设置这三
+- [x] 不运行 fixed replay、Oracle 或 `evaluate_case.py`；普通跑测不重复设置这三
   个阶段。
-- [ ] 验收主树：`session_main` 可渲染；line 若通过则挂到真实 emitted parent；
+- [x] 验收主树：`session_main` 可渲染；line 若通过则挂到真实 emitted parent；
   observation/机制/STOP 只挂到各自来源；orphan 和历史子树不进入主布局。
-- [ ] 验收候选诊断：能看到 AI 实际返回/失败字段、初始证据、合法候选数、门禁失败
+- [x] 验收候选诊断：能看到 AI 实际返回/失败字段、初始证据、合法候选数、门禁失败
   清单和 fallback 保留父节点；不能把 Analyzer fallback 伪装成 AI root cause。
-- [ ] 验收 heap：attach 成功时有真实 Memray 产物；失败时有结构化边界且
+- [x] 验收 heap：attach 成功时有真实 Memray 产物；失败时有结构化边界且
   runtime/source follow-up 仍完成。
-- [ ] 无 eligible AI candidate 时必须为
+- [x] 无 eligible AI candidate 时必须为
   `root_cause_clusters=[]`、`causal_chain=[]`、`formal_root_cause=null`、
   `abstained=true`；保留结论只能是实际来源父节点的原结论。
-- [ ] 报告保存 runner manifest、producer barrier、diagnosis terminal state、
+- [x] 报告保存 runner manifest、producer barrier、diagnosis terminal state、
   probe outcomes、AI review、tree/data-quality 和最终结论字段，作为本次 vulnerable-only
   跑测记录。
+
+**CE011/CE012 实际执行记录（2026-08-22）**：
+
+- 提交并推送：`e799d76`。
+- Control 和 Worker1 均已 `git pull --ff-only origin try1` 并 rebuild；
+  Worker1 agent 使用新镜像启动。
+- Worker1 heap smoke 使用未预加载 Memray 的 Python 目标，由 managed helper
+  现场 attach，产出 `memray.bin`、stats 和 `python_heap_profile`，证据状态为
+  `valid`。
+- vulnerable-only 报告：
+  `reports/eval/real-open-source/celery-8882-vulnerable-600s-20260823-041730/run.json`。
+- 诊断会话：`diag_session_20260822_201819_2ebdfe94`。
+- AI 首轮候选 3 个，均通过结构校验并带显式父节点；`source_snapshot` 形成
+  已验证的 `/opt/celery-src/celery/app/trace.py:651` line 锚点。
+- 运行时树为 `session_main`；orphan 和 child snapshot 被记录为数据质量/历史
+  信息，不进入主布局；正式根因仍为空，`formal_root_cause=null`、
+  `abstained=true`，保留结论沿实际来源父节点回退。
+- producer 在等待窗口内未写入 `producer_complete`，因此本次运行结果是
+  **partial / 未形成正式根因**；这是真实运行状态，不把任务不完整伪装成验收成功。
 
 **Execution order**:
 
