@@ -1566,6 +1566,7 @@ class DiagnosisOrchestrator:
             *collect_ai_gate_failures(
                 tree_payload,
                 valid_evidence_refs=valid_session_evidence_refs,
+                evidence_catalog=self.store.list_evidence(diagnosis_id),
             ),
             *_collect_probe_gate_failures(
                 self.store.list_probes(diagnosis_id),
@@ -5081,19 +5082,13 @@ def _build_session_controlled_ai_tree(
         candidate_relation = str(item.get("relation") or "").strip()
         if not candidate_relation:
             candidate_relation = "refinement" if candidate_parent_ids else "alternative"
-        # Analyzer base candidates are independent directions from the
-        # current assessment. They have a real coarse parent even when the
-        # Analyzer did not carry an explicit lineage field. Other sources
-        # (alternative hypotheses, mechanisms, boundaries) must retain an
-        # orphan instead of receiving this fallback.
+        # Only an explicitly independent alternative may attach to the
+        # emitted coarse root. A bare alternative is missing provenance and
+        # must remain visible as a data-quality orphan.
         if (
             not candidate_parent_ids
             and candidate_relation == "alternative"
-            and candidate_id not in {
-                "python_runtime_stack_hotspot",
-                "python_userland_hotspot",
-                "off_cpu_wait_hotspot",
-            }
+            and item.get("independent") is True
         ):
             candidate_parent_ids = [coarse_id]
             candidate_origin_parent = coarse_id
@@ -7422,10 +7417,39 @@ def _heap_probe_outcome(probes: list[dict[str, Any]]) -> dict[str, Any]:
             or (outcome.get("evidence_validity") or {}).get("detail")
             or "",
         )[:500],
+        "failure_detail": str(
+            outcome.get("failure_detail")
+            or (outcome.get("evidence_validity") or {}).get("detail")
+            or probe.get("reason")
+            or "",
+        )[:800],
+        "blocked_reason": str(
+            probe.get("blocked_reason")
+            or outcome.get("blocked_reason")
+            or (outcome.get("evidence_validity") or {}).get("reason")
+            or "",
+        )[:240],
         "retry_attempted": bool(
             outcome.get("retry_attempted")
             or (outcome.get("evidence_validity") or {}).get("retry_attempted")
         ),
+        "retry_skipped_reason": str(
+            outcome.get("retry_skipped_reason")
+            or (outcome.get("evidence_validity") or {}).get("retry_skipped_reason")
+            or "",
+        )[:240],
+        "attach_preflight": (
+            outcome.get("attach_preflight")
+            or (outcome.get("evidence_validity") or {}).get("attach_preflight")
+            or {}
+        ),
+        "helper_trace": outcome.get("helper_trace") or {},
+        "artifact_refs": _unique_strings(
+            probe.get("evidence_refs")
+            or outcome.get("evidence_refs")
+            or outcome.get("raw_artifact_refs")
+            or []
+        )[:32],
     }
 
 

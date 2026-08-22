@@ -65,10 +65,63 @@ def test_ai_gate_failure_is_exposed_and_not_derived_as_formal_cluster():
             }],
         }],
     }
-    failures = collect_ai_gate_failures(tree, valid_evidence_refs={"ev-rss"})
+    failures = collect_ai_gate_failures(
+        tree,
+        valid_evidence_refs={"ev-rss"},
+        evidence_catalog=[{
+            "evidence_id": "ev-rss",
+            "observed_value": {
+                "evidence_window": {
+                    "timing_relation": "same_window",
+                    "window_start": "2026-08-22T01:00:00Z",
+                    "window_end": "2026-08-22T01:00:10Z",
+                    "evidence_cohort_id": "cohort-1",
+                },
+            },
+        }],
+    )
     assert failures[0]["candidate_id"] == "ai_candidate_unproven"
     assert failures[0]["failure_code"] == "eligibility_gate"
+    assert failures[0]["gate_checks"]["source_is_ai"] is True
+    assert failures[0]["gate_checks"]["evidence_refs_exist"] is True
+    assert failures[0]["gate_checks"]["window"] is True
+    assert failures[0]["gate_checks"]["causal_status"] is False
+    assert "causal_status" in failures[0]["failed_gates"]
     assert derive_root_cause_clusters_from_ai_tree(tree, valid_evidence_refs={"ev-rss"}) == []
+
+
+def test_ai_gate_failure_marks_missing_window_and_parent_as_failed_gates():
+    tree = {
+        "layers": [{
+            "layer_id": "layer-0",
+            "depth": 0,
+            "unknown_causes": [{
+                "candidate_id": "ai_candidate_no_window",
+                "generated_by": "ai_candidate",
+                "relation": "refinement",
+                "node_type": "base_cause",
+                "role": "unknown",
+                "claim": "候选",
+                "supported_level": "process",
+                "status": "missing_evidence",
+                "claim_type": "likely_root_cause",
+                "causal_status": "unproven",
+                "decision": "continue_probe",
+                "mechanism": "memory_retention",
+                "target": "worker",
+                "evidence_refs": ["ev-rss"],
+                "self_challenge": {},
+            }],
+        }],
+    }
+    failures = collect_ai_gate_failures(
+        tree,
+        valid_evidence_refs={"ev-rss"},
+        evidence_catalog=[{"evidence_id": "ev-rss", "observed_value": {}}],
+    )
+    assert failures[0]["gate_checks"]["window"] is False
+    assert failures[0]["gate_checks"]["parent_exists"] is False
+    assert {"window", "parent_exists"} <= set(failures[0]["failed_gates"])
 
 
 def test_candidate_generation_failure_is_exposed_with_initial_evidence():

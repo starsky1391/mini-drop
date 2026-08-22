@@ -691,6 +691,36 @@ function DiagnosisDetail({ detail }) {
                       输出摘要：{item.response_excerpt || "无可展示输出"}。
                     </Typography.Text>
                   ))}
+                  {candidateGenerationOutput.validation_diagnostics?.map((item, index) => (
+                    <Space
+                      key={`candidate-diagnostic-${item.attempt || index}-${item.candidate_id || "response"}`}
+                      direction="vertical"
+                      size={2}
+                      style={{ width: "100%" }}
+                    >
+                      <Typography.Text type="warning">
+                        门禁失败：{item.failure_code || "validation_error"}；
+                        路径：{item.failure_path || "response"}；
+                        候选：{item.candidate_id || "整轮响应"}；
+                        原因：{item.reason || item.actual_value || "未提供"}。
+                      </Typography.Text>
+                      <Typography.Text type="secondary">
+                        实际证据引用：{item.candidate_evidence_refs?.join("、") || "无"}；
+                        缺失初始证据：{item.missing_initial_evidence_refs?.join("、") || "无"}；
+                        父节点：{item.candidate_parent_candidate_ids?.join("、") || "无"}；
+                        缺失父节点：{item.missing_parent_candidate_ids?.join("、") || "无"}。
+                      </Typography.Text>
+                      {item.raw_response_excerpt && (
+                        <Typography.Paragraph
+                          code
+                          ellipsis={{ rows: 4, expandable: true, symbol: "展开实际输出" }}
+                          style={{ marginBottom: 0, whiteSpace: "pre-wrap" }}
+                        >
+                          {item.raw_response_excerpt}
+                        </Typography.Paragraph>
+                      )}
+                    </Space>
+                  ))}
                 </Space>
               )}
               style={{ marginBottom: 12 }}
@@ -757,6 +787,13 @@ function DiagnosisDetail({ detail }) {
                       缺失父节点：{item.missing_parent_candidate_ids?.join("、") || "无"}。
                     </Typography.Text>
                   ))}
+                  {candidateGenerationOutput.initial_evidence_context?.evidence_snapshots
+                    && Object.entries(candidateGenerationOutput.initial_evidence_context.evidence_snapshots).map(([ref, snapshot]) => (
+                      <Typography.Text type="secondary" key={`initial-snapshot-${ref}`}>
+                        初始证据 {ref}：{snapshot?.family || "unknown"} / {snapshot?.status || "unknown"}；
+                        {snapshot?.observed_excerpt || "无摘要"}。
+                      </Typography.Text>
+                    ))}
                   {candidateGenerationOutput.status !== "succeeded"
                     && candidateGenerationOutput.accepted_candidate_ids?.length === 0
                     && (
@@ -834,6 +871,24 @@ function DiagnosisDetail({ detail }) {
                         {heapProbeOutcome.failure_type ? `；失败类型：${heapProbeOutcome.failure_type}` : ""}
                       </Typography.Text>
                       {heapProbeOutcome.reason && <Typography.Text type="secondary">{heapProbeOutcome.reason}</Typography.Text>}
+                      {heapProbeOutcome.blocked_reason && (
+                        <Typography.Text type="secondary">边界原因：{heapProbeOutcome.blocked_reason}</Typography.Text>
+                      )}
+                      {heapProbeOutcome.retry_skipped_reason && (
+                        <Typography.Text type="secondary">重试状态：{heapProbeOutcome.retry_skipped_reason}</Typography.Text>
+                      )}
+                      {heapProbeOutcome.helper_trace?.completed_phases?.length > 0 && (
+                        <Typography.Text type="secondary">
+                          现场阶段：{heapProbeOutcome.helper_trace.completed_phases.join(" -> ")}
+                        </Typography.Text>
+                      )}
+                      {heapProbeOutcome.attach_preflight?.target_pid && (
+                        <Typography.Text type="secondary">
+                          Attach 预检：PID {heapProbeOutcome.attach_preflight.target_pid}；
+                          PID namespace {String(heapProbeOutcome.attach_preflight.same_pid_namespace ?? "unknown")}；
+                          helper {heapProbeOutcome.attach_preflight.helper_available ? "可用" : "不可用"}。
+                        </Typography.Text>
+                      )}
                     </Space>
                   )}
                 />
@@ -848,14 +903,33 @@ function DiagnosisDetail({ detail }) {
               description={(
                 <Space direction="vertical" size={4}>
                   {gateFailures.map((item, index) => (
-                    <Typography.Text key={`${item.candidate_id}-${item.failure_code}-${index}`}>
-                      {item.candidate_id || "未命名候选"}：{item.reason || item.failure_code}；
-                      状态 {item.status || "unknown"} / {item.causal_status || "unknown"}；
-                      候选证据 {item.evidence_refs?.length || 0} 条；
-                      初始证据 {item.initial_evidence_refs?.length || 0} 条；
-                      缺失引用 {item.missing_initial_evidence_refs?.join(", ") || "无"}；
-                      缺失父节点 {item.missing_parent_candidate_ids?.join(", ") || "无"}。
-                    </Typography.Text>
+                    <Space
+                      direction="vertical"
+                      size={2}
+                      style={{ width: "100%" }}
+                      key={`${item.candidate_id}-${item.failure_code}-${index}`}
+                    >
+                      <Typography.Text>
+                        {item.candidate_id || "未命名候选"}：{item.reason || item.failure_code}；
+                        状态 {item.status || "unknown"} / {item.causal_status || "unknown"}；
+                        保留来源父节点 {item.retained_parent_candidate_id || item.origin_parent_candidate_id || "无"}。
+                      </Typography.Text>
+                      <Typography.Text type="secondary">
+                        失败门禁：{item.failed_gates?.join("、") || "未提供"}；
+                        候选证据 {item.evidence_refs?.length || 0} 条；
+                        初始证据 {item.initial_evidence_refs?.length || 0} 条；
+                        缺失引用 {item.missing_initial_evidence_refs?.join(", ") || "无"}；
+                        缺失父节点 {item.missing_parent_candidate_ids?.join(", ") || "无"}。
+                      </Typography.Text>
+                      {item.initial_evidence_context?.evidence_windows
+                        && Object.entries(item.initial_evidence_context.evidence_windows).map(([ref, window]) => (
+                          <Typography.Text type="secondary" key={`gate-window-${item.candidate_id}-${ref}`}>
+                            {ref} 窗口：{window?.timing_relation || "unknown"}
+                            {window?.window_start ? `，${window.window_start}` : ""}
+                            {window?.window_end ? ` 至 ${window.window_end}` : ""}。
+                          </Typography.Text>
+                        ))}
+                    </Space>
                   ))}
                 </Space>
               )}

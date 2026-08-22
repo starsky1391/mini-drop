@@ -136,6 +136,7 @@ def _initial_evidence_context(evidence_catalog: list[dict], valid_refs: set[str]
     families: dict[str, str] = {}
     statuses: dict[str, str] = {}
     snapshots: dict[str, dict[str, str]] = {}
+    windows: dict[str, dict[str, str]] = {}
     for item in evidence_catalog:
         if not isinstance(item, dict):
             continue
@@ -177,6 +178,21 @@ def _initial_evidence_context(evidence_catalog: list[dict], valid_refs: set[str]
             json.dumps(item.get("observed_value") or {}, ensure_ascii=False, sort_keys=True, default=str),
             500,
         )
+        observed_window = observed.get("evidence_window")
+        if not isinstance(observed_window, dict):
+            observed_window = summary.get("evidence_window")
+        if isinstance(observed_window, dict):
+            windows[ref] = {
+                key: str(observed_window[key])
+                for key in (
+                    "collection_mode",
+                    "timing_relation",
+                    "window_start",
+                    "window_end",
+                    "evidence_cohort_id",
+                )
+                if observed_window.get(key) is not None
+            }
         snapshots[ref] = {
             "family": families[ref],
             "status": statuses[ref],
@@ -187,6 +203,7 @@ def _initial_evidence_context(evidence_catalog: list[dict], valid_refs: set[str]
         "evidence_families": dict(sorted(families.items())[:128]),
         "evidence_statuses": dict(sorted(statuses.items())[:128]),
         "evidence_snapshots": dict(sorted(snapshots.items())[:128]),
+        "evidence_windows": dict(sorted(windows.items())[:128]),
     }
 
 

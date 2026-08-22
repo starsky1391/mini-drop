@@ -81,7 +81,7 @@ function ControlledAITreeGraphInner({ tree, evidenceMap, highlightedCandidateIds
           <Tag color="gold">停止边界</Tag>
         </Space>
         <Typography.Text type="secondary">
-          Hover 看节点反问，点击节点或探针边查看完整证据。
+          主树只展示显性父子血缘；探针历史、回退和孤儿节点仅在下方审计区查看。
         </Typography.Text>
       </div>
       {sourceGraph.orphanNodes?.length > 0 && (
@@ -91,6 +91,9 @@ function ControlledAITreeGraphInner({ tree, evidenceMap, highlightedCandidateIds
           message={`数据质量：${sourceGraph.orphanNodes.length} 个节点缺少可用父节点（未进入主树）`}
           description={(
             <Space direction="vertical" size={2}>
+              <Typography.Text type="secondary">
+                这些记录没有被静默接到 coarse，也不代表当前正式根因。
+              </Typography.Text>
               {sourceGraph.orphanNodes.map((node) => (
                 <Typography.Text key={node.id}>
                   {node.data?.candidate?.candidate_id || node.data?.title}：
@@ -330,6 +333,10 @@ async function layoutGraph(graph) {
   const layoutNodes = graph.nodes.filter((node) => node.data?.layoutRole !== "annotation");
   const annotationNodes = graph.nodes.filter((node) => node.data?.layoutRole === "annotation");
   const layoutEdges = graph.layoutEdges || graph.edges.filter((edge) => edge.data?.layoutRole === "tree");
+  const visibleEdges = graph.edges.filter((edge) => (
+    edge.data?.layoutRole === "tree"
+    || edge.data?.kind === "boundary"
+  ));
   const elkGraph = {
     id: "root",
     layoutOptions: {
@@ -364,7 +371,7 @@ async function layoutGraph(graph) {
     });
     return {
       nodes: placeAnnotationNodes(positionedLayoutNodes, annotationNodes),
-      edges: graph.edges.filter((edge) => edge.data?.layoutRole === "tree"),
+      edges: visibleEdges,
     };
   } catch {
     const fallbackLayoutNodes = layoutNodes.map((node, index) => ({
@@ -376,7 +383,7 @@ async function layoutGraph(graph) {
     }));
     return {
       nodes: placeAnnotationNodes(fallbackLayoutNodes, annotationNodes),
-      edges: graph.edges.filter((edge) => edge.data?.layoutRole === "tree"),
+      edges: visibleEdges,
     };
   }
 }
@@ -391,6 +398,12 @@ async function getElk() {
 
 function placeAnnotationNodes(layoutedNodes, annotationNodes) {
   if (!annotationNodes.length) return layoutedNodes;
+  const nodesByCandidateId = new Map(
+    layoutedNodes
+      .map((node) => [node.data?.candidate?.candidate_id, node])
+      .filter(([candidateId]) => candidateId),
+  );
+  const siblingOffsets = new Map();
   const bounds = layoutedNodes.reduce((acc, node) => {
     const x = node.position?.x || 0;
     const y = node.position?.y || 0;
@@ -410,6 +423,22 @@ function placeAnnotationNodes(layoutedNodes, annotationNodes) {
   return [
     ...layoutedNodes,
     ...annotationNodes.map((node) => {
+      const candidate = node.data?.candidate || {};
+      const parentId = candidate.origin_parent_candidate_id
+        || candidate.parent_candidate_ids?.[0]
+        || "";
+      const parent = nodesByCandidateId.get(parentId);
+      if (parent) {
+        const offset = siblingOffsets.get(parentId) || 0;
+        siblingOffsets.set(parentId, offset + 1);
+        return {
+          ...node,
+          position: {
+            x: (parent.position?.x || 0) + NODE_SIZE.width + 52,
+            y: (parent.position?.y || 0) + offset * (NODE_SIZE.height + 24),
+          },
+        };
+      }
       const positioned = {
         ...node,
         position: { x: anchorX, y: nextY },

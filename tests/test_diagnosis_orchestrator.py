@@ -3059,6 +3059,53 @@ def test_missing_candidate_provenance_is_orphan_not_coarse_fallback():
     assert result.node_type == "orphan"
 
 
+def test_unparented_alternative_stays_orphan_unless_explicitly_independent():
+    base = {
+        "classification": "self_code_or_process_pressure",
+        "summary": "目标进程存在异常压力，仍需继续核验。",
+        "supported_level": "process",
+        "confidence": 0.3,
+        "evidence_refs": ["ev-rss"],
+        "conclusion_eligible": False,
+    }
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-alternative-provenance",
+        cluster_assessment=base,
+        candidates=[{
+            "candidate_id": "unbound-alternative",
+            "description": "没有来源的备选",
+            "root_entity": "worker",
+            "max_supported_level": "process",
+            "relation": "alternative",
+            "evidence_refs": ["ev-rss"],
+        }, {
+            "candidate_id": "independent-alternative",
+            "description": "明确独立的备选",
+            "root_entity": "worker",
+            "max_supported_level": "process",
+            "relation": "alternative",
+            "independent": True,
+            "evidence_refs": ["ev-rss"],
+        }],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+    )
+    nodes = {
+        node.candidate_id: node
+        for layer in tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    }
+    assert nodes["unbound-alternative"].node_type == "orphan"
+    assert nodes["unbound-alternative"].parent_candidate_ids == []
+    assert nodes["independent-alternative"].parent_candidate_ids == [tree.emitted_coarse_ids[0]]
+
+
 def test_session_tree_preserves_single_source_hash_and_rejects_revision_conflict():
     kwargs = {
         "diagnosis_id": "diag-source",

@@ -319,6 +319,7 @@ def collect_ai_gate_failures(
     session_tree: dict[str, Any] | None,
     *,
     valid_evidence_refs: set[str] | None = None,
+    evidence_catalog: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Expose why AI-originated nodes did not enter formal conclusions."""
     if not isinstance(session_tree, dict):
@@ -358,9 +359,60 @@ def collect_ai_gate_failures(
             parent_id for parent_id in ai_node.parent_candidate_ids
             if parent_id not in known_ids
         ]
+        known_refs = set(valid_evidence_refs or set())
+        evidence_windows = _evidence_windows_for_refs(
+            ai_node.evidence_refs,
+            evidence_catalog or [],
+        )
+        has_verified_window = any(
+            str(window.get("timing_relation") or "unknown") != "unknown"
+            and (
+                window.get("window_start") is not None
+                or window.get("window_end") is not None
+                or window.get("evidence_cohort_id")
+            )
+            for window in evidence_windows.values()
+        )
+        parent_is_declared = ai_node.relation == "root" or bool(ai_node.parent_candidate_ids)
+        gate_checks = {
+            "source_is_ai": ai_node.generated_by in {"ai_candidate", "ai_guarded"},
+            "candidate_id": bool(ai_node.candidate_id),
+            "evidence_refs": bool(ai_node.evidence_refs),
+            "evidence_refs_exist": not (
+                valid_evidence_refs is not None
+                and any(ref not in known_refs for ref in ai_node.evidence_refs)
+            ),
+            "target": bool(ai_node.target.strip()),
+            "window": has_verified_window,
+            "supported_level": bool(ai_node.supported_level),
+            "mechanism": bool(ai_node.mechanism.strip()),
+            "causal_status": ai_node.causal_status == "supported",
+            "decision": ai_node.decision == "conclude",
+            "required_probe": bool(
+                ai_node.self_challenge.missing_evidence
+                or ai_node.self_challenge.what_would_change_my_mind
+                or ai_node.evidence_refs
+            ),
+            "parent_exists": parent_is_declared and not missing_parents,
+            "origin_parent": bool(
+                ai_node.relation == "root"
+                or (
+                    ai_node.origin_parent_candidate_id
+                    and ai_node.origin_parent_candidate_id in ai_node.parent_candidate_ids
+                    and ai_node.origin_parent_candidate_id in known_ids
+                )
+            ),
+            "causal_chain": bool(
+                ai_node.self_challenge.why_this_claim.strip()
+                and ai_node.evidence_refs
+            ),
+        }
         if not eligible or missing_parents:
             evidence_refs = _unique(ai_node.evidence_refs)
-            known_refs = set(valid_evidence_refs or set())
+            failed_gates = [
+                key for key, passed in gate_checks.items()
+                if not passed
+            ]
             failures.append({
                 "candidate_id": ai_node.candidate_id,
                 "failure_code": "missing_parent" if missing_parents else "eligibility_gate",
@@ -371,13 +423,102 @@ def collect_ai_gate_failures(
                 "supported_level": ai_node.supported_level,
                 "evidence_refs": evidence_refs,
                 "valid_initial_evidence_refs": sorted(known_refs)[:256],
+                "initial_evidence_context": _initial_evidence_context_for_refs(
+                    ai_node.evidence_refs,
+                    evidence_catalog or [],
+                ),
                 "missing_initial_evidence_refs": sorted(
                     ref for ref in evidence_refs if ref not in known_refs
                 )[:128],
+                "evidence_windows": evidence_windows,
                 "parent_candidate_ids": list(ai_node.parent_candidate_ids),
                 "missing_parent_candidate_ids": missing_parents,
+                "gate_checks": gate_checks,
+                "failed_gates": failed_gates,
+                "required_probe": list(ai_node.self_challenge.missing_evidence),
+                "target": ai_node.target,
+                "mechanism": ai_node.mechanism,
+                "origin_parent_candidate_id": ai_node.origin_parent_candidate_id,
             })
     return failures
+
+
+def _evidence_windows_for_refs(
+    refs: Iterable[str],
+    evidence_catalog: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    catalog_by_ref: dict[str, dict[str, Any]] = {}
+    for item in evidence_catalog:
+        if not isinstance(item, dict):
+            continue
+        for key in ("evidence_id", "evidence_ref", "raw_artifact_ref", "derived_artifact_ref"):
+            value = str(item.get(key) or "").strip()
+            if value:
+                catalog_by_ref[value] = item
+
+    result: dict[str, dict[str, Any]] = {}
+    for ref in _unique(refs):
+        item = catalog_by_ref.get(str(ref))
+        if item is None:
+            continue
+        observed = item.get("observed_value")
+        observed = observed if isinstance(observed, dict) else {}
+        summary = observed.get("summary")
+        summary = summary if isinstance(summary, dict) else {}
+        candidates = (
+            item.get("evidence_window"),
+            observed.get("evidence_window"),
+            summary.get("evidence_window"),
+            observed.get("evidence_index"),
+            summary.get("evidence_index"),
+        )
+        window = next(
+            (value for value in candidates if isinstance(value, dict)),
+            {},
+        )
+        if window:
+            result[str(ref)] = {
+                key: window[key]
+                for key in (
+                    "collection_mode",
+                    "timing_relation",
+                    "window_start",
+                    "window_end",
+                    "evidence_cohort_id",
+                )
+                if key in window
+            }
+    return result
+
+
+def _initial_evidence_context_for_refs(
+    refs: Iterable[str],
+    evidence_catalog: list[dict[str, Any]],
+) -> dict[str, Any]:
+    windows = _evidence_windows_for_refs(refs, evidence_catalog)
+    return {
+        "evidence_refs": _unique(refs),
+        "evidence_windows": windows,
+        "evidence_statuses": {
+            str(ref): str(
+                (
+                    (
+                        next(
+                            (
+                                item for item in evidence_catalog
+                                if isinstance(item, dict)
+                                and str(item.get("evidence_id") or item.get("evidence_ref") or "") == str(ref)
+                            ),
+                            {},
+                        ).get("data_quality")
+                        or {}
+                    ).get("completeness")
+                    or "unknown"
+                )
+            )
+            for ref in _unique(refs)
+        },
+    }
 
 
 def collect_candidate_generation_gate_failures(
