@@ -88,7 +88,7 @@ function ControlledAITreeGraphInner({ tree, evidenceMap, highlightedCandidateIds
         <Alert
           type="warning"
           showIcon
-          message={`数据质量：${sourceGraph.orphanNodes.length} 个节点缺少可用父节点`}
+          message={`数据质量：${sourceGraph.orphanNodes.length} 个节点缺少可用父节点（未进入主树）`}
           description={(
             <Space direction="vertical" size={2}>
               {sourceGraph.orphanNodes.map((node) => (

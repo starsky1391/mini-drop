@@ -156,6 +156,11 @@ def replay_report(report: dict[str, Any]) -> dict[str, Any]:
     assessment = latest.get("cluster_assessment") if isinstance(latest.get("cluster_assessment"), dict) else {}
     anchor = assessment.get("primary_anchor") if isinstance(assessment.get("primary_anchor"), dict) else {}
     candidate_review = latest.get("candidate_review") if isinstance(latest.get("candidate_review"), dict) else {}
+    candidate_generation_output = (
+        latest.get("candidate_generation_output")
+        if isinstance(latest.get("candidate_generation_output"), dict)
+        else {}
+    )
     candidate_validation = (
         latest.get("candidate_validation_diagnostics")
         if isinstance(latest.get("candidate_validation_diagnostics"), list)
@@ -183,7 +188,10 @@ def replay_report(report: dict[str, Any]) -> dict[str, Any]:
     tree_summary = _tree_summary(tree)
     ai_candidate_ids = tree_summary["ai_candidate_ids"]
 
-    gate_failures = []
+    gate_failures = [
+        item for item in (latest.get("gate_failures") or [])
+        if isinstance(item, dict)
+    ]
     if not ai_candidate_ids:
         gate_failures.append({
             "gate": "ai_candidate_generation",
@@ -232,6 +240,23 @@ def replay_report(report: dict[str, Any]) -> dict[str, Any]:
             },
         })
 
+    deduped_gate_failures = []
+    seen_gate_failures = set()
+    for item in gate_failures:
+        if not isinstance(item, dict):
+            continue
+        key = (
+            str(item.get("gate") or ""),
+            str(item.get("failure_code") or item.get("status") or ""),
+            str(item.get("candidate_id") or ""),
+            str(item.get("reason") or ""),
+        )
+        if key in seen_gate_failures:
+            continue
+        seen_gate_failures.add(key)
+        deduped_gate_failures.append(item)
+    gate_failures = deduped_gate_failures
+
     return {
         "replay_scope": "existing_report_only",
         "answer_sources_used": [],
@@ -257,7 +282,13 @@ def replay_report(report: dict[str, Any]) -> dict[str, Any]:
             "attempts": candidate_review.get("candidate_generation_attempts", []),
             "validation_diagnostics": candidate_validation,
             "initial_evidence_context": candidate_review.get("initial_evidence_context", {}),
+            "output": candidate_generation_output,
             "candidate_proposals": candidate_review.get("candidate_proposals", []),
+        },
+        "investigation_review": {
+            "status": (latest.get("investigation_review") or {}).get("ai_review_status"),
+            "selected_evidence_families": (latest.get("investigation_review") or {}).get("selected_evidence_families", []),
+            "probe_inputs": (latest.get("investigation_review") or {}).get("probe_inputs", {}),
         },
         "line_probe": [
             {
@@ -290,6 +321,17 @@ def replay_report(report: dict[str, Any]) -> dict[str, Any]:
             )
         ],
         "gate_failures": gate_failures,
+        "line_anchor_eligibility": (
+            tree.get("line_anchor_eligibility", {})
+            if isinstance(tree, dict)
+            else {}
+        ),
+        "heap_probe_outcome": (
+            tree.get("heap_probe_outcome", {})
+            if isinstance(tree, dict)
+            else {}
+        ),
+        "retained_parent_conclusions": latest.get("retained_parent_conclusions", []),
         "final_state": {
             "diagnosis_status": detail.get("status"),
             "runner_status": diagnosis.get("runner_status"),

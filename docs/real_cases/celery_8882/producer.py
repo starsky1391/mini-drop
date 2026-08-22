@@ -53,7 +53,7 @@ def wait_for_worker_event(event: str, *, batch: int | None = None, timeout: floa
     raise TimeoutError(f"worker did not emit {event} for batch {batch}")
 
 
-def main() -> None:
+def _run() -> None:
     warmup_count = max(0, int(os.environ.get("CELERY_WARMUP_COUNT", "1000")))
     failure_count = max(1, int(os.environ.get("CELERY_FAILURE_COUNT", "1000")))
     failure_batches = max(1, int(os.environ.get("CELERY_FAILURE_BATCHES", "2")))
@@ -106,10 +106,28 @@ def main() -> None:
         if batch < failure_batches:
             time.sleep(settle_seconds)
     emit(
+        "workload_complete",
+        submitted_failures=submitted_failures,
+        submitted_controls=submitted_controls,
+        completed_batches=failure_batches,
+    )
+    emit(
         "producer_complete",
         submitted_failures=submitted_failures,
         submitted_controls=submitted_controls,
     )
+
+
+def main() -> None:
+    try:
+        _run()
+    except Exception as exc:
+        emit(
+            "producer_failed",
+            error_type=type(exc).__name__,
+            error=str(exc)[:500],
+        )
+        raise
 
 
 if __name__ == "__main__":

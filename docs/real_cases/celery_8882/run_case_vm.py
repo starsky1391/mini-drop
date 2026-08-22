@@ -414,6 +414,8 @@ def run_stage(
             remote.run(
                 f"for attempt in $(seq 1 {completion_timeout}); do "
                 f"grep -q 'producer_complete' {evidence_root}/producer_observations.ndjson 2>/dev/null && exit 0; "
+                f"grep -q 'producer_failed' {evidence_root}/producer_observations.ndjson 2>/dev/null && "
+                "echo 'producer reported workload failure' >&2 && exit 1; "
                 "sleep 1; done; "
                 "echo 'producer did not complete the workload' >&2; exit 1",
                 timeout=completion_timeout + 30,

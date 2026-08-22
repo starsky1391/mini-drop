@@ -723,6 +723,17 @@ function DiagnosisDetail({ detail }) {
                       AI 候选：{candidateGenerationOutput.accepted_candidate_ids.join("、")}
                     </Typography.Text>
                   )}
+                  {candidateGenerationOutput.accepted_candidates?.length > 0 && (
+                    <Space direction="vertical" size={2} style={{ width: "100%" }}>
+                      {candidateGenerationOutput.accepted_candidates.map((item) => (
+                        <Typography.Text key={`accepted-candidate-${item.candidate_id}`}>
+                          {item.candidate_id}：{item.claim || "未提供候选说明"}
+                          {"；"}父节点：{item.origin_parent_candidate_id || item.parent_candidate_ids?.join("、") || "无"}
+                          {"；"}缺失证据：{item.missing_evidence?.join("、") || "无"}
+                        </Typography.Text>
+                      ))}
+                    </Space>
+                  )}
                   {candidateGenerationOutput.active_candidate_ids?.length > 0 && (
                     <Typography.Text type="secondary">
                       本轮进入深探：{candidateGenerationOutput.active_candidate_ids.join("、")}

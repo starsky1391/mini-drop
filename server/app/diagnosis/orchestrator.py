@@ -1535,6 +1535,20 @@ class DiagnosisOrchestrator:
                 if investigation_review.get("ai_review_status") == "succeeded":
                     followup_requests = list(investigation_review.get("selected_evidence_families") or followup_requests)
                     session_controlled_tree = _apply_investigation_review(session_controlled_tree, investigation_review)
+        # Plan the selected follow-up before composing the persisted conclusion.
+        # This makes blocked input/provenance and collector failures part of the
+        # same conclusion instead of appearing only in a later event stream.
+        if followup_requests and tasks:
+            probe_inputs = _merge_probe_input_maps(
+                (candidate_review or {}).get("probe_inputs") if isinstance(candidate_review, dict) else {},
+                (investigation_review or {}).get("probe_inputs") if isinstance(investigation_review, dict) else {},
+            )
+            self._plan_followup_requests(
+                diagnosis_id,
+                followup_requests,
+                tasks[-1],
+                probe_inputs=probe_inputs,
+            )
         tree_payload = session_controlled_tree.model_dump(mode="json") if session_controlled_tree else None
         valid_session_evidence_refs = {
             str(item.get(key) or "")
@@ -1552,6 +1566,11 @@ class DiagnosisOrchestrator:
             *collect_ai_gate_failures(
                 tree_payload,
                 valid_evidence_refs=valid_session_evidence_refs,
+            ),
+            *_collect_probe_gate_failures(
+                self.store.list_probes(diagnosis_id),
+                (self.store.get_detail(diagnosis_id) or {}).get("events", []),
+                initial_evidence_refs=valid_session_evidence_refs,
             ),
         ]
         session_tree_payload = session_controlled_tree.model_dump(mode="json") if session_controlled_tree else None
@@ -1743,17 +1762,6 @@ class DiagnosisOrchestrator:
         }
         self._append_conclusion(diagnosis_id, conclusion)
         self._update_hypotheses(diagnosis_id, hypothesis_candidates)
-        if followup_requests and tasks:
-            probe_inputs = _merge_probe_input_maps(
-                (candidate_review or {}).get("probe_inputs") if isinstance(candidate_review, dict) else {},
-                (investigation_review or {}).get("probe_inputs") if isinstance(investigation_review, dict) else {},
-            )
-            self._plan_followup_requests(
-                diagnosis_id,
-                followup_requests,
-                tasks[-1],
-                probe_inputs=probe_inputs,
-            )
         return True
 
     @staticmethod
@@ -1878,6 +1886,10 @@ class DiagnosisOrchestrator:
                 if isinstance((probe_inputs or {}).get(evidence_gap), dict)
                 else {}
             )
+            deep_candidate_id, origin_parent_candidate_id = _followup_provenance(
+                evidence_gap,
+                guarded_probe_input,
+            )
             if evidence_gap == "source_mechanism_query" and not _source_mechanism_input_ready(
                 guarded_probe_input,
                 collector_parameters,
@@ -1889,6 +1901,9 @@ class DiagnosisOrchestrator:
                         "evidence_gap": evidence_gap,
                         "probe_id": probe_id,
                         "target_instance_id": target_key,
+                        "candidate_id": deep_candidate_id,
+                        "origin_parent_candidate_id": origin_parent_candidate_id,
+                        "query_spec_hash": _guarded_query_spec_hash(guarded_probe_input),
                         "reason": "缺少受控 AI 查询、受管理 SARIF 或显式受管理 query suite",
                     },
                 )
@@ -1907,10 +1922,6 @@ class DiagnosisOrchestrator:
                     },
                 )
                 continue
-            deep_candidate_id, origin_parent_candidate_id = _followup_provenance(
-                evidence_gap,
-                guarded_probe_input,
-            )
             provenance_required = bool(guarded_probe_input) or evidence_gap in {
                 "source_mechanism_query",
                 "python_heap_reference",
@@ -1932,6 +1943,7 @@ class DiagnosisOrchestrator:
                         "evidence_gap": evidence_gap,
                         "candidate_id": deep_candidate_id,
                         "origin_parent_candidate_id": origin_parent_candidate_id,
+                        "target_instance_id": target_key,
                         "reason": "深探任务必须绑定唯一来源父节点，禁止从候选顺序推断。",
                     },
                 )
@@ -5039,6 +5051,7 @@ def _build_session_controlled_ai_tree(
     unknown_nodes: list[AITreeCandidateNode] = []
     line_refinement_nodes: list[AITreeCandidateNode] = []
     coarse_id = f"coarse_{cluster_assessment.get('classification') or 'assessment'}"
+    explicit_source_parent_ids: dict[str, str] = {}
 
     seen_candidate_ids: set[str] = set()
     for item in candidates:
@@ -5061,6 +5074,8 @@ def _build_session_controlled_ai_tree(
         ).strip()
         if candidate_origin_parent == "coarse_insufficient_evidence":
             candidate_origin_parent = coarse_id
+        if candidate_origin_parent:
+            explicit_source_parent_ids[candidate_id] = candidate_origin_parent
         if candidate_origin_parent and candidate_origin_parent not in candidate_parent_ids:
             candidate_parent_ids.append(candidate_origin_parent)
         candidate_relation = str(item.get("relation") or "").strip()
@@ -5581,7 +5596,17 @@ def _build_session_controlled_ai_tree(
         _attach_coarse_parent_if_missing(node, coarse_id)
         for node in unknown_nodes
     ]
-    observation_nodes = [_ensure_explicit_origin(node) for node in observation_nodes]
+    observation_nodes = [
+        _ensure_explicit_origin(
+            node
+            if node.parent_candidate_ids
+            else _attach_observation_parent(
+                node,
+                explicit_source_parent_ids.get(node.candidate_id, ""),
+            )
+        )
+        for node in observation_nodes
+    ]
     if has_verified_line_anchor:
         emitted_line_parent = next(
             (
@@ -5597,7 +5622,7 @@ def _build_session_controlled_ai_tree(
             observation_nodes = [
                 _ensure_explicit_origin(
                     node
-                    if node.parent_candidate_ids
+                    if node.parent_candidate_ids and node.origin_parent_candidate_id == emitted_line_parent
                     else _attach_observation_parent(node, emitted_line_parent)
                 )
                 for node in observation_nodes
@@ -6240,6 +6265,7 @@ def _candidate_generation_output(review: dict[str, Any] | None) -> dict[str, Any
             "status": "not_started",
             "attempts": [],
             "accepted_candidate_ids": [],
+            "accepted_candidates": [],
             "rejected_candidate_ids": [],
             "active_candidate_ids": [],
             "deferred_candidate_ids": [],
@@ -6261,6 +6287,26 @@ def _candidate_generation_output(review: dict[str, Any] | None) -> dict[str, Any
         for item in proposals
         if isinstance(item, dict) and item.get("candidate_id")
     ]
+    accepted_candidates = []
+    for item in proposals:
+        if not isinstance(item, dict) or not item.get("candidate_id"):
+            continue
+        accepted_candidates.append({
+            "candidate_id": str(item.get("candidate_id")),
+            "claim": str(item.get("claim") or "")[:1000],
+            "mechanism": str(item.get("mechanism") or "")[:240],
+            "target": str(item.get("target") or "")[:240],
+            "role": str(item.get("role") or "unknown"),
+            "relation": str(item.get("relation") or ""),
+            "supported_level": str(item.get("supported_level") or "resource"),
+            "decision": str(item.get("decision") or ""),
+            "causal_status": str(item.get("causal_status") or ""),
+            "evidence_refs": _unique_strings(item.get("evidence_refs", []))[:128],
+            "missing_evidence": _unique_strings(item.get("missing_evidence", []))[:32],
+            "parent_candidate_ids": _unique_strings(item.get("parent_candidate_ids", []))[:32],
+            "origin_parent_candidate_id": str(item.get("origin_parent_candidate_id") or ""),
+            "probe_requests": _unique_strings(item.get("probe_requests", []))[:16],
+        })
     rejected_ids = [
         str(item.get("candidate_id"))
         for item in validation_diagnostics
@@ -6271,6 +6317,7 @@ def _candidate_generation_output(review: dict[str, Any] | None) -> dict[str, Any
         "error": str(review.get("ai_review_error") or "")[:500],
         "attempts": attempts,
         "accepted_candidate_ids": accepted_ids,
+        "accepted_candidates": accepted_candidates,
         "rejected_candidate_ids": list(dict.fromkeys(rejected_ids)),
         "active_candidate_ids": [
             str(value)
@@ -7197,6 +7244,140 @@ def _heap_probe_outcome(probes: list[dict[str, Any]]) -> dict[str, Any]:
             or (outcome.get("evidence_validity") or {}).get("retry_attempted")
         ),
     }
+
+
+def _collect_probe_gate_failures(
+    probes: list[dict[str, Any]],
+    events: list[dict[str, Any]] | None = None,
+    *,
+    initial_evidence_refs: set[str] | list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Expose blocked follow-up work as first-class gate diagnostics."""
+    failures: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add(
+        *,
+        gate: str,
+        failure_code: str,
+        reason: str,
+        candidate_id: str = "",
+        origin_parent_candidate_id: str = "",
+        evidence_refs: list[str] | None = None,
+        status: str = "blocked",
+        actual_value: str = "",
+        probe_id: str = "",
+    ) -> None:
+        key = (gate, failure_code, candidate_id)
+        if key in seen:
+            return
+        seen.add(key)
+        failures.append({
+            "stage": "followup_probe",
+            "gate": gate,
+            "failure_code": failure_code,
+            "candidate_id": candidate_id,
+            "probe_id": probe_id,
+            "reason": str(reason or "深探没有形成可用证据。")[:500],
+            "actual_value": str(actual_value or "")[:240],
+            "status": status,
+            "evidence_refs": _unique_strings(evidence_refs or []),
+            "initial_evidence_refs": sorted({
+                str(ref) for ref in (initial_evidence_refs or set()) if str(ref)
+            })[:256],
+            "missing_initial_evidence_refs": [],
+            "parent_candidate_id": origin_parent_candidate_id,
+            "origin_parent_candidate_id": origin_parent_candidate_id,
+            "retained_parent_candidate_id": origin_parent_candidate_id,
+            "conclusion_eligible": False,
+        })
+
+    for event in events or []:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("event_type") or "")
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if event_type == "followup_probe_input_missing":
+            add(
+                gate=str(payload.get("evidence_gap") or "followup_probe"),
+                failure_code="missing_guarded_probe_input",
+                reason=str(payload.get("reason") or ""),
+                candidate_id=str(payload.get("candidate_id") or ""),
+                origin_parent_candidate_id=str(payload.get("origin_parent_candidate_id") or ""),
+                actual_value=str(payload.get("query_spec_hash") or "missing"),
+                probe_id=str(payload.get("probe_id") or ""),
+            )
+        elif event_type == "followup_probe_provenance_missing":
+            add(
+                gate=str(payload.get("evidence_gap") or "followup_probe"),
+                failure_code="missing_probe_provenance",
+                reason=str(payload.get("reason") or ""),
+                candidate_id=str(payload.get("candidate_id") or ""),
+                origin_parent_candidate_id=str(payload.get("origin_parent_candidate_id") or ""),
+            )
+        elif event_type == "followup_probe_blocked":
+            add(
+                gate=str(payload.get("evidence_gap") or "followup_probe"),
+                failure_code="probe_budget_or_policy_blocked",
+                reason=str(payload.get("reason") or payload.get("blocked_reason") or ""),
+                actual_value=str(payload.get("execution_policy") or ""),
+            )
+        elif event_type == "followup_round_limit_reached":
+            add(
+                gate="followup_round",
+                failure_code="followup_round_limit_reached",
+                reason=str(payload.get("reason") or "已达到深探轮次上限。"),
+                actual_value=str(payload.get("followup_round") or ""),
+            )
+
+    for probe in probes:
+        if not isinstance(probe, dict):
+            continue
+        status = str(probe.get("status") or "").upper()
+        evidence_status = str(probe.get("evidence_status") or "").lower()
+        if status not in {
+            "FAILED",
+            "BLOCKED",
+            "UNAVAILABLE",
+            "REJECTED_POLICY",
+            "TIMED_OUT",
+            "TIMEOUT",
+        } and evidence_status not in {
+            "failed",
+            "blocked",
+            "empty_window",
+            "unparseable",
+            "target_exit",
+        }:
+            continue
+        parameters = probe.get("parameters") if isinstance(probe.get("parameters"), dict) else {}
+        outcome = probe.get("outcome") if isinstance(probe.get("outcome"), dict) else {}
+        gate = str(parameters.get("evidence_gap") or probe.get("probe_id") or "followup_probe")
+        add(
+            gate=gate,
+            failure_code=(
+                "collector_evidence_failed"
+                if status in {"FAILED", "TIMED_OUT", "TIMEOUT"} or evidence_status in {"failed", "unparseable"}
+                else "collector_evidence_blocked"
+            ),
+            reason=str(
+                probe.get("reason")
+                or outcome.get("reason")
+                or (outcome.get("evidence_validity") or {}).get("detail")
+                or "深探采集未形成有效证据。"
+            ),
+            candidate_id=str(parameters.get("candidate_id") or ""),
+            origin_parent_candidate_id=str(parameters.get("origin_parent_candidate_id") or ""),
+            evidence_refs=_unique_strings(
+                probe.get("evidence_refs")
+                or outcome.get("evidence_refs")
+                or []
+            ),
+            status=status.lower() or evidence_status or "blocked",
+            actual_value=evidence_status,
+            probe_id=str(probe.get("probe_id") or ""),
+        )
+    return failures
 
 
 def _best_supported_level(*levels: Any) -> str:

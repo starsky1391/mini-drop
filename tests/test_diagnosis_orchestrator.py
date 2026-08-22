@@ -957,6 +957,111 @@ def test_session_tree_places_runtime_observations_under_base_candidate():
     assert "stop_boundary_python_runtime_stack_hotspot" not in tree.final_unknown_causes
 
 
+def test_observation_source_parent_is_preserved_when_node_enters_observation_layer():
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-observation-source-parent",
+        cluster_assessment={
+            "classification": "self_code_or_process_pressure",
+            "summary": "运行时观察需要挂到显式来源。",
+            "supported_level": "function",
+            "confidence": 0.4,
+            "evidence_refs": ["ev-stack"],
+        },
+        candidates=[
+            {
+                "candidate_id": "python_runtime_stack_hotspot",
+                "rank": 1,
+                "description": "运行时栈观察",
+                "source_candidate_id": "celery-worker",
+                "evidence_refs": ["ev-stack"],
+                "max_supported_level": "function",
+            },
+            {
+                "candidate_id": "celery-worker",
+                "rank": 2,
+                "description": "worker 基础定位",
+                "evidence_refs": ["ev-stack"],
+                "max_supported_level": "function",
+            },
+        ],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+    )
+
+    assert tree is not None
+    observation = next(
+        node
+        for layer in tree.layers
+        for node in layer.unknown_causes
+        if node.candidate_id == "python_runtime_stack_hotspot"
+    )
+    assert observation.node_type == "observation"
+    assert observation.parent_candidate_ids == ["celery-worker"]
+    assert observation.origin_parent_candidate_id == "celery-worker"
+
+
+def test_probe_gate_failure_is_promoted_to_top_level_diagnostic():
+    failures = orchestrator_module._collect_probe_gate_failures(
+        [],
+        [{
+            "event_type": "followup_probe_input_missing",
+            "payload": {
+                "evidence_gap": "source_mechanism_query",
+                "probe_id": "process_source_mechanism_query",
+                "candidate_id": "ai_proposal_trace",
+                "origin_parent_candidate_id": "verified_line_trace",
+                "reason": "缺少受控查询参数",
+            },
+        }],
+    )
+
+    assert failures == [{
+        "stage": "followup_probe",
+        "gate": "source_mechanism_query",
+        "failure_code": "missing_guarded_probe_input",
+        "candidate_id": "ai_proposal_trace",
+        "probe_id": "process_source_mechanism_query",
+        "reason": "缺少受控查询参数",
+        "actual_value": "missing",
+        "status": "blocked",
+        "evidence_refs": [],
+        "initial_evidence_refs": [],
+        "missing_initial_evidence_refs": [],
+        "parent_candidate_id": "verified_line_trace",
+        "origin_parent_candidate_id": "verified_line_trace",
+        "retained_parent_candidate_id": "verified_line_trace",
+        "conclusion_eligible": False,
+    }]
+
+
+def test_candidate_generation_output_includes_bounded_accepted_candidate_claims():
+    output = orchestrator_module._candidate_generation_output({
+        "ai_review_status": "succeeded",
+        "candidate_proposals": [{
+            "candidate_id": "ai_candidate_memory",
+            "claim": "RSS 增长需要堆证据验证",
+            "mechanism": "python_heap_growth",
+            "target": "worker",
+            "role": "unknown",
+            "relation": "refinement",
+            "supported_level": "function",
+            "decision": "needs_more_evidence",
+            "causal_status": "needs_more_evidence",
+            "evidence_refs": ["ev-rss"],
+            "missing_evidence": ["python_heap_profile"],
+            "parent_candidate_ids": ["coarse_memory"],
+            "origin_parent_candidate_id": "coarse_memory",
+            "probe_requests": ["python_heap_profile"],
+        }],
+        "initial_evidence_context": {"evidence_refs": ["ev-rss"]},
+    })
+
+    assert output["accepted_candidate_ids"] == ["ai_candidate_memory"]
+    assert output["accepted_candidates"][0]["claim"] == "RSS 增长需要堆证据验证"
+    assert output["accepted_candidates"][0]["origin_parent_candidate_id"] == "coarse_memory"
+
+
 def test_audit_structured_evidence_merges_task_families_without_last_empty_task_erasing_signals():
     evidence = [
         {
