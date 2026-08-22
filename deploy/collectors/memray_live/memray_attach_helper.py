@@ -8,6 +8,7 @@ import importlib.metadata
 import json
 import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
@@ -154,6 +155,7 @@ def _target_capture_path(host_pid: int) -> tuple[Path, Path]:
 
 def _run_memray_attach(
     *,
+    nsenter: str,
     host_pid: int,
     target_capture: Path,
     target_source: Path,
@@ -182,7 +184,7 @@ def _run_memray_attach(
                 "from memray.commands import main",
                 f"_native.__file__ = {str(target_native)!r}",
                 "sys.argv = [",
-                "  'memray', 'attach', '--method', 'gdb', '--force',",
+                "  'memray', 'attach', '--method', 'gdb', '--verbose', '--force',",
                 "  '--no-compress', '--output',",
                 f"  {str(target_capture)!r}, '--duration', {str(duration)!r},",
                 f"  {str(host_pid)!r},",
@@ -193,12 +195,38 @@ def _run_memray_attach(
         encoding="utf-8",
     )
     try:
-        result = subprocess.run(
-            [sys.executable, str(script)],
-            capture_output=True,
-            timeout=duration + 45,
-            check=False,
+        process = subprocess.Popen(
+            [
+                nsenter,
+                "-t",
+                str(host_pid),
+                "-n",
+                "--",
+                sys.executable,
+                str(script),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
         )
+        try:
+            stdout, stderr = process.communicate(timeout=duration + 45)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            stdout, stderr = process.communicate()
+            result = subprocess.CompletedProcess(
+                process.args,
+                124,
+                stdout=stdout,
+                stderr=stderr + b"\nmemray_attach_process_timeout",
+            )
+        else:
+            result = subprocess.CompletedProcess(
+                process.args,
+                process.returncode,
+                stdout=stdout,
+                stderr=stderr,
+            )
         if result.returncode == 0:
             source = target_source
             if source.is_file() and source.stat().st_size > 0:
@@ -253,6 +281,7 @@ def main() -> int:
         staged = _stage_memray_runtime(args.pid, runtime["purelib"])
         target_capture, visible_capture = _target_capture_path(args.pid)
         result = _run_memray_attach(
+            nsenter=nsenter,
             host_pid=args.pid,
             target_capture=visible_capture,
             target_source=target_capture,
