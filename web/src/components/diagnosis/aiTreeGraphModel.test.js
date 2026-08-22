@@ -197,6 +197,7 @@ test("mechanism and stop nodes keep their explicit local parents", () => {
   assert.ok(baseToMechanism);
   assert.equal(coarseToMechanism, undefined);
   assert.ok(localStopEdge);
+  assert.equal(graph.layoutEdges.some((edge) => edge.target.endsWith("__stop-base-retention")), false);
   assert.equal(graph.nodes.some((node) => node.id === "tree_stop"), false);
 });
 
@@ -542,4 +543,34 @@ test("unparented runtime observations are data-quality orphans, never guessed in
   assert.equal(graph.orphanNodes.length, 2);
   assert.equal(graph.layoutEdges.length, 0);
   assert.equal(graph.edges.length, 0);
+});
+
+test("missing origin keeps a refinement out of the main tree even when a declared parent exists", () => {
+  const graph = buildControlledAITreeGraph({
+    final_supported_level: "process",
+    layers: [{
+      layer_id: "layer-0",
+      depth: 0,
+      unknown_causes: [candidate({
+        candidate_id: "coarse-root",
+        relation: "root",
+      })],
+    }, {
+      layer_id: "layer-1",
+      depth: 1,
+      unknown_causes: [candidate({
+        candidate_id: "refinement-without-origin",
+        relation: "refinement",
+        parent_candidate_ids: ["coarse-root", "other-root"],
+        origin_parent_candidate_id: "",
+        supported_level: "function",
+      })],
+    }],
+  });
+
+  assert.equal(graph.nodes.some((node) => (
+    node.data?.candidate?.candidate_id === "refinement-without-origin"
+  )), false);
+  assert.equal(graph.orphanNodes.length, 1);
+  assert.equal(graph.layoutEdges.length, 0);
 });

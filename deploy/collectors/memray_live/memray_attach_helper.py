@@ -13,7 +13,6 @@ import shutil
 import subprocess
 import sys
 import sysconfig
-import tempfile
 import uuid
 from pathlib import Path
 
@@ -76,6 +75,7 @@ def _target_python_runtime(nsenter: str, host_pid: int) -> dict[str, str]:
         "minor": str(version[1]),
         "purelib": purelib,
         "executable": executable,
+        "container_pid": str(_container_pid(host_pid)),
     }
 
 
@@ -153,10 +153,57 @@ def _target_capture_path(host_pid: int) -> tuple[Path, Path]:
     return target_root / relative, Path("/") / relative
 
 
+def _attach_script_content(
+    *,
+    target_capture: Path,
+    target_pid: int,
+    duration: int,
+    target_native: Path,
+) -> str:
+    return "\n".join(
+        [
+            "import memray",
+            "import memray._memray as _native",
+            "import sys",
+            "from memray.commands import main",
+            f"_native.__file__ = {str(target_native)!r}",
+            "sys.argv = [",
+            "  'memray', 'attach', '--method', 'gdb', '--verbose', '--force',",
+            "  '--no-compress', '--output',",
+            f"  {str(target_capture)!r}, '--duration', {str(duration)!r},",
+            f"  {str(target_pid)!r},",
+            "]",
+            "raise SystemExit(main())",
+        ]
+    )
+
+
+def _attach_namespace_command(
+    *,
+    nsenter: str,
+    host_pid: int,
+    target_executable: str,
+    visible_script: Path,
+) -> list[str]:
+    return [
+        nsenter,
+        "-t",
+        str(host_pid),
+        "-m",
+        "-p",
+        "-n",
+        "--",
+        target_executable,
+        str(visible_script),
+    ]
+
+
 def _run_memray_attach(
     *,
     nsenter: str,
     host_pid: int,
+    target_pid: int,
+    target_executable: str,
     target_capture: Path,
     target_source: Path,
     output: Path,
@@ -174,23 +221,16 @@ def _run_memray_attach(
             stderr=b"agent_memray_native_module_missing",
         )
     target_native = Path("/") / target_purelib.lstrip("/") / "memray" / native_candidates[0].name
-    script = Path(tempfile.mkstemp(prefix="mini-drop-memray-attach-", suffix=".py")[1])
-    script.write_text(
-        "\n".join(
-            [
-                "import memray",
-                "import memray._memray as _native",
-                "import sys",
-                "from memray.commands import main",
-                f"_native.__file__ = {str(target_native)!r}",
-                "sys.argv = [",
-                "  'memray', 'attach', '--method', 'gdb', '--verbose', '--force',",
-                "  '--no-compress', '--output',",
-                f"  {str(target_capture)!r}, '--duration', {str(duration)!r},",
-                f"  {str(host_pid)!r},",
-                "]",
-                "raise SystemExit(main())",
-            ]
+    script_name = f"mini-drop-memray-attach-{uuid.uuid4().hex}.py"
+    target_script = Path(f"/proc/{host_pid}/root/tmp") / script_name
+    visible_script = Path("/tmp") / script_name
+    target_script.parent.mkdir(parents=True, exist_ok=True)
+    target_script.write_text(
+        _attach_script_content(
+            target_capture=target_capture,
+            target_pid=target_pid,
+            duration=duration,
+            target_native=target_native,
         ),
         encoding="utf-8",
     )
@@ -214,15 +254,12 @@ def _run_memray_attach(
     signal.signal(signal.SIGINT, _terminate_child)
     try:
         process = subprocess.Popen(
-            [
-                nsenter,
-                "-t",
-                str(host_pid),
-                "-n",
-                "--",
-                sys.executable,
-                str(script),
-            ],
+            _attach_namespace_command(
+                nsenter=nsenter,
+                host_pid=host_pid,
+                target_executable=target_executable,
+                visible_script=visible_script,
+            ),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
@@ -255,7 +292,7 @@ def _run_memray_attach(
         signal.signal(signal.SIGTERM, previous_sigterm)
         signal.signal(signal.SIGINT, previous_sigint)
         try:
-            script.unlink()
+            target_script.unlink()
         except OSError:
             pass
 
@@ -290,8 +327,23 @@ def main() -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     staged: list[Path] = []
     target_capture: Path | None = None
+    result: subprocess.CompletedProcess | None = None
     try:
         runtime = _target_python_runtime(nsenter, args.pid)
+        target_pid = int(runtime["container_pid"])
+        print(
+            json.dumps(
+                {
+                    "phase": "runtime_resolved",
+                    "host_pid": args.pid,
+                    "target_pid": target_pid,
+                    "executable": runtime["executable"],
+                    "purelib": runtime["purelib"],
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
         if (
             runtime["major"] != str(sys.version_info.major)
             or runtime["minor"] != str(sys.version_info.minor)
@@ -299,10 +351,32 @@ def main() -> int:
             print("incompatible_python_runtime", flush=True)
             return 6
         staged = _stage_memray_runtime(args.pid, runtime["purelib"])
+        print(
+            json.dumps(
+                {"phase": "runtime_staged", "file_count": len(staged)},
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
         target_capture, visible_capture = _target_capture_path(args.pid)
+        print(
+            json.dumps(
+                {
+                    "phase": "attach_started",
+                    "host_pid": args.pid,
+                    "target_pid": target_pid,
+                    "duration": args.duration,
+                    "method": "gdb",
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
         result = _run_memray_attach(
             nsenter=nsenter,
             host_pid=args.pid,
+            target_pid=target_pid,
+            target_executable=runtime["executable"],
             target_capture=visible_capture,
             target_source=target_capture,
             output=output,
@@ -319,6 +393,9 @@ def main() -> int:
                 target_capture.unlink()
             except OSError:
                 pass
+    if result is None:
+        print("memray_attach_result_missing", flush=True)
+        return 10
     if result.returncode != 0:
         if result.stdout:
             print(

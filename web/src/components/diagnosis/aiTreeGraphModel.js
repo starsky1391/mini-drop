@@ -22,7 +22,10 @@ export const ROLE_LABELS = {
 export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = []) {
   if (
     tree?.renderable === false
-    || ["child_snapshot", "probe_history", "data_quality"].includes(tree?.tree_kind)
+    || (
+      tree?.tree_kind
+      && tree.tree_kind !== "session_main"
+    )
   ) {
     return {
       nodes: [],
@@ -45,6 +48,7 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
   const candidateIndex = new Map();
   const ambiguousCandidateIds = new Set();
   const duplicateCandidateIds = new Set();
+  const orphanCandidateIds = new Set();
   const layerIndex = new Map();
   const edgeKeys = new Set();
   const finalLevel = tree.final_supported_level || "resource";
@@ -74,6 +78,7 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
     const candidates = flattenLayerCandidates(layer);
     layerIndex.set(layer.layer_id, candidates);
     for (const candidate of candidates) {
+      const candidateId = String(candidate.candidate_id || "");
       const declaredParentIds = Array.isArray(candidate.parent_candidate_ids)
         ? candidate.parent_candidate_ids.filter(Boolean).map(String)
         : [];
@@ -82,15 +87,24 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
       const validDeclaredParentIds = declaredParentIds.filter((parentId) => (
         allCandidateCounts.has(parentId) && !duplicateCandidateIds.has(parentId)
       ));
-      const originParentId = String(candidate.origin_parent_candidate_id || "");
+      const originParentId = String(
+        candidate.origin_parent_candidate_id
+        || (declaredParentIds.length === 1 ? declaredParentIds[0] : "")
+        || "",
+      );
       const originParentIsValid = Boolean(originParentId && validDeclaredParentIds.includes(originParentId));
       const missingDeclaredParent = validDeclaredParentIds.length !== declaredParentIds.length;
+      const missingOrigin = !isRoot
+        && declaredParentIds.length > 0
+        && !originParentIsValid;
       const isOrphan = candidate.node_type === "orphan"
         || (["observation", "mechanism_explanation", "stop_boundary", "evidence_gap"].includes(candidate.node_type)
           && declaredParentIds.length === 0)
         || (candidate.relation && candidate.relation !== "root" && declaredParentIds.length === 0)
-        || (missingDeclaredParent && !originParentIsValid);
+        || (missingDeclaredParent && !originParentIsValid)
+        || missingOrigin;
       if (isOrphan) {
+        orphanCandidateIds.add(candidateId);
         const orphan = orphanNodeFor(
           layer,
           candidate,
@@ -113,6 +127,10 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
           : "unknown";
       const outsideFinalBoundary = isDeeperLevel(candidate.supported_level, finalLevel);
       const nodeId = nodeIdFor(layer.layer_id, candidate.candidate_id);
+      const nodeLayoutRole = candidate.node_type === "stop_boundary"
+        || candidate.depth_kind === "boundary"
+        ? "annotation"
+        : "tree";
       if (candidateIndex.has(candidate.candidate_id)) {
         ambiguousCandidateIds.add(candidate.candidate_id);
       } else {
@@ -127,7 +145,7 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
         type: "aiTreeNode",
         data: {
           nodeKind: "candidate",
-          layoutRole: "tree",
+          layoutRole: nodeLayoutRole,
           layerId: layer.layer_id,
           layerDepth: layer.depth,
           generatedBy: layer.generated_by,
@@ -182,6 +200,12 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
 
   for (const layer of layers) {
     for (const candidate of layerIndex.get(layer.layer_id) || []) {
+      const candidateId = String(candidate.candidate_id || "");
+      if (
+        candidate.node_type === "orphan"
+        || orphanCandidateIds.has(candidateId)
+        || duplicateCandidateIds.has(candidateId)
+      ) continue;
       const declaredParentIds = Array.isArray(candidate.parent_candidate_ids)
         ? candidate.parent_candidate_ids
         : [];
@@ -208,13 +232,15 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
           label: depthKind === "mechanism" ? "机制展开" : depthKind === "boundary" ? "证据边界" : "定位细化",
           data: {
             kind: depthKind === "mechanism" ? "mechanism" : depthKind === "boundary" ? "boundary" : "lineage",
-            layoutRole: "tree",
+            layoutRole: depthKind === "boundary" ? "annotation" : "tree",
             effect: "refine",
             parentCandidateId: parentId,
             candidateId: candidate.candidate_id,
           },
         })) {
-          layoutEdges.push(graphEdges[graphEdges.length - 1]);
+          if (depthKind !== "boundary") {
+            layoutEdges.push(graphEdges[graphEdges.length - 1]);
+          }
         }
       }
     }

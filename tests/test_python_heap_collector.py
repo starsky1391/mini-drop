@@ -242,6 +242,68 @@ def test_managed_helper_is_attempted_before_plain_memray_attach(tmp_path, monkey
     assert not any(command == "/usr/bin/memray" for command in calls[:1])
 
 
+def test_managed_helper_phase_trace_is_saved_in_heap_evidence(tmp_path, monkeypatch):
+    collector = PythonHeapCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    helper = tmp_path / "memray-helper-trace"
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    helper.chmod(0o755)
+    monkeypatch.setenv("MINI_DROP_MEMRAY_HELPER", str(helper))
+    task = CollectorTask(
+        id="heap-helper-trace",
+        collector_type="python_heap_profile",
+        target_pid=1234,
+        sample_rate=1,
+        duration_sec=5,
+        options={},
+    )
+    capture = tmp_path / "out" / task.id / "memray.bin"
+
+    def fake_run(command, **_kwargs):
+        if command[0] == str(helper):
+            capture.parent.mkdir(parents=True, exist_ok=True)
+            capture.write_bytes(b"memray")
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    b'{"phase":"runtime_resolved","host_pid":1234,"target_pid":17}\n'
+                    b'{"phase":"runtime_staged","file_count":4}\n'
+                    b'{"phase":"attach_started","method":"gdb"}\n'
+                ),
+                stderr=b"",
+            )
+        if "stats" in command:
+            stats_path = command[command.index("-o") + 1]
+            with open(stats_path, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "top_allocations_by_size": [{
+                        "location": "worker:worker.py:10",
+                        "size": 1,
+                        "count": 1,
+                    }],
+                }, handle)
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    with mock.patch("shutil.which", return_value="/usr/bin/memray"), mock.patch.object(
+        collector, "_pid_exists", return_value=True
+    ), mock.patch("subprocess.run", side_effect=fake_run):
+        result = collector.collect(task)
+
+    assert result.ok is True
+    payload = next(
+        item["metadata"]["data"]
+        for item in result.artifacts
+        if item["artifact_type"] == "python_heap_profile_json"
+    )
+    assert payload["attach_preflight"]["helper_trace"]["completed_phases"] == [
+        "runtime_resolved",
+        "runtime_staged",
+        "attach_started",
+    ]
+    assert payload["attach_preflight"]["helper_trace"]["events"][0]["target_pid"] == 17
+
+
 def test_memray_helper_can_run_when_cli_is_not_installed(tmp_path, monkeypatch):
     collector = PythonHeapCollector()
     collector.OUTPUT_BASE = str(tmp_path / "out")

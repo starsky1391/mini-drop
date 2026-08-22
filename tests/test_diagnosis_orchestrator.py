@@ -417,6 +417,145 @@ def test_successful_candidate_generation_keeps_analyzer_observation_distinct_fro
     assert ai_node.generated_by == "ai_candidate"
 
 
+def test_initial_ai_candidate_stays_investigation_only_even_if_model_says_conclude():
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag_initial_candidate_gate",
+        cluster_assessment={
+            "classification": "self_code_or_process_pressure",
+            "summary": "目标进程存在异常压力，仍需候选调查。",
+            "supported_level": "process",
+            "confidence": 0.35,
+            "evidence_refs": ["ev-rss"],
+            "conclusion_eligible": False,
+        },
+        candidates=[],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+    )
+
+    updated = orchestrator_module._apply_candidate_review(tree, {
+        "ai_review_status": "succeeded",
+        "active_candidate_ids": ["ai_candidate_premature"],
+        "candidate_proposals": [{
+            "candidate_id": "ai_candidate_premature",
+            "claim": "模型认为该路径可能解释异常。",
+            "mechanism": "premature_mechanism",
+            "target": "worker",
+            "supported_level": "process",
+            "decision": "conclude",
+            "causal_status": "supported",
+            "role": "primary",
+            "parent_candidate_ids": ["self_code_or_process_pressure"],
+            "origin_parent_candidate_id": "self_code_or_process_pressure",
+            "evidence_refs": ["ev-rss"],
+        }],
+    })
+
+    node = next(
+        node
+        for layer in updated.layers
+        for node in layer.unknown_causes + layer.primary_causes + layer.secondary_causes
+        if node.candidate_id == "ai_candidate_premature"
+    )
+    assert node.status == "missing_evidence"
+    assert node.causal_status == "unproven"
+    assert node.decision == "continue_probe"
+    assert node.conclusion_eligible is False
+
+
+def test_candidate_tree_ingestion_records_deferred_and_missing_parent_candidates():
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag_candidate_ingestion",
+        cluster_assessment={
+            "classification": "self_code_or_process_pressure",
+            "summary": "目标进程存在异常压力，仍需候选调查。",
+            "supported_level": "process",
+            "confidence": 0.35,
+            "evidence_refs": ["ev-rss"],
+            "conclusion_eligible": False,
+        },
+        candidates=[],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+    )
+    coarse_id = tree.emitted_coarse_ids[0]
+    review = {
+        "ai_review_status": "succeeded",
+        "active_candidate_ids": ["ai_candidate_active"],
+        "deferred_candidate_ids": ["ai_candidate_deferred"],
+        "candidate_proposals": [
+            {
+                "candidate_id": "ai_candidate_active",
+                "claim": "active 候选",
+                "mechanism": "runtime_path",
+                "target": "worker",
+                "supported_level": "process",
+                "role": "unknown",
+                "parent_candidate_ids": ["coarse_insufficient_evidence"],
+                "origin_parent_candidate_id": "coarse_insufficient_evidence",
+                "evidence_refs": ["ev-rss"],
+            },
+            {
+                "candidate_id": "ai_candidate_deferred",
+                "claim": "deferred 候选",
+                "mechanism": "broker_path",
+                "target": "broker",
+                "supported_level": "service",
+                "role": "unknown",
+                "parent_candidate_ids": [coarse_id],
+                "origin_parent_candidate_id": coarse_id,
+                "evidence_refs": ["ev-rss"],
+            },
+            {
+                "candidate_id": "ai_candidate_missing_parent",
+                "claim": "无父节点候选",
+                "mechanism": "unknown_path",
+                "target": "worker",
+                "supported_level": "process",
+                "role": "unknown",
+                "parent_candidate_ids": ["missing-parent"],
+                "origin_parent_candidate_id": "missing-parent",
+                "evidence_refs": ["ev-rss"],
+            },
+        ],
+    }
+
+    updated = orchestrator_module._apply_candidate_review(tree, review)
+
+    nodes = {
+        node.candidate_id
+        for layer in updated.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    }
+    assert "ai_candidate_active" in nodes
+    assert "ai_candidate_deferred" not in nodes
+    diagnostics = review["tree_ingestion_diagnostics"]
+    assert {
+        item["failure_code"]
+        for item in diagnostics
+    } == {"candidate_deferred_from_tree", "tree_parent_not_emitted"}
+    active = next(
+        node
+        for layer in updated.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+        if node.candidate_id == "ai_candidate_active"
+    )
+    assert active.parent_candidate_ids == [coarse_id]
+    assert active.origin_parent_candidate_id == coarse_id
+
+
 def test_verified_line_rewrites_emitted_parent_and_attaches_runtime_observations():
     tree = orchestrator_module._build_session_controlled_ai_tree(
         diagnosis_id="diag_line_parent_repair",
@@ -4800,3 +4939,34 @@ def test_dag_lineage_rejects_self_loop_and_missing_child_reference():
         orchestrator_module._validate_tree_lineage([
             AITreeLayer(layer_id="l0", depth=0, unknown_causes=[orphan])
         ])
+
+
+def test_dag_lineage_preserves_missing_parent_as_orphan_data_quality_node():
+    child = _dag_node("child", parents=["missing-parent"])
+    validated = orchestrator_module._validate_tree_lineage([
+        AITreeLayer(layer_id="l0", depth=0, unknown_causes=[_dag_node("root")]),
+        AITreeLayer(layer_id="l1", depth=1, unknown_causes=[child]),
+    ])
+
+    node = validated[1].unknown_causes[0]
+    assert node.node_type == "orphan"
+    assert node.parent_candidate_ids == ["missing-parent"]
+    assert node.origin_parent_candidate_id is None
+    assert "missing-parent" in node.eligibility_reason
+
+
+def test_dag_lineage_requires_unique_origin_for_multiple_real_parents():
+    child = _dag_node("merge", parents=["left", "right"])
+    child = child.model_copy(update={"origin_parent_candidate_id": None})
+    validated = orchestrator_module._validate_tree_lineage([
+        AITreeLayer(layer_id="l0", depth=0, unknown_causes=[
+            _dag_node("left"),
+            _dag_node("right"),
+        ]),
+        AITreeLayer(layer_id="l1", depth=1, unknown_causes=[child]),
+    ])
+
+    node = validated[1].unknown_causes[0]
+    assert node.node_type == "orphan"
+    assert node.parent_candidate_ids == ["left", "right"]
+    assert node.origin_parent_candidate_id is None

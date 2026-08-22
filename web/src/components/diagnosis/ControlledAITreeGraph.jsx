@@ -9,7 +9,7 @@ import {
   ReactFlow,
   ReactFlowProvider,
 } from "@xyflow/react";
-import { Alert, Drawer, Empty, Popover, Progress, Space, Tag, Typography } from "antd";
+import { Alert, Collapse, Drawer, Empty, Popover, Progress, Space, Tag, Typography } from "antd";
 import "@xyflow/react/dist/style.css";
 import "./ControlledAITreeGraph.css";
 import { buildControlledAITreeGraph, ROLE_LABELS } from "./aiTreeGraphModel";
@@ -122,6 +122,31 @@ function ControlledAITreeGraphInner({ tree, evidenceMap, highlightedCandidateIds
           <MiniMap pannable zoomable nodeColor={(node) => miniMapColor(node.data?.role)} />
         </ReactFlow>
       </div>
+      {(sourceGraph.historyEdges?.length > 0 || sourceGraph.dataQuality?.length > 0) && (
+        <Collapse
+          ghost
+          items={[{
+            key: "tree-audit",
+            label: `调查历史与数据质量（${sourceGraph.historyEdges?.length || 0} 条历史边，${sourceGraph.dataQuality?.length || 0} 条记录）`,
+            children: (
+              <Space direction="vertical" size={6} style={{ width: "100%" }}>
+                {sourceGraph.historyEdges?.map((edge) => (
+                  <Typography.Text key={`history-${edge.id}`}>
+                    {edge.label || edge.data?.kind || "历史边"}：
+                    {edge.data?.reason || edge.data?.status || "未说明"}
+                  </Typography.Text>
+                ))}
+                {sourceGraph.dataQuality?.map((item, index) => (
+                  <Typography.Text type="warning" key={`quality-${item.candidate_id || index}`}>
+                    数据质量：{item.candidate_id || item.title || "未命名节点"}；
+                    {item.claim || item.status || "父节点或节点关系无效"}。
+                  </Typography.Text>
+                ))}
+              </Space>
+            ),
+          }]}
+        />
+      )}
       <TreeDetailDrawer
         selected={selected}
         evidenceMap={evidenceMap}
@@ -339,7 +364,7 @@ async function layoutGraph(graph) {
     });
     return {
       nodes: placeAnnotationNodes(positionedLayoutNodes, annotationNodes),
-      edges: graph.edges,
+      edges: graph.edges.filter((edge) => edge.data?.layoutRole === "tree"),
     };
   } catch {
     const fallbackLayoutNodes = layoutNodes.map((node, index) => ({
@@ -351,7 +376,7 @@ async function layoutGraph(graph) {
     }));
     return {
       nodes: placeAnnotationNodes(fallbackLayoutNodes, annotationNodes),
-      edges: graph.edges,
+      edges: graph.edges.filter((edge) => edge.data?.layoutRole === "tree"),
     };
   }
 }

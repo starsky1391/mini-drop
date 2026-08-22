@@ -5997,6 +5997,7 @@ def _build_session_controlled_ai_tree(
         final_secondary_causes=final_secondary,
         final_rejected_causes=final_rejected,
         final_unknown_causes=final_unknown,
+        retained_candidate_id=retained_candidate_id or None,
         localization_chain=localization_chain,
     )
     guarded_tree = enforce_conclusion_eligibility(tree)
@@ -6173,21 +6174,47 @@ def _validate_tree_lineage(layers: list[AITreeLayer]) -> list[AITreeLayer]:
         for group_name in ("primary_causes", "secondary_causes", "rejected_causes", "unknown_causes"):
             nodes: list[AITreeCandidateNode] = []
             for node in getattr(layer, group_name):
-                parent_ids = [parent for parent in node.parent_candidate_ids if parent in emitted_ids]
-                origin = node.origin_parent_candidate_id
-                if origin not in emitted_ids:
-                    origin = None
-                if node.relation != "root" and not parent_ids:
+                declared_parent_ids = _unique_strings(node.parent_candidate_ids)
+                missing_parent_ids = [
+                    parent for parent in declared_parent_ids
+                    if parent not in emitted_ids
+                ]
+                parent_ids = [
+                    parent for parent in declared_parent_ids
+                    if parent in emitted_ids
+                ]
+                declared_origin = str(node.origin_parent_candidate_id or "").strip()
+                origin = declared_origin if declared_origin in emitted_ids else None
+                missing_origin = (
+                    node.relation != "root"
+                    and bool(declared_parent_ids)
+                    and origin is None
+                )
+                if node.relation != "root" and (
+                    not parent_ids
+                    or missing_parent_ids
+                    or missing_origin
+                    or len(parent_ids) > 1 and origin is None
+                ):
+                    missing_detail = _unique_strings([
+                        *missing_parent_ids,
+                        "origin_parent_candidate_id"
+                        if missing_origin
+                        else "",
+                    ])
                     node = node.model_copy(update={
                         "node_type": "orphan",
-                        "parent_candidate_ids": [],
+                        "parent_candidate_ids": declared_parent_ids,
                         "origin_parent_candidate_id": None,
                         "relation": node.relation,
                         "conclusion_eligible": False,
                         "claim_type": "abstention" if node.depth_kind == "base" else "partial_localization",
                         "causal_status": node.causal_status if node.depth_kind == "base" else "inconclusive",
                         "decision": node.decision if node.depth_kind == "base" else "abstain",
-                        "eligibility_reason": "缺少指向当前树已发出节点的显式来源父节点。",
+                        "eligibility_reason": (
+                            "缺少指向当前树已发出节点的显式来源父节点："
+                            + "、".join(missing_detail)
+                        ),
                     })
                 else:
                     if origin is None and len(parent_ids) == 1:
@@ -6270,6 +6297,7 @@ def _candidate_generation_output(review: dict[str, Any] | None) -> dict[str, Any
             "active_candidate_ids": [],
             "deferred_candidate_ids": [],
             "selection_diagnostics": [],
+            "tree_ingestion_diagnostics": [],
             "validation_diagnostics": [],
             "selected_evidence_families": [],
             "initial_evidence_context": {},
@@ -6331,6 +6359,9 @@ def _candidate_generation_output(review: dict[str, Any] | None) -> dict[str, Any
         ],
         "selection_diagnostics": list(
             review.get("candidate_selection_diagnostics") or []
+        ),
+        "tree_ingestion_diagnostics": list(
+            review.get("tree_ingestion_diagnostics") or []
         ),
         "validation_diagnostics": validation_diagnostics,
         "selected_evidence_families": [
@@ -6769,30 +6800,86 @@ def _mark_analyzer_fallback_tree(tree: ControlledAITree | None) -> ControlledAIT
 def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> ControlledAITree:
     """Attach first-round AI candidates to the existing canonical DAG."""
     proposals = review.get("candidate_proposals") if isinstance(review.get("candidate_proposals"), list) else []
+    ingestion_diagnostics: list[dict[str, Any]] = []
     if not proposals:
+        review["tree_ingestion_diagnostics"] = ingestion_diagnostics
         return enforce_conclusion_eligibility(tree)
     existing_ids = {
         node.candidate_id
         for layer in tree.layers
         for node in [*layer.primary_causes, *layer.secondary_causes, *layer.rejected_causes, *layer.unknown_causes]
     }
-    proposals = [
-        item for item in proposals
-        if str(item.get("candidate_id") or "") not in existing_ids
-        and all(str(parent_id) in existing_ids for parent_id in item.get("parent_candidate_ids", []))
-    ]
+    aliases = {
+        **dict(tree.coarse_aliases or {}),
+        "coarse_insufficient_evidence": (
+            tree.emitted_coarse_ids[0] if len(tree.emitted_coarse_ids) == 1 else ""
+        ),
+    }
     active_candidate_ids = {
         str(value)
         for value in review.get("active_candidate_ids", [])
         if str(value)
     }
-    if active_candidate_ids:
-        proposals = [
-            item
-            for item in proposals
-            if str(item.get("candidate_id") or "") in active_candidate_ids
+    eligible_proposals: list[dict[str, Any]] = []
+    for item in proposals:
+        candidate_id = str(item.get("candidate_id") or "")
+        parent_ids = [
+            aliases.get(str(parent_id), str(parent_id))
+            for parent_id in item.get("parent_candidate_ids", [])
+            if str(parent_id)
         ]
-    if not proposals or len(tree.layers) >= tree.budget.max_tree_depth:
+        origin = aliases.get(
+            str(item.get("origin_parent_candidate_id") or ""),
+            str(item.get("origin_parent_candidate_id") or ""),
+        )
+        if origin and origin not in parent_ids:
+            parent_ids.append(origin)
+        normalized_item = {
+            **item,
+            "parent_candidate_ids": list(dict.fromkeys(parent_ids)),
+            "origin_parent_candidate_id": origin or None,
+        }
+        if candidate_id in existing_ids:
+            ingestion_diagnostics.append({
+                "candidate_id": candidate_id,
+                "failure_code": "candidate_already_emitted",
+                "reason": "候选 ID 已存在于当前 session_main，未重复发出。",
+                "parent_candidate_ids": parent_ids,
+            })
+            continue
+        missing_parents = [parent_id for parent_id in parent_ids if parent_id not in existing_ids]
+        if missing_parents:
+            ingestion_diagnostics.append({
+                "candidate_id": candidate_id,
+                "failure_code": "tree_parent_not_emitted",
+                "reason": "AI 候选的父节点不在当前 emitted session_main 中，未接入主树。",
+                "parent_candidate_ids": parent_ids,
+                "missing_parent_candidate_ids": missing_parents,
+            })
+            continue
+        if active_candidate_ids and candidate_id not in active_candidate_ids:
+            ingestion_diagnostics.append({
+                "candidate_id": candidate_id,
+                "failure_code": "candidate_deferred_from_tree",
+                "reason": "候选结构有效，但本轮仅进入 deferred 审计集合，未消耗深探预算。",
+                "selection": "deferred",
+                "parent_candidate_ids": parent_ids,
+            })
+            continue
+        eligible_proposals.append(normalized_item)
+    proposals = eligible_proposals
+    if not proposals:
+        review["tree_ingestion_diagnostics"] = ingestion_diagnostics
+        return enforce_conclusion_eligibility(tree)
+    if len(tree.layers) >= tree.budget.max_tree_depth:
+        for item in proposals:
+            ingestion_diagnostics.append({
+                "candidate_id": str(item.get("candidate_id") or ""),
+                "failure_code": "tree_depth_budget_exhausted",
+                "reason": "当前 AI 树已达到最大深度，候选保留在 candidate_review，不进入主树。",
+                "parent_candidate_ids": list(item.get("parent_candidate_ids") or []),
+            })
+        review["tree_ingestion_diagnostics"] = ingestion_diagnostics
         return enforce_conclusion_eligibility(tree)
     valid_levels = {"resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"}
     valid_relations = {"root", "alternative", "refinement", "causal_convergence", "shared_evidence"}
@@ -6815,6 +6902,9 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
         role = str(item.get("role") or "unknown")
         if role not in {"primary", "secondary", "rejected", "unknown"}:
             role = "unknown"
+        raw_decision = str(item.get("decision") or "needs_more_evidence")
+        raw_causal_status = str(item.get("causal_status") or "needs_more_evidence")
+        is_rejected = role == "rejected" or raw_decision in {"reject", "reject_candidate"} or raw_causal_status in {"rejected", "contradicted"}
         nodes.append(AITreeCandidateNode(
                 candidate_id=str(item["candidate_id"]),
                 generated_by="ai_candidate",
@@ -6830,16 +6920,24 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
             claim=str(item["claim"]),
             supported_level=level,
             confidence=float(item.get("confidence") or 0.45),
-            status=str(item.get("status") or ("supported" if item.get("causal_status") == "supported" else "missing_evidence")),
-            claim_type=str(item.get("claim_type") or "likely_root_cause"),
-            causal_status={
-                "needs_more_evidence": "unproven",
-                "rejected": "contradicted",
-            }.get(str(item.get("causal_status") or "needs_more_evidence"), str(item.get("causal_status") or "needs_more_evidence")),
-            decision=str(item.get("decision") or "needs_more_evidence").replace("needs_more_evidence", "continue_probe").replace("reject", "reject_candidate"),
+            # First-round AI output is an investigation direction, never a
+            # formal conclusion. The original model decision/status remain in
+            # candidate_review for audit; only a later evidence回流 round may
+            # promote this node through the shared qualification gate.
+            status="rejected" if is_rejected else "missing_evidence",
+            claim_type="insufficient_for_root_cause" if is_rejected else "likely_root_cause",
+            causal_status="contradicted" if is_rejected else "unproven",
+            decision="reject_candidate" if is_rejected else "continue_probe",
             mechanism=str(item["mechanism"]),
             target=str(item["target"]),
             depth_kind="base",
+            conclusion_eligible=False,
+            eligibility_reason=(
+                "首轮 AI 候选只是调查方向；必须等待同候选深探证据回流后，"
+                "再由统一正式门禁判断是否可升级。"
+                if not is_rejected
+                else "首轮 AI 已将该方向标记为拒绝，保留为反证分支。"
+            ),
             evidence_refs=refs,
             self_challenge=AITreeSelfChallenge(
                 why_this_claim=str(item["claim"]),
@@ -6849,6 +6947,7 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
             ),
         ))
     if not nodes:
+        review["tree_ingestion_diagnostics"] = ingestion_diagnostics
         return enforce_conclusion_eligibility(tree)
     node_ids = {node.candidate_id for node in nodes}
     layers = []
@@ -6877,6 +6976,7 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
         unknown_causes=[node for node in nodes if node.role == "unknown"],
     )
     updated = tree.model_copy(update={"layers": [*layers, proposal_layer]})
+    review["tree_ingestion_diagnostics"] = ingestion_diagnostics
     return enforce_conclusion_eligibility(updated)
 
 

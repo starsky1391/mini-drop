@@ -1609,3 +1609,211 @@ heap live attach 不要求预加载，失败结构化降级并继续诊断
 普通真实 case 只跑 vulnerable-only 600s
 未形成正式根因时 abstention 字段一致
 ```
+
+## Task Group CF - Unified Closure: Tree, Heap and Candidate Diagnostics
+
+**Purpose**: 按当前真实 case 暴露的问题重新收口。CF 将代码契约、离线
+证据回放和 VM vulnerable-only 跑测分开，避免把旧的“本地测试通过”记录
+误当成真实 VM 验收完成。
+
+### CF001 - Canonical lineage and emitted-parent validation
+
+- [ ] 建立当前 `session_main` 的 emitted candidate index。
+- [ ] 将 `coarse_insufficient_evidence` 等概念 ID 映射到真实 emitted coarse ID。
+- [ ] 强制 `refinement`、`line_anchor`、`observation`、`mechanism`、
+  `boundary` 只能引用当前树中存在的父节点。
+- [ ] 无法解析来源时写入 `data_quality.missing_provenance/orphan`，不补 coarse。
+- [ ] line 节点增加真实父节点硬门禁，禁止使用 rank、layer 顺序或
+  `primary_nodes[0]`。
+
+### CF002 - Fallback and conclusion inheritance
+
+- [ ] 深探 `blocked/failed/partial/inconclusive/target_exit` 统一生成局部
+  boundary 子节点。
+- [ ] boundary 继承真实 origin parent 的 claim、evidence 和结论状态。
+- [ ] 子探针失败不得反证父节点；只有父节点被直接反证时才回退。
+- [ ] 来源父节点缺失时只输出 data-quality orphan 和 abstention。
+- [ ] 统一 `formal_root_cause`、`root_cause_clusters`、`causal_chain`、
+  `headline`、`confidence`、`abstained` 的资格来源。
+
+### CF003 - AI candidate output and gate diagnostics
+
+- [ ] 保存每次首轮、重试和调查轮的阶段、attempt、响应摘要 hash、候选数、
+  接受/拒绝/延后数量和失败状态。
+- [ ] 固定保存该次尝试看到的 initial evidence context、有效 refs、缺失 refs、
+  evidence status 和 emitted parent IDs。
+- [ ] 输出逐字段 gate checks，至少覆盖 source、candidate、evidence、target/window、
+  supported level、mechanism、causal status、decision、required probe 和 parent。
+- [ ] 单个候选失败不影响其他合法候选；只有全部候选失败才生成
+  `analyzer_fallback`。
+- [ ] Analyzer fallback 保持 unknown/partial_localization/unproven，
+  不得进入正式 root-cause cluster。
+- [ ] 前端和 audit 均展示“模型实际返回什么、为什么未过门禁、保留哪个父结论”。
+
+### CF004 - Runtime quality and line-probe closure
+
+- [ ] 为 `python_runtime_profile` 增加 sample-quality 字段和 idle/framework
+  状态分类。
+- [ ] 低质量 poll/select/epoll/sleep/event-loop 样本只能进入 observation。
+- [ ] 统一 evidence-family 到 registered probe 的映射，未知 family 生成结构化
+  失败而不创建虚假任务。
+- [ ] 实现 line-anchor eligibility：revision、file、line、runtime/source match、
+  source hash、window 和真实 parent。
+- [ ] `source_snapshot=valid` 仅证明源码可读；不通过 line 门禁时生成来源 boundary。
+- [ ] source mechanism 和 object-call-chain 只允许从 verified line 下钻。
+
+### CF005 - Live Memray and bounded heap fallback
+
+- [ ] 目标不预加载 Memray，Agent 使用 managed helper 在诊断窗口现场 attach。
+- [ ] 保存 PID/namespace/UID/ptrace/helper/runtime/output preflight。
+- [ ] 处理目标 Python runtime mismatch：优先进入目标 runtime，否则输出
+  `blocked/incompatible_python_runtime`。
+- [ ] 允许一次有界 retry，保存 stdout/stderr、exit code、failure type 和产物缺失原因。
+- [ ] 成功保存官方 `memray.bin`、stats/leaks 和结构化热点。
+- [ ] 失败继续 runtime、RSS/smaps 和 source follow-up，不生成 Python retention。
+- [ ] native live fallback 只能输出 `native_allocation_observation` partial。
+- [ ] 禁止 gc referrer、objgraph、Pympler 或自研对象图替代 Memray。
+
+### CF006 - Frontend main tree and diagnostic views
+
+- [ ] 主图只接受 `session_main/renderable=true`，只用显式 lineage edge 布局。
+- [ ] child snapshot、probe history、coarse summary edge 不进入主树骨架。
+- [ ] orphan、duplicate ID、invalid relation 进入 data-quality 区，不静默挂 coarse。
+- [ ] observation、line、mechanism、STOP、boundary 使用不同节点语义。
+- [ ] blocked/partial/inconclusive 不显示为 rejected；只有 contradicted/rejected 灰化。
+- [ ] 历史子树单独展示尝试、回退和停止原因，不改变当前主树。
+- [ ] 候选诊断区展示 attempt、实际输出、初始证据、失败字段、门禁和保留父结论。
+
+### CF007 - Verification, deployment and vulnerable-only run
+
+- [ ] 补齐后端、前端、heap、line eligibility、candidate diagnostics 和 audit round-trip
+  focused tests。
+- [ ] 运行 `compileall`、`git diff --check`、focused pytest 和前端 production build。
+- [ ] 提交并推送代码，不提交本地报告、临时回放、密钥或 VM 私有配置。
+- [ ] Control 和 Worker1 拉取同一 commit 并 rebuild 对应 mini-drop/Agent 容器。
+- [ ] Worker1 完成长寿命、未预加载 Memray 的 heap smoke，并保存真实产物或结构化边界。
+- [ ] 用最新 Celery `run.json` 做只读离线回放，不读取 issue、PR、fixed、Oracle 或答案。
+- [ ] 只运行 vulnerable-only Celery 600 秒真实 case；不运行 fixed、Oracle 或
+  `evaluate_case.py`。
+- [ ] 检查 producer barrier、诊断终态、主树父血缘、候选失败输出、line eligibility、
+  heap outcome、fallback retained parent 和 abstention 一致性。
+
+### CF Completion Criteria
+
+```text
+session_main 是唯一主布局输入
+line/refinement/observation/mechanism/boundary 的父节点真实存在
+概念 coarse ID 已归一化为 emitted coarse ID
+无来源节点显示 orphan，不伪造树边
+深探失败只产生局部 boundary 并继承父结论
+AI 部分成功不会切换 Analyzer fallback
+AI 全部失败时才生成 fallback，且不进入正式根因
+门禁失败能关联初始证据和实际返回
+line 探测失败有具体 eligibility 原因
+Heap attach 不要求目标预加载，失败后诊断继续
+前端主树、历史子树和数据质量区互不污染
+vulnerable-only 600s case 可形成完整运行终态
+```
+
+## Task Group CG - Final Integrated Closure (Authoritative)
+
+CG 是当前执行任务的唯一来源，覆盖前端树渲染、实时 Heap、AI 候选
+失败诊断、Line 探测、父结论回退和 vulnerable-only 真实跑测。CE/CF
+中的重复条目保留为历史记录；CG 完成前不得把方案标记为完成。
+
+### CG001 - Lock the evidence, lineage and conclusion contracts
+
+- [ ] CG001 [P] Update `server/app/rca/models.py` with the canonical fields and validation for `tree_kind`, `renderable`, `relation`, `parent_candidate_ids`, `origin_parent_candidate_id`, `line_anchor_eligibility`, `candidate_diagnostics`, `ai_gate_failures`, `heap_probe_outcome`, `retained_conclusion` and `data_quality`.
+- [ ] CG002 [P] Update `server/app/rca/controlled_tree.py` and `server/app/diagnosis/session_conclusion.py` so one eligibility result drives formal root cause, clusters, causal chain, headline, confidence and abstention.
+- [ ] CG003 [P] Add compatibility tests in `tests/test_rca.py`, `tests/test_session_conclusion.py` and `tests/test_diagnosis_orchestrator.py` for old reports containing `analyzer_fallback` and missing new fields.
+
+### CG002 - Restore canonical backend parent lineage
+
+- [ ] CG004 Build the emitted candidate index at the start of `_build_session_controlled_ai_tree()` in `server/app/diagnosis/orchestrator.py`.
+- [ ] CG005 Map `coarse_insufficient_evidence` and other conceptual IDs to the current emitted coarse candidate before persisting any child node in `server/app/diagnosis/orchestrator.py`.
+- [ ] CG006 Enforce real-parent resolution for `refinement`, `line_anchor`, `observation`, `mechanism`, `boundary`, `STOP` and object-call-chain nodes in `server/app/diagnosis/orchestrator.py`.
+- [ ] CG007 Remove parent inference from `primary_nodes[0]`, index order, rank, global most-specific candidate and `root_entity` in `server/app/diagnosis/orchestrator.py`; unresolved nodes must become `missing_provenance/orphan` data-quality records.
+- [ ] CG008 Allow `alternative/rejected_alternative` to attach to coarse only when the node explicitly declares an independent branch with a real emitted parent in `server/app/diagnosis/orchestrator.py`.
+- [ ] CG009 Add regression cases in `tests/test_diagnosis_orchestrator.py` for real emitted coarse parents, conceptual coarse mapping, cross-branch isolation, duplicate IDs, orphan nodes and line parent hard failures.
+
+### CG003 - Implement inherited fallback and local boundary semantics
+
+- [ ] CG010 Update fallback construction in `server/app/diagnosis/orchestrator.py` and `server/app/diagnosis/session_conclusion.py` so blocked, failed, partial, inconclusive, target-exit and timeout probes create only a local boundary under `origin_parent_candidate_id`.
+- [ ] CG011 Preserve the origin parent's claim, evidence refs, mechanism state and causal status in `retained_conclusion` in `server/app/diagnosis/session_conclusion.py`; do not create a new generic fallback claim.
+- [ ] CG012 Allow rollback to move upward only when the parent itself is directly contradicted in `server/app/diagnosis/orchestrator.py` and `server/app/diagnosis/session_conclusion.py`; a failed child probe must not invalidate its parent.
+- [ ] CG013 Make missing origin parent produce orphan plus abstention in `server/app/diagnosis/session_conclusion.py`, and keep `formal_root_cause`, clusters and causal chain empty.
+- [ ] CG014 Add tests in `tests/test_session_conclusion.py` for child failure, parent contradiction, retained parent identity, boundary rendering and no-eligible-candidate output.
+
+### CG004 - Make AI candidate failure explainable from initial evidence
+
+- [ ] CG015 Persist every candidate-generation and investigation attempt in `server/app/rca/llm_client.py` with phase, attempt, bounded actual output, response hash, candidate counts, accepted/rejected/deferred/active IDs and retry state.
+- [ ] CG016 Persist the exact initial evidence context, valid and missing evidence refs, evidence statuses and emitted parent IDs used by each attempt in `server/app/rca/llm_client.py`.
+- [ ] CG017 Emit field-level `gate_checks` for source, candidate ID, evidence refs, target/window, supported level, mechanism, causal status, decision, required probe, parent existence, origin parent and causal chain in `server/app/diagnosis/session_conclusion.py`.
+- [ ] CG018 Preserve valid sibling candidates when one candidate fails in `server/app/rca/llm_client.py`; cap active candidates only for probe scheduling; create `analyzer_fallback` only after all AI candidates and retries are unusable.
+- [ ] CG019 Keep fallback as `unknown + partial_localization + unproven + ineligible` and prevent it from entering formal clusters in `server/app/diagnosis/orchestrator.py`.
+- [ ] CG020 Add backend tests in `tests/test_diagnosis_orchestrator.py`, `tests/test_session_conclusion.py` and the existing LLM test module covering valid sibling retention, malformed candidate fields, retry exhaustion and evidence-based gate explanations.
+
+### CG005 - Close runtime quality and Line probe promotion
+
+- [ ] CG021 Add `sample_quality` production and normalization in `agent/mini_drop_agent/collectors/pyspy.py` and the runtime-profile consumer; classify idle loop, primitive frame, framework loop and target-code ratios.
+- [ ] CG022 Prevent low-quality poll/select/epoll/sleep/futex and single-tail samples from creating function, call-path or line candidates in `agent/mini_drop_agent/collectors/pyspy.py` and `server/app/diagnosis/orchestrator.py`; retain them as observations with a reason.
+- [ ] CG023 Make evidence-family mapping in `server/app/diagnosis/orchestrator.py` reject unknown probe families with structured diagnostics instead of creating non-executable tasks.
+- [ ] CG024 Implement and persist line-anchor eligibility for revision, file, positive line, runtime/source match, source hash, time window and real parent in `server/app/diagnosis/orchestrator.py`.
+- [ ] CG025 Emit a source/line boundary under the actual origin parent when `source_snapshot` is valid but line eligibility fails in `server/app/diagnosis/orchestrator.py`; do not treat source readability as line proof.
+- [ ] CG026 Permit source mechanism and object-call-chain probes only below a verified line anchor in `server/app/diagnosis/orchestrator.py` and `server/app/rca/llm_client.py`, and bind every result to the same candidate and origin parent.
+- [ ] CG027 Add focused line and runtime-quality tests in `tests/test_diagnosis_orchestrator.py` and `tests/test_session_conclusion.py`.
+
+### CG006 - Make Heap collection genuinely live and diagnosable
+
+- [ ] CG028 Keep Memray live attach as the Python heap primary path and ensure the target process does not preload Memray in `agent/mini_drop_agent/collectors/python_heap.py`.
+- [ ] CG029 Split `deploy/collectors/memray_live/memray_attach_helper.py` into observable preflight, runtime staging, attach-control and artifact-finalization phases.
+- [ ] CG030 Record PID/namespace/UID/ptrace/runtime/helper/output preflight, staged module paths, attach method, bounded stdout/stderr, exit code, process-group timeout and artifact state in `deploy/collectors/memray_live/memray_attach_helper.py` and `agent/mini_drop_agent/collectors/python_heap.py`.
+- [ ] CG031 Resolve target Python runtime and Memray native module compatibility before attach in `deploy/collectors/memray_live/memray_attach_helper.py`; classify mismatch, namespace, permission, target-exit, control-channel timeout and missing-artifact failures separately.
+- [ ] CG032 Keep one bounded retry, kill the entire helper process group on timeout, and never report Heap success without a valid official `memray.bin` or parseable official stats/leaks in `agent/mini_drop_agent/collectors/python_heap.py`.
+- [ ] CG033 Preserve RSS/smaps/runtime/source follow-up after Heap failure in `server/app/diagnosis/orchestrator.py`; native live fallback may only emit `native_allocation_observation` partial and must not claim Python retention or a line root cause.
+- [ ] CG034 Keep PyHeap as an explicit optional post-mortem/deep probe only in `agent/mini_drop_agent/collectors/python_heap_reference.py`; do not use tracemalloc, objgraph, `gc.get_referrers`, Pympler or a custom object graph as the default live replacement.
+- [ ] CG035 Extend `tests/test_python_heap_collector.py` and add helper-stage tests for no-preload attach, runtime mismatch, namespace/permission block, control timeout, retry, target exit, missing artifact and native partial fallback.
+
+### CG007 - Separate frontend main tree, history and diagnostics
+
+- [ ] CG036 Update `web/src/components/diagnosis/aiTreeGraphModel.js` so only `session_main/renderable=true` enters the primary layout and only explicit canonical lineage edges are layout edges.
+- [ ] CG037 Treat coarse summary/probe edges as annotations in `web/src/components/diagnosis/aiTreeGraphModel.js`, keep rollback/boundary edges out of the main hierarchy, and remove any index-0 or layer-order parent inference.
+- [ ] CG038 Keep `child_snapshot`, `probe_history`, orphan, duplicate ID and invalid-relation records outside the main tree in `web/src/components/diagnosis/ControlledAITreeGraph.jsx` while exposing them in dedicated audit/data-quality sections.
+- [ ] CG039 Render `line_anchor`, `observation`, `mechanism_explanation`, `stop_boundary`, `rejected_candidate` and orphan with distinct semantics in `web/src/components/diagnosis/ControlledAITreeGraph.jsx`; only contradicted/rejected use grey rejected styling.
+- [ ] CG040 Add the candidate diagnostics view in `web/src/pages/AIDiagnosis.jsx` for actual AI output, initial evidence, field failures, gate checks, line eligibility, heap outcome, retained parent and abstention.
+- [ ] CG041 Add/extend `web/src/components/diagnosis/aiTreeGraphModel.test.js` and diagnosis-page fixtures for cross-branch parents, history isolation, coarse summary edges, orphan visibility, local STOP and candidate failure explanations.
+
+### CG008 - Persist audit data and provide offline replay
+
+- [ ] CG042 Update `server/app/diagnosis/audit_bundle.py` and API serialization to preserve Analyzer facts, AI attempts, actual output summary, initial evidence, gate failures, probe outcomes, parent validation, line eligibility, Heap outcome, tree kind, data quality, retained conclusion and final eligibility.
+- [ ] CG043 Bind every follow-up result to diagnosis ID, parent task ID, candidate ID, origin parent, evidence family, probe ID and fingerprint in `server/app/diagnosis/audit_bundle.py` and `server/app/diagnosis/orchestrator.py`.
+- [ ] CG044 Update `docs/real_cases/celery_8882/replay_original_evidence.py` to read only the latest vulnerable `run.json` and explain why each candidate/gate/line/Heap step passed or failed from the saved initial evidence.
+- [ ] CG045 Ensure replay in `docs/real_cases/celery_8882/replay_original_evidence.py` never reads issue, PR, fixed revision, Oracle, evaluator answer or hidden test labels, and never mutates the original report.
+
+### CG009 - Validate, deploy and run the ordinary real case
+
+- [ ] CG046 Run focused backend, frontend, Heap, line-eligibility, candidate-diagnostic and audit round-trip tests from `tests/` and `web/`, plus `compileall`, `git diff --check` and frontend production build.
+- [ ] CG047 Review the repository diff at the repository root and commit only source, tests and required plan artifacts; exclude `reports/`, temporary replay files, credentials and VM-private configuration.
+- [ ] CG048 Push one commit, then have Control and Worker1 pull the exact commit and rebuild the corresponding mini-drop/Agent containers using the VM deployment scripts under `deploy/`.
+- [ ] CG049 Run Worker1's long-lived non-preloaded Python target Heap smoke using the real Worker1 Agent container and the deployment configuration; record official Memray artifacts or a structured capability boundary before the case run.
+- [ ] CG050 Run the ordinary Celery case through `docs/real_cases/celery_8882/run_case_vm.py` for vulnerable-only 600 seconds with real Redis, worker and native `apply_async()` producer; do not run fixed, Oracle or `evaluate_case.py`.
+- [ ] CG051 Verify the saved report under `reports/eval/real-open-source/` contains producer barrier, diagnosis terminal state, main-tree lineage, candidate diagnostics, line eligibility, Heap outcome, retained parent, history/data-quality records and consistent abstention fields.
+
+### CG Completion Criteria
+
+```text
+session_main is the only primary layout input
+every refinement/line/observation/mechanism/boundary parent is a real emitted node
+conceptual coarse IDs are normalized before persistence
+unresolved provenance is visible as orphan/data quality
+deep probe failure creates a local boundary and retains the source parent claim
+AI partial success keeps valid siblings; full failure alone creates fallback
+AI output and initial evidence explain every gate failure
+line promotion requires verified file:line eligibility
+mechanism and object-call-chain nodes are below verified line
+Memray live attach does not require target preload
+Heap failure is structured and does not stop runtime/source follow-up
+main tree, history, probe edges and data quality do not contaminate each other
+formal conclusion fields share one eligibility result
+ordinary real-case validation is vulnerable-only 600 seconds
+```

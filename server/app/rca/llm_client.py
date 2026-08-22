@@ -392,6 +392,22 @@ def generate_session_candidate_review(
             "evidence_gap",
         }
     } if session_tree else set()
+    emitted_coarse_ids = (
+        list(dict.fromkeys(
+            str(value)
+            for value in (session_tree.emitted_coarse_ids if session_tree else [])
+            if str(value)
+        ))
+        if session_tree
+        else []
+    )
+    if not emitted_coarse_ids and session_tree:
+        emitted_coarse_ids = [
+            node.candidate_id
+            for layer in session_tree.layers
+            for node in [*layer.primary_causes, *layer.secondary_causes, *layer.rejected_causes, *layer.unknown_causes]
+            if node.node_type in {"cluster_root", "coarse_candidate"}
+        ]
     payload = {
         "diagnosis_id": diagnosis_id,
         "fact_context": fact_context,
@@ -448,8 +464,16 @@ def generate_session_candidate_review(
                     if any(parent_id not in known_candidate_ids for parent_id in parent_ids):
                         raise ValueError("candidate parent_candidate_ids 不真实")
                     relation = str(item.get("relation") or "").strip()
-                    if not parent_ids and relation != "root":
+                    if not parent_ids and relation not in {"", "root"}:
                         raise ValueError("candidate parent_candidate_ids 缺少显式来源父节点")
+                    if not parent_ids and relation in {"", "root"}:
+                        if len(emitted_coarse_ids) == 1:
+                            parent_ids = [emitted_coarse_ids[0]]
+                            relation = "refinement"
+                        elif emitted_coarse_ids:
+                            raise ValueError("candidate root 父节点对应多个 emitted coarse，无法确定来源")
+                        else:
+                            raise ValueError("candidate root 没有可用的 emitted coarse 父节点")
                     decision = _normalize_initial_candidate_decision(item.get("decision"))
                     causal_status = _normalize_initial_candidate_status(item.get("causal_status"))
                     if not decision:

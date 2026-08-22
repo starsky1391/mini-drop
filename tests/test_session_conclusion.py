@@ -492,6 +492,70 @@ def test_ineligible_memory_fallback_is_possible_cause_not_confirmed_root():
     assert explanation["abstained"] is True
 
 
+def test_fallback_retains_emitted_tree_candidate_instead_of_diagnostic_claim():
+    assessment = _assessment(
+        classification="python_memory_retention",
+        diagnostic_claim="这段 Analyzer 文本不能直接成为正式根因。",
+        conclusion_eligible=False,
+        evidence_refs=["ev-rss"],
+    )
+    tree = {
+        "retained_candidate_id": "fallback-memory",
+        "layers": [{
+            "layer_id": "base",
+            "depth": 1,
+            "unknown_causes": [
+                {
+                    "candidate_id": "fallback-memory",
+                    "generated_by": "analyzer_fallback",
+                    "node_type": "base_cause",
+                    "depth_kind": "base",
+                    "relation": "alternative",
+                    "parent_candidate_ids": ["coarse"],
+                    "origin_parent_candidate_id": "coarse",
+                    "claim": "worker 异常任务压力导致 RSS 观察需要继续补证。",
+                    "supported_level": "process",
+                    "status": "missing_evidence",
+                    "claim_type": "partial_localization",
+                    "causal_status": "unproven",
+                    "decision": "continue_probe",
+                    "confidence": 0.3,
+                    "evidence_refs": ["ev-rss"],
+                },
+                {
+                    "candidate_id": "fallback-runtime",
+                    "generated_by": "analyzer_fallback",
+                    "node_type": "base_cause",
+                    "depth_kind": "base",
+                    "relation": "alternative",
+                    "parent_candidate_ids": ["coarse"],
+                    "origin_parent_candidate_id": "coarse",
+                    "claim": "runtime 路径仍需补证。",
+                    "supported_level": "process",
+                    "status": "missing_evidence",
+                    "claim_type": "partial_localization",
+                    "causal_status": "unproven",
+                    "decision": "continue_probe",
+                    "confidence": 0.2,
+                    "evidence_refs": ["ev-rss"],
+                },
+            ],
+        }],
+    }
+
+    explanation = build_fallback_explanation(
+        [],
+        assessment,
+        session_tree=tree,
+    )
+
+    assert explanation["retained_conclusion"]["candidate_id"] == "fallback-memory"
+    assert explanation["retained_conclusion"]["claim"] == tree["layers"][0]["unknown_causes"][0]["claim"]
+    assert explanation["headline"] == tree["layers"][0]["unknown_causes"][0]["claim"]
+    assert explanation["formal_root_cause"] is None
+    assert explanation["abstained"] is True
+
+
 def test_blocked_deep_probe_retains_parent_claim_and_separates_boundary():
     tree = {
         "layers": [{

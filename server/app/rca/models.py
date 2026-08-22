@@ -474,6 +474,7 @@ class ControlledAITree(BaseModel):
     final_secondary_causes: list[str] = Field(default_factory=list)
     final_rejected_causes: list[str] = Field(default_factory=list)
     final_unknown_causes: list[str] = Field(default_factory=list)
+    retained_candidate_id: Optional[str] = None
     localization_chain: list["CausalExplanationStep"] = Field(default_factory=list)
 
 

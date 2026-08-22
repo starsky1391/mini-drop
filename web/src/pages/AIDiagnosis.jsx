@@ -749,6 +749,14 @@ function DiagnosisDetail({ detail }) {
                       {item.candidate_id}：{item.selection}；{item.reason}
                     </Typography.Text>
                   ))}
+                  {candidateGenerationOutput.tree_ingestion_diagnostics?.map((item, index) => (
+                    <Typography.Text type="warning" key={`tree-ingestion-${item.candidate_id}-${index}`}>
+                      主树接入：{item.candidate_id || "未命名候选"}；
+                      {item.reason || item.failure_code || "未进入 session_main"}；
+                      父节点：{item.parent_candidate_ids?.join("、") || "无"}；
+                      缺失父节点：{item.missing_parent_candidate_ids?.join("、") || "无"}。
+                    </Typography.Text>
+                  ))}
                   {candidateGenerationOutput.status !== "succeeded"
                     && candidateGenerationOutput.accepted_candidate_ids?.length === 0
                     && (
@@ -762,7 +770,7 @@ function DiagnosisDetail({ detail }) {
               style={{ marginBottom: 12 }}
             />
           )}
-          {candidateGenerationOutput.initial_evidence_context?.evidence_refs?.length > 0 && (
+          {candidateGenerationOutput.status !== "not_started" && (
             <Alert
               type="info"
               showIcon
@@ -770,15 +778,22 @@ function DiagnosisDetail({ detail }) {
               description={(
                 <Space direction="vertical" size={4}>
                   <Typography.Text>
-                    AI 首轮只读取已有证据目录；合法引用 {candidateGenerationOutput.initial_evidence_context.evidence_refs.length} 条，
+                    AI 首轮只读取已有证据目录；合法引用 {candidateGenerationOutput.initial_evidence_context?.evidence_refs?.length || 0} 条，
                     生成候选 {candidateGenerationOutput.accepted_candidate_ids?.length || 0} 个，
                     延后调查 {candidateGenerationOutput.deferred_candidate_ids?.length || 0} 个。
                   </Typography.Text>
-                  <Space wrap>
-                    {candidateGenerationOutput.initial_evidence_context.evidence_refs.map((ref) => (
+                  {(candidateGenerationOutput.initial_evidence_context?.evidence_refs || []).length > 0 && (
+                    <Space wrap>
+                    {(candidateGenerationOutput.initial_evidence_context?.evidence_refs || []).map((ref) => (
                       <Tag key={ref} color={evidenceMap.has(ref) ? "blue" : "red"}>{ref}</Tag>
                     ))}
-                  </Space>
+                    </Space>
+                  )}
+                  {(candidateGenerationOutput.initial_evidence_context?.evidence_refs || []).length === 0 && (
+                    <Typography.Text type="warning">
+                      本轮没有可供 AI 候选引用的初始 evidence ref，无法通过证据引用门禁。
+                    </Typography.Text>
+                  )}
                   {candidateGenerationOutput.error && (
                     <Typography.Text type="secondary">{candidateGenerationOutput.error}</Typography.Text>
                   )}

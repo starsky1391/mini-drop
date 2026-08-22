@@ -85,10 +85,12 @@ class PythonHeapCollector:
                         task.duration_sec + 45,
                         process_group=True,
                     )
+                    helper_trace = self._helper_trace(result)
                     if result.returncode == 0 and capture.is_file() and capture.stat().st_size > 0:
                         attach_preflight = {
                             **preflight,
                             "attach_strategy": "managed_helper",
+                            "helper_trace": helper_trace,
                         }
                         retry = subprocess.CompletedProcess([], 0, stdout=b"", stderr=b"")
                     else:
@@ -124,6 +126,8 @@ class PythonHeapCollector:
                             attach_preflight = {
                                 **preflight,
                                 "attach_strategy": "managed_helper_then_memray_retry",
+                                "helper_trace": helper_trace,
+                                "retry_trace": self._helper_trace(retry),
                             }
                         elif native_live_tool:
                             return self._collect_native_live(
@@ -153,6 +157,8 @@ class PythonHeapCollector:
                                 preflight={
                                     **preflight,
                                     "attach_strategy": "managed_helper_then_memray_retry",
+                                    "helper_trace": helper_trace,
+                                    "retry_trace": self._helper_trace(retry),
                                 },
                             )
                 else:
@@ -606,6 +612,34 @@ class PythonHeapCollector:
         if stderr:
             parts.append(f"stderr: {stderr}")
         return "\n".join(parts)[:1200]
+
+    @staticmethod
+    def _helper_trace(result: subprocess.CompletedProcess) -> dict[str, Any]:
+        """Parse bounded phase JSON emitted by the managed attach helper."""
+        events: list[dict[str, Any]] = []
+        stdout = result.stdout.decode("utf-8", errors="replace") if isinstance(result.stdout, bytes) else str(result.stdout or "")
+        for line in stdout.splitlines():
+            if len(events) >= 16:
+                break
+            try:
+                value = json.loads(line)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(value, dict) or not value.get("phase"):
+                continue
+            events.append({
+                "phase": str(value.get("phase"))[:80],
+                **{
+                    str(key): value[key]
+                    for key in ("host_pid", "target_pid", "executable", "purelib", "duration", "method", "file_count")
+                    if key in value
+                },
+            })
+        return {
+            "events": events,
+            "completed_phases": list(dict.fromkeys(str(item["phase"]) for item in events)),
+            "last_phase": events[-1]["phase"] if events else "",
+        }
 
     @classmethod
     def _failure_detail(cls, result: subprocess.CompletedProcess, fallback: str) -> str:

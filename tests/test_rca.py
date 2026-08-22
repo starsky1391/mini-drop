@@ -162,6 +162,94 @@ def test_session_candidate_review_keeps_valid_candidates_when_one_candidate_is_i
     }
 
 
+def test_session_candidate_review_normalizes_root_candidate_to_emitted_coarse_parent():
+    evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
+    analysis = analyze_evidence(evidence, [])
+    coarse_ids = ["unknown_evidence_gap"]
+    analysis_tree = analysis.controlled_ai_tree.model_copy(update={
+        "emitted_coarse_ids": coarse_ids,
+        "coarse_aliases": {
+            "coarse_insufficient_evidence": coarse_ids[0],
+            coarse_ids[0]: coarse_ids[0],
+        },
+    })
+    assert len(coarse_ids) == 1
+    response = {
+        "probe_requests": [],
+        "candidates": [{
+            "candidate_id": "ai_candidate_root_alias",
+            "claim": "候选仍需沿当前粗粒度方向补证。",
+            "mechanism": "runtime_task_path",
+            "target": "worker",
+            "supported_level": "process",
+            "decision": "needs_more_evidence",
+            "causal_status": "needs_more_evidence",
+            "evidence_refs": ["ev-top"],
+            "relation": "root",
+        }],
+    }
+    with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key", "MINI_DROP_AI_ENABLED": "1"}), mock.patch(
+        "server.app.rca.llm_client._call_deepseek", return_value=json.dumps(response)
+    ):
+        result = generate_session_candidate_review(
+            diagnosis_id="diag-root-alias",
+            fact_context={},
+            session_tree=analysis_tree,
+            evidence_catalog=[{"evidence_id": "ev-top"}],
+            probe_manifest=build_probe_manifest(),
+        )
+
+    assert result["ai_review_status"] == "succeeded"
+    candidate = result["candidate_proposals"][0]
+    assert candidate["relation"] == "refinement"
+    assert candidate["parent_candidate_ids"] == coarse_ids
+    assert candidate["origin_parent_candidate_id"] == coarse_ids[0]
+
+
+def test_session_candidate_review_treats_omitted_relation_as_root_before_coarse_normalization():
+    evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
+    analysis = analyze_evidence(evidence, [])
+    coarse_id = next(
+        node.candidate_id
+        for layer in analysis.controlled_ai_tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.unknown_causes,
+            *layer.rejected_causes,
+        ]
+        if node.node_type in {"cluster_root", "coarse_candidate"}
+    )
+    response = {
+        "candidates": [{
+            "candidate_id": "ai_candidate_omitted_relation",
+            "claim": "候选需要沿当前粗粒度方向继续补证。",
+            "mechanism": "runtime_task_path",
+            "target": "worker",
+            "supported_level": "process",
+            "decision": "needs_more_evidence",
+            "causal_status": "needs_more_evidence",
+            "evidence_refs": ["ev-top"],
+        }],
+    }
+    with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key", "MINI_DROP_AI_ENABLED": "1"}), mock.patch(
+        "server.app.rca.llm_client._call_deepseek", return_value=json.dumps(response)
+    ):
+        result = generate_session_candidate_review(
+            diagnosis_id="diag-omitted-relation",
+            fact_context={},
+            session_tree=analysis.controlled_ai_tree,
+            evidence_catalog=[{"evidence_id": "ev-top"}],
+            probe_manifest=build_probe_manifest(),
+        )
+
+    assert result["ai_review_status"] == "succeeded"
+    candidate = result["candidate_proposals"][0]
+    assert candidate["relation"] == "refinement"
+    assert candidate["parent_candidate_ids"] == [coarse_id]
+    assert candidate["origin_parent_candidate_id"] == coarse_id
+
+
 def test_session_candidate_review_limits_active_investigation_to_three_deduplicated_candidates():
     evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
     analysis = analyze_evidence(evidence, [])

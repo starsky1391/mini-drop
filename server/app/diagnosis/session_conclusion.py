@@ -388,6 +388,8 @@ def collect_candidate_generation_gate_failures(
         return []
     diagnostics = candidate_review.get("validation_diagnostics")
     diagnostics = diagnostics if isinstance(diagnostics, list) else []
+    ingestion_diagnostics = candidate_review.get("tree_ingestion_diagnostics")
+    ingestion_diagnostics = ingestion_diagnostics if isinstance(ingestion_diagnostics, list) else []
     initial_context = (
         candidate_review.get("initial_evidence_context")
         if isinstance(candidate_review.get("initial_evidence_context"), dict)
@@ -422,6 +424,24 @@ def collect_candidate_generation_gate_failures(
             "parent_candidate_ids": list(diagnostic.get("candidate_parent_candidate_ids") or []),
             "missing_parent_candidate_ids": list(
                 diagnostic.get("missing_parent_candidate_ids") or []
+            ),
+        })
+    for diagnostic in ingestion_diagnostics:
+        if not isinstance(diagnostic, dict):
+            continue
+        failures.append({
+            "stage": "candidate_tree_ingestion",
+            "candidate_id": str(diagnostic.get("candidate_id") or ""),
+            "failure_code": str(diagnostic.get("failure_code") or "tree_ingestion_error"),
+            "failure_path": "session_main.parent_candidate_ids",
+            "reason": str(diagnostic.get("reason") or "AI 候选没有进入当前主树。")[:500],
+            "actual_value": diagnostic.get("parent_candidate_ids") or diagnostic.get("selection"),
+            "expected_values": ["当前 emitted candidate_id"],
+            "candidate_parent_candidate_ids": list(diagnostic.get("parent_candidate_ids") or []),
+            "missing_parent_candidate_ids": list(diagnostic.get("missing_parent_candidate_ids") or []),
+            "initial_evidence_context": initial_context,
+            "initial_evidence_refs": list(
+                initial_context.get("evidence_refs") or []
             ),
         })
     proposals = candidate_review.get("candidate_proposals")
@@ -469,7 +489,16 @@ def build_retained_conclusion(
 ) -> dict[str, Any] | None:
     """Select an existing evidence-backed claim; never invent a fallback claim."""
     tree_nodes = _tree_base_nodes(session_tree)
-    active_id = str(assessment.get("active_retained_candidate_id") or "").strip()
+    tree_retained_id = (
+        str(session_tree.get("retained_candidate_id") or "").strip()
+        if isinstance(session_tree, dict)
+        else ""
+    )
+    active_id = str(
+        assessment.get("active_retained_candidate_id")
+        or tree_retained_id
+        or ""
+    ).strip()
     selected_node = next(
         (node for node in tree_nodes if node.get("candidate_id") == active_id),
         None,

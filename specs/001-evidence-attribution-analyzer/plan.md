@@ -661,6 +661,560 @@ include tree kind, parent validation, candidate diagnostics, line eligibility,
 heap outcome, probe history, data-quality records, retained conclusion and
 final abstention state.
 
+## Unified Closure Plan: Tree Lineage, Candidate Diagnostics and Live Heap
+
+### Objective
+
+Close the remaining diagnosis-chain failures as one contract. The system must
+keep a real canonical tree, explain why AI candidates did or did not pass the
+formal gates, and attempt Python heap collection against a live target without
+requiring the target to preload Memray.
+
+The ordinary real-case runner remains vulnerable-only. Fixed replay, Oracle and
+`evaluate_case.py` are separate evaluation tools and are not part of a normal
+case run.
+
+### Shared semantics
+
+```text
+session_main
+  -> only canonical lineage nodes and explicit parent edges
+child_snapshot / probe_history
+  -> audit and replay only; never part of the main layout
+data_quality
+  -> orphan, duplicate ID, invalid relation and missing provenance records
+formal conclusion
+  -> only eligible AI candidates; Analyzer facts and fallback hints are not
+     formal root causes
+```
+
+The backend, frontend, audit output and replay must share these rules:
+
+1. `parent_candidate_ids` declares possible parents; the stable visual parent is
+   `origin_parent_candidate_id`.
+2. Every `refinement`, `line_anchor`, `observation`, `mechanism` and `boundary`
+   node resolves its parent against the current emitted `session_main` index.
+3. `coarse_insufficient_evidence` and other conceptual IDs are aliases only and
+   must resolve to the actual emitted coarse candidate ID.
+4. No resolver may use rank, layer order, `primary_nodes[0]`, a global
+   most-specific candidate, or root entity to guess a parent.
+5. Only an explicitly independent `alternative` may attach to the emitted
+   coarse root. Other unresolved alternatives remain orphan/data-quality nodes.
+6. Observation and runtime-stack nodes are evidence context. They do not become
+   parallel root candidates.
+7. Mechanism and object-call-chain nodes are legal only below a verified line
+   anchor.
+8. A blocked, failed, partial or inconclusive deep probe creates a local
+   boundary under the actual origin parent and retains that parent's claim.
+9. A child probe failure never contradicts its parent. Parent-level backtrack
+   requires direct evidence against the parent.
+10. With no eligible AI candidate, the final fields are
+    `formal_root_cause=null`, `root_cause_clusters=[]`, `causal_chain=[]` and
+    `abstained=true`; localization, boundary and retained-parent details remain.
+
+### Backend scope
+
+#### Candidate lineage and line eligibility
+
+Build an emitted-candidate index before constructing layers. Normalize
+conceptual coarse IDs, validate real parents, preserve origin parent through
+retries/source-line normalization/follow-up persistence, and record
+`missing_provenance`, `orphan`, duplicate IDs and invalid relations in
+`data_quality`.
+
+A line anchor is valid only when revision, file, positive line, runtime/source
+match, stable source hash, evidence-window relation and real emitted parent all
+pass. `source_snapshot=valid` proves only that source context was read; it does
+not itself create a line conclusion. Failed checks are persisted in
+`line_anchor_eligibility` and produce a source/line boundary under the known
+origin parent.
+
+#### Candidate failure diagnostics
+
+Every AI attempt and retry persists a bounded record containing phase, attempt,
+response summary/hash, actual candidate count, accepted/rejected/deferred
+counts, claim/relation/parents, initial evidence context, valid and missing
+evidence refs, required probe, field-level gate checks, and retained parent.
+One invalid candidate must not discard valid siblings. `analyzer_fallback` is
+created only when all candidates/retries are unusable or AI is unavailable, and
+is always `unknown + partial_localization + unproven + ineligible`.
+
+The output must explain:
+
+```text
+AI actually returned what
+which field or gate failed
+what initial evidence existed
+what evidence or parent was missing
+which parent conclusion was retained
+why line or formal-root-cause promotion was blocked
+```
+
+#### Runtime quality and live Heap
+
+`python_runtime_profile` emits sample quality including diagnostic value,
+dominant state, idle/primitive/framework/target ratios, sample count,
+stability and reason. Poll/select/epoll/sleep/event-loop-only samples remain
+observations and cannot become function or line roots.
+
+Memray remains the Python heap producer. The target must not preload it. The
+managed Agent helper resolves target PID and namespaces, UID/ptrace capability,
+target executable/runtime, helper availability and output paths, then attaches
+during the diagnosis window. It retains official `memray.bin`,
+stats/leaks output and bounded stdout/stderr, with one bounded retry.
+
+Runtime mismatch is a structured capability boundary. Heap outcomes are:
+
+```text
+valid
+  -> allocation/retained-allocation evidence may be used
+blocked / failed / memray_attach_failed / timeout / target_exit
+  -> boundary only; continue runtime, RSS/smaps and source follow-up
+native_allocation_observation
+  -> partial observation only; never Python retention, object chain or line root cause
+```
+
+No `gc.get_referrers`, objgraph, Pympler or custom object graph may replace
+Memray.
+
+#### Fallback and final conclusion
+
+The same qualification result drives `headline`, `confidence`,
+`formal_root_cause`, `root_cause_clusters`, `causal_chain`, `abstained` and
+frontend eligibility. A retained conclusion is the actual origin parent's
+claim, never a newly invented generic fallback claim.
+
+### Frontend scope
+
+`buildControlledAITreeGraph()` accepts only `session_main/renderable=true` for
+the primary layout. Explicit lineage edges are the only layout edges. Coarse
+summary/probe edges are annotations; rollback and local boundary edges are
+history edges. `child_snapshot`, `probe_history`, orphan, duplicate ID and
+invalid relation records never create main-tree layout edges.
+
+Use distinct node semantics for `cluster_root`, `base_cause`, `line_anchor`,
+`observation`, `mechanism_explanation`, `stop_boundary`, `rejected_candidate`
+and `orphan`. `blocked`, `partial` and `inconclusive` are boundary states;
+only `contradicted` and `rejected` use the grey rejected style.
+
+The diagnosis page reads backend diagnostics and displays each AI attempt,
+actual returned candidates, accepted/rejected/active/deferred candidates,
+initial evidence, parent resolution, gate failures, line eligibility, heap
+preflight/retry/outcome, retained parent and formal abstention. It must not
+infer eligibility from node color or text.
+
+### Validation and deployment
+
+Local validation covers focused backend/heap/line/candidate/audit tests,
+frontend graph/detail tests, production build, `compileall` and
+`git diff --check`.
+
+Offline replay reads only the latest Celery `run.json` and reports initial
+evidence, AI output/failures, gate checks, line eligibility, heap outcome,
+parent validation, data quality, retained parent and final abstention. It does
+not read issue, PR, fixed revision, Oracle or answer data, and does not rewrite
+the original report.
+
+After commit/push, Control and Worker1 pull the exact commit and rebuild.
+Worker1 first runs a long-lived, non-preloaded Memray smoke and saves either
+official artifacts or a structured capability boundary. Only then does the
+ordinary runner execute one vulnerable-only Celery case for 600 seconds using
+the complete checkout, real Redis, real worker and native `apply_async()`.
+Fixed replay, Oracle and `evaluate_case.py` are not run in this ordinary case.
+
+The case report must include runner manifest, producer barrier, diagnosis
+terminal state, candidate diagnostics, line eligibility, heap outcome, tree
+kind, parent validation, history/data-quality records, retained conclusion and
+final abstention.
+
+### Completion gates
+
+```text
+main layout contains session_main lineage only
+history/probe/orphan records do not create main-tree edges
+line nodes point to real emitted parents or become explicit boundaries
+mechanism/object-call-chain nodes are below verified line anchors
+deep probe failure retains the actual parent claim
+one invalid AI candidate does not discard valid siblings
+Analyzer fallback appears only after complete AI failure
+gate failures explain actual output and initial evidence
+runtime idle samples cannot become root causes
+live heap attach does not require preload
+heap failure is structured and does not stop later probes
+formal conclusion and abstention fields are consistent
+normal Celery validation is vulnerable-only 600s
+```
+
+## Final Integrated Closure Plan (Authoritative)
+
+本节是当前“树渲染、候选失败解释、Line 探测、实时 Heap 和真实
+Celery 跑测”闭环的唯一执行口径。前文 CE/CF 保留为历史设计记录；若
+与本节冲突，以本节为准。
+
+### 1. Scope and non-goals
+
+本次闭环只修复 Analyzer/诊断输出/前端展示/Agent 采集和真实跑测流程。
+不从 issue、PR、修复 commit、Oracle 或测试答案向 Analyzer 回流答案。
+不把 fixed replay、Oracle 或 `evaluate_case.py` 放入普通真实 case 的
+跑测路径。普通 Celery 跑测固定为 vulnerable-only，默认持续 600 秒；
+runner 不要求每次手工重新设置 fixed/Oracle 参数。
+
+不新增 Celery 特供证据，不由 runner 生成深层源码、heap 或调用链结论。
+runner 只负责启动完整项目、真实 Redis、worker、原生 producer，维持
+异常 workload 和诊断窗口，并保存运行清单。
+
+### 2. Canonical evidence-to-conclusion pipeline
+
+```text
+initial evidence
+  -> Analyzer facts / observations / localization boundary
+  -> AI candidate review
+  -> candidate field-level gate
+  -> selected follow-up probes
+  -> evidence回流与AI DAG更新
+  -> line-anchor eligibility
+  -> optional mechanism/object-call-chain explanation
+  -> one shared conclusion eligibility result
+  -> session_main + diagnostics + audit bundle
+```
+
+三类内容必须隔离：
+
+```text
+facts/observation
+  只能描述已观测事实和定位边界
+
+AI candidate
+  只能来自真实 AI 输出，并通过工程门禁后才可成为正式候选
+
+formal root cause
+  只能来自通过同一资格结果的 AI candidate
+```
+
+Analyzer fallback 只能作为 `fallback_observation`/调查方向。它固定为
+`unknown + partial_localization + unproven + conclusion_eligible=false`，
+不得进入 `root_cause_clusters`、`causal_chain` 或 `formal_root_cause`。
+
+### 3. Backend lineage and emitted-parent contract
+
+在构建 `session_main` 前先建立当前 emitted candidate index。所有概念
+父 ID 必须先归一化：
+
+```text
+coarse_insufficient_evidence
+  -> 当前本次真正 emitted 的 coarse candidate_id
+```
+
+`line`、`refinement`、`observation`、`mechanism`、`boundary`、
+`STOP` 和对象调用链节点必须满足：
+
+```text
+parent_candidate_ids
+  -> 当前 session_main 中真实存在的 candidate_id
+
+origin_parent_candidate_id
+  -> 唯一视觉主父节点，且属于 parent_candidate_ids
+```
+
+禁止使用 `index 0`、`primary_nodes[0]`、rank、layer 顺序、全局“最具体”
+候选或 `root_entity` 猜测父节点。父节点解析失败时输出
+`missing_provenance/orphan` 数据质量记录，不补 coarse、不伪造 line。
+
+`alternative/rejected_alternative` 只有明确表示独立候选且父节点真实存在
+时才可以挂 coarse；没有来源的备选保持 orphan。子节点探针失败不能反证
+父节点，只有父节点本身被直接反驳时才能沿 `origin_parent_candidate_id`
+回退。
+
+### 4. Fallback and retained conclusion
+
+深探返回 `blocked`、`failed`、`partial`、`inconclusive`、`target_exit`
+或超时时：
+
+```text
+来源父节点
+  -> 保留原 claim/evidence/causal status
+  -> 增加局部 boundary 子节点
+  -> boundary.parent = origin_parent_candidate_id
+  -> 记录 retained_conclusion 和 qualification_boundary
+```
+
+boundary 只说明“为什么停止”，不能产生新的根因 claim；不能把
+“当前证据不足”“unknown downstream dependency”或探针失败文本升格为
+新的正式 fallback 结论。来源父节点不存在时只能生成 orphan 和
+`abstained=true`。
+
+最终字段必须全部由同一 eligibility result 派生：
+
+```text
+formal_root_cause
+root_cause_candidates
+root_cause_clusters
+final_primary_causes
+causal_chain
+headline
+confidence
+abstained
+```
+
+无 eligible AI candidate 时固定输出：
+
+```json
+{
+  "formal_root_cause": null,
+  "root_cause_clusters": [],
+  "causal_chain": [],
+  "abstained": true
+}
+```
+
+### 5. Runtime quality and Line probe
+
+`python_runtime_profile` 必须输出 `sample_quality`，至少包含：
+
+```text
+diagnostic_value
+dominant_state
+non_idle_ratio
+primitive_frame_ratio
+framework_loop_ratio
+target_code_ratio
+sample_count
+stable_across_samples
+reason
+```
+
+纯 `poll/select/epoll/sleep/futex`、事件循环尾帧、单样本尾帧和低占比
+runtime plumbing 只能作为 observation，不能升级为 function/call_path/line
+主因。高占比、跨窗口稳定、能解释症状并有 RSS/smaps/日志/heap/source
+交叉证据的框架瓶颈可以保留为候选。
+
+Line 探测流程固定为：
+
+```text
+runtime/source frame
+  -> process_source_snapshot
+  -> revision/file/positive line/source hash 校验
+  -> runtime/source/window/parent 交叉校验
+  -> verified line_anchor
+```
+
+`source_snapshot=valid` 只说明源码存在和 revision 可读，不能单独制造
+line 主因。Line eligibility 任一项失败时，生成挂在真实来源父节点下的
+source/line boundary，并持久化逐项失败原因。只有 verified line 后，才允许
+机制节点、对象调用链或源码机制解释继续下钻；这些节点只能解释 line，
+不能替代 line 或基础结论。
+
+### 6. Live Heap tool decision and failure handling
+
+工具职责固定如下：
+
+```text
+Memray live attach
+  -> Python heap 主路径；目标不预加载 Memray
+
+RSS/smaps
+  -> 进程级内存增长和映射观察；不是 Python retention 证明
+
+python_runtime_profile / py-spy
+  -> 运行时栈和执行状态；不是 heap retention 证明
+
+PyHeap
+  -> 显式、可选的后置深探；需要暂停/attach 条件时不得作为实时默认路径
+
+tracemalloc/objgraph/gc.get_referrers/Pympler/自研对象图
+  -> 不作为当前默认 live heap 方案
+```
+
+Memray helper 必须分阶段记录：
+
+```text
+preflight
+  PID、namespace、UID、ptrace、目标 runtime、helper、输出目录、目标稳定性
+
+staging
+  目标 Python runtime 和 Memray purelib/native module 是否可用
+
+attach
+  method、注入脚本、控制通道、duration、stdout/stderr、exit code
+
+artifact
+  memray.bin、stats/leaks、解析状态、产物缺失原因
+```
+
+managed attach 允许一次有界 retry，但 timeout 后必须杀掉整个 helper
+进程组并保存阶段状态，不能只输出一个总 timeout。目标 runtime 不匹配、
+namespace 不可达、权限不足、目标退出、产物缺失和 attach 控制通道无响应
+必须使用不同的结构化 failure type。
+
+结果语义：
+
+```text
+valid
+  -> 可提供 allocation/retained-allocation evidence
+
+blocked/failed/memray_attach_failed/timeout/target_exit
+  -> heap boundary；继续 runtime、RSS/smaps、source follow-up
+
+native_allocation_observation
+  -> partial；不能声明 Python retention、对象引用链或源码 line 根因
+```
+
+Heap 失败不能终止诊断，也不能改变来源父节点结论。
+
+### 7. AI candidate failure and gate diagnostics
+
+每次首轮、重试和 investigation review 都要保存：
+
+```text
+phase
+attempt
+response_summary_hash
+bounded_actual_output
+candidate_count
+accepted/rejected/deferred/active candidate IDs
+initial_evidence_context
+valid/missing evidence refs
+emitted parent IDs
+retry state
+```
+
+每个候选保存逐字段 `gate_checks`：
+
+```text
+source_is_ai
+candidate_id
+evidence_refs
+target/window
+supported_level
+mechanism
+causal_status
+decision
+required_probe
+parent_exists
+origin_parent
+causal_chain
+```
+
+页面和 audit 必须同时回答：
+
+```text
+AI 实际返回了什么
+哪一个字段/门禁失败
+失败时初始证据是什么
+缺失或不一致的证据是什么
+为什么不能升级到 line 或 formal root cause
+最后保留了哪个来源父结论
+```
+
+单个候选失败不能丢弃合法兄弟；active candidate 最多只限制深探
+调度，不授予正式资格。只有全部候选、重试和可用 AI 路径都失败时才
+创建 Analyzer fallback。
+
+### 8. Frontend tree and history rendering
+
+前端把返回内容分成四个域：
+
+```text
+session_main
+  当前 canonical tree，唯一进入主布局
+
+child_snapshot
+  某次子探针快照，只用于审计/回放
+
+probe_history
+  尝试、回退、停止和 rollback 边，只用于解释过程
+
+data_quality
+  orphan、duplicate ID、invalid relation、missing parent
+```
+
+主图只按显性 `origin_parent_candidate_id` 生成主树边；普通 probe/refine
+边、`session_edge_coarse_to_supported_causes` 等总览边只能作为注释，
+不能参与布局。rollback/boundary 可以显示为非布局说明边。
+
+节点语义必须分开：
+
+```text
+cluster_root/base_cause/line_anchor
+observation/mechanism_explanation/stop_boundary
+rejected_candidate/orphan
+```
+
+`blocked/partial/inconclusive` 显示为证据边界，不得套用 rejected 灰色；
+只有 `contradicted/rejected` 才进入反证态。orphan 必须可见但不进入主树，
+不能静默接 coarse。历史子树必须有独立入口，不能与当前主树混合成一排
+“探针节点”。
+
+诊断详情页新增候选失败诊断区，读取后端结构化字段，不从节点颜色、
+headline 文本或数组顺序推断资格。
+
+### 9. Runner and real-case contract
+
+普通真实 case 固定执行：
+
+```text
+完整项目 checkout
+真实 Redis broker
+真实 Celery worker
+Celery 原生 apply_async() producer
+持续 600 秒的异常 workload
+唯一 vulnerable diagnosis
+```
+
+runner 不采集深层证据、不生成源码 line/heap/调用链答案，只提供目标
+定位信息、维持 workload、保存 runner manifest 和诊断输出。固定不执行：
+
+```text
+fixed replay
+Oracle
+evaluate_case.py
+```
+
+只有用户明确要求回归对照时，才另行执行 fixed/Oracle 流程；这不属于
+普通“跑测 case”的默认配置。
+
+### 10. Validation and deployment order
+
+实施顺序固定为：
+
+```text
+CG001 契约与 canonical index
+  -> CG002 fallback/结论资格
+  -> CG003 AI 候选和门禁诊断
+  -> CG004 runtime quality/Line probe
+  -> CG005 live Heap helper
+  -> CG006 前端主树/历史树/诊断视图
+  -> CG007 audit/API/离线回放
+  -> CG008 本地测试和构建
+  -> CG009 commit/push
+  -> CG010 Control/Worker1 git pull + rebuild
+  -> CG011 Worker1 未预加载 Memray smoke
+  -> CG012 vulnerable-only Celery 600 秒真实 case
+```
+
+部署前不把本地测试结果称为 VM 验收。Heap smoke 先于 Celery case；
+smoke 失败时仍可以跑 case，但必须把 Heap 结果记录为结构化 boundary，
+不能写成 Heap 成功。
+
+### 11. Completion gate
+
+完整方案只有同时满足以下条件才算完成：
+
+```text
+所有细化节点父节点真实存在，概念 coarse 已映射
+无来源节点进入 data-quality/orphan，不伪造父边
+深探失败只产生局部 boundary 并保留来源父结论
+line 只有通过真实 file:line eligibility 才生成
+机制/对象调用链只能挂 verified line
+runtime idle 样本不能升级为主因
+Heap 不要求预加载，失败后继续其他证据
+AI 部分失败保留合法候选，全部失败才 fallback
+AI 实际输出和初始证据可解释每个门禁失败
+主树、历史子树、probe edge、orphan 不互相污染
+正式结论字段来自同一资格结果
+普通真实 case 只运行 vulnerable-only 600 秒
+```
+
 ## Complexity Tracking
 
 | Violation | Why Needed | Simpler Alternative Rejected Because |
