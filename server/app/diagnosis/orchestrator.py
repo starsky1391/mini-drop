@@ -5863,6 +5863,20 @@ def _build_session_controlled_ai_tree(
 
 
 def _attach_coarse_parent_if_missing(node: AITreeCandidateNode, coarse_id: str) -> AITreeCandidateNode:
+    if "coarse_insufficient_evidence" in node.parent_candidate_ids:
+        parent_ids = [
+            coarse_id if parent_id == "coarse_insufficient_evidence" else parent_id
+            for parent_id in node.parent_candidate_ids
+        ]
+        origin = (
+            coarse_id
+            if node.origin_parent_candidate_id == "coarse_insufficient_evidence"
+            else node.origin_parent_candidate_id
+        )
+        return node.model_copy(update={
+            "parent_candidate_ids": list(dict.fromkeys(parent_ids)),
+            "origin_parent_candidate_id": origin,
+        })
     if node.parent_candidate_ids:
         return node
     if node.node_type in {"observation", "mechanism_explanation", "stop_boundary", "evidence_gap", "orphan"}:

@@ -4326,6 +4326,47 @@ def test_conceptual_coarse_parent_maps_to_emitted_coarse_node_id():
     ) == "coarse_python_memory_retention"
 
 
+def test_unparented_alternatives_attach_to_emitted_coarse_root():
+    assessment = {
+        "classification": "self_code_or_process_pressure",
+        "summary": "目标进程存在压力，其他分支尚缺证据。",
+        "supported_level": "function",
+        "confidence": 0.4,
+        "evidence_refs": ["ev-runtime"],
+        "conclusion_eligible": False,
+        "alternative_hypotheses": [
+            {
+                "hypothesis": "same_host_noisy_neighbor",
+                "status": "missing_evidence",
+                "supported_level": "host",
+                "reason": "同宿主窗口不足。",
+            },
+        ],
+    }
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-alternative-coarse-parent",
+        cluster_assessment=assessment,
+        candidates=[],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+    )
+    nodes = {
+        node.candidate_id: node
+        for layer in tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    }
+    alternative = nodes["unknown_same_host_noisy_neighbor"]
+    assert alternative.node_type != "orphan"
+    assert alternative.parent_candidate_ids == ["coarse_self_code_or_process_pressure"]
+    assert alternative.origin_parent_candidate_id == "coarse_self_code_or_process_pressure"
+
+
 def test_multiple_lineage_parents_collapse_to_the_single_origin_for_mechanism():
     tree = _origin_backtrack_tree(multiple_parents=True, probe_status="COMPLETED", evidence_status="partial")
     line_id = orchestrator_module._verified_line_candidate_id(
