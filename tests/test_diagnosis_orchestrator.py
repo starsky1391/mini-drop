@@ -366,6 +366,148 @@ def test_child_task_tree_remains_fallback_when_session_ai_does_not_succeed(clien
     )
 
 
+def test_successful_candidate_generation_keeps_analyzer_observation_distinct_from_fallback():
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag_ai_candidate_source",
+        cluster_assessment={
+            "classification": "self_code_or_process_pressure",
+            "summary": "目标进程存在异常压力，仍需候选调查。",
+            "supported_level": "process",
+            "confidence": 0.35,
+            "evidence_refs": ["ev-rss"],
+            "conclusion_eligible": False,
+        },
+        candidates=[],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+    )
+
+    assert tree is not None
+    assert all(layer.generated_by == "analyzer_observation" for layer in tree.layers)
+
+    review = {
+        "ai_review_status": "succeeded",
+        "active_candidate_ids": ["ai_candidate_runtime_path"],
+        "candidate_proposals": [{
+            "candidate_id": "ai_candidate_runtime_path",
+            "claim": "运行时任务路径需要进一步验证。",
+            "mechanism": "runtime_task_path",
+            "target": "celery-worker",
+            "supported_level": "process",
+            "decision": "needs_more_evidence",
+            "causal_status": "needs_more_evidence",
+            "role": "unknown",
+            "parent_candidate_ids": ["self_code_or_process_pressure"],
+            "origin_parent_candidate_id": "self_code_or_process_pressure",
+            "evidence_refs": ["ev-rss"],
+            "missing_evidence": ["python_runtime_profile"],
+        }],
+    }
+
+    updated = orchestrator_module._apply_candidate_review(tree, review)
+
+    assert not any(layer.generated_by == "analyzer_fallback" for layer in updated.layers)
+    assert updated.layers[-1].generated_by == "ai_candidate"
+    ai_node = next(
+        node
+        for node in updated.layers[-1].unknown_causes
+        if node.candidate_id == "ai_candidate_runtime_path"
+    )
+    assert ai_node.generated_by == "ai_candidate"
+
+
+def test_verified_line_rewrites_emitted_parent_and_attaches_runtime_observations():
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag_line_parent_repair",
+        cluster_assessment={
+            "classification": "python_memory_retention",
+            "summary": "worker 存在持续内存压力。",
+            "supported_level": "line",
+            "max_supported_level": "line",
+            "confidence": 0.42,
+            "evidence_refs": ["ev-rss", "ev-stack"],
+            "conclusion_eligible": False,
+            "primary_anchor": {
+                "source_context_hash": "sha256:source",
+                "source_revision": "rev-1",
+                "file": "/opt/celery-src/celery/app/trace.py",
+                "line": 651,
+                "supported_level": "line",
+                "evidence_refs": ["ev-source"],
+            },
+        },
+        candidates=[
+            {
+                "candidate_id": "service-runtime",
+                "description": "worker 服务级运行时压力。",
+                "root_entity": "celery-worker",
+                "max_supported_level": "service",
+                "confidence_level": "中",
+                "rank": 1,
+                "evidence_refs": ["ev-rss"],
+                "relation": "alternative",
+            },
+            {
+                "candidate_id": "line-existing",
+                "description": "异常处理行 /opt/celery-src/celery/app/trace.py:651 需要继续验证。",
+                "root_entity": "celery-worker",
+                "max_supported_level": "line",
+                "confidence_level": "低",
+                "rank": 2,
+                "evidence_refs": ["ev-stack"],
+                "target": "/opt/celery-src/celery/app/trace.py:651",
+                "relation": "refinement",
+            },
+            {
+                "candidate_id": "python_runtime_stack_hotspot",
+                "description": "运行时栈热点观察。",
+                "root_entity": "celery-worker",
+                "max_supported_level": "process",
+                "confidence_level": "低",
+                "rank": 3,
+                "evidence_refs": ["ev-stack"],
+                "relation": "alternative",
+            },
+            {
+                "candidate_id": "python_userland_hotspot",
+                "description": "用户态热点观察。",
+                "root_entity": "celery-worker",
+                "max_supported_level": "process",
+                "confidence_level": "低",
+                "rank": 4,
+                "evidence_refs": ["ev-stack"],
+                "relation": "alternative",
+            },
+        ],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+    )
+
+    assert tree is not None
+    nodes = {
+        node.candidate_id: node
+        for layer in tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    }
+    coarse_id = tree.emitted_coarse_ids[0]
+    assert nodes["line-existing"].parent_candidate_ids == [coarse_id]
+    assert nodes["line-existing"].origin_parent_candidate_id == coarse_id
+    assert any(
+        layer.layer_id.endswith("line_refinement")
+        and any(node.candidate_id == "line-existing" for node in layer.unknown_causes)
+        for layer in tree.layers
+    )
+    assert nodes["python_runtime_stack_hotspot"].parent_candidate_ids == ["line-existing"]
+    assert nodes["python_userland_hotspot"].parent_candidate_ids == ["line-existing"]
+
+
 def test_readiness_gate_fails_completed_probe_without_structured_family_artifact():
     bundle = {
         "runtime_trace": [{"stage": "evidence"}],

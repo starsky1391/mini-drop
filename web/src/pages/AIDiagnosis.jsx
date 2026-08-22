@@ -579,7 +579,13 @@ function DiagnosisDetail({ detail }) {
   const formalRootCause = conclusion?.formal_root_cause || null;
   const qualificationBoundary = conclusion?.qualification_boundary || {};
   const candidateReview = conclusion?.candidate_review || {};
-  const candidateGenerationAttempts = candidateReview.candidate_generation_attempts || [];
+  const candidateGenerationOutput = conclusion?.candidate_generation_output || {};
+  const candidateGenerationAttempts = candidateGenerationOutput.attempts
+    || candidateReview.candidate_generation_attempts
+    || [];
+  const gateFailures = conclusion?.gate_failures || conclusion?.ai_gate_failures || [];
+  const retainedParentConclusions = conclusion?.retained_parent_conclusions || [];
+  const conclusionBoundaries = conclusion?.boundaries || [];
   const controlledTree = conclusion?.controlled_ai_tree || {};
   const lineAnchorEligibility = controlledTree.line_anchor_eligibility || {};
   const heapProbeOutcome = controlledTree.heap_probe_outcome || {};
@@ -671,7 +677,7 @@ function DiagnosisDetail({ detail }) {
           )}
           {candidateGenerationAttempts.length > 0 && (
             <Alert
-              type={candidateReview.ai_review_status === "succeeded" ? "info" : "warning"}
+              type={candidateGenerationOutput.status === "succeeded" ? "info" : "warning"}
               showIcon
               message={`AI 首轮候选生成尝试：${candidateGenerationAttempts.length} 次`}
               description={(
@@ -685,6 +691,31 @@ function DiagnosisDetail({ detail }) {
                       输出摘要：{item.response_excerpt || "无可展示输出"}。
                     </Typography.Text>
                   ))}
+                </Space>
+              )}
+              style={{ marginBottom: 12 }}
+            />
+          )}
+          {candidateGenerationOutput.initial_evidence_context?.evidence_refs?.length > 0 && (
+            <Alert
+              type="info"
+              showIcon
+              message="首轮候选使用的初始证据"
+              description={(
+                <Space direction="vertical" size={4}>
+                  <Typography.Text>
+                    AI 首轮只读取已有证据目录；合法引用 {candidateGenerationOutput.initial_evidence_context.evidence_refs.length} 条，
+                    生成候选 {candidateGenerationOutput.accepted_candidate_ids?.length || 0} 个，
+                    延后调查 {candidateGenerationOutput.deferred_candidate_ids?.length || 0} 个。
+                  </Typography.Text>
+                  <Space wrap>
+                    {candidateGenerationOutput.initial_evidence_context.evidence_refs.map((ref) => (
+                      <Tag key={ref} color={evidenceMap.has(ref) ? "blue" : "red"}>{ref}</Tag>
+                    ))}
+                  </Space>
+                  {candidateGenerationOutput.error && (
+                    <Typography.Text type="secondary">{candidateGenerationOutput.error}</Typography.Text>
+                  )}
                 </Space>
               )}
               style={{ marginBottom: 12 }}
@@ -728,18 +759,21 @@ function DiagnosisDetail({ detail }) {
               )}
             </Space>
           )}
-          {conclusion.ai_gate_failures?.length > 0 && (
+          {gateFailures.length > 0 && (
             <Alert
               type="info"
               showIcon
               message="AI 候选已生成，但未通过正式根因门禁"
               description={(
                 <Space direction="vertical" size={4}>
-                  {conclusion.ai_gate_failures.map((item) => (
-                    <Typography.Text key={`${item.candidate_id}-${item.failure_code}`}>
+                  {gateFailures.map((item, index) => (
+                    <Typography.Text key={`${item.candidate_id}-${item.failure_code}-${index}`}>
                       {item.candidate_id || "未命名候选"}：{item.reason || item.failure_code}；
                       状态 {item.status || "unknown"} / {item.causal_status || "unknown"}；
-                      证据 {item.evidence_refs?.length || 0} 条。
+                      候选证据 {item.evidence_refs?.length || 0} 条；
+                      初始证据 {item.initial_evidence_refs?.length || 0} 条；
+                      缺失引用 {item.missing_initial_evidence_refs?.join(", ") || "无"}；
+                      缺失父节点 {item.missing_parent_candidate_ids?.join(", ") || "无"}。
                     </Typography.Text>
                   ))}
                 </Space>
@@ -769,6 +803,43 @@ function DiagnosisDetail({ detail }) {
                       尚缺：{qualificationBoundary.missing_evidence.join("；")}
                     </Typography.Text>
                   )}
+                </Space>
+              )}
+              style={{ marginBottom: 12 }}
+            />
+          )}
+          {retainedParentConclusions.length > 0 && (
+            <Alert
+              type="success"
+              showIcon
+              message="当前保留的父结论链"
+              description={(
+                <Space direction="vertical" size={4}>
+                  {retainedParentConclusions.map((item) => (
+                    <Typography.Text key={item.candidate_id}>
+                      {item.candidate_id}：{item.claim}
+                      {item.origin_parent_candidate_id ? `；来源父节点：${item.origin_parent_candidate_id}` : ""}
+                      {item.retained ? "；当前保留" : "；上层父节点"}
+                    </Typography.Text>
+                  ))}
+                </Space>
+              )}
+              style={{ marginBottom: 12 }}
+            />
+          )}
+          {conclusionBoundaries.length > 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              message="调查边界与降级原因"
+              description={(
+                <Space direction="vertical" size={4}>
+                  {conclusionBoundaries.map((item, index) => (
+                    <Typography.Text key={`${item.kind || "boundary"}-${item.candidate_id || index}`}>
+                      {item.candidate_id || item.kind}：{item.reason || item.message || "当前分支未继续升级"}
+                      {item.origin_parent_candidate_id ? `；回退来源：${item.origin_parent_candidate_id}` : ""}
+                    </Typography.Text>
+                  ))}
                 </Space>
               )}
               style={{ marginBottom: 12 }}

@@ -301,6 +301,11 @@ def _normalize_conclusion(latest: dict[str, Any]) -> dict[str, Any]:
         "candidate_review": latest.get("candidate_review"),
         "candidate_validation_diagnostics": latest.get("candidate_validation_diagnostics", []),
         "ai_gate_failures": latest.get("ai_gate_failures", []),
+        "gate_failures": latest.get("gate_failures", latest.get("ai_gate_failures", [])),
+        "candidate_generation_output": latest.get("candidate_generation_output", {}),
+        "observations": latest.get("observations", []),
+        "boundaries": latest.get("boundaries", []),
+        "retained_parent_conclusions": latest.get("retained_parent_conclusions", []),
         "candidate_sources": sorted({
             str(node.get("generated_by"))
             for layer in (latest.get("controlled_ai_tree") or {}).get("layers", [])

@@ -1633,6 +1633,9 @@ class DiagnosisOrchestrator:
             cluster_assessment["observation_confidence"] = cluster_assessment.get("confidence")
             cluster_assessment["confidence"] = min(_num(cluster_assessment.get("confidence")), 0.49)
             cluster_assessment["confidence_level"] = "低" if possible_clusters else "不可判断"
+        candidate_review_summary = _summarize_investigation_review(candidate_review)
+        controlled_tree_payload = session_controlled_tree.model_dump(mode="json") if session_controlled_tree else None
+        gate_failures = ai_gate_failures
         conclusion = {
             "version": len((self.store.get_session(diagnosis_id) or {}).get("conclusion_versions", [])) + 1,
             "generated_at": utcnow().isoformat(),
@@ -1657,13 +1660,27 @@ class DiagnosisOrchestrator:
                 (explanation.get("retained_conclusion") or {}).get("candidate_id")
             ),
             "investigation_review": _summarize_investigation_review(investigation_review),
-            "candidate_review": _summarize_investigation_review(candidate_review),
+            "candidate_review": candidate_review_summary,
             "candidate_validation_diagnostics": (
                 (candidate_review or {}).get("validation_diagnostics") or []
                 if isinstance(candidate_review, dict)
                 else []
             ),
-            "ai_gate_failures": ai_gate_failures,
+            "ai_gate_failures": gate_failures,
+            # Stable, explicit diagnostic fields. The older names above remain
+            # for API compatibility, while these fields let the UI and offline
+            # replay explain why promotion stopped without reading raw probes.
+            "gate_failures": gate_failures,
+            "candidate_generation_output": _candidate_generation_output(candidate_review_summary),
+            "observations": _conclusion_observations(task_observations),
+            "boundaries": _conclusion_boundaries(
+                controlled_tree_payload,
+                qualification_boundary,
+            ),
+            "retained_parent_conclusions": _retained_parent_conclusions(
+                controlled_tree_payload,
+                explanation.get("retained_conclusion"),
+            ),
             "confidence_level": (
                 cluster_assessment.get("confidence_level")
                 if cluster_candidates
@@ -1686,7 +1703,7 @@ class DiagnosisOrchestrator:
             # Child task trees are audit/replay snapshots only. They must never
             # be promoted to the session's canonical tree when the session
             # tree is absent.
-            "controlled_ai_tree": session_controlled_tree.model_dump(mode="json") if session_controlled_tree else None,
+            "controlled_ai_tree": controlled_tree_payload,
             "controlled_ai_trees": controlled_ai_trees,
             "coverage": {
                 "task_count": len(tasks),
@@ -4976,7 +4993,10 @@ def _build_session_controlled_ai_tree(
     if not cluster_assessment and not candidates:
         return None
 
-    generated_by = "analyzer_fallback"
+    # The initial tree contains Analyzer observations and localization
+    # boundaries, not fallback conclusions. It is converted to
+    # analyzer_fallback only when the complete first AI candidate round fails.
+    generated_by = "analyzer_observation"
     assessment_eligible = bool(cluster_assessment.get("conclusion_eligible"))
     evidence_refs = _unique_strings(cluster_assessment.get("evidence_refs", []))
     final_level = _best_supported_level(
@@ -5308,6 +5328,21 @@ def _build_session_controlled_ai_tree(
                     "origin_parent_candidate_id": resolved_coarse_parent_id,
                     "relation": "refinement",
                 })
+            # The matching node came from one of the layer collections. Keep
+            # the canonical line parent in the emitted tree as well as in the
+            # lookup map; otherwise later mechanism/observation nodes see the
+            # repaired parent while the frontend still receives the stale node.
+            for collection in (primary_nodes, secondary_nodes, rejected_nodes, unknown_nodes):
+                for index, existing in enumerate(collection):
+                    if existing.candidate_id == line_node.candidate_id:
+                        collection[index] = line_node
+            line_refinement_nodes.append(line_node)
+            for collection in (primary_nodes, secondary_nodes, rejected_nodes, unknown_nodes):
+                collection[:] = [
+                    existing
+                    for existing in collection
+                    if existing.candidate_id != line_node.candidate_id
+                ]
             line_parent_id = line_node.candidate_id
             # The matched node is already the canonical source node. It may
             # itself be a child from an earlier round, so never copy it into a
@@ -5530,7 +5565,14 @@ def _build_session_controlled_ai_tree(
             "",
         )
         if emitted_line_parent:
-            observation_nodes = [_ensure_explicit_origin(node) for node in observation_nodes]
+            observation_nodes = [
+                _ensure_explicit_origin(
+                    node
+                    if node.parent_candidate_ids
+                    else _attach_observation_parent(node, emitted_line_parent)
+                )
+                for node in observation_nodes
+            ]
 
     layer0 = AITreeLayer(
         layer_id="session_layer_0_coarse_assessment",
@@ -6160,6 +6202,148 @@ def _layer_nodes_for_validation(layer: AITreeLayer) -> list[AITreeCandidateNode]
         *layer.rejected_causes,
         *layer.unknown_causes,
     ]
+
+
+def _candidate_generation_output(review: dict[str, Any] | None) -> dict[str, Any]:
+    """Expose bounded first-round model output and the evidence it saw."""
+    if not isinstance(review, dict):
+        return {
+            "status": "not_started",
+            "attempts": [],
+            "accepted_candidate_ids": [],
+            "deferred_candidate_ids": [],
+            "selected_evidence_families": [],
+            "initial_evidence_context": {},
+        }
+    proposals = review.get("candidate_proposals")
+    proposals = proposals if isinstance(proposals, list) else []
+    attempts = review.get("candidate_generation_attempts")
+    attempts = attempts if isinstance(attempts, list) else []
+    initial_context = review.get("initial_evidence_context")
+    initial_context = initial_context if isinstance(initial_context, dict) else {}
+    return {
+        "status": str(review.get("ai_review_status") or "unknown"),
+        "error": str(review.get("ai_review_error") or "")[:500],
+        "attempts": attempts,
+        "accepted_candidate_ids": [
+            str(item.get("candidate_id"))
+            for item in proposals
+            if isinstance(item, dict) and item.get("candidate_id")
+        ],
+        "deferred_candidate_ids": [
+            str(value)
+            for value in (review.get("deferred_candidate_ids") or [])
+            if str(value)
+        ],
+        "selected_evidence_families": [
+            str(value)
+            for value in (review.get("selected_evidence_families") or [])
+            if str(value)
+        ],
+        "initial_evidence_context": initial_context,
+    }
+
+
+def _conclusion_observations(task_observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep a compact, answer-free summary of the evidence used for gating."""
+    result: list[dict[str, Any]] = []
+    for item in task_observations:
+        if not isinstance(item, dict):
+            continue
+        summary = item.get("summary")
+        if isinstance(summary, (dict, list)):
+            summary = json.dumps(summary, ensure_ascii=False, sort_keys=True, default=str)
+        result.append({
+            "task_id": str(item.get("task_id") or ""),
+            "collector_type": str(item.get("collector_type") or ""),
+            "status": str(item.get("status") or item.get("evidence_status") or "completed"),
+            "evidence_status": str(item.get("evidence_status") or ""),
+            "summary": str(summary or "")[:800],
+            "evidence_refs": _unique_strings(item.get("evidence_refs", []))[:64],
+            "top_function": item.get("top_function") if isinstance(item.get("top_function"), dict) else {},
+            "specific_anchor": item.get("specific_anchor") if isinstance(item.get("specific_anchor"), dict) else {},
+        })
+    return result
+
+
+def _conclusion_boundaries(
+    tree: dict[str, Any] | None,
+    qualification_boundary: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Return local boundary nodes plus the session qualification boundary."""
+    boundaries: list[dict[str, Any]] = []
+    if isinstance(qualification_boundary, dict) and qualification_boundary.get("status") not in {None, "none"}:
+        boundaries.append({
+            "kind": "qualification",
+            **qualification_boundary,
+        })
+    if not isinstance(tree, dict):
+        return boundaries
+    for layer in tree.get("layers", []):
+        if not isinstance(layer, dict):
+            continue
+        for group in ("primary_causes", "secondary_causes", "rejected_causes", "unknown_causes"):
+            for node in layer.get(group, []):
+                if not isinstance(node, dict):
+                    continue
+                if node.get("depth_kind") != "boundary" and node.get("node_type") not in {
+                    "stop_boundary", "evidence_gap", "orphan",
+                }:
+                    continue
+                boundaries.append({
+                    "kind": "tree_boundary",
+                    "candidate_id": str(node.get("candidate_id") or ""),
+                    "parent_candidate_ids": _unique_strings(node.get("parent_candidate_ids", [])),
+                    "origin_parent_candidate_id": node.get("origin_parent_candidate_id"),
+                    "status": node.get("status"),
+                    "blocked_probe": node.get("blocked_probe"),
+                    "claim": str(node.get("claim") or "")[:500],
+                    "reason": str(node.get("stop_reason") or node.get("eligibility_reason") or "")[:500],
+                    "evidence_refs": _unique_strings(node.get("evidence_refs", []))[:64],
+                })
+    return boundaries
+
+
+def _retained_parent_conclusions(
+    tree: dict[str, Any] | None,
+    retained: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Describe the retained node and its real ancestor chain."""
+    if not isinstance(retained, dict) or not retained.get("candidate_id"):
+        return []
+    nodes: dict[str, dict[str, Any]] = {}
+    if isinstance(tree, dict):
+        for layer in tree.get("layers", []):
+            if not isinstance(layer, dict):
+                continue
+            for group in ("primary_causes", "secondary_causes", "rejected_causes", "unknown_causes"):
+                for node in layer.get(group, []):
+                    if isinstance(node, dict) and node.get("candidate_id"):
+                        nodes.setdefault(str(node["candidate_id"]), node)
+    chain: list[dict[str, Any]] = []
+    current_id = str(retained.get("candidate_id") or "")
+    visited: set[str] = set()
+    while current_id and current_id not in visited:
+        visited.add(current_id)
+        node = nodes.get(current_id)
+        if node is None:
+            if current_id == str(retained.get("candidate_id")):
+                chain.append(dict(retained))
+            break
+        chain.append({
+            "candidate_id": current_id,
+            "claim": str(node.get("claim") or "")[:800],
+            "supported_level": node.get("supported_level"),
+            "status": node.get("status"),
+            "qualification": retained.get("qualification") if current_id == str(retained.get("candidate_id")) else "observation",
+            "evidence_refs": _unique_strings(node.get("evidence_refs", []))[:64],
+            "origin_parent_candidate_id": node.get("origin_parent_candidate_id"),
+            "retained": current_id == str(retained.get("candidate_id")),
+            "inherited": bool(retained.get("inherited")) if current_id == str(retained.get("candidate_id")) else False,
+            "fallback_mode": retained.get("fallback_mode") if current_id == str(retained.get("candidate_id")) else "none",
+        })
+        current_id = str(node.get("origin_parent_candidate_id") or "")
+    return list(reversed(chain))
 
 
 def _classify_tree_node(node: AITreeCandidateNode) -> AITreeCandidateNode:
