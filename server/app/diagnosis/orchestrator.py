@@ -5049,6 +5049,7 @@ def _build_session_controlled_ai_tree(
             item.get("origin_parent_candidate_id")
             or item.get("source_candidate_id")
             or item.get("parent_candidate_id")
+            or ""
         ).strip()
         if parent_id == "coarse_insufficient_evidence":
             parent_id = coarse_id
@@ -5087,6 +5088,7 @@ def _build_session_controlled_ai_tree(
             item.get("origin_parent_candidate_id")
             or item.get("source_candidate_id")
             or item.get("parent_candidate_id")
+            or ""
         ).strip()
         if parent_id == "coarse_insufficient_evidence":
             parent_id = coarse_id
