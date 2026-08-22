@@ -85,6 +85,7 @@ def structure_artifact_evidence(
     values = artifact_values or {}
     window = _normalize_evidence_window(evidence_window or values.get("evidence_window") or _artifact_value_window(values))
     window_json = window.model_dump(mode="json")
+    runtime_profile = values.get("python_stack_samples_json") if isinstance(values.get("python_stack_samples_json"), dict) else values.get("pyspy_status_json")
     artifact_refs = _with_window_metadata(_build_artifact_refs(task_id, artifacts), window_json)
     top_functions = _normalize_top_functions(values.get("top_json"))
     if not top_functions:
@@ -102,9 +103,13 @@ def structure_artifact_evidence(
             top_functions,
             artifact_refs,
             off_cpu_wait=values.get("off_cpu_wait_json"),
+            runtime_profile=runtime_profile,
         ),
         "evidence_window": window_json,
     }
+    sample_quality = _runtime_profile_sample_quality(runtime_profile)
+    if sample_quality:
+        stack_summary["sample_quality"] = sample_quality
     call_path_hotspots = _with_window_metadata(_build_call_path_hotspots(depth, top_functions), window_json)
     trace_profile = values.get("trace_endpoint_profile_json")
     if isinstance(trace_profile, dict):
@@ -127,6 +132,11 @@ def structure_artifact_evidence(
         pyspy_status=values.get("pyspy_status_json"),
         baseline=values.get("continuous_summary"),
     )
+    confidence_inputs["runtime_profile_quality"] = sample_quality.get("diagnostic_value") if sample_quality else "unknown"
+    confidence_inputs["runtime_profile_non_idle_ratio"] = sample_quality.get("non_idle_ratio") if sample_quality else 0.0
+    confidence_inputs["runtime_profile_primitive_frame_ratio"] = sample_quality.get("primitive_frame_ratio") if sample_quality else 0.0
+    confidence_inputs["runtime_profile_framework_loop_ratio"] = sample_quality.get("framework_loop_ratio") if sample_quality else 0.0
+    confidence_inputs["runtime_profile_target_code_ratio"] = sample_quality.get("target_code_ratio") if sample_quality else 0.0
     confidence_inputs["evidence_window"] = window_json
     evidence_index = _build_evidence_index(
         artifact_refs=artifact_refs,
@@ -142,6 +152,8 @@ def structure_artifact_evidence(
         runtime_control=values.get("runtime_control_event_json"),
     )
     evidence_index["evidence_window"] = window_json
+    if sample_quality:
+        evidence_index["runtime_profile_quality"] = sample_quality
     return StructuredEvidence(
         task_id=task_id,
         trigger_event_id=window.trigger_event_id,
@@ -426,6 +438,7 @@ def _build_stack_summary(
     top_functions: list[dict[str, Any]],
     artifact_refs: list[dict[str, Any]],
     off_cpu_wait: Any = None,
+    runtime_profile: Any = None,
 ) -> dict[str, Any]:
     stack_samples = depth.get("stack_samples", []) if isinstance(depth, dict) else []
     first_sample = stack_samples[0] if isinstance(stack_samples, list) and stack_samples and isinstance(stack_samples[0], dict) else {}
@@ -455,6 +468,7 @@ def _build_stack_summary(
         "raw_payload_policy": "references_only",
         "artifact_ref_count": len(artifact_refs),
         "evidence_ref": "structured_evidence.stack_summary",
+        "sample_quality": _runtime_profile_sample_quality(runtime_profile),
     }
 
 
@@ -628,6 +642,25 @@ def _trace_profile_status(value: Any, section: str, field: str = "status") -> st
     if not isinstance(section_value, dict):
         return ""
     return str(section_value.get(field) or "")
+
+
+def _runtime_profile_sample_quality(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    quality = value.get("sample_quality")
+    if not isinstance(quality, dict):
+        return {}
+    return {
+        "diagnostic_value": str(quality.get("diagnostic_value") or "unknown"),
+        "dominant_state": str(quality.get("dominant_state") or "unknown"),
+        "non_idle_ratio": _safe_float(quality.get("non_idle_ratio")),
+        "primitive_frame_ratio": _safe_float(quality.get("primitive_frame_ratio")),
+        "framework_loop_ratio": _safe_float(quality.get("framework_loop_ratio")),
+        "target_code_ratio": _safe_float(quality.get("target_code_ratio")),
+        "sample_count": _safe_int(quality.get("sample_count")),
+        "stable_across_samples": bool(quality.get("stable_across_samples")),
+        "reason": str(quality.get("reason") or ""),
+    }
 
 
 def _compact_trace_profile(value: dict[str, Any]) -> dict[str, Any]:

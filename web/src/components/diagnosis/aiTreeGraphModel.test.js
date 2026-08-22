@@ -69,6 +69,41 @@ test("explicit counterevidence remains a rejected grey-node candidate", () => {
   assert.equal(rejected.data.candidate.status, "contradicted");
 });
 
+test("blocked and partial boundaries stay unresolved instead of becoming grey rejected nodes", () => {
+  const graph = buildControlledAITreeGraph({
+    final_supported_level: "function",
+    layers: [{
+      layer_id: "layer-1",
+      depth: 1,
+      primary_causes: [],
+      secondary_causes: [],
+      rejected_causes: [],
+      unknown_causes: [
+        candidate({
+          candidate_id: "blocked-child",
+          role: "rejected",
+          status: "blocked",
+          causal_status: "inconclusive",
+        }),
+        candidate({
+          candidate_id: "partial-child",
+          role: "rejected",
+          status: "partial",
+          causal_status: "unproven",
+        }),
+      ],
+    }],
+    probe_edges: [],
+  });
+
+  const blocked = graph.nodes.find((node) => node.data?.candidate?.candidate_id === "blocked-child");
+  const partial = graph.nodes.find((node) => node.data?.candidate?.candidate_id === "partial-child");
+  assert.equal(blocked.data.role, "unknown");
+  assert.equal(partial.data.role, "unknown");
+  assert.ok(blocked.data.badges.includes("证据边界"));
+  assert.ok(partial.data.badges.includes("证据边界"));
+});
+
 test("legacy forbidden boundary is rendered unresolved even with stale contradicted causal status", () => {
   const graph = buildControlledAITreeGraph({
     final_supported_level: "function",

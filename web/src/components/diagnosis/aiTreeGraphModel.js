@@ -44,7 +44,9 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
     const candidates = flattenLayerCandidates(layer);
     layerIndex.set(layer.layer_id, candidates);
     for (const candidate of candidates) {
-      const visualRole = candidate.role === "rejected" || ["contradicted", "rejected"].includes(candidate.status)
+      const boundaryStatus = ["blocked", "partial", "inconclusive"].includes(candidate.status)
+        || ["blocked", "partial", "inconclusive"].includes(candidate.causal_status);
+      const visualRole = !boundaryStatus && (candidate.role === "rejected" || ["contradicted", "rejected"].includes(candidate.status))
         ? "rejected"
         : candidate.node_type === "stop_boundary" || candidate.depth_kind === "boundary"
           ? "unknown"
@@ -90,10 +92,11 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
             candidate.claim_type,
             candidate.conclusion_eligible ? "可进入结论" : "未过门禁",
             candidate.causal_status === "inconclusive" ? "探针未决" : candidate.causal_status,
+            boundaryStatus ? "证据边界" : null,
             candidate.node_type === "stop_boundary" ? "局部STOP" : candidate.node_type === "observation" ? "观察上下文" : candidate.node_type === "mechanism_explanation" || candidate.depth_kind === "mechanism" ? "机制链" : candidate.depth_kind === "boundary" ? "边界" : "基础定位",
             outsideFinalBoundary ? "已观察/未入终态" : "终态边界内",
             layer.generated_by === "ai_guarded" ? "AI" : "fallback",
-          ],
+          ].filter(Boolean),
         },
       });
     }

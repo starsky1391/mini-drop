@@ -55,6 +55,34 @@ def test_structured_evidence_is_deterministic_for_same_artifacts():
     assert first.confidence_inputs["token_safety"] == "compact_summary_only"
 
 
+def test_pyspy_sample_quality_is_preserved_in_structured_evidence():
+    structured = structure_artifact_evidence(
+        task_id="pyspy_quality",
+        artifacts=[{"artifact_type": "python_stack_samples_json", "filename": "stack_samples.json"}],
+        artifact_values={
+            "python_stack_samples_json": {
+                "sample_quality": {
+                    "diagnostic_value": "low",
+                    "dominant_state": "blocked_io",
+                    "non_idle_ratio": 0.12,
+                    "primitive_frame_ratio": 0.88,
+                    "framework_loop_ratio": 0.73,
+                    "target_code_ratio": 0.05,
+                    "sample_count": 50,
+                    "stable_across_samples": False,
+                    "reason": "样本主要集中在 poll/select，缺少业务执行栈。",
+                }
+            },
+            "top_json": [{"name": "poll", "samples": 50, "percent": 100.0}],
+        },
+    )
+
+    assert structured.stack_summary["sample_quality"]["diagnostic_value"] == "low"
+    assert structured.confidence_inputs["runtime_profile_quality"] == "low"
+    assert structured.confidence_inputs["runtime_profile_target_code_ratio"] == 0.05
+    assert structured.evidence_index["runtime_profile_quality"]["dominant_state"] == "blocked_io"
+
+
 def test_evidence_window_metadata_distinguishes_same_window_from_followup():
     same_window = structure_artifact_evidence(
         task_id="triggered_task",

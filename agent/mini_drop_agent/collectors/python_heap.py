@@ -38,20 +38,33 @@ class PythonHeapCollector:
             if not capture.is_file() or capture.stat().st_size <= 0:
                 return self._blocked(output_dir, task, "instrumented_result_missing", "Memray 官方产物不存在或为空")
         elif not supplied_reports:
+            if not task.target_pid or not self._pid_exists(task.target_pid):
+                return self._blocked(output_dir, task, "missing_target_pid", "目标 PID 不存在或不可访问")
             capture = output_dir / "memray.bin"
-            attach = [
-                memray,
-                "attach",
-                "--output",
-                str(capture),
-                "--duration",
-                str(task.duration_sec),
-                str(task.target_pid),
-            ]
-            result = self._run(attach, task.duration_sec + 45)
+            result = self._run(
+                self._attach_command(memray, capture, task, task.duration_sec),
+                task.duration_sec + 45,
+            )
             if result.returncode != 0 or not capture.is_file() or capture.stat().st_size <= 0:
-                reason = result.stderr.decode("utf-8", errors="replace").strip()[:300]
-                return self._blocked(output_dir, task, "memray_attach_failed", reason or "Memray attach 未产出数据")
+                retry_capture = output_dir / "memray-retry.bin"
+                retry = self._run(
+                    self._attach_command(memray, retry_capture, task, min(task.duration_sec, 5)),
+                    max(30, min(task.duration_sec, 5) + 20),
+                )
+                if retry.returncode == 0 and retry_capture.is_file() and retry_capture.stat().st_size > 0:
+                    capture = retry_capture
+                else:
+                    return self._failed(
+                        output_dir,
+                        task,
+                        "memray_attach_failed",
+                        self._failure_detail(result, "Memray attach 未产出数据"),
+                        failure_type=self._failure_type(result, capture),
+                        exit_code=result.returncode,
+                        stderr_excerpt=self._stderr_excerpt(result),
+                        retry_attempted=True,
+                        retry_exit_code=retry.returncode,
+                    )
 
         stats_path: Path | None = None
         if supplied_stats:
@@ -67,14 +80,27 @@ class PythonHeapCollector:
                 max(60, task.duration_sec + 30),
             )
             if stats.returncode != 0 or not stats_path.is_file():
-                reason = stats.stderr.decode("utf-8", errors="replace").strip()[:300]
-                return self._blocked(output_dir, task, "memray_stats_failed", reason or "Memray stats 未产出 JSON")
+                return self._failed(
+                    output_dir,
+                    task,
+                    "memray_stats_failed",
+                    self._failure_detail(stats, "Memray stats 未产出 JSON"),
+                    failure_type=self._failure_type(stats, stats_path),
+                    exit_code=stats.returncode,
+                    stderr_excerpt=self._stderr_excerpt(stats),
+                )
         official: dict[str, Any] = {}
         if stats_path is not None:
             try:
                 official = json.loads(stats_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
-                return self._blocked(output_dir, task, "memray_stats_invalid", str(exc))
+                return self._failed(
+                    output_dir,
+                    task,
+                    "memray_stats_invalid",
+                    str(exc),
+                    failure_type="output_unparseable",
+                )
 
         leaks_path: Path | None = None
         retained: list[dict[str, Any]] = []
@@ -85,7 +111,13 @@ class PythonHeapCollector:
             try:
                 retained = self._retained_hotspots(leaks_path)
             except (OSError, csv.Error, ValueError) as exc:
-                return self._blocked(output_dir, task, "memray_leaks_invalid", str(exc))
+                return self._failed(
+                    output_dir,
+                    task,
+                    "memray_leaks_invalid",
+                    str(exc),
+                    failure_type="output_unparseable",
+                )
 
         payload = self._normalize_stats(
             official,
@@ -116,7 +148,53 @@ class PythonHeapCollector:
         try:
             return subprocess.run(command, capture_output=True, timeout=timeout)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            return subprocess.CompletedProcess(command, 1, stdout=b"", stderr=str(exc).encode())
+            return subprocess.CompletedProcess(
+                command,
+                124 if isinstance(exc, subprocess.TimeoutExpired) else 127,
+                stdout=b"",
+                stderr=str(exc).encode(),
+            )
+
+    @staticmethod
+    def _attach_command(memray: str, capture: Path, task: CollectorTask, duration: int) -> list[str]:
+        return [
+            memray,
+            "attach",
+            "--output",
+            str(capture),
+            "--duration",
+            str(duration),
+            str(task.target_pid),
+        ]
+
+    @staticmethod
+    def _pid_exists(pid: int) -> bool:
+        return bool(pid) and os.path.isdir(f"/proc/{pid}")
+
+    @staticmethod
+    def _stderr_excerpt(result: subprocess.CompletedProcess) -> str:
+        return result.stderr.decode("utf-8", errors="replace").strip()[:300]
+
+    @classmethod
+    def _failure_detail(cls, result: subprocess.CompletedProcess, fallback: str) -> str:
+        return cls._stderr_excerpt(result) or fallback
+
+    @classmethod
+    def _failure_type(cls, result: subprocess.CompletedProcess, output_path: Path) -> str:
+        stderr = cls._stderr_excerpt(result).lower()
+        if result.returncode == 124 or "timeout" in stderr or "timed out" in stderr:
+            return "timeout"
+        if any(token in stderr for token in ("permission denied", "operation not permitted", "ptrace")):
+            return "permission_denied"
+        if any(token in stderr for token in ("namespace", "container", "pid namespace")):
+            return "namespace_inaccessible"
+        if any(token in stderr for token in ("incompatible", "unsupported", "not compatible")):
+            return "incompatible_runtime"
+        if result.returncode != 0:
+            return "collector_exit_nonzero"
+        if not output_path.is_file() or output_path.stat().st_size <= 0:
+            return "output_missing"
+        return "collector_failed"
 
     @staticmethod
     def _normalize_stats(
@@ -280,9 +358,57 @@ class PythonHeapCollector:
                 "detail": detail,
             },
         }
+        return self._write_status_result(output_dir, task, payload, detail)
+
+    def _failed(
+        self,
+        output_dir: Path,
+        task: CollectorTask,
+        reason: str,
+        detail: str,
+        *,
+        failure_type: str,
+        exit_code: int | None = None,
+        stderr_excerpt: str = "",
+        retry_attempted: bool = False,
+        retry_exit_code: int | None = None,
+    ) -> CollectorResult:
+        payload = {
+            "schema_version": "1.0",
+            "producer": "memray",
+            "mode": "failed",
+            "target_pid": task.target_pid,
+            "allocation_hotspots": [],
+            "retained_allocation_hotspots": [],
+            "call_path_hotspots": [],
+            "line_candidates": [],
+            "raw_artifact_refs": [],
+            "evidence_validity": {
+                "execution_status": "timed_out" if failure_type == "timeout" else "failed",
+                "artifact_status": "missing",
+                "evidence_status": "failed",
+                "reason": reason,
+                "detail": detail,
+                "failure_type": failure_type,
+                "exit_code": exit_code,
+                "stderr_excerpt": stderr_excerpt,
+                "retry_attempted": retry_attempted,
+                "retry_exit_code": retry_exit_code,
+            },
+        }
+        return self._write_status_result(output_dir, task, payload, detail)
+
+    @classmethod
+    def _write_status_result(
+        cls,
+        output_dir: Path,
+        task: CollectorTask,
+        payload: dict[str, Any],
+        detail: str,
+    ) -> CollectorResult:
         path = output_dir / "python_heap_profile.json"
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        artifact = {**self._artifact("python_heap_profile_json", path, "application/json"), "collector_family": "python_heap_profile", "metadata": {"data": payload}}
+        artifact = {**cls._artifact("python_heap_profile_json", path, "application/json"), "collector_family": "python_heap_profile", "metadata": {"data": payload}}
         return CollectorResult(ok=False, reason=detail, artifacts=[artifact])
 
     @staticmethod

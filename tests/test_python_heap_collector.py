@@ -30,6 +30,62 @@ def test_memray_missing_emits_structured_blocked_artifact(tmp_path):
     assert payload["evidence_validity"]["reason"] == "memray_not_installed"
 
 
+def test_memray_attach_failure_is_failed_after_one_light_retry(tmp_path):
+    collector = PythonHeapCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    task = CollectorTask(
+        id="heap-attach-failed",
+        collector_type="python_heap_profile",
+        target_pid=1234,
+        sample_rate=1,
+        duration_sec=10,
+        options={},
+    )
+    failed = mock.MagicMock(
+        returncode=1,
+        stdout=b"",
+        stderr=b"memray attach failed: operation not permitted",
+    )
+    with mock.patch("shutil.which", return_value="/usr/bin/memray"), mock.patch.object(
+        collector, "_pid_exists", return_value=True
+    ), mock.patch("subprocess.run", return_value=failed) as run:
+        result = collector.collect(task)
+
+    assert result.ok is False
+    assert run.call_count == 2
+    payload = result.artifacts[0]["metadata"]["data"]
+    validity = payload["evidence_validity"]
+    assert payload["mode"] == "failed"
+    assert validity["evidence_status"] == "failed"
+    assert validity["reason"] == "memray_attach_failed"
+    assert validity["failure_type"] == "permission_denied"
+    assert validity["retry_attempted"] is True
+    assert payload["retained_allocation_hotspots"] == []
+
+
+def test_memray_missing_target_is_blocked_without_running_collector(tmp_path):
+    collector = PythonHeapCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    task = CollectorTask(
+        id="heap-missing-pid",
+        collector_type="python_heap_profile",
+        target_pid=1234,
+        sample_rate=1,
+        duration_sec=5,
+        options={},
+    )
+    with mock.patch("shutil.which", return_value="/usr/bin/memray"), mock.patch.object(
+        collector, "_pid_exists", return_value=False
+    ), mock.patch("subprocess.run") as run:
+        result = collector.collect(task)
+
+    assert result.ok is False
+    run.assert_not_called()
+    payload = result.artifacts[0]["metadata"]["data"]
+    assert payload["mode"] == "blocked"
+    assert payload["evidence_validity"]["reason"] == "missing_target_pid"
+
+
 def test_memray_official_stats_are_normalized_with_lines(tmp_path, monkeypatch):
     result_path = tmp_path / "capture.bin"
     result_path.write_bytes(b"memray")

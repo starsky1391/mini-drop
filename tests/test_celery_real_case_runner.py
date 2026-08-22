@@ -92,6 +92,82 @@ def test_pair_stage_modes_create_only_one_diagnosis(tmp_path, monkeypatch):
     assert vulnerable["runtime_manifest"]["workload"] == fixed["runtime_manifest"]["workload"]
 
 
+def test_diagnosis_timeout_preserves_id_and_latest_detail(monkeypatch):
+    runner = load_module("celery_case_timeout", "run_case_vm.py")
+    calls = {"count": 0}
+
+    class TimeoutAPI:
+        def call(self, path, method="GET", payload=None, *, timeout=60):
+            calls["count"] += 1
+            if path == "/api/v1/diagnoses":
+                return {"diagnosis_id": "diag-timeout"}
+            return {
+                "status": "RUNNING",
+                "probes": [],
+                "headline": "runtime observation still collecting",
+            }
+
+    monkeypatch.setattr(runner.time, "monotonic", iter([0.0, 2.0, 4.0]).__next__)
+    monkeypatch.setattr(runner.time, "sleep", lambda _: None)
+
+    result = runner.diagnosis(
+        TimeoutAPI(),
+        {"service_id": "celery-worker"},
+        {"repo_revision": runner.VULNERABLE_REVISION},
+        timeout=1,
+        time_range={},
+    )
+
+    assert result["diagnosis_id"] == "diag-timeout"
+    assert result["runner_status"] == "diagnosis_timeout"
+    assert result["terminal"] is False
+    assert result["detail"]["status"] == "RUNNING"
+
+
+def test_run_stage_keeps_partial_result_when_producer_does_not_complete(tmp_path, monkeypatch):
+    runner = load_module("celery_case_partial", "run_case_vm.py")
+
+    class PartialRemote(FakeRemote):
+        def run(self, command: str, *, timeout: int = 600) -> str:
+            self.commands.append(command)
+            if "submission_sample" in command:
+                return ""
+            if "date -u +%Y-%m-%dT%H:%M:%S%z" in command:
+                return "2026-08-21T00:00:00+0000\n"
+            if "docker inspect" in command:
+                return f"1234|5678|{'a' * 64}\n"
+            if "producer_complete" in command:
+                raise RuntimeError("worker command failed (1): producer did not complete the workload")
+            return ""
+
+    class FakeAPI:
+        def __init__(self, api_key: str):
+            assert api_key == "test-key"
+
+    monkeypatch.setattr(runner, "API", FakeAPI)
+    monkeypatch.setattr(runner, "diagnosis", lambda *args, **kwargs: {"diagnosis_id": "diag", "detail": {"status": "COMPLETED"}})
+    monkeypatch.setattr(runner.time, "sleep", lambda _: None)
+    remote = PartialRemote()
+
+    result = runner.run_stage(
+        remote,
+        "test-key",
+        stage="vulnerable",
+        revision=runner.VULNERABLE_REVISION,
+        remote_root_value="/tmp/python_worker_failure_case",
+        duration_sec=60,
+        diagnosis_timeout_sec=120,
+        output_root=tmp_path,
+        stage_role="diagnosis_target",
+        diagnosis_mode="full",
+        keep_running=True,
+    )
+
+    assert result["producer_completed"] is False
+    assert result["diagnosis"]["diagnosis_id"] == "diag"
+    assert result["stage_role"] == "diagnosis_target"
+
+
 def test_vm_runtime_files_do_not_expose_oracle_labels():
     runner = load_module("celery_case_runtime_files", "run_case_vm.py")
     runtime_text = "\n".join(

@@ -224,6 +224,15 @@ class AITreeCandidateNode(BaseModel):
     branch_id: str = ""
     parent_candidate_ids: list[str] = Field(default_factory=list)
     origin_parent_candidate_id: Optional[str] = None
+    relation: Literal[
+        "root",
+        "alternative",
+        "refinement",
+        "evidence_context",
+        "mechanism",
+        "boundary",
+        "rejected_alternative",
+    ] = "alternative"
     node_type: Literal[
         "cluster_root",
         "coarse_candidate",
@@ -290,13 +299,39 @@ class AITreeCandidateNode(BaseModel):
         if not data.get("origin_parent_candidate_id") and data.get("source_parent_candidate_id"):
             data["origin_parent_candidate_id"] = data["source_parent_candidate_id"]
         data.pop("source_parent_candidate_id", None)
+        if not data.get("relation"):
+            data["relation"] = cls._infer_relation(data)
         return data
 
     @model_validator(mode="after")
     def _validate_origin_parent(self):
+        if self.relation == "root" and self.parent_candidate_ids:
+            raise ValueError("root 节点不能携带 parent_candidate_ids")
         if self.origin_parent_candidate_id and self.origin_parent_candidate_id not in self.parent_candidate_ids:
             raise ValueError("origin_parent_candidate_id 必须是 parent_candidate_ids 中的唯一来源父节点")
         return self
+
+    @classmethod
+    def _infer_relation(cls, data: dict[str, Any]) -> str:
+        candidate_id = str(data.get("candidate_id") or "")
+        node_type = str(data.get("node_type") or "")
+        depth_kind = str(data.get("depth_kind") or "")
+        role = str(data.get("role") or "")
+        status = str(data.get("status") or "")
+        supported_level = str(data.get("supported_level") or "")
+        if node_type == "cluster_root" or candidate_id.startswith("coarse_"):
+            return "root"
+        if node_type == "observation" or supported_level in {"resource", "host", "process"} and str(data.get("claim_type") or "") == "observation_only":
+            return "evidence_context"
+        if depth_kind == "mechanism" or node_type == "mechanism_explanation":
+            return "mechanism"
+        if depth_kind == "boundary" or node_type in {"stop_boundary", "evidence_gap"}:
+            return "boundary"
+        if role == "rejected" or status in {"contradicted", "rejected", "forbidden"} or node_type == "rejected_candidate":
+            return "rejected_alternative"
+        if node_type in {"line_anchor", "call_path_context"} or supported_level in {"line", "call_path"}:
+            return "refinement"
+        return "alternative"
 
 
 class AITreeProbeResult(BaseModel):
@@ -424,6 +459,30 @@ class RootCauseCluster(BaseModel):
         "partial_localization",
         "observation",
     ] = "observation"
+
+
+class RetainedConclusion(BaseModel):
+    """当前证据下仍可展示、可继续验证的父结论。"""
+
+    candidate_id: str
+    claim: str
+    supported_level: Literal["resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"] = "resource"
+    status: Literal["supported", "partial", "blocked", "inconclusive", "observation"] = "observation"
+    qualification: Literal["formal_root_cause", "possible_root_cause", "partial_localization", "observation"] = "observation"
+    evidence_refs: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    source_candidate_id: str = ""
+    inherited: bool = False
+    fallback_mode: Literal["none", "inherit_parent"] = "none"
+
+
+class QualificationBoundary(BaseModel):
+    """说明当前分支为何没有继续升级，不承担主结论语义。"""
+
+    status: Literal["blocked", "partial", "inconclusive", "none"] = "none"
+    message: str = ""
+    missing_evidence: list[str] = Field(default_factory=list)
+    origin_parent_candidate_id: Optional[str] = None
 
 
 class SessionConclusionReview(BaseModel):

@@ -562,6 +562,14 @@ function DiagnosisDetail({ detail }) {
     [conclusion?.controlled_ai_tree],
   );
   const aiReviewStatus = conclusion?.ai_review_status || "fallback";
+  const retainedConclusion = conclusion?.retained_conclusion || {};
+  const formalRootCause = conclusion?.formal_root_cause || null;
+  const qualificationBoundary = conclusion?.qualification_boundary || {};
+  const displayedConclusion = retainedConclusion.claim || formalRootCause?.claim || conclusion?.headline || conclusion?.summary;
+  const displayedLevel = retainedConclusion.supported_level || conclusion?.cluster_assessment?.supported_level;
+  const displayedQualification = retainedConclusion.qualification || (
+    formalRootCause ? "formal_root_cause" : "partial_localization"
+  );
 
   function inspectClusterInTree(candidateIds) {
     setHighlightedTreeCandidates(candidateIds);
@@ -593,15 +601,16 @@ function DiagnosisDetail({ detail }) {
           <Alert
             showIcon
             type={!hasEligiblePrimary || aiReviewStatus !== "succeeded" ? "warning" : "info"}
-            message={conclusion.headline || conclusion.summary}
+            message={displayedConclusion}
             description={(
               <Space direction="vertical" size={6}>
                 <Typography.Text>{conclusion.why_it_happened || conclusion.summary}</Typography.Text>
                 <Space wrap>
                   <Tag color={hasEligiblePrimary ? "green" : "gold"}>根因置信等级 {displayedConfidence}</Tag>
-                  {!hasEligiblePrimary && <Tag>未形成最终主因</Tag>}
+                  <Tag>{displayedQualification}</Tag>
+                  {displayedLevel && <Tag>当前定位：{displayedLevel}</Tag>}
                   <Tag color={aiReviewStatus === "succeeded" ? "green" : aiReviewStatus === "failed" ? "red" : "orange"}>
-                    {aiReviewStatus === "succeeded" ? "AI 会话裁决已通过" : aiReviewStatus === "failed" ? "AI 裁决失败，已回退" : "Analyzer 回退结论"}
+                    {aiReviewStatus === "succeeded" ? "AI 会话裁决已通过" : aiReviewStatus === "failed" ? "AI 会话裁决失败，保留当前结论" : "AI 会话裁决未完成，保留当前结论"}
                   </Tag>
                   {conclusion.ai_review_model && <Tag>{conclusion.ai_review_model}</Tag>}
                 </Space>
@@ -624,6 +633,24 @@ function DiagnosisDetail({ detail }) {
               showIcon
               message="当前保留的是可能根因，不是最终根因"
               description="深探被阻断或结果不完整不会否定上一层候选；系统已保留已有证据、未验证因果边和下一步补证请求。"
+              style={{ marginBottom: 12 }}
+            />
+          )}
+          {qualificationBoundary.message && (
+            <Alert
+              type={qualificationBoundary.status === "blocked" ? "warning" : "info"}
+              showIcon
+              message="证据边界"
+              description={(
+                <Space direction="vertical" size={4}>
+                  <Typography.Text>{qualificationBoundary.message}</Typography.Text>
+                  {qualificationBoundary.missing_evidence?.length > 0 && (
+                    <Typography.Text type="secondary">
+                      尚缺：{qualificationBoundary.missing_evidence.join("；")}
+                    </Typography.Text>
+                  )}
+                </Space>
+              )}
               style={{ marginBottom: 12 }}
             />
           )}

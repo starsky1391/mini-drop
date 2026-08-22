@@ -19,6 +19,30 @@ class PySpyCollector:
     """py-spy sampling profiler。"""
 
     OUTPUT_BASE = "/tmp/mini-drop"
+    _IDLE_NAMES = (
+        "poll",
+        "epoll_wait",
+        "epoll_pwait",
+        "select",
+        "pselect",
+        "recv",
+        "recv_bytes",
+        "drain_events",
+        "wait",
+        "sleep",
+        "futex",
+        "idle",
+        "workloop",
+    )
+    _FRAMEWORK_NAMES = (
+        "celery",
+        "kombu",
+        "billiard",
+        "asyncio",
+        "multiprocessing",
+        "consumer",
+        "hub",
+    )
 
     def collect(self, task: CollectorTask) -> CollectorResult:
         pyspy = shutil.which("py-spy")
@@ -204,9 +228,11 @@ class PySpyCollector:
         stacks: list[dict] = []
         leaf_counts: dict[tuple[str, str, int], int] = {}
         leaf_paths: dict[tuple[str, str, int], list[str]] = {}
+        leaf_state_counts: dict[tuple[str, str, int], dict[str, int]] = {}
         frame_counts: dict[tuple[str, str, int], int] = {}
         frame_paths: dict[tuple[str, str, int], dict[tuple[str, ...], int]] = {}
         frame_depths: dict[tuple[str, str, int], dict[int, int]] = {}
+        state_counts: dict[str, int] = {}
         total_samples = 0
         for raw_line in text.splitlines():
             match = re.match(r"^(.*)\s+(-?\d+)\s*$", raw_line.strip())
@@ -222,11 +248,15 @@ class PySpyCollector:
             leaf = frames[-1]
             if PySpyCollector._invalid_anchor(leaf["name"]):
                 continue
+            sample_state = PySpyCollector._classify_state(frames)
+            state_counts[sample_state] = state_counts.get(sample_state, 0) + count
             total_samples += count
             names = [frame["name"] for frame in frames]
             key = (leaf["name"], leaf["file"], leaf["line"])
             leaf_counts[key] = leaf_counts.get(key, 0) + count
             leaf_paths.setdefault(key, names)
+            state_bucket = leaf_state_counts.setdefault(key, {})
+            state_bucket[sample_state] = state_bucket.get(sample_state, 0) + count
             for frame_index, frame in enumerate(frames):
                 if PySpyCollector._invalid_anchor(frame["name"]):
                     continue
@@ -245,12 +275,15 @@ class PySpyCollector:
                 "file": leaf["file"],
                 "line": leaf["line"],
                 "sample_count": count,
+                "sample_state": sample_state,
             })
 
         for item in stacks:
             item["percent"] = round(item["sample_count"] / total_samples * 100.0, 2) if total_samples else 0.0
         top_functions = []
         for (name, file_name, line), count in leaf_counts.items():
+            state_bucket = leaf_state_counts.get((name, file_name, line), {})
+            state = max(state_bucket.items(), key=lambda item: (item[1], item[0]))[0] if state_bucket else PySpyCollector._classify_call_path(leaf_paths[(name, file_name, line)])
             top_functions.append({
                 "name": name,
                 "file": file_name,
@@ -258,9 +291,12 @@ class PySpyCollector:
                 "samples": count,
                 "percent": round(count / total_samples * 100.0, 2) if total_samples else 0.0,
                 "call_path": leaf_paths[(name, file_name, line)],
+                "state": state,
             })
         top_functions.sort(key=lambda item: (-item["samples"], item["name"], item["file"], item["line"]))
         top_functions = top_functions[:limit]
+        for item in top_functions:
+            item["is_idle_like"] = item["state"] in {"blocked_io", "scheduler_wait", "idle_loop"}
         line_candidates = [
             {
                 "symbol": item["name"],
@@ -303,6 +339,9 @@ class PySpyCollector:
                 item["line"],
             )
         )
+        filtered_idle_frames = [item for item in top_functions if item.get("is_idle_like")]
+        candidate_frames = [item for item in top_functions if not item.get("is_idle_like")]
+        sample_quality = PySpyCollector._sample_quality(total_samples, state_counts)
         return {
             "schema_version": "1.0",
             "producer": "py-spy",
@@ -310,6 +349,9 @@ class PySpyCollector:
             "total_samples": total_samples,
             "stack_samples": stacks,
             "top_functions": top_functions,
+            "candidate_frames": candidate_frames[:limit],
+            "filtered_idle_frames": filtered_idle_frames[:limit],
+            "sample_quality": sample_quality,
             "call_path_hotspots": stacks[:limit],
             "line_candidates": source_line_candidates[: max(limit * 4, len(line_candidates))],
             "evidence_validity": {
@@ -336,3 +378,117 @@ class PySpyCollector:
         return not normalized or normalized in {"[unknown]", "unknown", "all", "root"} or bool(
             re.fullmatch(r"(?:0x)?[0-9a-f]+", normalized)
         )
+
+    @classmethod
+    def _classify_call_path(cls, call_path: list[str]) -> str:
+        text = " ".join(call_path).lower()
+        if any(token in text for token in ("recv", "drain_events", "poll", "select", "epoll_wait", "epoll_pwait")):
+            return "blocked_io"
+        if any(token in text for token in ("sleep", "wait", "futex", "park", "idle", "workloop")):
+            return "scheduler_wait"
+        leaf = call_path[-1].lower() if call_path else ""
+        if cls._is_framework_loop_leaf(leaf):
+            return "framework_loop"
+        if any(token in leaf for token in ("celery/", "kombu/", "billiard/", "asyncio/", "multiprocessing/")):
+            return "executing"
+        if any(token in text for token in ("celery", "kombu", "billiard", "asyncio", "multiprocessing", "consumer", "hub")):
+            return "framework_loop"
+        if any(token in leaf for token in ("/opt/", "/home/", "/src/", "site-packages/")):
+            return "executing"
+        return "unknown"
+
+    @classmethod
+    def _classify_state(cls, frames: list[dict]) -> str:
+        if not frames:
+            return "unknown"
+        names = " ".join(str(frame.get("name") or "") for frame in frames).lower()
+        files = " ".join(str(frame.get("file") or "") for frame in frames).lower()
+        combined = f"{names} {files}"
+        if any(token in combined for token in ("recv", "drain_events", "poll", "select", "epoll_wait", "epoll_pwait")):
+            return "blocked_io"
+        if any(token in combined for token in ("sleep", "wait", "futex", "park", "idle", "workloop")):
+            return "scheduler_wait"
+        leaf = frames[-1]
+        leaf_name = str(leaf.get("name") or "").lower()
+        leaf_file = str(leaf.get("file") or "").lower()
+        if cls._is_framework_loop_leaf(f"{leaf_name} {leaf_file}"):
+            return "framework_loop"
+        if leaf_file and leaf.get("line", 0):
+            return "executing"
+        if any(token in combined for token in ("celery", "kombu", "billiard", "asyncio", "multiprocessing", "consumer", "hub")):
+            return "framework_loop"
+        if any(token in combined for token in ("celery/", "/opt/", "/home/", "/src/", "site-packages/celery", "celery_case_tasks")):
+            return "executing"
+        return "unknown"
+
+    @staticmethod
+    def _is_framework_loop_leaf(value: str) -> bool:
+        return any(
+            token in value
+            for token in (
+                "consumer",
+                "drain_events",
+                "event_loop",
+                "asynloop",
+                "workloop",
+                "hub",
+                "kombu.transport",
+                "billiard.pool",
+            )
+        )
+
+    @classmethod
+    def _sample_quality(cls, total_samples: int, state_counts: dict[str, int]) -> dict:
+        if total_samples <= 0:
+            return {
+                "diagnostic_value": "low",
+                "dominant_state": "unknown",
+                "non_idle_ratio": 0.0,
+                "primitive_frame_ratio": 0.0,
+                "framework_loop_ratio": 0.0,
+                "target_code_ratio": 0.0,
+                "sample_count": 0,
+                "stable_across_samples": False,
+                "reason": "没有可解析的 py-spy 栈样本。",
+            }
+
+        dominant_state = "unknown"
+        dominant_count = 0
+        for state, count in state_counts.items():
+            if count > dominant_count or (count == dominant_count and state < dominant_state):
+                dominant_state = state
+                dominant_count = count
+
+        primitive_count = sum(state_counts.get(state, 0) for state in {"blocked_io", "scheduler_wait"})
+        framework_count = state_counts.get("framework_loop", 0)
+        target_count = state_counts.get("executing", 0)
+        non_idle_ratio = round(max(0.0, (total_samples - primitive_count) / total_samples), 4)
+        primitive_ratio = round(primitive_count / total_samples, 4)
+        framework_ratio = round(framework_count / total_samples, 4)
+        target_ratio = round(target_count / total_samples, 4)
+
+        if dominant_state == "executing" and target_ratio >= 0.35 and non_idle_ratio >= 0.4:
+            diagnostic_value = "high"
+            reason = "样本主要落在目标代码路径，且空闲/等待帧占比较低。"
+        elif target_ratio >= 0.15 and non_idle_ratio >= 0.25:
+            diagnostic_value = "medium"
+            reason = "样本含有一定目标代码路径，但仍混有框架循环或等待帧，需要交叉证据。"
+        else:
+            diagnostic_value = "low"
+            if dominant_state in {"blocked_io", "scheduler_wait", "framework_loop"}:
+                reason = f"样本主要集中在 {dominant_state}，缺少可升级为根因的业务执行栈。"
+            else:
+                reason = "样本对目标代码的诊断价值不足。"
+
+        stable_across_samples = dominant_count >= max(3, int(total_samples * 0.5))
+        return {
+            "diagnostic_value": diagnostic_value,
+            "dominant_state": dominant_state,
+            "non_idle_ratio": round(non_idle_ratio, 4),
+            "primitive_frame_ratio": round(primitive_ratio, 4),
+            "framework_loop_ratio": round(framework_ratio, 4),
+            "target_code_ratio": round(target_ratio, 4),
+            "sample_count": total_samples,
+            "stable_across_samples": stable_across_samples,
+            "reason": reason,
+        }

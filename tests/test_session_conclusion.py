@@ -4,7 +4,9 @@ import json
 
 from server.app.diagnosis.session_conclusion import (
     apply_session_review,
+    build_qualification_boundary,
     build_fallback_explanation,
+    build_retained_conclusion,
     build_root_cause_clusters,
     classify_cluster_set,
     validate_session_review,
@@ -397,10 +399,108 @@ def test_ineligible_memory_fallback_is_possible_cause_not_confirmed_root():
 
     assert explanation["root_cause_clusters"][0].qualification == "possible_root_cause"
     assert explanation["root_cause_clusters"][0].role == "independent"
-    assert explanation["headline"].startswith("未形成正式根因")
-    assert assessment["diagnostic_claim"] not in explanation["headline"]
-    assert explanation["confidence_level"] == "低"
+    assert explanation["headline"] == assessment["diagnostic_claim"]
+    assert explanation["retained_conclusion"]["claim"] == assessment["diagnostic_claim"]
+    assert explanation["retained_conclusion"]["qualification"] == "possible_root_cause"
+    assert explanation["formal_root_cause"] is None
+    assert explanation["confidence_level"] == "中"
     assert explanation["abstained"] is True
+
+
+def test_blocked_deep_probe_retains_parent_claim_and_separates_boundary():
+    tree = {
+        "layers": [{
+            "layer_id": "base",
+            "depth": 1,
+            "unknown_causes": [{
+                "candidate_id": "worker-runtime-pressure",
+                "node_type": "base_cause",
+                "depth_kind": "base",
+                "claim": "worker 异常处理路径与 RSS 增长同窗出现。",
+                "supported_level": "function",
+                "status": "supported",
+                "confidence": 0.72,
+                "evidence_refs": ["ev-stack", "ev-rss"],
+            }, {
+                "candidate_id": "heap-probe",
+                "node_type": "stop_boundary",
+                "depth_kind": "boundary",
+                "parent_candidate_ids": ["worker-runtime-pressure"],
+                "origin_parent_candidate_id": "worker-runtime-pressure",
+                "claim": "heap 深探被阻断。",
+                "supported_level": "function",
+                "status": "blocked",
+                "confidence": 0.1,
+            }],
+        }],
+    }
+
+    retained = build_retained_conclusion(
+        [],
+        {"classification": "python_memory_retention", "evidence_refs": ["ev-stack", "ev-rss"]},
+        tree,
+    )
+    boundary = build_qualification_boundary(
+        {},
+        followup_requests=["python_heap_reference"],
+        probes=[{"evidence_status": "blocked", "parameters": {"evidence_gap": "python_heap_reference"}}],
+        origin_parent_candidate_id=retained["candidate_id"],
+    )
+
+    assert retained["candidate_id"] == "worker-runtime-pressure"
+    assert retained["claim"] == "worker 异常处理路径与 RSS 增长同窗出现。"
+    assert retained["qualification"] == "partial_localization"
+    assert boundary["status"] == "blocked"
+    assert boundary["origin_parent_candidate_id"] == "worker-runtime-pressure"
+    assert "heap-probe" not in retained["claim"]
+
+
+def test_child_contradiction_keeps_parent_as_retained_candidate():
+    retained = build_retained_conclusion(
+        [],
+        {},
+        {"layers": [{
+            "layer_id": "base",
+            "depth": 1,
+            "unknown_causes": [{
+                "candidate_id": "parent",
+                "node_type": "base_cause",
+                "depth_kind": "base",
+                "claim": "父节点结论仍由同窗证据支持。",
+                "supported_level": "process",
+                "status": "supported",
+                "confidence": 0.7,
+            }, {
+                "candidate_id": "child",
+                "node_type": "call_path_context",
+                "depth_kind": "base",
+                "parent_candidate_ids": ["parent"],
+                "origin_parent_candidate_id": "parent",
+                "claim": "被反驳的子调用链。",
+                "supported_level": "call_path",
+                "status": "contradicted",
+                "confidence": 0.2,
+            }],
+        }]},
+    )
+
+    assert retained["candidate_id"] == "parent"
+    assert retained["claim"] == "父节点结论仍由同窗证据支持。"
+
+
+def test_contradicted_previous_retained_claim_is_not_reused():
+    retained = build_retained_conclusion(
+        [],
+        {},
+        None,
+        previous_retained={
+            "candidate_id": "old-parent",
+            "claim": "已经被直接反驳的旧结论。",
+            "status": "contradicted",
+        },
+    )
+
+    assert retained is None
 
 
 def test_session_ai_review_rejects_unknown_cluster_and_evidence(monkeypatch):

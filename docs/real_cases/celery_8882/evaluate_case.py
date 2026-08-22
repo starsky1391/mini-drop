@@ -156,6 +156,62 @@ def all_tree_nodes(tree: dict) -> list[dict]:
     return result
 
 
+def evaluate_tree_contract(tree: dict, stage_result: dict) -> dict:
+    nodes = all_tree_nodes(tree)
+    node_by_id = {
+        str(node.get("candidate_id")): node
+        for node in nodes
+        if node.get("candidate_id")
+    }
+    deep_nodes = [
+        node for node in nodes
+        if node.get("depth_kind") in {"mechanism", "boundary"}
+    ]
+    explicit_parent_links = all(
+        node.get("parent_candidate_ids")
+        and node.get("origin_parent_candidate_id") in node.get("parent_candidate_ids", [])
+        and all(parent in node_by_id for parent in node.get("parent_candidate_ids", []))
+        for node in deep_nodes
+    )
+    observation_nodes = [node for node in nodes if node.get("node_type") == "observation"]
+    observations_under_base = all(
+        node.get("parent_candidate_ids")
+        and any(
+            node_by_id.get(parent, {}).get("depth_kind") == "base"
+            for parent in node.get("parent_candidate_ids", [])
+        )
+        for node in observation_nodes
+    )
+    detail = ((stage_result.get("diagnosis") or {}).get("detail") or {})
+    probes = detail.get("probes") or []
+    heap_failures = [
+        probe for probe in probes
+        if str((probe.get("parameters") or {}).get("evidence_gap") or "") == "python_heap_profile"
+        and (
+            str(probe.get("status") or "").lower() in {"failed", "blocked", "timed_out", "timeout"}
+            or str(probe.get("evidence_status") or "").lower() in {
+                "failed", "blocked", "partial", "empty_window", "unparseable", "target_exit",
+            }
+        )
+    ]
+    final_primary = set(tree.get("final_primary_causes") or [])
+    heap_primary_free = all(
+        str((probe.get("parameters") or {}).get("candidate_id") or "") not in final_primary
+        for probe in heap_failures
+    )
+    headline = str(detail.get("headline") or detail.get("summary") or "")
+    abstain_truthful = bool(final_primary) or (
+        bool(detail.get("abstained"))
+        and "未形成正式根因" in headline
+    )
+    return {
+        "explicit_parent_links": explicit_parent_links,
+        "observations_under_base": observations_under_base,
+        "heap_failure_not_formal_primary": heap_primary_free,
+        "abstain_truthful": abstain_truthful,
+    }
+
+
 def evaluate_stage(stage: str, stage_result: dict, evidence_dir: Path, oracle: dict) -> dict:
     manifest = stage_result.get("runtime_manifest") or {}
     revision = ((manifest.get("source_context") or {}).get("repo_revision") or "")
@@ -177,6 +233,12 @@ def evaluate_stage(stage: str, stage_result: dict, evidence_dir: Path, oracle: d
     mechanism_nodes = [node for node in nodes if node.get("depth_kind") == "mechanism"]
     final_primary = set(tree.get("final_primary_causes") or [])
     mechanism_not_primary = all(node.get("candidate_id") not in final_primary for node in mechanism_nodes)
+    tree_contract = evaluate_tree_contract(tree, stage_result) if stage == "vulnerable" else {
+        "explicit_parent_links": True,
+        "observations_under_base": True,
+        "heap_failure_not_formal_primary": True,
+        "abstain_truthful": True,
+    }
     return {
         "revision_matches_oracle": revision == expected_revision,
         "revision": revision,
@@ -194,6 +256,7 @@ def evaluate_stage(stage: str, stage_result: dict, evidence_dir: Path, oracle: d
         "source_hit_count": len(source_hits),
         "mechanism_node_count": len(mechanism_nodes),
         "mechanism_not_formal_primary": mechanism_not_primary,
+        "tree_contract": tree_contract,
         "tree": tree,
     }
 
@@ -321,6 +384,10 @@ def evaluate_run(run: dict, base: Path, oracle: dict) -> dict:
         "same_workload": comparison["same_workload"] and comparison["producer_counts_close"],
         "real_source_range": vulnerable["source_range_detected"],
         "mechanism_is_not_primary": vulnerable["mechanism_not_formal_primary"],
+        "tree_parent_links_explicit": vulnerable["tree_contract"]["explicit_parent_links"],
+        "observations_under_base": vulnerable["tree_contract"]["observations_under_base"],
+        "heap_failure_not_formal_primary": vulnerable["tree_contract"]["heap_failure_not_formal_primary"],
+        "abstain_truthful": vulnerable["tree_contract"]["abstain_truthful"],
         "deep_probe_fallback": fallback["failed_deep_probe_rolls_back_to_recorded_origin"] is not False,
     }
     result = {

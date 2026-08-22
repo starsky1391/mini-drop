@@ -1060,6 +1060,29 @@ This group supersedes the old qualification wording in BJ001-BJ002; remaining im
 
 **Outcome**: Persistent Watch freezes the first abnormal window, aggregates repeated signals into one durable Episode, starts at most one eligible AI diagnosis, and lets users understand individual anomaly points without invoking the controlled tree.
 
+### Task Group BY - 父结论继承式回退与分层结论展示
+
+**Purpose**: Keep the strongest evidence-backed parent conclusion visible when deep investigation is blocked, partial, inconclusive, or only disproves a child hypothesis; expose qualification boundaries separately from the current diagnosis.
+
+- [x] BY001 Extend the conclusion contract in `server/app/rca/models.py` with retained conclusion, formal root cause, qualification boundary, and active retained candidate fields while preserving legacy JSON reads.
+- [x] BY002 Add deterministic retained-conclusion and boundary builders in `server/app/diagnosis/session_conclusion.py` that select an existing candidate claim and never synthesize a generic fallback claim.
+- [x] BY003 Update fallback explanation assembly in `server/app/diagnosis/session_conclusion.py` to inherit the origin parent claim, preserve level/evidence/confidence, and expose AI fallback only as metadata.
+- [x] BY004 Carry retained conclusion and qualification boundary through `_analyze_tasks` and persisted conclusion versions in `server/app/diagnosis/orchestrator.py`.
+- [x] BY005 Ensure deep-probe blocked/partial/inconclusive/empty-window/target-exit outcomes add boundary evidence without changing the active retained candidate or formal-root-cause eligibility in `server/app/diagnosis/orchestrator.py`.
+- [x] BY006 Ensure child contradicted/rejected status does not invalidate its parent, while direct parent contradiction follows `origin_parent_candidate_id` in `server/app/diagnosis/orchestrator.py`.
+- [x] BY007 Make active retained candidate selection exclude observation, mechanism, call-path context, and stop-boundary nodes in `server/app/diagnosis/orchestrator.py`.
+- [x] BY008 Update `web/src/pages/AIDiagnosis.jsx` to display retained claim and supported level first, with formal root cause and qualification boundary as separate fields.
+- [x] BY009 Update `web/src/components/diagnosis/ControlledAITreeGraph.jsx` and `web/src/components/diagnosis/aiTreeGraphModel.js` so only contradicted/rejected nodes are grey and boundary/observation/mechanism nodes remain explanatory.
+- [x] BY010 Add backend regression tests for inherited claims, boundary-only failures, child-vs-parent contradiction, formal-root-cause nullability, and retained-candidate eligibility in `tests/test_session_conclusion.py` and `tests/test_diagnosis_orchestrator.py`.
+- [x] BY011 Add frontend graph regressions for retained conclusion metadata, boundary styling, and non-primary observation/mechanism nodes in `web/src/components/diagnosis/aiTreeGraphModel.test.js`.
+- [x] BY012 Run focused backend and frontend tests, mark this task group complete, and verify no Celery runner/fixed/oracle files changed for this feature.
+- [x] BY013 Ensure line refinement nodes in `server/app/diagnosis/orchestrator.py` always point `parent_candidate_ids` at a real emitted coarse node in the current tree, never at an empty or conceptual placeholder.
+- [x] BY014 Add regression coverage in `tests/test_diagnosis_orchestrator.py` for mapping conceptual `coarse_insufficient_evidence` parents onto the actual emitted coarse node id and keeping line parents stable after normalization.
+
+**Execution order**: BY001 -> BY002-BY004 -> BY005-BY007 -> BY008-BY011 -> BY012. Backend contract and conclusion assembly must be complete before frontend assertions are updated.
+
+**Outcome**: A failed deep probe preserves the actual parent diagnosis, displays the failed branch as a qualification boundary, and never turns analyzer status text into the latest root-cause conclusion.
+
 ### Task Group BX - 源码机制下探回退与结论一致性
 
 **Purpose**: Prevent a blocked or inconclusive deep probe from erasing its still-plausible parent candidate, continue investigation with another evidence path, and ensure partial localization is never displayed as a high-confidence completed root cause.

@@ -124,7 +124,9 @@ export default function ControlledAITreeGraph(props) {
 function AITreeNode({ data }) {
   const candidate = data.candidate || {};
   const challenge = candidate.self_challenge || {};
-  const isRejected = candidate.status !== "forbidden" && (
+  const isBoundaryStatus = ["blocked", "partial", "inconclusive"].includes(candidate.status)
+    || ["blocked", "partial", "inconclusive"].includes(candidate.causal_status);
+  const isRejected = !isBoundaryStatus && candidate.status !== "forbidden" && (
     ["contradicted", "rejected"].includes(candidate.status)
     || candidate.causal_status === "contradicted"
   );

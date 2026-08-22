@@ -7,6 +7,8 @@ from typing import Any, Iterable
 
 from server.app.rca.models import (
     CausalExplanationStep,
+    QualificationBoundary,
+    RetainedConclusion,
     RootCauseCluster,
     RootCauseRecommendation,
     SessionConclusionReview,
@@ -257,6 +259,210 @@ def classify_cluster_set(clusters: Iterable[RootCauseCluster]) -> str:
     }.get(mechanism, mechanism)
 
 
+def build_retained_conclusion(
+    clusters: list[RootCauseCluster],
+    assessment: dict[str, Any],
+    session_tree: dict[str, Any] | None = None,
+    *,
+    previous_retained: dict[str, Any] | None = None,
+    inherited: bool = False,
+) -> dict[str, Any] | None:
+    """Select an existing evidence-backed claim; never invent a fallback claim."""
+    tree_nodes = _tree_base_nodes(session_tree)
+    active_id = str(assessment.get("active_retained_candidate_id") or "").strip()
+    selected_node = next(
+        (node for node in tree_nodes if node.get("candidate_id") == active_id),
+        None,
+    ) if active_id else None
+    if selected_node is None and not active_id:
+        final_ids: list[str] = []
+        if isinstance(session_tree, dict):
+            final_ids = _unique([
+                *(session_tree.get("final_primary_causes") or []),
+                *(session_tree.get("final_secondary_causes") or []),
+            ])
+        selected_node = next(
+            (node for node in tree_nodes if node.get("candidate_id") in final_ids),
+            None,
+        )
+    if selected_node is None and len(tree_nodes) == 1:
+        selected_node = tree_nodes[0]
+
+    ordered_clusters = sorted(
+        clusters,
+        key=lambda item: (
+            0 if item.conclusion_eligible else 1,
+            0 if item.qualification == "possible_root_cause" else 1,
+            -item.confidence,
+        ),
+    )
+    selected_cluster = ordered_clusters[0] if ordered_clusters else None
+    if selected_node is None and selected_cluster is not None:
+        cluster_ids = _unique([
+            *selected_cluster.source_tree_candidate_ids,
+            *selected_cluster.candidate_ids,
+        ])
+        selected_node = next(
+            (node for node in tree_nodes if node.get("candidate_id") in cluster_ids),
+            None,
+        )
+
+    previous = previous_retained if isinstance(previous_retained, dict) else None
+    if (
+        selected_node is None
+        and selected_cluster is None
+        and previous
+        and previous.get("claim")
+        and previous.get("status") not in {"contradicted", "rejected"}
+    ):
+        retained = dict(previous)
+        retained["status"] = {
+            "missing_evidence": "partial",
+            "unknown": "observation",
+            "weakened": "partial",
+        }.get(str(retained.get("status") or ""), retained.get("status") or "observation")
+        retained.setdefault("qualification", "partial_localization")
+        retained["inherited"] = True
+        retained["fallback_mode"] = "inherit_parent"
+        return RetainedConclusion.model_validate(retained).model_dump(mode="json")
+
+    claim = str(
+        (selected_node or {}).get("claim")
+        or (selected_cluster.claim if selected_cluster else "")
+        or assessment.get("diagnostic_claim")
+        or ""
+    ).strip()
+    if not claim:
+        return None
+    candidate_id = str(
+        (selected_node or {}).get("candidate_id")
+        or (
+            selected_cluster.source_tree_candidate_ids[0]
+            if selected_cluster and selected_cluster.source_tree_candidate_ids
+            else selected_cluster.candidate_ids[0]
+            if selected_cluster and selected_cluster.candidate_ids
+            else assessment.get("active_retained_candidate_id")
+            or assessment.get("root_entity")
+            or "assessment"
+        )
+    ).strip()
+    evidence_refs = _unique([
+        *((selected_node or {}).get("evidence_refs") or []),
+        *(selected_cluster.evidence_refs if selected_cluster else []),
+        *(assessment.get("evidence_refs") or []),
+    ])
+    eligible = bool(selected_cluster and selected_cluster.conclusion_eligible)
+    possible = bool(
+        selected_cluster
+        and selected_cluster.qualification in {"possible_root_cause", "partial_localization"}
+    )
+    level = str(
+        (selected_node or {}).get("supported_level")
+        or assessment.get("supported_level")
+        or assessment.get("max_supported_level")
+        or "resource"
+    )
+    qualification = "formal_root_cause" if eligible else "possible_root_cause" if possible else "partial_localization" if evidence_refs else "observation"
+    status = str((selected_node or {}).get("status") or "")
+    if status not in {"supported", "partial", "blocked", "inconclusive", "observation"}:
+        status = "supported" if eligible else "partial" if evidence_refs else "observation"
+    confidence = _number(
+        (selected_node or {}).get("confidence")
+        if selected_node is not None
+        else selected_cluster.confidence
+        if selected_cluster is not None
+        else assessment.get("confidence")
+    )
+    source_id = str(
+        (selected_node or {}).get("origin_parent_candidate_id")
+        or (selected_node or {}).get("source_candidate_id")
+        or candidate_id
+    ).strip()
+    return RetainedConclusion(
+        candidate_id=candidate_id,
+        claim=claim,
+        supported_level=level,
+        status=status,
+        qualification=qualification,
+        evidence_refs=evidence_refs,
+        confidence=max(0.0, min(1.0, confidence)),
+        source_candidate_id=source_id,
+        inherited=inherited,
+        fallback_mode="inherit_parent" if inherited else "none",
+    ).model_dump(mode="json")
+
+
+def build_qualification_boundary(
+    assessment: dict[str, Any],
+    *,
+    followup_requests: Iterable[str] = (),
+    probes: Iterable[dict[str, Any]] = (),
+    origin_parent_candidate_id: str | None = None,
+) -> dict[str, Any]:
+    """Describe an evidence boundary without replacing the retained claim."""
+    explicit = assessment.get("qualification_boundary")
+    if isinstance(explicit, dict):
+        boundary = dict(explicit)
+        boundary.setdefault("origin_parent_candidate_id", origin_parent_candidate_id)
+        return QualificationBoundary.model_validate(boundary).model_dump(mode="json")
+    missing = _unique([
+        *(assessment.get("missing_evidence") or []),
+        *followup_requests,
+    ])
+    statuses = {
+        str(probe.get("evidence_status") or probe.get("status") or "").lower()
+        for probe in probes
+        if isinstance(probe, dict)
+    }
+    if statuses & {"blocked", "failed", "unavailable", "memray_attach_failed", "target_exit"}:
+        status = "blocked"
+        message = "深探未能完成，当前保留来源父结论；暂不能升级到更细定位。"
+    elif statuses & {"partial", "empty_window", "unparseable"}:
+        status = "partial"
+        message = "深探只返回部分或空窗口证据，当前保留来源父结论；暂不能升级到更细定位。"
+    elif missing:
+        status = "inconclusive"
+        message = "当前仍缺少必要补证，来源父结论继续有效；暂不能升级到更细定位。"
+    else:
+        status = "none"
+        message = ""
+    return QualificationBoundary(
+        status=status,
+        message=message,
+        missing_evidence=missing,
+        origin_parent_candidate_id=origin_parent_candidate_id,
+    ).model_dump(mode="json")
+
+
+def _formal_root_cause(clusters: list[RootCauseCluster]) -> dict[str, Any] | None:
+    primary = next(
+        (cluster for cluster in clusters if cluster.conclusion_eligible and cluster.role == "primary"),
+        next((cluster for cluster in clusters if cluster.conclusion_eligible), None),
+    )
+    return primary.model_dump(mode="json") if primary else None
+
+
+def _tree_base_nodes(tree: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(tree, dict):
+        return []
+    result: list[dict[str, Any]] = []
+    for layer in tree.get("layers", []):
+        if not isinstance(layer, dict):
+            continue
+        for group in ("primary_causes", "secondary_causes", "unknown_causes"):
+            for node in layer.get(group, []):
+                if not isinstance(node, dict):
+                    continue
+                if node.get("node_type") in {"observation", "mechanism_explanation", "stop_boundary"}:
+                    continue
+                if node.get("depth_kind") in {"mechanism", "boundary"}:
+                    continue
+                if node.get("status") in {"contradicted", "rejected", "forbidden"}:
+                    continue
+                result.append(node)
+    return result
+
+
 def build_fallback_explanation(
     clusters: list[RootCauseCluster],
     assessment: dict[str, Any],
@@ -265,13 +471,13 @@ def build_fallback_explanation(
     attempts: int = 0,
     model: str = "",
     error: str = "",
+    session_tree: dict[str, Any] | None = None,
+    previous_retained: dict[str, Any] | None = None,
+    qualification_boundary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     eligible = [cluster for cluster in clusters if cluster.conclusion_eligible]
     primary = eligible[0] if eligible else None
-    possible = next(
-        (cluster for cluster in clusters if cluster.qualification == "possible_root_cause"),
-        None,
-    )
+    possible = next((cluster for cluster in clusters if cluster.qualification in {"possible_root_cause", "partial_localization"}), None)
     if primary:
         primary.role = "primary"
         primary.causal_status = "primary"
@@ -285,18 +491,22 @@ def build_fallback_explanation(
     if primary:
         headline = primary.claim
         why = primary.why_it_happened
+    retained = build_retained_conclusion(
+        clusters,
+        assessment,
+        session_tree,
+        previous_retained=previous_retained,
+        inherited=True,
+    )
+    if primary:
+        retained = retained or build_retained_conclusion(clusters, assessment, session_tree)
+    headline = str((retained or {}).get("claim") or "当前没有可继承的证据支持结论。")
+    if primary:
+        why = primary.why_it_happened
+    elif possible:
+        why = possible.why_it_happened
     else:
-        boundary_level = str(
-            assessment.get("supported_level")
-            or assessment.get("max_supported_level")
-            or "观察"
-        )
-        headline = f"未形成正式根因；当前证据只支持停在 {boundary_level} 层的局部定位。"
-        if possible:
-            why = f"{possible.why_it_happened} 当前深探尚未闭环，因此该机制保留为待验证候选。"
-        else:
-            reason = str(assessment.get("eligibility_reason") or "").strip()
-            why = reason or "当前只有观察事实，尚未建立可引用证据支持的因果机制。"
+        why = str(assessment.get("eligibility_reason") or "当前只有观察事实，尚未建立可引用证据支持的因果机制。")
     residual = _unique(
         item
         for cluster in clusters
@@ -323,8 +533,15 @@ def build_fallback_explanation(
         "ai_review_attempts": attempts,
         "ai_review_model": model,
         "ai_review_error": error[:500],
-        "confidence_level": "高" if primary else "低" if possible else "不可判断",
+        "confidence_level": "高" if primary else "中" if retained else "不可判断",
         "abstained": not bool(primary),
+        "retained_conclusion": retained,
+        "formal_root_cause": _formal_root_cause(clusters),
+        "qualification_boundary": qualification_boundary or build_qualification_boundary(
+            assessment,
+            origin_parent_candidate_id=(retained or {}).get("candidate_id"),
+        ),
+        "active_retained_candidate_id": (retained or {}).get("candidate_id"),
     }
 
 
@@ -334,6 +551,8 @@ def apply_session_review(
     *,
     attempts: int = 1,
     model: str = "",
+    retained_conclusion: dict[str, Any] | None = None,
+    qualification_boundary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     parsed = review if isinstance(review, SessionConclusionReview) else SessionConclusionReview.model_validate(review)
     by_id = {cluster.cluster_id: cluster for cluster in clusters}
@@ -363,6 +582,10 @@ def apply_session_review(
         "ai_review_attempts": attempts,
         "ai_review_model": model,
         "ai_review_error": "",
+        "retained_conclusion": retained_conclusion,
+        "formal_root_cause": _formal_root_cause(ordered),
+        "qualification_boundary": qualification_boundary or {"status": "none", "message": "", "missing_evidence": [], "origin_parent_candidate_id": (retained_conclusion or {}).get("candidate_id")},
+        "active_retained_candidate_id": (retained_conclusion or {}).get("candidate_id"),
     }
 
 

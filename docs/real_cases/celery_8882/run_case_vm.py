@@ -61,7 +61,7 @@ WARMUP_COUNT = env_int("CELERY_L4_WARMUP_COUNT", 1000)
 FAILURE_COUNT = env_int("CELERY_L4_FAILURE_COUNT", 1000)
 FAILURE_BATCHES = env_int("CELERY_L4_FAILURE_BATCHES", 2)
 WARMUP_SETTLE_SEC = env_float("CELERY_L4_WARMUP_SETTLE_SEC", 10.0)
-FAILURE_TASK_SECONDS = env_float("CELERY_L4_FAILURE_TASK_SECONDS", 0.0)
+FAILURE_TASK_SECONDS = env_float("CELERY_L4_FAILURE_TASK_SECONDS", 0.25)
 FAILURE_PAYLOAD_BYTES = env_int("CELERY_L4_FAILURE_PAYLOAD_BYTES", 16384)
 PRODUCER_INTERVAL_SEC = env_float("CELERY_L4_PRODUCER_INTERVAL_SEC", 0.0)
 WORKER_POOL = os.environ.get("CELERY_L4_WORKER_POOL", "prefork")
@@ -217,7 +217,18 @@ def diagnosis(
         }:
             return {"diagnosis_id": diagnosis_id, "detail": latest}
         time.sleep(3)
-    raise TimeoutError(f"diagnosis {diagnosis_id} did not reach a terminal state")
+    if not latest:
+        try:
+            latest = api.call(f"/api/v1/diagnoses/{diagnosis_id}", timeout=60)
+        except (TimeoutError, urllib.error.URLError):
+            latest = {}
+    return {
+        "diagnosis_id": diagnosis_id,
+        "detail": latest,
+        "runner_status": "diagnosis_timeout",
+        "terminal": False,
+        "timeout_sec": timeout,
+    }
 
 
 def run_stage(
@@ -269,6 +280,7 @@ def run_stage(
         f"CELERY_REVISION={revision} CELERY_SOURCE_ROOT={source_root} CELERY_EVIDENCE_ROOT={evidence_root} "
         f"CELERY_PRODUCER_DURATION_SEC={duration_sec} "
         f"CELERY_FAILURE_PAYLOAD_BYTES={FAILURE_PAYLOAD_BYTES} "
+        f"CELERY_FAILURE_TASK_SECONDS={FAILURE_TASK_SECONDS} "
         f"CELERY_WORKER_POOL={WORKER_POOL} CELERY_WORKER_CONCURRENCY={WORKER_CONCURRENCY} "
         f"CELERY_BARRIER_GC_COLLECT={BARRIER_GC_COLLECT} "
         f"docker compose -p {project_name} -f compose.yml build",
@@ -280,6 +292,7 @@ def run_stage(
         f"CELERY_SOURCE_ROOT={source_root} CELERY_EVIDENCE_ROOT={evidence_root} "
         f"CELERY_PRODUCER_DURATION_SEC={duration_sec} CELERY_CASE_DURATION_SEC={worker_duration} "
         f"CELERY_FAILURE_PAYLOAD_BYTES={FAILURE_PAYLOAD_BYTES} "
+        f"CELERY_FAILURE_TASK_SECONDS={FAILURE_TASK_SECONDS} "
         f"CELERY_WORKER_POOL={WORKER_POOL} CELERY_WORKER_CONCURRENCY={WORKER_CONCURRENCY} "
         f"CELERY_BARRIER_GC_COLLECT={BARRIER_GC_COLLECT} "
         f"docker compose -p {project_name} -f compose.yml up -d worker worker-monitor producer",
@@ -299,14 +312,16 @@ def run_stage(
         vm_now = datetime.fromisoformat(remote.run("date -u +%Y-%m-%dT%H:%M:%S%z").strip())
         time_range = {
             "start": (vm_now - timedelta(seconds=duration_sec + 45)).astimezone(timezone.utc).isoformat(),
-            "end": (vm_now + timedelta(seconds=90)).astimezone(timezone.utc).isoformat(),
+            "end": (
+                vm_now + timedelta(seconds=max(90, duration_sec + 60))
+            ).astimezone(timezone.utc).isoformat(),
         }
         inspected = remote.run(
             f"cd {remote_root}; export CELERY_SOURCE_ROOT={source_root} CELERY_EVIDENCE_ROOT={evidence_root}; "
             f"cid=$(docker compose -p {project_name} -f compose.yml ps -q worker); "
             "test -n \"$cid\"; "
-            "main_pid=$(docker inspect -f '{{.State.Pid}}' \"$cid\"); "
-            "container_id=$(docker inspect -f '{{.Id}}' \"$cid\"); "
+            "main_pid=$(docker inspect -f '{{{{.State.Pid}}}}' \"$cid\"); "
+            "container_id=$(docker inspect -f '{{{{.Id}}}}' \"$cid\"); "
             "target_pid=$(ps --no-headers -o pid=,ppid=,rss=,args= --ppid \"$main_pid\" "
             "| sort -k3 -nr | awk 'NR==1 {print $1}'); "
             "printf '%s|%s|%s\\n' \"${target_pid:-$main_pid}\" \"$main_pid\" \"$container_id\""
@@ -366,17 +381,24 @@ def run_stage(
             )
             progress(f"{stage_role}: Analyzer diagnosis reached a terminal state")
         completion_timeout = max(180, duration_sec + 300)
-        remote.run(
-            f"for attempt in $(seq 1 {completion_timeout}); do "
-            f"grep -q 'producer_complete' {evidence_root}/producer_observations.ndjson 2>/dev/null && exit 0; "
-            "sleep 1; done; "
-            "echo 'producer did not complete the workload' >&2; exit 1",
-            timeout=completion_timeout + 30,
-        )
-        progress(f"{stage_role}: producer completed both worker-side barriers")
+        producer_completed = True
+        try:
+            remote.run(
+                f"for attempt in $(seq 1 {completion_timeout}); do "
+                f"grep -q 'producer_complete' {evidence_root}/producer_observations.ndjson 2>/dev/null && exit 0; "
+                "sleep 1; done; "
+                "echo 'producer did not complete the workload' >&2; exit 1",
+                timeout=completion_timeout + 30,
+            )
+        except RuntimeError:
+            producer_completed = False
+            progress(f"{stage_role}: producer did not complete within the wait window; saving partial evidence")
+        else:
+            progress(f"{stage_role}: producer completed both worker-side barriers")
         return {
             "stage_role": stage_role,
             "diagnosis_mode": diagnosis_mode,
+            "producer_completed": producer_completed,
             **result,
         }
     finally:
@@ -405,8 +427,8 @@ def run_stage(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--remote-root", default="/home/worker1/mini-drop-cases/python_worker_failure_case")
-    parser.add_argument("--duration-sec", type=int, default=240)
-    parser.add_argument("--diagnosis-timeout-sec", type=int, default=420)
+    parser.add_argument("--duration-sec", type=int, default=600)
+    parser.add_argument("--diagnosis-timeout-sec", type=int, default=600)
     parser.add_argument(
         "--skip-diagnosis",
         action="store_true",
@@ -415,7 +437,12 @@ def main() -> int:
     parser.add_argument(
         "--vulnerable-only",
         action="store_true",
-        help="只运行 vulnerable 真实诊断阶段，不执行 fixed control replay",
+        help="兼容旧入口；vulnerable-only 现在是默认行为",
+    )
+    parser.add_argument(
+        "--with-fixed-control",
+        action="store_true",
+        help="显式追加 fixed control replay；fixed 不创建 Analyzer 诊断",
     )
     parser.add_argument("--keep-running", action="store_true", help="保留最后一个 stage 的 VM 服务供人工检查")
     parser.add_argument("--output-json", default="")
@@ -431,7 +458,7 @@ def main() -> int:
         parser.error("MINI_DROP_API_KEY is unavailable from the local environment or Control deployment")
 
     if not args.output_json:
-        parser.error("--output-json is required so vulnerable/fixed evidence can be separated")
+        parser.error("--output-json is required so the timestamped evidence path is explicit")
     output_path = Path(args.output_json)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     remote = Remote(password)
@@ -478,7 +505,7 @@ def main() -> int:
             keep_running=False,
         )
         output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-        if args.vulnerable_only:
+        if not args.with_fixed_control:
             progress("vulnerable-only run completed and saved; fixed control replay skipped by request")
             print(json.dumps({
                 "output_json": str(output_path),

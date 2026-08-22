@@ -181,6 +181,49 @@ def test_extracts_structured_stacks_and_source_lines_from_raw(collector, task, t
     assert sum(item["percent"] for item in top) == 100.0
 
 
+def test_raw_parser_labels_idle_heavy_samples_as_low_quality(collector):
+    payload = collector._parse_raw_text(
+        "thread-1;main (repro.py:42);poll (app.py:9) 18\n"
+        "thread-1;main (repro.py:42);poll (app.py:9) 2\n"
+    )
+
+    assert payload["sample_quality"]["diagnostic_value"] == "low"
+    assert payload["sample_quality"]["dominant_state"] in {"blocked_io", "scheduler_wait"}
+    assert payload["filtered_idle_frames"][0]["name"] == "poll"
+    assert payload["candidate_frames"] == []
+    assert payload["top_functions"][0]["is_idle_like"] is True
+
+
+def test_raw_parser_keeps_executing_samples_as_high_quality(collector):
+    payload = collector._parse_raw_text(
+        "thread-1;main (repro.py:42);worker.handle (celery/app/trace.py:651);compute_hotspot (app.py:9) 18\n"
+        "thread-1;main (repro.py:42);worker.handle (celery/app/trace.py:651);compute_hotspot (app.py:9) 2\n"
+    )
+
+    assert payload["sample_quality"]["diagnostic_value"] == "high"
+    assert payload["sample_quality"]["target_code_ratio"] >= 0.9
+    assert payload["filtered_idle_frames"] == []
+    assert payload["candidate_frames"][0]["name"] == "compute_hotspot"
+
+
+def test_celery_wait_stack_is_not_classified_as_executing(collector):
+    payload = collector._parse_raw_text(
+        "billiard.worker;celery.worker.consumer;poll (kombu/transport/redis.py:88) 20\n"
+    )
+
+    assert payload["top_functions"][0]["state"] == "blocked_io"
+    assert payload["sample_quality"]["dominant_state"] == "blocked_io"
+
+
+def test_celery_consumer_loop_is_framework_loop(collector):
+    payload = collector._parse_raw_text(
+        "billiard.worker;celery.worker.consumer.loop (celery/worker/consumer/consumer.py:88) 20\n"
+    )
+
+    assert payload["top_functions"][0]["state"] == "framework_loop"
+    assert payload["sample_quality"]["diagnostic_value"] == "low"
+
+
 def test_raw_parser_rejects_unknown_addresses_and_invalid_samples(collector):
     payload = collector._parse_raw_text(
         "thread;[unknown] 12\n"
@@ -189,14 +232,12 @@ def test_raw_parser_rejects_unknown_addresses_and_invalid_samples(collector):
         "thread;work (app.py:10) 5\n"
     )
     assert payload["total_samples"] == 5
-    assert payload["top_functions"] == [{
-        "name": "work",
-        "file": "app.py",
-        "line": 10,
-        "samples": 5,
-        "percent": 100.0,
-        "call_path": ["thread", "work"],
-    }]
+    assert payload["top_functions"][0]["name"] == "work"
+    assert payload["top_functions"][0]["file"] == "app.py"
+    assert payload["top_functions"][0]["line"] == 10
+    assert payload["top_functions"][0]["samples"] == 5
+    assert payload["top_functions"][0]["percent"] == 100.0
+    assert payload["top_functions"][0]["call_path"] == ["thread", "work"]
 
 
 def test_pid_exists(collector):

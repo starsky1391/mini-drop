@@ -776,6 +776,7 @@ def test_session_tree_places_runtime_observations_under_base_candidate():
                 "description": "Python 运行时采样产出非空调用栈。",
                 "evidence_refs": ["ev_stack"],
                 "max_supported_level": "call_path",
+                "source_candidate_id": "celery-worker",
             },
             {
                 "candidate_id": "python_userland_hotspot",
@@ -783,6 +784,7 @@ def test_session_tree_places_runtime_observations_under_base_candidate():
                 "description": "Python 用户态函数热点。",
                 "evidence_refs": ["ev_runtime"],
                 "max_supported_level": "call_path",
+                "source_candidate_id": "celery-worker",
             },
             {
                 "candidate_id": "celery-worker",
@@ -3486,7 +3488,8 @@ def test_session_tree_rebuilds_supported_and_refuted_codeql_candidates():
     assert nodes["python_memory_retention"].role == "unknown"
     assert nodes["python_memory_retention"].conclusion_eligible is False
     assert all(node.depth_kind != "mechanism" for node in nodes.values())
-    assert nodes["python_memory_retention"].parent_candidate_ids == ["coarse_python_memory_retention"]
+    assert nodes["python_memory_retention"].node_type == "line_anchor"
+    assert nodes["python_memory_retention"].parent_candidate_ids == []
 
 
 def test_partial_codeql_chain_keeps_existing_candidate_unresolved_and_backtracks():
@@ -3557,7 +3560,8 @@ def test_partial_codeql_chain_keeps_existing_candidate_unresolved_and_backtracks
     assert unresolved[0].causal_status == "unproven"
     assert unresolved[0].decision == "continue_probe"
     assert unresolved[0].depth_kind == "base"
-    assert unresolved[0].origin_parent_candidate_id == "coarse_python_memory_retention"
+    assert unresolved[0].node_type == "observation"
+    assert unresolved[0].origin_parent_candidate_id is None
     assert "python_runtime_stack_hotspot" not in tree.final_primary_causes
     assert all(node.depth_kind != "mechanism" for layer in tree.layers for node in [
         *layer.primary_causes,
@@ -3737,7 +3741,9 @@ def test_duplicate_verified_line_hotspots_collapse_and_failed_deep_probe_returns
         ]
     }
     assert line_id in nodes
-    assert "celery-worker" not in nodes
+    assert nodes["celery-worker"].supported_level == "function"
+    assert nodes[line_id].parent_candidate_ids == ["coarse_self_code_or_process_pressure"]
+    assert nodes[line_id].origin_parent_candidate_id == "coarse_self_code_or_process_pressure"
     boundary = nodes["gap_source_mechanism_query_ai_proposal_trace_retention"]
     assert boundary.parent_candidate_ids == [line_id]
     rollback = next(edge for edge in tree.probe_edges if edge.effect == "rollback")
@@ -3816,6 +3822,9 @@ def test_verified_source_line_is_synthesized_as_base_parent_for_mechanism():
     }
     assert nodes[line_id].depth_kind == "base"
     assert nodes[line_id].supported_level == "line"
+    assert nodes[line_id].parent_candidate_ids == ["coarse_python_memory_retention"]
+    assert nodes[line_id].origin_parent_candidate_id == "coarse_python_memory_retention"
+    assert "coarse_python_memory_retention" in nodes
     assert tree.final_primary_causes == [line_id]
     assert nodes["ai_proposal_trace_cycle"].parent_candidate_ids == [line_id]
 
@@ -4098,7 +4107,8 @@ def test_werkzeug_1521_fixture_closes_bound_method_branch_and_greys_defaults():
     assert nodes["ai_proposal_bound_method_code_constant"].depth_kind == "mechanism"
     line_id = orchestrator_module._verified_line_candidate_id(anchor, "python_memory_retention")
     assert nodes["ai_proposal_bound_method_code_constant"].origin_parent_candidate_id == line_id
-    assert line_id in tree.final_primary_causes
+    assert "python_memory_retention" in tree.final_primary_causes
+    assert line_id in tree.final_unknown_causes
     assert nodes["ai_proposal_defaults"].role == "rejected"
     assert nodes["ai_proposal_defaults"].status == "contradicted"
 
@@ -4304,11 +4314,22 @@ def test_blocked_deep_probe_rolls_back_to_its_origin_parent_only():
         if node.candidate_id == "bound_method_retention"
     )
     assert mechanism.origin_parent_candidate_id == line_id
-    assert tree.final_primary_causes == [line_id]
+    assert tree.final_primary_causes == ["line_rule_compile"]
     rollback = next(edge for edge in tree.probe_edges if edge.effect == "rollback")
     assert rollback.from_candidate_ids == ["bound_method_retention"]
     assert rollback.to_candidate_ids == [line_id]
     assert "coarse_" not in rollback.to_candidate_ids[0]
+
+
+def test_conceptual_coarse_parent_maps_to_emitted_coarse_node_id():
+    assert orchestrator_module._resolve_real_coarse_parent_id(
+        "coarse_insufficient_evidence",
+        "coarse_python_memory_retention",
+    ) == "coarse_python_memory_retention"
+    assert orchestrator_module._resolve_real_coarse_parent_id(
+        "",
+        "coarse_python_memory_retention",
+    ) == "coarse_python_memory_retention"
 
 
 def test_multiple_lineage_parents_collapse_to_the_single_origin_for_mechanism():
@@ -4327,7 +4348,7 @@ def test_multiple_lineage_parents_collapse_to_the_single_origin_for_mechanism():
     assert mechanism.parent_candidate_ids == [line_id]
     rollback = next(edge for edge in tree.probe_edges if edge.effect == "rollback")
     assert rollback.to_candidate_ids == [line_id]
-    assert tree.final_primary_causes == [line_id]
+    assert tree.final_primary_causes == ["line_rule_compile"]
 
 
 def test_supported_mechanism_is_additional_and_cannot_replace_base_primary():
@@ -4339,8 +4360,13 @@ def test_supported_mechanism_is_additional_and_cannot_replace_base_primary():
         },
         "python_memory_retention",
     )
-    mechanism_path = tree.layers[2].unknown_causes[0]
+    mechanism_layer = next(
+        layer
+        for layer in tree.layers
+        if any(node.depth_kind == "mechanism" for node in [*layer.primary_causes, *layer.secondary_causes, *layer.rejected_causes, *layer.unknown_causes])
+    )
+    mechanism_path = next(node for node in mechanism_layer.unknown_causes if node.depth_kind == "mechanism")
     assert mechanism_path.depth_kind == "mechanism"
     assert mechanism_path.conclusion_eligible is False
     assert mechanism_path.candidate_id not in tree.final_primary_causes
-    assert tree.final_primary_causes == [line_id]
+    assert tree.final_primary_causes == ["line_rule_compile"]

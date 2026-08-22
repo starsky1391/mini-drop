@@ -113,6 +113,60 @@ def test_function_level_result_reports_missing_collection_capabilities():
     assert any("function -> process" in item for item in result.blocked_upgrades)
 
 
+def test_low_quality_runtime_profile_does_not_promote_function_or_line():
+    evidence = EvidenceInput(
+        top_functions=[{"name": "poll", "percent": 88.0}],
+        sys_metrics={
+            "summary": {
+                "avg_cpu_user_pct": 93.0,
+                "avg_cpu_iowait_pct": 1.0,
+            }
+        },
+        evidence_index={
+            "stack_summary": {
+                "dominant_hot_frame": "poll",
+                "dominant_percent": 88.0,
+                "sample_count": 50,
+                "parse_status": "ok",
+                "sample_quality": {
+                    "diagnostic_value": "low",
+                    "dominant_state": "blocked_io",
+                    "non_idle_ratio": 0.12,
+                    "primitive_frame_ratio": 0.88,
+                    "framework_loop_ratio": 0.73,
+                    "target_code_ratio": 0.05,
+                    "sample_count": 50,
+                    "stable_across_samples": False,
+                    "reason": "样本主要集中在 poll/select，缺少业务执行栈。",
+                },
+            },
+            "call_path_hotspots": [{
+                "function": "poll",
+                "call_path": ["thread-1", "poll"],
+                "samples": 50,
+                "percent": 88.0,
+            }],
+            "line_candidates": [{
+                "file": "celery/app/trace.py",
+                "line": 651,
+                "symbol": "fast_trace_task",
+                "confidence": 0.96,
+                "evidence_ref": "evidence_index.line_candidates[0]",
+            }],
+        },
+        source_context={
+            "source_paths": ["/opt/celery-src"],
+            "repo_revision": "rev-1",
+            "language": "python",
+        },
+    )
+
+    result = analyze_evidence(evidence, [_candidate("cpu_hotspot_recursive", ["top_functions[0]"])])
+
+    assert result.conclusion_boundary.max_supported_level == "resource"
+    assert all(item.level not in {"function", "line"} for item in result.localizations)
+
+
 def test_depth_evidence_can_promote_to_line_level():
     evidence = EvidenceInput(
         top_functions=[{"name": "compute_hotspot", "percent": 62.0}],

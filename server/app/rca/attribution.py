@@ -239,17 +239,28 @@ def _derive_facts(evidence: EvidenceInput) -> list[AnalysisFact]:
         top = evidence.top_functions[0]
         percent = _number(top.get("percent")) or 0.0
         threshold = 30.0
-        facts.append(AnalysisFact(
-            fact_id="fact_top_function_0",
-            source="top_functions",
-            evidence_ref="top_functions[0]",
-            value={
-                "name": top.get("name", "unknown"),
-                "percent": percent,
-            },
-            status="observed" if percent >= threshold else "normal",
-            threshold_band=_threshold_band(percent, threshold),
-        ))
+        quality = _runtime_profile_quality(evidence)
+        if quality.get("diagnostic_value") != "low":
+            facts.append(AnalysisFact(
+                fact_id="fact_top_function_0",
+                source="top_functions",
+                evidence_ref="top_functions[0]",
+                value={
+                    "name": top.get("name", "unknown"),
+                    "percent": percent,
+                },
+                status="observed" if percent >= threshold else "normal",
+                threshold_band=_threshold_band(percent, threshold),
+            ))
+        if quality:
+            facts.append(AnalysisFact(
+                fact_id="fact_runtime_profile_quality",
+                source="evidence_index",
+                evidence_ref="evidence_index.stack_summary.sample_quality",
+                value=quality,
+                status="observed" if quality.get("diagnostic_value") == "high" else "normal",
+                threshold_band="unknown",
+            ))
 
     rss_mb = _number(summary.get("vmrss_mb"))
     if rss_mb is not None:
@@ -645,6 +656,11 @@ def _derive_localizations(
     fact_by_id = {fact.fact_id: fact for fact in facts}
     symptom_types = {symptom.symptom_type for symptom in symptoms}
     localizations: list[AnalysisLocalization] = []
+    runtime_quality = fact_by_id.get("fact_runtime_profile_quality")
+    runtime_diagnostic_value = ""
+    if runtime_quality and isinstance(runtime_quality.value, dict):
+        runtime_diagnostic_value = str(runtime_quality.value.get("diagnostic_value") or "")
+    allow_runtime_upgrade = runtime_diagnostic_value != "low"
 
     if "cpu_utilization_high" in symptom_types:
         localizations.append(AnalysisLocalization(
@@ -660,28 +676,31 @@ def _derive_localizations(
             fact_ids=ids,
         ))
     if "function_hotspot" in symptom_types:
-        top = fact_by_id["fact_top_function_0"].value
-        localizations.append(AnalysisLocalization(
-            level="function",
-            target=str(top.get("name", "unknown")),
-            fact_ids=["fact_cpu_user_high", "fact_top_function_0"],
-        ))
+        if allow_runtime_upgrade and "fact_top_function_0" in fact_by_id:
+            top = fact_by_id["fact_top_function_0"].value
+            localizations.append(AnalysisLocalization(
+                level="function",
+                target=str(top.get("name", "unknown")),
+                fact_ids=["fact_cpu_user_high", "fact_top_function_0"],
+            ))
     if "fact_depth_stack_summary" in fact_by_id:
         summary = fact_by_id["fact_depth_stack_summary"].value
-        localizations.append(AnalysisLocalization(
-            level="function",
-            target=str(summary.get("dominant_hot_frame", "unknown")),
-            fact_ids=["fact_depth_stack_summary"],
-            evidence_refs=["evidence_index.stack_summary"],
-        ))
+        if allow_runtime_upgrade:
+            localizations.append(AnalysisLocalization(
+                level="function",
+                target=str(summary.get("dominant_hot_frame", "unknown")),
+                fact_ids=["fact_depth_stack_summary"],
+                evidence_refs=["evidence_index.stack_summary"],
+            ))
     if "fact_depth_call_path_hotspot_1" in fact_by_id:
         hotspot = fact_by_id["fact_depth_call_path_hotspot_1"].value
-        localizations.append(AnalysisLocalization(
-            level="call_path",
-            target=";".join(hotspot.get("call_path", [])) or str(hotspot.get("function", "unknown")),
-            fact_ids=["fact_depth_call_path_hotspot_1"],
-            evidence_refs=["evidence_index.call_path_hotspots[0]"],
-        ))
+        if allow_runtime_upgrade:
+            localizations.append(AnalysisLocalization(
+                level="call_path",
+                target=";".join(hotspot.get("call_path", [])) or str(hotspot.get("function", "unknown")),
+                fact_ids=["fact_depth_call_path_hotspot_1"],
+                evidence_refs=["evidence_index.call_path_hotspots[0]"],
+            ))
     if "io_wait_high" in symptom_types or "io_latency_high" in symptom_types:
         ids = [
             fact_id
@@ -722,13 +741,15 @@ def _derive_depth_localizations(
     line_candidates = index.get("line_candidates", [])
     stack_samples = index.get("stack_samples", [])
     context = index.get("context", {})
+    runtime_quality = _runtime_profile_quality(evidence)
+    allow_runtime_upgrade = runtime_quality.get("diagnostic_value") != "low"
     has_contextual_support = bool(stack_samples) or (
         isinstance(context, dict)
         and any(str(context.get(key) or "").strip() for key in ("call_path", "endpoint", "trace_id", "wait_reason"))
     )
     source_context = evidence.source_context if isinstance(evidence.source_context, dict) else {}
     has_source_context = _has_source_context(source_context)
-    if isinstance(line_candidates, list) and has_source_context:
+    if isinstance(line_candidates, list) and has_source_context and allow_runtime_upgrade:
         for position, item in enumerate(line_candidates[:3], start=1):
             if not isinstance(item, dict):
                 continue
@@ -755,7 +776,7 @@ def _derive_depth_localizations(
                 evidence_refs=evidence_refs,
             ))
 
-    if isinstance(context, dict) and not localizations:
+    if isinstance(context, dict) and not localizations and allow_runtime_upgrade:
         call_path = str(context.get("call_path") or "").strip()
         endpoint = str(context.get("endpoint") or "").strip()
         if call_path and endpoint:
@@ -765,7 +786,7 @@ def _derive_depth_localizations(
                 fact_ids=["fact_depth_context"] if "fact_depth_context" in fact_map else [],
                 evidence_refs=["evidence_index.context"] if "fact_depth_context" in fact_map else [],
             ))
-    if isinstance(index.get("call_path_hotspots"), list) and not any(item.level == "call_path" for item in localizations):
+    if isinstance(index.get("call_path_hotspots"), list) and not any(item.level == "call_path" for item in localizations) and allow_runtime_upgrade:
         hotspot = next((item for item in index.get("call_path_hotspots", []) if isinstance(item, dict) and item.get("call_path")), None)
         if isinstance(hotspot, dict):
             call_path = hotspot.get("call_path") if isinstance(hotspot.get("call_path"), list) else []
@@ -790,6 +811,17 @@ def _has_source_context(source_context: dict[str, object]) -> bool:
         bool(str(source_context.get("repo_revision") or "").strip()),
         bool(str(source_context.get("build_id") or "").strip()),
     ])
+
+
+def _runtime_profile_quality(evidence: EvidenceInput) -> dict[str, Any]:
+    index = evidence.evidence_index if isinstance(evidence.evidence_index, dict) else {}
+    stack_summary = index.get("stack_summary") if isinstance(index.get("stack_summary"), dict) else {}
+    quality = stack_summary.get("sample_quality") if isinstance(stack_summary.get("sample_quality"), dict) else {}
+    if quality:
+        return quality
+    top = evidence.top_functions[0] if evidence.top_functions else {}
+    runtime_quality = top.get("sample_quality") if isinstance(top.get("sample_quality"), dict) else {}
+    return runtime_quality
 
 
 def _guard_candidate(
