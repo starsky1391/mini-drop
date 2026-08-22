@@ -74,64 +74,105 @@ class PythonHeapCollector:
                 )
             else:
                 capture = output_dir / "memray.bin"
-                result = self._run(
-                    self._attach_command(memray, capture, task, task.duration_sec),
-                    task.duration_sec + 45,
-                )
-            if result.returncode != 0 or not capture.is_file() or capture.stat().st_size <= 0:
-                helper = managed_helper
-                if helper:
-                    helper_result = self._run(helper, task.duration_sec + 45)
-                    if helper_result.returncode == 0 and capture.is_file() and capture.stat().st_size > 0:
-                        result = helper_result
+                # Prefer the managed helper when it is available. A plain CLI
+                # attach can leave a ptrace session behind, causing the helper
+                # to fail later with "already traced" even when the target is
+                # healthy.
+                if managed_helper:
+                    result = self._run(managed_helper, task.duration_sec + 45)
+                    if result.returncode == 0 and capture.is_file() and capture.stat().st_size > 0:
                         attach_preflight = {
                             **preflight,
                             "attach_strategy": "managed_helper",
                         }
+                        retry = subprocess.CompletedProcess([], 0, stdout=b"", stderr=b"")
                     else:
-                        result = helper_result
-                retry_capture = output_dir / "memray-retry.bin"
-                retry = (
-                    self._run(
-                        self._attach_command(memray, retry_capture, task, min(task.duration_sec, 5)),
-                        max(30, min(task.duration_sec, 5) + 20),
-                    )
-                    if not capture.is_file() or capture.stat().st_size <= 0
-                    else subprocess.CompletedProcess([], 0, stdout=b"", stderr=b"")
-                )
-                if retry.returncode == 0 and retry_capture.is_file() and retry_capture.stat().st_size > 0:
-                    capture = retry_capture
-                    attach_preflight = {
-                        **attach_preflight,
-                        "attach_strategy": "memray_attach_retry",
-                    }
-                elif capture.is_file() and capture.stat().st_size > 0:
-                    pass
-                else:
-                    if native_live_tool:
-                        return self._collect_native_live(
-                            output_dir,
-                            task,
-                            native_live_tool,
-                            preflight=preflight,
-                            attach_failure=result,
-                            retry_failure=retry,
+                        retry_capture = output_dir / "memray-retry.bin"
+                        retry = (
+                            self._run(
+                                self._attach_command(memray, retry_capture, task, min(task.duration_sec, 5)),
+                                max(30, min(task.duration_sec, 5) + 20),
+                            )
+                            if memray
+                            else subprocess.CompletedProcess([], 127, stdout=b"", stderr=b"memray command not found")
                         )
-                    return self._failed(
-                        output_dir,
-                        task,
-                        "memray_attach_failed",
-                        self._failure_detail(result, "Memray attach 未产出数据"),
-                        failure_type=self._failure_type(result, capture),
-                        exit_code=result.returncode,
-                        stdout_excerpt=self._stdout_excerpt(result),
-                        stderr_excerpt=self._stderr_excerpt(result),
-                        retry_attempted=True,
-                        retry_exit_code=retry.returncode,
-                        retry_stdout_excerpt=self._stdout_excerpt(retry),
-                        retry_stderr_excerpt=self._stderr_excerpt(retry),
-                        preflight={**preflight, "attach_strategy": "memray_attach_then_helper"},
+                        if retry.returncode == 0 and retry_capture.is_file() and retry_capture.stat().st_size > 0:
+                            capture = retry_capture
+                            result = retry
+                            attach_preflight = {
+                                **preflight,
+                                "attach_strategy": "managed_helper_then_memray_retry",
+                            }
+                        elif native_live_tool:
+                            return self._collect_native_live(
+                                output_dir,
+                                task,
+                                native_live_tool,
+                                preflight=preflight,
+                                attach_failure=result,
+                                retry_failure=retry,
+                            )
+                        else:
+                            return self._failed(
+                                output_dir,
+                                task,
+                                "memray_attach_failed",
+                                self._failure_detail(result, "Memray managed helper 未产出数据"),
+                                failure_type=self._failure_type(result, capture),
+                                exit_code=result.returncode,
+                                stdout_excerpt=self._stdout_excerpt(result),
+                                stderr_excerpt=self._stderr_excerpt(result),
+                                retry_attempted=True,
+                                retry_exit_code=retry.returncode,
+                                retry_stdout_excerpt=self._stdout_excerpt(retry),
+                                retry_stderr_excerpt=self._stderr_excerpt(retry),
+                                preflight={
+                                    **preflight,
+                                    "attach_strategy": "managed_helper_then_memray_retry",
+                                },
+                            )
+                else:
+                    result = self._run(
+                        self._attach_command(memray, capture, task, task.duration_sec),
+                        task.duration_sec + 45,
                     )
+                    if result.returncode != 0 or not capture.is_file() or capture.stat().st_size <= 0:
+                        retry_capture = output_dir / "memray-retry.bin"
+                        retry = self._run(
+                            self._attach_command(memray, retry_capture, task, min(task.duration_sec, 5)),
+                            max(30, min(task.duration_sec, 5) + 20),
+                        )
+                        if retry.returncode == 0 and retry_capture.is_file() and retry_capture.stat().st_size > 0:
+                            capture = retry_capture
+                            attach_preflight = {
+                                **preflight,
+                                "attach_strategy": "memray_attach_retry",
+                            }
+                        elif native_live_tool:
+                            return self._collect_native_live(
+                                output_dir,
+                                task,
+                                native_live_tool,
+                                preflight=preflight,
+                                attach_failure=result,
+                                retry_failure=retry,
+                            )
+                        else:
+                            return self._failed(
+                                output_dir,
+                                task,
+                                "memray_attach_failed",
+                                self._failure_detail(result, "Memray attach 未产出数据"),
+                                failure_type=self._failure_type(result, capture),
+                                exit_code=result.returncode,
+                                stdout_excerpt=self._stdout_excerpt(result),
+                                stderr_excerpt=self._stderr_excerpt(result),
+                                retry_attempted=True,
+                                retry_exit_code=retry.returncode,
+                                retry_stdout_excerpt=self._stdout_excerpt(retry),
+                                retry_stderr_excerpt=self._stderr_excerpt(retry),
+                                preflight={**preflight, "attach_strategy": "memray_attach_retry"},
+                            )
 
         stats_path: Path | None = None
         if supplied_stats:
