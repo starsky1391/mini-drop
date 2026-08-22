@@ -2646,6 +2646,31 @@ def test_memory_followup_is_sequential_heap_runtime_then_source():
     assert orchestrator_module._assessment_followup_requests(assessment, runtime_done) == ["source_snapshot"]
 
 
+def test_memory_followup_continues_after_heap_failure():
+    assessment = {"classification": "self_code_or_process_pressure", "primary_anchor": {"supported_level": "process"}}
+    base = {"normalized_intent": {"symptom": "memory_pressure"}, "target_scope": {}}
+    heap_failed = {
+        **base,
+        "probe_evidence_status": {"python_heap_profile": "failed"},
+        "probe_attempt_counts": {"python_heap_profile": 1},
+    }
+    assert orchestrator_module._assessment_followup_requests(assessment, heap_failed) == ["python_runtime_profile"]
+
+
+def test_missing_candidate_provenance_is_orphan_not_coarse_fallback():
+    node = orchestrator_module.AITreeCandidateNode(
+        candidate_id="orphan-alternative",
+        relation="alternative",
+        role="unknown",
+        claim="未绑定来源的候选",
+        supported_level="process",
+    )
+    result = orchestrator_module._attach_coarse_parent_if_missing(node, "coarse_real")
+    assert result.parent_candidate_ids == []
+    assert result.origin_parent_candidate_id is None
+    assert result.node_type == "orphan"
+
+
 def test_session_tree_preserves_single_source_hash_and_rejects_revision_conflict():
     kwargs = {
         "diagnosis_id": "diag-source",
@@ -3442,11 +3467,15 @@ def test_session_tree_rebuilds_supported_and_refuted_codeql_candidates():
         "confidence": 0.8,
         "evidence_refs": ["ev-heap", "ev-codeql"],
         "conclusion_eligible": False,
-        "claim_type": "direct_failure_mechanism",
-        "causal_status": "supported",
-        "claim_target": "src/werkzeug/routing.py:844",
-        "primary_anchor": {
-            "mechanism_paths": [
+            "claim_type": "direct_failure_mechanism",
+            "causal_status": "supported",
+            "claim_target": "src/werkzeug/routing.py:844",
+            "primary_anchor": {
+                "source_context_hash": "sha256:test",
+                "source_revision": "rev-1",
+                "file": "src/werkzeug/routing.py",
+                "line": 844,
+                "mechanism_paths": [
                 {
                     "candidate_id": "ai_proposal_bound_method",
                     "candidate_relation": "supports",
@@ -3483,8 +3512,12 @@ def test_session_tree_rebuilds_supported_and_refuted_codeql_candidates():
     assert nodes["python_memory_retention"].role == "unknown"
     assert nodes["python_memory_retention"].conclusion_eligible is False
     assert all(node.depth_kind != "mechanism" for node in nodes.values())
-    assert nodes["python_memory_retention"].node_type == "line_anchor"
-    assert nodes["python_memory_retention"].parent_candidate_ids == ["coarse_python_memory_retention"]
+    assert nodes["python_memory_retention"].node_type == "orphan"
+    line_anchor = next(
+        node for node in nodes.values()
+        if node.node_type == "line_anchor"
+    )
+    assert line_anchor.parent_candidate_ids == ["coarse_python_memory_retention"]
 
 
 def test_partial_codeql_chain_keeps_existing_candidate_unresolved_and_backtracks():
@@ -4326,7 +4359,7 @@ def test_conceptual_coarse_parent_maps_to_emitted_coarse_node_id():
     ) == "coarse_python_memory_retention"
 
 
-def test_unparented_alternatives_attach_to_emitted_coarse_root():
+def test_unparented_alternatives_are_orphans_without_emitted_provenance():
     assessment = {
         "classification": "self_code_or_process_pressure",
         "summary": "目标进程存在压力，其他分支尚缺证据。",
@@ -4362,9 +4395,9 @@ def test_unparented_alternatives_attach_to_emitted_coarse_root():
         ]
     }
     alternative = nodes["unknown_same_host_noisy_neighbor"]
-    assert alternative.node_type != "orphan"
-    assert alternative.parent_candidate_ids == ["coarse_self_code_or_process_pressure"]
-    assert alternative.origin_parent_candidate_id == "coarse_self_code_or_process_pressure"
+    assert alternative.node_type == "orphan"
+    assert alternative.parent_candidate_ids == []
+    assert alternative.origin_parent_candidate_id is None
 
 
 def test_multiple_lineage_parents_collapse_to_the_single_origin_for_mechanism():

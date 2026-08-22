@@ -169,6 +169,15 @@ def qualify_ai_candidate(
         return False, "candidate 来源不是 AI。"
     if known_candidate_ids is not None and node.candidate_id not in known_candidate_ids:
         return False, "candidate ID 不属于当前 AI DAG。"
+    if node.relation != "root" and not node.parent_candidate_ids:
+        return False, "candidate 缺少显式来源父节点。"
+    if node.origin_parent_candidate_id and node.origin_parent_candidate_id not in node.parent_candidate_ids:
+        return False, "candidate 的 origin_parent_candidate_id 不在 parent_candidate_ids 中。"
+    if known_candidate_ids is not None and any(
+        parent_id not in known_candidate_ids
+        for parent_id in node.parent_candidate_ids
+    ):
+        return False, "candidate 引用了当前 AI DAG 不存在的父节点。"
     if valid_evidence_refs is not None and any(ref not in valid_evidence_refs for ref in node.evidence_refs):
         return False, "candidate 包含当前会话不存在的 evidence ref。"
     guarded = _guard_candidate(node)

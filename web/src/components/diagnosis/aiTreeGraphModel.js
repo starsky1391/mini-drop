@@ -20,6 +20,9 @@ export const ROLE_LABELS = {
 };
 
 export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = []) {
+  if (tree?.renderable === false || tree?.tree_kind === "child_snapshot") {
+    return { nodes: [], edges: [], layoutEdges: [], hasEligiblePrimary: false, dataQualityErrors: ["child_snapshot_not_renderable"] };
+  }
   const layers = tree.layers || [];
   const highlighted = new Set(highlightedCandidateIds);
   const graphNodes = [];
@@ -27,6 +30,7 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
   const layoutEdges = [];
   const candidateIndex = new Map();
   const ambiguousCandidateIds = new Set();
+  const duplicateCandidateIds = new Set();
   const layerIndex = new Map();
   const edgeKeys = new Set();
   const finalLevel = tree.final_supported_level || "resource";
@@ -57,6 +61,7 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
       const nodeId = nodeIdFor(layer.layer_id, candidate.candidate_id);
       if (candidateIndex.has(candidate.candidate_id)) {
         ambiguousCandidateIds.add(candidate.candidate_id);
+        duplicateCandidateIds.add(candidate.candidate_id);
       } else {
         candidateIndex.set(candidate.candidate_id, {
           nodeId,
@@ -100,6 +105,26 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
         },
       });
     }
+  }
+
+  for (const candidateId of duplicateCandidateIds) {
+    graphNodes.push({
+      id: `data-quality-duplicate-${candidateId}`,
+      type: "aiTreeNode",
+      data: {
+        nodeKind: "data_quality",
+        layoutRole: "annotation",
+        role: "orphan",
+        nodeType: "orphan",
+        title: `重复 candidate_id: ${candidateId}`,
+        claim: "同一 candidate_id 在多个层重复发出，主树边已停止推断。",
+        level: "resource",
+        confidence: 0,
+        status: "duplicate_candidate_id",
+        layoutBand: "orphan",
+        badges: ["数据质量错误", "重复节点"],
+      },
+    });
   }
 
   for (const layer of layers) {

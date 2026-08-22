@@ -41,6 +41,9 @@ RUN curl -fsSL "https://github.com/ivanyu/pyheap/archive/refs/tags/v${PYHEAP_VER
 COPY deploy/collectors/pyheap/pyheap_dump /usr/local/bin/pyheap_dump
 RUN chmod 0755 /usr/local/bin/pyheap_dump
 
+COPY deploy/collectors/native_heap_live/native_heap_live_helper.py /usr/local/bin/mini-drop-native-heap-live
+RUN chmod 0755 /usr/local/bin/mini-drop-native-heap-live
+
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY server/ ./server/

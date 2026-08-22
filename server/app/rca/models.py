@@ -456,6 +456,8 @@ class ControlledAITree(BaseModel):
 
     tree_id: str
     schema_version: str = "1.1"
+    tree_kind: Literal["session_main", "child_snapshot"] = "session_main"
+    renderable: bool = True
     source_context_hash: Optional[str] = None
     final_supported_level: Literal["resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"] = "resource"
     stop_reason: str = ""

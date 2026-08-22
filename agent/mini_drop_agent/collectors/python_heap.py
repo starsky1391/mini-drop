@@ -26,11 +26,13 @@ class PythonHeapCollector:
         supplied_leaks = str(task.options.get("memray_leaks_path") or "").strip()
         supplied_reports = bool(supplied_stats or supplied_leaks)
         memray = shutil.which("memray")
-        if not memray and not supplied_reports:
+        native_live_tool = self._native_live_tool()
+        if not memray and not supplied_reports and not native_live_tool:
             return self._blocked(output_dir, task, "memray_not_installed", "Memray 命令不可用")
 
         mode = "official_reports" if supplied_reports else "instrumented_result" if supplied else "attach"
         capture: Path | None = None
+        attach_preflight: dict[str, Any] = {}
         if supplied:
             capture = Path(supplied).resolve()
             if not self._is_allowed(capture, "MINI_DROP_MEMRAY_ROOTS", "/var/lib/mini-drop/profiles,/tmp/mini-drop"):
@@ -40,20 +42,71 @@ class PythonHeapCollector:
         elif not supplied_reports:
             if not task.target_pid or not self._pid_exists(task.target_pid):
                 return self._blocked(output_dir, task, "missing_target_pid", "目标 PID 不存在或不可访问")
+            preflight = self._attach_preflight(task, helper_available=bool(self._helper_command(task, output_dir / "memray.bin")))
+            attach_preflight = preflight
+            if preflight["blocked_reason"]:
+                return self._blocked(
+                    output_dir,
+                    task,
+                    preflight["blocked_reason"],
+                    preflight["detail"],
+                    preflight=preflight,
+                )
+            if not memray and native_live_tool:
+                return self._collect_native_live(
+                    output_dir,
+                    task,
+                    native_live_tool,
+                    preflight=preflight,
+                    attach_failure=subprocess.CompletedProcess(
+                        [],
+                        127,
+                        stdout=b"",
+                        stderr=b"memray command not found",
+                    ),
+                    retry_failure=subprocess.CompletedProcess(
+                        [],
+                        127,
+                        stdout=b"",
+                        stderr=b"memray command not found",
+                    ),
+                )
             capture = output_dir / "memray.bin"
             result = self._run(
                 self._attach_command(memray, capture, task, task.duration_sec),
                 task.duration_sec + 45,
             )
             if result.returncode != 0 or not capture.is_file() or capture.stat().st_size <= 0:
+                helper = self._helper_command(task, capture)
+                if helper:
+                    helper_result = self._run(helper, task.duration_sec + 45)
+                    if helper_result.returncode == 0 and capture.is_file() and capture.stat().st_size > 0:
+                        result = helper_result
+                    else:
+                        result = helper_result
                 retry_capture = output_dir / "memray-retry.bin"
-                retry = self._run(
-                    self._attach_command(memray, retry_capture, task, min(task.duration_sec, 5)),
-                    max(30, min(task.duration_sec, 5) + 20),
+                retry = (
+                    self._run(
+                        self._attach_command(memray, retry_capture, task, min(task.duration_sec, 5)),
+                        max(30, min(task.duration_sec, 5) + 20),
+                    )
+                    if not capture.is_file() or capture.stat().st_size <= 0
+                    else subprocess.CompletedProcess([], 0, stdout=b"", stderr=b"")
                 )
                 if retry.returncode == 0 and retry_capture.is_file() and retry_capture.stat().st_size > 0:
                     capture = retry_capture
+                elif capture.is_file() and capture.stat().st_size > 0:
+                    pass
                 else:
+                    if native_live_tool:
+                        return self._collect_native_live(
+                            output_dir,
+                            task,
+                            native_live_tool,
+                            preflight=preflight,
+                            attach_failure=result,
+                            retry_failure=retry,
+                        )
                     return self._failed(
                         output_dir,
                         task,
@@ -64,6 +117,7 @@ class PythonHeapCollector:
                         stderr_excerpt=self._stderr_excerpt(result),
                         retry_attempted=True,
                         retry_exit_code=retry.returncode,
+                        preflight=preflight,
                     )
 
         stats_path: Path | None = None
@@ -126,6 +180,7 @@ class PythonHeapCollector:
             has_capture=capture is not None,
             has_stats=stats_path is not None,
             has_leaks=leaks_path is not None,
+            attach_preflight=attach_preflight,
         )
         structured_path = output_dir / "python_heap_profile.json"
         structured_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -168,6 +223,176 @@ class PythonHeapCollector:
         ]
 
     @staticmethod
+    def _helper_command(task: CollectorTask, capture: Path) -> list[str] | None:
+        helper = str(os.getenv("MINI_DROP_MEMRAY_HELPER") or "").strip()
+        if not helper or not os.path.isfile(helper) or not os.access(helper, os.X_OK):
+            return None
+        return [
+            helper,
+            "--pid",
+            str(task.target_pid),
+            "--duration",
+            str(max(1, task.duration_sec)),
+            "--output",
+            str(capture),
+        ]
+
+    @staticmethod
+    def _native_live_tool() -> str | None:
+        configured = str(os.getenv("MINI_DROP_NATIVE_HEAP_LIVE_HELPER") or "").strip()
+        if configured and os.path.isfile(configured) and os.access(configured, os.X_OK):
+            return configured
+        return None
+
+    def _collect_native_live(
+        self,
+        output_dir: Path,
+        task: CollectorTask,
+        tool: str,
+        *,
+        preflight: dict[str, Any],
+        attach_failure: subprocess.CompletedProcess,
+        retry_failure: subprocess.CompletedProcess,
+    ) -> CollectorResult:
+        """Run a managed live native-allocation helper after Python attach fails.
+
+        This result is deliberately partial: native allocator observations do
+        not prove Python object retention and cannot create a Python heap root
+        cause or source-line anchor.
+        """
+        raw_path = output_dir / "native_heap_live.txt"
+        result = self._run(
+            [
+                tool,
+                "--pid",
+                str(task.target_pid),
+                "--duration",
+                str(max(1, task.duration_sec)),
+                "--output",
+                str(raw_path),
+            ],
+            task.duration_sec + 45,
+        )
+        if result.returncode != 0 or not raw_path.is_file() or raw_path.stat().st_size <= 0:
+            return self._failed(
+                output_dir,
+                task,
+                "memray_attach_failed",
+                self._failure_detail(attach_failure, "Memray attach 与 native live helper 均未产出数据"),
+                failure_type=self._failure_type(result, raw_path),
+                exit_code=result.returncode,
+                stderr_excerpt=self._stderr_excerpt(result) or self._stderr_excerpt(retry_failure),
+                retry_attempted=True,
+                retry_exit_code=retry_failure.returncode,
+                preflight={
+                    **preflight,
+                    "native_live_attempted": True,
+                    "native_live_tool": Path(tool).name,
+                },
+            )
+        payload = {
+            "schema_version": "1.0",
+            "producer": "native_allocator_live_helper",
+            "mode": "native_live",
+            "target_pid": task.target_pid,
+            "heap_semantics": "native_allocation_observation",
+            "allocation_hotspots": [],
+            "retained_allocation_hotspots": [],
+            "call_path_hotspots": [],
+            "line_candidates": [],
+            "raw_artifact_refs": ["artifact:native_heap_live"],
+            "evidence_validity": {
+                "execution_status": "completed",
+                "artifact_status": "produced",
+                "evidence_status": "partial",
+                "reason": "native_allocator_observation_only",
+                "detail": "Python heap attach 不可用，已降级为 native allocator 现场观察；不能证明 Python 对象 retention。",
+                "attach_preflight": preflight,
+                "attach_failure_reason": self._stderr_excerpt(attach_failure),
+                "retry_failure_reason": self._stderr_excerpt(retry_failure),
+            },
+        }
+        structured_path = output_dir / "python_heap_profile.json"
+        structured_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        artifacts = [
+            {
+                **self._artifact("native_heap_live", raw_path, "text/plain"),
+                "collector_family": "native_heap_live_profile",
+            },
+            {
+                **self._artifact("python_heap_profile_json", structured_path, "application/json"),
+                "collector_family": "python_heap_profile",
+                "metadata": {"data": payload},
+            },
+        ]
+        return CollectorResult(ok=True, reason="Memray 不可 attach，已降级为 native allocator 现场观察", artifacts=artifacts)
+
+    @classmethod
+    def _attach_preflight(cls, task: CollectorTask, *, helper_available: bool = False) -> dict[str, Any]:
+        """Check attach prerequisites without claiming that attach succeeded."""
+        pid = int(task.target_pid or 0)
+        result: dict[str, Any] = {
+            "target_pid": pid,
+            "target_exists": cls._pid_exists(pid),
+            "target_uid": None,
+            "agent_uid": os.geteuid() if hasattr(os, "geteuid") else None,
+            "same_pid_namespace": None,
+            "same_mount_namespace": None,
+            "ptrace_scope": None,
+            "blocked_reason": "",
+            "detail": "",
+        }
+        status_path = f"/proc/{pid}/status"
+        try:
+            for line in open(status_path, encoding="utf-8", errors="replace"):
+                if line.startswith("Uid:"):
+                    result["target_uid"] = int(line.split()[1])
+                    break
+        except FileNotFoundError:
+            # Tests and non-Linux development hosts may provide a mocked PID
+            # without procfs. Keep the preflight informational in that case.
+            pass
+        except (PermissionError, ValueError, IndexError):
+            result["blocked_reason"] = "target_process_unstable"
+            result["detail"] = "目标进程在 attach 预检期间不可读取"
+            return result
+
+        for name, key in (("pid", "same_pid_namespace"), ("mnt", "same_mount_namespace")):
+            target_ns = f"/proc/{pid}/ns/{name}"
+            self_ns = f"/proc/self/ns/{name}"
+            try:
+                result[key] = os.stat(target_ns).st_ino == os.stat(self_ns).st_ino
+            except FileNotFoundError:
+                result[key] = None
+            except OSError:
+                result[key] = False
+
+        try:
+            result["ptrace_scope"] = Path("/proc/sys/kernel/yama/ptrace_scope").read_text().strip()
+        except OSError:
+            result["ptrace_scope"] = None
+
+        expected_uid = task.options.get("target_uid")
+        if expected_uid not in (None, "") and result["target_uid"] is not None:
+            try:
+                if int(expected_uid) != int(result["target_uid"]):
+                    result["blocked_reason"] = "permission_denied"
+                    result["detail"] = "目标进程 UID 与诊断任务声明不一致"
+                    return result
+            except (TypeError, ValueError):
+                result["blocked_reason"] = "permission_denied"
+                result["detail"] = "目标 UID 声明不可解析"
+                return result
+        if result["same_pid_namespace"] is False and not (
+            helper_available or task.options.get("allow_pid_namespace_mismatch")
+        ):
+            result["blocked_reason"] = "namespace_inaccessible"
+            result["detail"] = "Agent 与目标进程不在同一 PID namespace，不能可靠 attach"
+        elif result["same_pid_namespace"] is False:
+            result["detail"] = "默认 attach 不在同一 PID namespace，将尝试容器内 helper"
+        return result
+
+    @staticmethod
     def _pid_exists(pid: int) -> bool:
         return bool(pid) and os.path.isdir(f"/proc/{pid}")
 
@@ -205,6 +430,7 @@ class PythonHeapCollector:
         has_capture: bool = True,
         has_stats: bool = True,
         has_leaks: bool = False,
+        attach_preflight: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         allocations = PythonHeapCollector._hotspots(
             value.get("top_allocations_by_size") or value.get("largest_allocations") or []
@@ -246,6 +472,7 @@ class PythonHeapCollector:
                     ("artifact:memray_leaks_csv", has_leaks),
                 ) if present
             ],
+            "attach_preflight": attach_preflight or {},
             "evidence_validity": {
                 "execution_status": "completed",
                 "artifact_status": "produced",
@@ -339,7 +566,15 @@ class PythonHeapCollector:
             line = line or int(match.group(3))
         return function, file_name, line
 
-    def _blocked(self, output_dir: Path, task: CollectorTask, reason: str, detail: str) -> CollectorResult:
+    def _blocked(
+        self,
+        output_dir: Path,
+        task: CollectorTask,
+        reason: str,
+        detail: str,
+        *,
+        preflight: dict[str, Any] | None = None,
+    ) -> CollectorResult:
         payload = {
             "schema_version": "1.0",
             "producer": "memray",
@@ -350,6 +585,7 @@ class PythonHeapCollector:
             "call_path_hotspots": [],
             "line_candidates": [],
             "raw_artifact_refs": [],
+            "attach_preflight": preflight or {},
             "evidence_validity": {
                 "execution_status": "failed",
                 "artifact_status": "produced",
@@ -372,6 +608,7 @@ class PythonHeapCollector:
         stderr_excerpt: str = "",
         retry_attempted: bool = False,
         retry_exit_code: int | None = None,
+        preflight: dict[str, Any] | None = None,
     ) -> CollectorResult:
         payload = {
             "schema_version": "1.0",
@@ -383,6 +620,7 @@ class PythonHeapCollector:
             "call_path_hotspots": [],
             "line_candidates": [],
             "raw_artifact_refs": [],
+            "attach_preflight": preflight or {},
             "evidence_validity": {
                 "execution_status": "timed_out" if failure_type == "timeout" else "failed",
                 "artifact_status": "missing",

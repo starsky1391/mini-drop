@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   Alert,
@@ -96,6 +96,7 @@ export default function AIDiagnosis() {
   const [loading, setLoading] = useState(false);
   const [validationRunning, setValidationRunning] = useState(false);
   const [error, setError] = useState("");
+  const requestSerial = useRef(0);
   const watchedInstances = Form.useWatch("instances", form) || [];
 
   async function refreshSessions() {
@@ -138,7 +139,12 @@ export default function AIDiagnosis() {
     const timer = window.setInterval(async () => {
       try {
         const detail = await getDiagnosisSession(selected.diagnosis_id);
-        setSelected(detail);
+        if (String(detail?.diagnosis_id || "") !== String(selected.diagnosis_id)) {
+          return;
+        }
+        setSelected((current) => (
+          current?.diagnosis_id === detail.diagnosis_id ? detail : current
+        ));
         refreshSessions();
       } catch (err) {
         setError(err.message);
@@ -184,10 +190,17 @@ export default function AIDiagnosis() {
   }
 
   async function openSession(id, updateRoute = true) {
+    const serial = requestSerial.current + 1;
+    requestSerial.current = serial;
     setLoading(true);
     setError("");
+    setSelected(null);
     try {
-      setSelected(await getDiagnosisSession(id));
+      const detail = await getDiagnosisSession(id);
+      if (serial !== requestSerial.current || String(detail?.diagnosis_id || "") !== String(id)) {
+        return;
+      }
+      setSelected(detail);
       if (updateRoute) navigate(`/ai-diagnosis/${id}`, { replace: false });
     } catch (err) {
       setError(err.message);
@@ -627,6 +640,49 @@ function DiagnosisDetail({ detail }) {
               style={{ marginBottom: 12 }}
             />
           )}
+          {(conclusion.candidate_validation_diagnostics?.length > 0
+            || conclusion.candidate_review?.validation_diagnostics?.length > 0) && (
+            <Alert
+              type="warning"
+              showIcon
+              message="AI 候选未通过结构化门禁"
+              description={(
+                <Space direction="vertical" size={4}>
+                  {(conclusion.candidate_validation_diagnostics
+                    || conclusion.candidate_review?.validation_diagnostics
+                    || []).map((item, index) => (
+                    <Typography.Text key={`${item.attempt || index}-${item.failure_code || "validation"}`}>
+                      第 {item.attempt || index + 1} 次：{item.failure_path || "响应结构"}；
+                      实际值：{item.actual_value || item.failure_code || "未提供"}；
+                      候选 {item.candidate_count ?? 0} 个，合法证据引用 {item.valid_evidence_ref_count ?? 0} 个；
+                      初始证据缺失 {item.missing_initial_evidence_refs?.join(", ") || "无"}；
+                      缺失父节点 {item.missing_parent_candidate_ids?.join(", ") || "无"}。
+                    </Typography.Text>
+                  ))}
+                </Space>
+              )}
+              style={{ marginBottom: 12 }}
+            />
+          )}
+          {conclusion.ai_gate_failures?.length > 0 && (
+            <Alert
+              type="info"
+              showIcon
+              message="AI 候选已生成，但未通过正式根因门禁"
+              description={(
+                <Space direction="vertical" size={4}>
+                  {conclusion.ai_gate_failures.map((item) => (
+                    <Typography.Text key={`${item.candidate_id}-${item.failure_code}`}>
+                      {item.candidate_id || "未命名候选"}：{item.reason || item.failure_code}；
+                      状态 {item.status || "unknown"} / {item.causal_status || "unknown"}；
+                      证据 {item.evidence_refs?.length || 0} 条。
+                    </Typography.Text>
+                  ))}
+                </Space>
+              )}
+              style={{ marginBottom: 12 }}
+            />
+          )}
           {!hasEligiblePrimary && possibleCauses.length > 0 && (
             <Alert
               type="warning"
@@ -747,6 +803,7 @@ function DiagnosisDetail({ detail }) {
             style={{ marginBottom: 12 }}
           />
           <ControlledAITreeGraph
+            key={`${detail.diagnosis_id}:${conclusion.controlled_ai_tree.tree_id || "tree"}`}
             tree={conclusion.controlled_ai_tree}
             evidenceMap={evidenceMap}
             highlightedCandidateIds={highlightedTreeCandidates}

@@ -6,6 +6,7 @@ import hashlib
 from typing import Any, Iterable
 
 from server.app.rca.models import (
+    AITreeCandidateNode,
     CausalExplanationStep,
     QualificationBoundary,
     RetainedConclusion,
@@ -13,6 +14,7 @@ from server.app.rca.models import (
     RootCauseRecommendation,
     SessionConclusionReview,
 )
+from server.app.rca.controlled_tree import qualify_ai_candidate
 
 
 ELIGIBLE_CAUSE_LEVELS = {"direct_root_cause", "complete_source_root_cause"}
@@ -258,6 +260,11 @@ def derive_root_cause_clusters_from_ai_tree(
             continue
         for key in ("primary_causes", "secondary_causes", "rejected_causes", "unknown_causes"):
             nodes.extend(item for item in layer.get(key, []) if isinstance(item, dict))
+    known_ids = {
+        str(node.get("candidate_id") or "")
+        for node in nodes
+        if node.get("candidate_id")
+    }
     clusters: list[RootCauseCluster] = []
     for node in nodes:
         if node.get("generated_by") not in {"ai_candidate", "ai_guarded"}:
@@ -266,6 +273,19 @@ def derive_root_cause_clusters_from_ai_tree(
         if valid_evidence_refs is not None and any(ref not in valid_evidence_refs for ref in refs):
             continue
         if not node.get("conclusion_eligible") or node.get("causal_status") != "supported" or node.get("decision") != "conclude":
+            continue
+        try:
+            ai_node = AITreeCandidateNode.model_validate(node)
+        except Exception:
+            continue
+        eligible, _ = qualify_ai_candidate(
+            ai_node,
+            valid_evidence_refs=valid_evidence_refs,
+            known_candidate_ids=known_ids,
+        )
+        if not eligible:
+            continue
+        if any(parent_id not in known_ids for parent_id in ai_node.parent_candidate_ids):
             continue
         role = node.get("role")
         if role not in {"primary", "secondary"}:
@@ -293,6 +313,71 @@ def derive_root_cause_clusters_from_ai_tree(
             qualification="confirmed_root_cause",
         ))
     return clusters
+
+
+def collect_ai_gate_failures(
+    session_tree: dict[str, Any] | None,
+    *,
+    valid_evidence_refs: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Expose why AI-originated nodes did not enter formal conclusions."""
+    if not isinstance(session_tree, dict):
+        return []
+    all_nodes = [
+        node
+        for layer in session_tree.get("layers", [])
+        if isinstance(layer, dict)
+        for group in ("primary_causes", "secondary_causes", "rejected_causes", "unknown_causes")
+        for node in layer.get(group, [])
+        if isinstance(node, dict)
+    ]
+    nodes = [
+        node
+        for node in all_nodes
+        if node.get("generated_by") in {"ai_candidate", "ai_guarded"}
+    ]
+    known_ids = {str(node.get("candidate_id") or "") for node in all_nodes if node.get("candidate_id")}
+    failures: list[dict[str, Any]] = []
+    for node in nodes:
+        try:
+            ai_node = AITreeCandidateNode.model_validate(node)
+        except Exception as exc:
+            failures.append({
+                "candidate_id": str(node.get("candidate_id") or ""),
+                "failure_code": "invalid_candidate_shape",
+                "reason": str(exc)[:240],
+                "evidence_refs": _unique(node.get("evidence_refs", [])),
+            })
+            continue
+        eligible, reason = qualify_ai_candidate(
+            ai_node,
+            valid_evidence_refs=valid_evidence_refs,
+            known_candidate_ids=known_ids,
+        )
+        missing_parents = [
+            parent_id for parent_id in ai_node.parent_candidate_ids
+            if parent_id not in known_ids
+        ]
+        if not eligible or missing_parents:
+            evidence_refs = _unique(ai_node.evidence_refs)
+            known_refs = set(valid_evidence_refs or set())
+            failures.append({
+                "candidate_id": ai_node.candidate_id,
+                "failure_code": "missing_parent" if missing_parents else "eligibility_gate",
+                "reason": "父节点不存在: " + ", ".join(missing_parents) if missing_parents else reason,
+                "status": ai_node.status,
+                "causal_status": ai_node.causal_status,
+                "decision": ai_node.decision,
+                "supported_level": ai_node.supported_level,
+                "evidence_refs": evidence_refs,
+                "valid_initial_evidence_refs": sorted(known_refs)[:256],
+                "missing_initial_evidence_refs": sorted(
+                    ref for ref in evidence_refs if ref not in known_refs
+                )[:128],
+                "parent_candidate_ids": list(ai_node.parent_candidate_ids),
+                "missing_parent_candidate_ids": missing_parents,
+            })
+    return failures
 
 
 def classify_cluster_set(clusters: Iterable[RootCauseCluster]) -> str:

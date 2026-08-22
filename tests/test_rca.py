@@ -105,6 +105,100 @@ def test_session_candidate_review_accepts_only_real_refs_and_canonical_parents()
     assert result["candidate_proposals"][0]["parent_candidate_ids"] == [parent_id]
 
 
+def test_session_candidate_review_keeps_valid_candidates_when_one_candidate_is_invalid():
+    evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
+    analysis = analyze_evidence(evidence, [])
+    parent_id = next(
+        node.candidate_id
+        for layer in analysis.controlled_ai_tree.layers
+        for node in [*layer.primary_causes, *layer.secondary_causes, *layer.unknown_causes, *layer.rejected_causes]
+    )
+    response = {
+        "probe_requests": ["python_heap_profile"],
+        "candidates": [
+            {
+                "candidate_id": "ai_candidate_invalid",
+                "claim": "invalid",
+                "mechanism": "bad",
+                "target": "worker",
+                "supported_level": "process",
+                "decision": "backtrack",
+                "causal_status": "needs_more_evidence",
+                "evidence_refs": ["ev-top"],
+                "parent_candidate_ids": [parent_id],
+            },
+            {
+                "candidate_id": "ai_candidate_valid",
+                "claim": "规则编译路径仍需堆证据验证",
+                "mechanism": "retained_allocation_during_rule_compilation",
+                "target": "Rule.compile",
+                "supported_level": "function",
+                "decision": "needs_more_evidence",
+                "causal_status": "needs_more_evidence",
+                "evidence_refs": ["ev-top"],
+                "parent_candidate_ids": [parent_id],
+                "probe_requests": ["python_heap_profile"],
+            },
+        ],
+    }
+    with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key", "MINI_DROP_AI_ENABLED": "1"}), mock.patch(
+        "server.app.rca.llm_client._call_deepseek", return_value=json.dumps(response)
+    ):
+        result = generate_session_candidate_review(
+            diagnosis_id="diag-partial-candidate",
+            fact_context={},
+            session_tree=analysis.controlled_ai_tree,
+            evidence_catalog=[{"evidence_id": "ev-top"}],
+            probe_manifest=build_probe_manifest(),
+        )
+    assert result["ai_review_status"] == "succeeded"
+    assert [item["candidate_id"] for item in result["candidate_proposals"]] == ["ai_candidate_valid"]
+    assert result["validation_diagnostics"][0]["failure_code"] == "invalid_decision"
+
+
+def test_session_candidate_review_limits_active_investigation_to_three_deduplicated_candidates():
+    evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
+    analysis = analyze_evidence(evidence, [])
+    parent_id = next(
+        node.candidate_id
+        for layer in analysis.controlled_ai_tree.layers
+        for node in [*layer.primary_causes, *layer.secondary_causes, *layer.unknown_causes, *layer.rejected_causes]
+    )
+    candidates = [
+        {
+            "candidate_id": f"ai_candidate_{index}",
+            "claim": f"候选 {index}",
+            "mechanism": mechanism,
+            "target": "worker",
+            "supported_level": "process",
+            "decision": "needs_more_evidence",
+            "causal_status": "needs_more_evidence",
+            "evidence_refs": ["ev-top"],
+            "parent_candidate_ids": [parent_id],
+            "probe_requests": ["python_heap_profile"],
+        }
+        for index, mechanism in enumerate(
+            ["exception_retention", "runtime_path", "broker_interaction", "low_quality_hotspot"],
+            start=1,
+        )
+    ]
+    with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key", "MINI_DROP_AI_ENABLED": "1"}), mock.patch(
+        "server.app.rca.llm_client._call_deepseek",
+        return_value=json.dumps({"probe_requests": [], "candidates": candidates}),
+    ):
+        result = generate_session_candidate_review(
+            diagnosis_id="diag-active-candidates",
+            fact_context={},
+            session_tree=analysis.controlled_ai_tree,
+            evidence_catalog=[{"evidence_id": "ev-top"}],
+            probe_manifest=build_probe_manifest(),
+        )
+    assert result["ai_review_status"] == "succeeded"
+    assert len(result["candidate_proposals"]) == 4
+    assert len(result["active_candidate_ids"]) == 3
+    assert len(result["deferred_candidate_ids"]) == 1
+
+
 def test_session_candidate_review_rejects_hint_id_and_unknown_evidence():
     response = {
         "probe_requests": [],
@@ -127,6 +221,52 @@ def test_session_candidate_review_rejects_hint_id_and_unknown_evidence():
             probe_manifest=build_probe_manifest(),
         )
     assert result["ai_review_status"] == "failed"
+    assert result["validation_diagnostics"][0]["failure_code"] in {
+        "invalid_candidate_id",
+        "invalid_evidence_ref",
+    }
+    assert result["validation_diagnostics"][0]["candidate_count"] == 1
+
+
+def test_session_candidate_review_reports_invalid_decision_with_initial_evidence_context():
+    evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
+    analysis = analyze_evidence(evidence, [])
+    parent_id = next(
+        node.candidate_id
+        for layer in analysis.controlled_ai_tree.layers
+        for node in [*layer.primary_causes, *layer.secondary_causes, *layer.unknown_causes, *layer.rejected_causes]
+    )
+    response = {
+        "probe_requests": [],
+        "candidates": [{
+            "candidate_id": "ai_candidate_aliases",
+            "claim": "候选仍需补证",
+            "mechanism": "runtime_alias",
+            "target": "worker",
+            "supported_level": "process",
+            "decision": "backtrack",
+            "causal_status": "inconclusive",
+            "evidence_refs": ["ev_top"],
+            "parent_candidate_ids": [parent_id],
+        }],
+    }
+    with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key", "MINI_DROP_AI_ENABLED": "1"}), mock.patch(
+        "server.app.rca.llm_client._call_deepseek", return_value=json.dumps(response)
+    ):
+        result = generate_session_candidate_review(
+            diagnosis_id="diag-alias",
+            fact_context={},
+            session_tree=analysis.controlled_ai_tree,
+            evidence_catalog=[{"evidence_id": "ev_top"}],
+            probe_manifest=build_probe_manifest(),
+        )
+    assert result["ai_review_status"] == "failed"
+    diagnostic = result["validation_diagnostics"][0]
+    assert diagnostic["failure_code"] == "invalid_decision"
+    assert diagnostic["failure_path"] == "candidates[].decision"
+    assert diagnostic["actual_value"] == "backtrack"
+    assert diagnostic["valid_evidence_ref_count"] == 1
+    assert parent_id in diagnostic["known_candidate_ids"]
 
 
 def test_session_investigation_review_selects_registered_probe_and_guarded_proposal():

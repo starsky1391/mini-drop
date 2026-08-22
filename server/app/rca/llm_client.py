@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import time
@@ -32,6 +33,161 @@ from server.app.rca.prompt import build_system_prompt, build_user_message
 MAX_RETRIES = 2
 
 
+def _redact_excerpt(value: str, limit: int = 600) -> str:
+    text = str(value or "")
+    text = re.sub(r"(?i)(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+", r"\1=[REDACTED]", text)
+    return text[:limit]
+
+
+def _validation_diagnostic(
+    *,
+    stage: str,
+    attempt: int,
+    error: str,
+    raw: str,
+    candidate_count: int,
+    valid_evidence_ref_count: int,
+    known_candidate_ids: set[str] | None = None,
+    initial_evidence_refs: set[str] | None = None,
+    initial_evidence_families: dict[str, str] | None = None,
+    initial_evidence_statuses: dict[str, str] | None = None,
+    candidate_evidence_refs: list[str] | None = None,
+    candidate_parent_candidate_ids: list[str] | None = None,
+) -> dict:
+    """Return a bounded explanation of a rejected model response."""
+    message = str(error or "")
+    failure_code = "validation_error"
+    failure_path = ""
+    patterns = (
+        ("candidate decision 非法", "invalid_decision", "candidates[].decision"),
+        ("candidate causal_status 非法", "invalid_causal_status", "candidates[].causal_status"),
+        ("candidate supported_level 非法", "invalid_supported_level", "candidates[].supported_level"),
+        ("candidate role 非法", "invalid_role", "candidates[].role"),
+        ("candidate relation 非法", "invalid_relation", "candidates[].relation"),
+        ("candidate_id 非法或重复", "invalid_candidate_id", "candidates[].candidate_id"),
+        ("candidate evidence_refs 不真实", "invalid_evidence_ref", "candidates[].evidence_refs"),
+        ("candidate parent_candidate_ids 不真实", "invalid_parent", "candidates[].parent_candidate_ids"),
+        ("candidate parent_candidate_ids 缺少显式来源父节点", "missing_parent_provenance", "candidates[].parent_candidate_ids"),
+        ("probe_requests 包含未注册证据族", "invalid_probe_request", "probe_requests"),
+        ("candidates 必须是最多四个候选的数组", "invalid_candidates", "candidates"),
+    )
+    for marker, code, path in patterns:
+        if marker in message:
+            failure_code = code
+            failure_path = path
+            break
+    raw_text = _redact_excerpt(raw)
+    actual_value = message.split(":", 1)[1].strip() if ":" in message else message
+    initial_refs = set(initial_evidence_refs or set())
+    candidate_refs = sorted(set(candidate_evidence_refs or []))
+    candidate_parents = sorted(set(candidate_parent_candidate_ids or []))
+    return {
+        "stage": stage,
+        "attempt": attempt,
+        "failure_code": failure_code,
+        "failure_path": failure_path,
+        "expected_values": {
+            "decision": ["needs_more_evidence", "conclude", "reject"],
+            "causal_status": ["supported", "needs_more_evidence", "contradicted", "rejected"],
+        } if failure_code in {"invalid_decision", "invalid_causal_status"} else [],
+        "actual_value": _redact_excerpt(actual_value, 240),
+        "candidate_count": candidate_count,
+        "valid_evidence_ref_count": valid_evidence_ref_count,
+        "known_candidate_ids": sorted(known_candidate_ids or set())[:32],
+        "initial_evidence_refs": sorted(initial_refs)[:256],
+        "initial_evidence_families": dict(sorted((initial_evidence_families or {}).items())[:128]),
+        "initial_evidence_statuses": dict(sorted((initial_evidence_statuses or {}).items())[:128]),
+        "candidate_evidence_refs": candidate_refs[:128],
+        "missing_initial_evidence_refs": [
+            ref for ref in candidate_refs if ref not in initial_refs
+        ][:128],
+        "candidate_parent_candidate_ids": candidate_parents[:64],
+        "missing_parent_candidate_ids": [
+            parent_id
+            for parent_id in candidate_parents
+            if parent_id not in (known_candidate_ids or set())
+        ][:64],
+        "raw_response_hash": hashlib.sha256(raw_text.encode("utf-8", errors="replace")).hexdigest() if raw_text else "",
+        "raw_response_excerpt": raw_text,
+    }
+
+
+def _initial_evidence_context(evidence_catalog: list[dict], valid_refs: set[str]) -> dict:
+    """Keep a bounded, answer-free snapshot of the evidence available to AI."""
+    families: dict[str, str] = {}
+    statuses: dict[str, str] = {}
+    for item in evidence_catalog:
+        if not isinstance(item, dict):
+            continue
+        ref = next(
+            (
+                str(item.get(key) or "")
+                for key in ("evidence_id", "evidence_ref", "raw_artifact_ref", "derived_artifact_ref")
+                if item.get(key)
+            ),
+            "",
+        )
+        if not ref:
+            continue
+        observed = item.get("observed_value") if isinstance(item.get("observed_value"), dict) else {}
+        summary = observed.get("summary") if isinstance(observed.get("summary"), dict) else {}
+        families[ref] = str(
+            item.get("query_or_probe")
+            or observed.get("collector_type")
+            or summary.get("collector_family")
+            or "unknown"
+        )
+        validity = summary.get("confidence_inputs")
+        validity = validity if isinstance(validity, dict) else {}
+        family_statuses = validity.get("evidence_validity_by_family")
+        if isinstance(family_statuses, dict) and family_statuses:
+            statuses[ref] = ",".join(
+                f"{key}:{value}"
+                for key, value in sorted(family_statuses.items())
+                if value
+            )
+        else:
+            quality = item.get("data_quality")
+            statuses[ref] = str(
+                (quality or {}).get("completeness")
+                if isinstance(quality, dict)
+                else ""
+            ) or "unknown"
+    return {
+        "evidence_refs": sorted(valid_refs)[:256],
+        "evidence_families": dict(sorted(families.items())[:128]),
+        "evidence_statuses": dict(sorted(statuses.items())[:128]),
+    }
+
+
+def _active_candidate_ids(proposals: list[dict], max_active: int = 3) -> tuple[list[str], list[str]]:
+    """Choose investigation directions without granting conclusion eligibility."""
+    ranked: list[tuple[tuple[int, int, int], str, dict]] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for index, item in enumerate(proposals):
+        candidate_id = str(item.get("candidate_id") or "")
+        if not candidate_id:
+            continue
+        if str(item.get("decision") or "") == "reject" or str(item.get("causal_status") or "") == "rejected":
+            continue
+        key = (str(item.get("mechanism") or "").strip(), str(item.get("target") or "").strip())
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        probeable = bool(item.get("probe_requests") or item.get("missing_evidence"))
+        score = (-len(item.get("evidence_refs") or []), 0 if probeable else 1, index)
+        ranked.append((score, candidate_id, item))
+    ranked.sort(key=lambda value: value[0])
+    active = [candidate_id for _, candidate_id, _ in ranked[:max_active]]
+    active_set = set(active)
+    deferred = [
+        str(item.get("candidate_id"))
+        for item in proposals
+        if str(item.get("candidate_id") or "") and str(item.get("candidate_id")) not in active_set
+    ]
+    return active, deferred
+
+
 def generate_session_candidate_review(
     *,
     diagnosis_id: str,
@@ -51,6 +207,7 @@ def generate_session_candidate_review(
         "candidate_proposals": [],
         "selected_evidence_families": [],
         "probe_inputs": {},
+        "validation_diagnostics": [],
     }
     if not is_feature_enabled("rca"):
         return {
@@ -66,6 +223,8 @@ def generate_session_candidate_review(
         for key in ("evidence_id", "evidence_ref", "raw_artifact_ref", "derived_artifact_ref")
         if item.get(key)
     }
+    initial_evidence_context = _initial_evidence_context(evidence_catalog, valid_refs)
+    base["initial_evidence_context"] = initial_evidence_context
     known_candidate_ids = {
         node.candidate_id
         for layer in session_tree.layers
@@ -94,8 +253,10 @@ def generate_session_candidate_review(
     ]
     attempt_limit = max(1, min(int(max_attempts), MAX_RETRIES + 1))
     last_error = ""
+    validation_diagnostics = []
     for attempt in range(1, attempt_limit + 1):
         raw = ""
+        current_item: dict | None = None
         try:
             raw = _call_deepseek(messages, model_name)
             data = json.loads(_extract_json(raw) or "{}")
@@ -105,68 +266,182 @@ def generate_session_candidate_review(
             normalized = []
             seen = set()
             for item in candidates:
-                if not isinstance(item, dict):
-                    raise ValueError("candidate 不是对象")
-                candidate_id = str(item.get("candidate_id") or "")
-                if not re.fullmatch(r"ai_candidate_[a-zA-Z0-9_-]{1,80}", candidate_id) or candidate_id in seen:
-                    raise ValueError("candidate_id 非法或重复")
-                refs = [str(ref) for ref in item.get("evidence_refs", []) if str(ref)]
-                if any(ref not in valid_refs for ref in refs):
-                    raise ValueError("candidate evidence_refs 不真实")
-                parent_ids = [str(value) for value in item.get("parent_candidate_ids", []) if str(value)]
-                if any(parent_id not in known_candidate_ids for parent_id in parent_ids):
-                    raise ValueError("candidate parent_candidate_ids 不真实")
-                decision = str(item.get("decision") or "needs_more_evidence")
-                causal_status = str(item.get("causal_status") or "needs_more_evidence")
-                supported_level = str(item.get("supported_level") or "resource")
-                if decision not in {"needs_more_evidence", "conclude", "reject"}:
-                    raise ValueError("candidate decision 非法")
-                if causal_status not in {"supported", "needs_more_evidence", "contradicted", "rejected"}:
-                    raise ValueError("candidate causal_status 非法")
-                if supported_level not in {"resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"}:
-                    raise ValueError("candidate supported_level 非法")
-                for field in ("claim", "mechanism", "target"):
-                    if not str(item.get(field) or "").strip():
-                        raise ValueError(f"candidate 缺少 {field}")
-                normalized.append({
-                    "candidate_id": candidate_id,
-                    "claim": str(item["claim"]).strip(),
-                    "mechanism": str(item["mechanism"]).strip(),
-                    "target": str(item["target"]).strip(),
-                    "role": str(item.get("role") or "unknown") if str(item.get("role") or "unknown") in {"primary", "secondary", "unknown", "rejected"} else "unknown",
-                    "relation": str(item.get("relation") or ("causal_convergence" if len(parent_ids) > 1 else "refinement")),
-                    "supported_level": supported_level,
-                    "decision": decision,
-                    "causal_status": causal_status,
-                    "evidence_refs": refs,
-                    "missing_evidence": [str(value) for value in item.get("missing_evidence", []) if str(value)],
-                    "parent_candidate_ids": parent_ids,
-                    "probe_requests": [str(value) for value in item.get("probe_requests", []) if str(value)],
-                })
-                seen.add(candidate_id)
+                current_item = item if isinstance(item, dict) else None
+                try:
+                    if not isinstance(item, dict):
+                        raise ValueError("candidate 不是对象")
+                    candidate_id = str(item.get("candidate_id") or "")
+                    if not re.fullmatch(r"ai_candidate_[a-zA-Z0-9_-]{1,80}", candidate_id) or candidate_id in seen:
+                        raise ValueError(f"candidate_id 非法或重复: {candidate_id}")
+                    refs = [str(ref) for ref in item.get("evidence_refs", []) if str(ref)]
+                    if any(ref not in valid_refs for ref in refs):
+                        raise ValueError("candidate evidence_refs 不真实")
+                    parent_ids = [str(value) for value in item.get("parent_candidate_ids", []) if str(value)]
+                    if any(parent_id not in known_candidate_ids for parent_id in parent_ids):
+                        raise ValueError("candidate parent_candidate_ids 不真实")
+                    relation = str(item.get("relation") or "").strip()
+                    if not parent_ids and relation != "root":
+                        raise ValueError("candidate parent_candidate_ids 缺少显式来源父节点")
+                    decision = str(item.get("decision") or "needs_more_evidence")
+                    causal_status = str(item.get("causal_status") or "needs_more_evidence")
+                    supported_level = str(item.get("supported_level") or "resource")
+                    if decision not in {"needs_more_evidence", "conclude", "reject"}:
+                        raise ValueError(f"candidate decision 非法: {decision}")
+                    if causal_status not in {"supported", "needs_more_evidence", "contradicted", "rejected"}:
+                        raise ValueError(f"candidate causal_status 非法: {causal_status}")
+                    if supported_level not in {"resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"}:
+                        raise ValueError(f"candidate supported_level 非法: {supported_level}")
+                    role = str(item.get("role") or "unknown")
+                    if role not in {"primary", "secondary", "unknown", "rejected"}:
+                        raise ValueError(f"candidate role 非法: {role}")
+                    if relation and relation not in {"root", "alternative", "refinement", "causal_convergence", "shared_evidence"}:
+                        raise ValueError(f"candidate relation 非法: {relation}")
+                    for field in ("claim", "mechanism", "target"):
+                        if not str(item.get(field) or "").strip():
+                            raise ValueError(f"candidate 缺少 {field}")
+                    probe_requests = [str(value) for value in item.get("probe_requests", []) if str(value)]
+                    normalized.append({
+                        "candidate_id": candidate_id,
+                        "claim": str(item["claim"]).strip(),
+                        "mechanism": str(item["mechanism"]).strip(),
+                        "target": str(item["target"]).strip(),
+                        "role": role,
+                        "relation": relation or ("root" if not parent_ids else "causal_convergence" if len(parent_ids) > 1 else "refinement"),
+                        "supported_level": supported_level,
+                        "decision": decision,
+                        "causal_status": causal_status,
+                        "evidence_refs": refs,
+                        "missing_evidence": [str(value) for value in item.get("missing_evidence", []) if str(value)],
+                        "parent_candidate_ids": parent_ids,
+                        "probe_requests": probe_requests,
+                    })
+                    seen.add(candidate_id)
+                except Exception as exc:
+                    validation_diagnostics.append(_validation_diagnostic(
+                        stage="candidate_generation",
+                        attempt=attempt,
+                        error=str(exc),
+                        raw=raw,
+                        candidate_count=len(candidates),
+                        valid_evidence_ref_count=len(valid_refs),
+                        known_candidate_ids=known_candidate_ids,
+                        initial_evidence_refs=valid_refs,
+                        initial_evidence_families=initial_evidence_context["evidence_families"],
+                        initial_evidence_statuses=initial_evidence_context["evidence_statuses"],
+                        candidate_evidence_refs=(
+                            [str(ref) for ref in current_item.get("evidence_refs", []) if str(ref)]
+                            if current_item
+                            else []
+                        ),
+                        candidate_parent_candidate_ids=(
+                            [str(value) for value in current_item.get("parent_candidate_ids", []) if str(value)]
+                            if current_item
+                            else []
+                        ),
+                    ))
+                    continue
             registered = {
                 str(item.get("evidence_family") or "")
                 for item in probe_manifest.get("available_probes", [])
                 if isinstance(item, dict)
             }
             selected = [str(value) for value in data.get("probe_requests", []) if str(value)]
+            invalid_selected = [value for value in selected if value not in registered]
+            if invalid_selected:
+                validation_diagnostics.append(_validation_diagnostic(
+                    stage="candidate_generation",
+                    attempt=attempt,
+                    error=f"probe_requests 包含未注册证据族: {', '.join(invalid_selected)}",
+                    raw=raw,
+                    candidate_count=len(candidates),
+                    valid_evidence_ref_count=len(valid_refs),
+                    known_candidate_ids=known_candidate_ids,
+                        initial_evidence_refs=valid_refs,
+                        initial_evidence_families=initial_evidence_context["evidence_families"],
+                        initial_evidence_statuses=initial_evidence_context["evidence_statuses"],
+                ))
+                selected = [value for value in selected if value in registered]
             candidate_probe_requests = [
                 value
                 for item in normalized
                 for value in item["probe_requests"]
             ]
-            if any(value not in registered for value in [*selected, *candidate_probe_requests]):
-                raise ValueError("probe_requests 包含未注册证据族")
+            invalid_candidate_probes = {
+                value for value in candidate_probe_requests if value not in registered
+            }
+            if invalid_candidate_probes:
+                kept = []
+                for item in normalized:
+                    invalid = [
+                        value for value in item["probe_requests"]
+                        if value in invalid_candidate_probes
+                    ]
+                    if invalid:
+                        validation_diagnostics.append(_validation_diagnostic(
+                            stage="candidate_generation",
+                            attempt=attempt,
+                            error=f"probe_requests 包含未注册证据族: {', '.join(invalid)}",
+                            raw=raw,
+                            candidate_count=len(candidates),
+                            valid_evidence_ref_count=len(valid_refs),
+                            known_candidate_ids=known_candidate_ids,
+                    initial_evidence_refs=valid_refs,
+                    initial_evidence_families=initial_evidence_context["evidence_families"],
+                    initial_evidence_statuses=initial_evidence_context["evidence_statuses"],
+                            candidate_evidence_refs=item["evidence_refs"],
+                            candidate_parent_candidate_ids=item["parent_candidate_ids"],
+                        ))
+                        continue
+                    kept.append(item)
+                normalized = kept
+            if not normalized:
+                raise ValueError("AI 未生成任何通过结构校验的候选")
+            active_ids, deferred_ids = _active_candidate_ids(normalized)
+            active_set = set(active_ids)
+            selected = list(dict.fromkeys([
+                *selected,
+                *(
+                    value
+                    for item in normalized
+                    if item["candidate_id"] in active_set
+                    for value in item["probe_requests"]
+                ),
+            ]))
             return {
                 **base,
                 "ai_review_status": "succeeded",
                 "ai_review_attempts": attempt,
                 "ai_review_error": "",
                 "candidate_proposals": normalized,
-                "selected_evidence_families": list(dict.fromkeys(selected)),
+                "selected_evidence_families": selected,
+                "active_candidate_ids": active_ids,
+                "deferred_candidate_ids": deferred_ids,
+                "validation_diagnostics": validation_diagnostics,
             }
         except Exception as exc:
             last_error = str(exc)
+            validation_diagnostics.append(_validation_diagnostic(
+                stage="candidate_generation",
+                attempt=attempt,
+                error=last_error,
+                raw=raw,
+                candidate_count=len(candidates) if isinstance(locals().get("candidates"), list) else 0,
+                valid_evidence_ref_count=len(valid_refs),
+                known_candidate_ids=known_candidate_ids,
+                            initial_evidence_refs=valid_refs,
+                            initial_evidence_families=initial_evidence_context["evidence_families"],
+                            initial_evidence_statuses=initial_evidence_context["evidence_statuses"],
+                candidate_evidence_refs=(
+                    [str(ref) for ref in current_item.get("evidence_refs", []) if str(ref)]
+                    if current_item
+                    else []
+                ),
+                candidate_parent_candidate_ids=(
+                    [str(value) for value in current_item.get("parent_candidate_ids", []) if str(value)]
+                    if current_item
+                    else []
+                ),
+            ))
             if attempt < attempt_limit:
                 messages.extend([
                     {"role": "assistant", "content": raw[:1000]},
@@ -177,6 +452,7 @@ def generate_session_candidate_review(
         "ai_review_status": "failed",
         "ai_review_attempts": attempt_limit,
         "ai_review_error": last_error[:500],
+        "validation_diagnostics": validation_diagnostics,
     }
 
 
@@ -313,7 +589,9 @@ def generate_session_investigation_review(
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)},
     ]
     last_error = ""
+    validation_diagnostics = []
     for attempt in range(1, attempt_limit + 1):
+        raw = ""
         try:
             raw = _call_deepseek(messages, model_name)
             data = json.loads(_extract_json(raw) or "{}")
@@ -368,6 +646,15 @@ def generate_session_investigation_review(
             }
         except Exception as exc:
             last_error = str(exc)
+            validation_diagnostics.append(_validation_diagnostic(
+                stage="investigation_round",
+                attempt=attempt,
+                error=last_error,
+                raw=raw,
+                candidate_count=len(proposals) if isinstance(locals().get("proposals"), list) else 0,
+                valid_evidence_ref_count=len(valid_refs),
+                known_candidate_ids=candidate_ids,
+            ))
             if attempt < attempt_limit:
                 messages.extend([
                     {"role": "assistant", "content": raw[:1000] if "raw" in locals() else "{}"},
@@ -379,6 +666,7 @@ def generate_session_investigation_review(
         "ai_review_attempts": attempt_limit,
         "ai_review_model": model_name,
         "ai_review_error": last_error[:500],
+        "validation_diagnostics": validation_diagnostics,
         "selected_evidence_families": [],
         "candidate_proposals": [],
         "candidate_updates": {},

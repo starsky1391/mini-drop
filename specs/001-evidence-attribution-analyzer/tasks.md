@@ -1298,3 +1298,65 @@ VM runtime 和首轮输入不含 Oracle，Oracle 仅离线评估
 ```
 
 **Outcome**: Analyzer 只回答“观察到什么、定位到哪里、还缺什么”；AI 才回答“候选是什么、下一步查什么、哪些候选成立以及如何形成因果链”。在 AI 不可用时，系统诚实停在事实/定位层，不再把 Analyzer 候选或局部定位伪装成正式根因。
+
+---
+
+## Task Group CC - 主树渲染、候选门禁诊断与实时 Heap 降级
+
+**Purpose**: 完成当前真实 case 暴露的三条断链：前端历史子树混入主图、AI 候选失败原因不可见、Memray attach 失败后诊断链停止。
+
+- [x] CC001 为 `ControlledAITree` 增加 `tree_kind/renderable`，子任务树只作为审计与回放快照，禁止回填为 session canonical tree。
+- [x] CC002 修复诊断详情切换的旧状态、响应 ID 校验和图组件 key，避免旧会话节点残留到新会话。
+- [x] CC003 让主图只按显式 lineage 边布局；duplicate candidate ID、missing parent 和 child snapshot 以数据质量状态显式展示。
+- [x] CC004 禁止无来源 `alternative/rejected_alternative/refinement` 节点自动挂 coarse；源码 line 节点只允许挂当前 emitted coarse 或真实基础父节点。
+- [x] CC005 为 AI 首轮候选校验保存每次 retry 的失败阶段、字段路径、实际值、合法 evidence ref 数量、合法父节点清单、脱敏响应 hash/摘要。
+- [x] CC006 为 AI 候选资格门禁输出 `ai_gate_failures`，并确保 Analyzer/fallback/observation/mechanism/boundary/orphan 节点不能派生正式 cluster。
+- [x] CC007 将 heap `blocked/failed/memray_attach_failed/timeout/target_exit` 结构化记录 preflight、失败类型、stderr、重试状态，并在失败后继续 runtime/source follow-up。
+- [x] CC008 增加 Worker1 容器内 managed Memray helper；允许同 PID namespace/UID 场景下实时 attach，不要求目标进程预加载。
+- [x] CC009 增加受控 native allocator live helper 降级；该路径只输出 `native_allocation_observation` partial evidence，不生成 Python retention 或源码行根因。
+- [x] CC010 补齐后端、前端、heap、AI 门禁和 sample-quality 回归；完成前端 production build。
+- [ ] CC011 在 VM 部署后执行 Worker1 heap collector smoke，保存 helper/preflight/structured evidence 产物。
+- [ ] CC012 使用最新 Celery 原始证据离线回放，确认 AI 候选失败原因和 gate failure 与初始证据一致。
+- [ ] CC013 仅运行 vulnerable-only Celery 600s 真实 case，确认 heap 失败可继续探测、主树无历史快照污染、无正式根因时 abstained 正确。
+
+**Acceptance criteria**:
+
+```text
+前端只渲染 session_main/renderable tree
+child_snapshot 不进入主图
+主树不存在 index 0、layer 顺序或 coarse probe 自动补边
+line/refinement/observation/mechanism/boundary 的 parent 必须是真实 emitted 节点
+AI 非法输出能指出实际字段和值，以及当时可用证据/父节点
+AI 候选未过门禁能指出具体原因且不进入正式 cluster
+heap attach 失败不会伪造 Python retention
+helper 可以在目标运行期间触发 attach
+native live 降级只声明 native allocation observation
+heap failure 后仍会继续 runtime/source，最终进入明确终态
+```
+
+---
+
+## Task Group CD - 多候选 AI 首轮与 Analyzer fallback 边界
+
+**Purpose**: 明确 AI 首轮候选生成、调查排序和 Analyzer fallback 的职责边界，避免单个非法候选拖垮整轮，也避免 Analyzer 候补方向被误当成 AI 或正式根因。
+
+- [x] CD001 首轮最多保留 4 个 AI 候选，逐个校验；单个候选非法时记录 `validation_diagnostics`，其余合法候选继续进入成功结果。
+- [x] CD002 使用证据数量、可探测性和 AI 返回顺序选择最多 3 个 `active_candidate_ids`；选择只影响深探调度，不改变 `conclusion_eligible`。
+- [x] CD003 其余合法候选保存在 `candidate_review` 审计结果中，标记 `deferred_candidate_ids`，不创建 active 深探。
+- [x] CD004 只有全部候选无效、AI 未启用、调用失败、解析失败或重试耗尽时，才将 Analyzer 方向标记为 `analyzer_fallback`。
+- [x] CD005 Analyzer fallback 节点固定为 `role=unknown`、`status=missing_evidence`、`claim_type=partial_localization`、`causal_status=unproven`、`conclusion_eligible=false`。
+- [x] CD006 AI 成功生成候选后，正式门禁仍只读取 `qualify_ai_candidate()` 和 `enforce_conclusion_eligibility()`，active 选择不授予正式根因资格。
+- [x] CD007 前端显示候选无效的实际字段、初始证据引用、缺失证据和缺失父节点；回归测试覆盖部分成功、全部失败和 active 限制。
+
+**Acceptance criteria**:
+
+```text
+一个候选非法不会使其他合法候选丢失
+AI 成功时不切换到 Analyzer fallback
+AI 完全失败时才出现 analyzer_fallback
+active_candidate_ids 最多 3 个
+deferred_candidate_ids 仍保留在 candidate_review
+active 选择不改变 conclusion_eligible
+Analyzer fallback 不进入正式 cluster
+门禁失败能关联最初证据和实际缺失项
+```

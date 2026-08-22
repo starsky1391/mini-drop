@@ -19,6 +19,7 @@ def build_collector_profile(capabilities: list[str]) -> dict[str, Any]:
         _always_available("sys_metrics", "procfs system and process metrics"),
         _tool_profile("pyspy", "py-spy", "Python stack sampling"),
         _tool_profile("python_heap_profile", "memray", "Memray Python allocation and leak profiling"),
+        _native_heap_live_profile(),
         _source_snapshot_profile(),
         _source_mechanism_profile(),
         _python_heap_reference_profile(),
@@ -66,6 +67,21 @@ def _tool_profile(collector_type: str, command: str, source: str) -> dict[str, A
         "source": source,
         "reason": f"{command} found" if path else f"{command} command not found",
         "default_options": {},
+    }
+
+
+def _native_heap_live_profile() -> dict[str, Any]:
+    helper = os.getenv("MINI_DROP_NATIVE_HEAP_LIVE_HELPER", "").strip()
+    available = bool(helper and Path(helper).is_file() and os.access(helper, os.X_OK))
+    return {
+        "collector_type": "native_heap_live_profile",
+        "status": "available" if available else "unavailable",
+        "source": "managed eBPF/BCC native allocator helper",
+        "reason": "managed helper found" if available else "managed native heap live helper not configured",
+        "default_options": {
+            "semantics": "native_allocation_observation_only",
+            "cannot_prove": ["python_object_retention", "python_source_line_root_cause"],
+        },
     }
 
 

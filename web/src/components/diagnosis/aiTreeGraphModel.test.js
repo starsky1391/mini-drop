@@ -354,6 +354,42 @@ test("layer zero is the rendered root and the graph does not invent a start node
   assert.ok(graph.nodes.some((node) => node.id === "layer-0__coarse-root"));
 });
 
+test("child snapshot is not rendered as the session main tree", () => {
+  const graph = buildControlledAITreeGraph({
+    tree_kind: "child_snapshot",
+    renderable: false,
+    layers: [{
+      layer_id: "child-layer",
+      depth: 0,
+      unknown_causes: [candidate({ candidate_id: "historical-hotspot" })],
+    }],
+  });
+
+  assert.deepEqual(graph.nodes, []);
+  assert.deepEqual(graph.edges, []);
+  assert.deepEqual(graph.dataQualityErrors, ["child_snapshot_not_renderable"]);
+});
+
+test("duplicate candidate ids become a visible data-quality annotation", () => {
+  const graph = buildControlledAITreeGraph({
+    layers: [
+      {
+        layer_id: "layer-0",
+        depth: 0,
+        unknown_causes: [candidate({ candidate_id: "duplicate" })],
+      },
+      {
+        layer_id: "layer-1",
+        depth: 1,
+        unknown_causes: [candidate({ candidate_id: "duplicate" })],
+      },
+    ],
+  });
+
+  assert.ok(graph.nodes.some((node) => node.data?.status === "duplicate_candidate_id"));
+  assert.equal(graph.edges.length, 0);
+});
+
 test("parent candidate id 0 is a real parent and rollback uses the explicit origin", () => {
   const graph = buildControlledAITreeGraph({
     final_primary_causes: [],

@@ -8,6 +8,8 @@ from server.app.diagnosis.session_conclusion import (
     build_fallback_explanation,
     build_retained_conclusion,
     build_root_cause_clusters,
+    collect_ai_gate_failures,
+    derive_root_cause_clusters_from_ai_tree,
     classify_cluster_set,
     validate_session_review,
 )
@@ -15,6 +17,57 @@ from server.app.rca.models import SessionConclusionReview
 from server.app.rca.llm_client import generate_session_conclusion_review
 from server.app.rca.llm_client import _build_session_review_payload
 from server.app.rca.llm_client import _compact_evidence_item
+
+
+def test_ai_gate_failure_is_exposed_and_not_derived_as_formal_cluster():
+    tree = {
+        "layers": [{
+            "layer_id": "layer-0",
+            "depth": 0,
+            "unknown_causes": [{
+                "candidate_id": "coarse",
+                "generated_by": "fallback_observation",
+                "relation": "root",
+                "node_type": "cluster_root",
+                "role": "unknown",
+                "claim": "粗定位",
+                "supported_level": "resource",
+                "status": "unknown",
+                "claim_type": "partial_localization",
+                "causal_status": "unproven",
+                "decision": "continue_probe",
+            }],
+        }, {
+            "layer_id": "layer-1",
+            "depth": 1,
+            "unknown_causes": [{
+                "candidate_id": "ai_candidate_unproven",
+                "generated_by": "ai_candidate",
+                "parent_candidate_ids": ["coarse"],
+                "origin_parent_candidate_id": "coarse",
+                "relation": "refinement",
+                "node_type": "base_cause",
+                "role": "primary",
+                "claim": "候选",
+                "supported_level": "process",
+                "confidence": 0.4,
+                "status": "missing_evidence",
+                "claim_type": "likely_root_cause",
+                "causal_status": "unproven",
+                "decision": "continue_probe",
+                "mechanism": "memory_retention",
+                "target": "worker",
+                "depth_kind": "base",
+                "conclusion_eligible": False,
+                "evidence_refs": ["ev-rss"],
+                "self_challenge": {},
+            }],
+        }],
+    }
+    failures = collect_ai_gate_failures(tree, valid_evidence_refs={"ev-rss"})
+    assert failures[0]["candidate_id"] == "ai_candidate_unproven"
+    assert failures[0]["failure_code"] == "eligibility_gate"
+    assert derive_root_cause_clusters_from_ai_tree(tree, valid_evidence_refs={"ev-rss"}) == []
 
 
 def test_compact_source_evidence_keeps_enclosing_source_text():
