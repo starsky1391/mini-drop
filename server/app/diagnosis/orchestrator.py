@@ -1478,6 +1478,35 @@ class DiagnosisOrchestrator:
                     # Analyzer directions are fallback investigation candidates
                     # only when the complete first AI candidate round failed.
                     session_controlled_tree = _mark_analyzer_fallback_tree(session_controlled_tree)
+            else:
+                # No call was available for the first candidate round. Keep
+                # the state explicit so Analyzer directions are understood as
+                # fallback investigation candidates, never formal causes.
+                candidate_review = {
+                    "ai_review_scope": "candidate_generation",
+                    "ai_review_status": "fallback",
+                    "ai_review_attempts": 0,
+                    "ai_review_model": "",
+                    "ai_review_error": "首轮 AI 候选生成没有可用的模型调用预算。",
+                    "candidate_proposals": [],
+                    "active_candidate_ids": [],
+                    "deferred_candidate_ids": [],
+                    "validation_diagnostics": [],
+                    "candidate_generation_attempts": [],
+                    "initial_evidence_context": {
+                        "evidence_refs": sorted({
+                            str(ref)
+                            for item in self.store.list_evidence(diagnosis_id)
+                            if isinstance(item, dict)
+                            for ref in (
+                                item.get("evidence_id"),
+                                item.get("evidence_ref"),
+                            )
+                            if ref
+                        })[:256],
+                    },
+                }
+                session_controlled_tree = _mark_analyzer_fallback_tree(session_controlled_tree)
         previous_retained = (
             previous_conclusions[-1].get("retained_conclusion")
             if previous_conclusions and isinstance(previous_conclusions[-1], dict)
@@ -6211,7 +6240,11 @@ def _candidate_generation_output(review: dict[str, Any] | None) -> dict[str, Any
             "status": "not_started",
             "attempts": [],
             "accepted_candidate_ids": [],
+            "rejected_candidate_ids": [],
+            "active_candidate_ids": [],
             "deferred_candidate_ids": [],
+            "selection_diagnostics": [],
+            "validation_diagnostics": [],
             "selected_evidence_families": [],
             "initial_evidence_context": {},
         }
@@ -6221,20 +6254,38 @@ def _candidate_generation_output(review: dict[str, Any] | None) -> dict[str, Any
     attempts = attempts if isinstance(attempts, list) else []
     initial_context = review.get("initial_evidence_context")
     initial_context = initial_context if isinstance(initial_context, dict) else {}
+    validation_diagnostics = review.get("validation_diagnostics")
+    validation_diagnostics = validation_diagnostics if isinstance(validation_diagnostics, list) else []
+    accepted_ids = [
+        str(item.get("candidate_id"))
+        for item in proposals
+        if isinstance(item, dict) and item.get("candidate_id")
+    ]
+    rejected_ids = [
+        str(item.get("candidate_id"))
+        for item in validation_diagnostics
+        if isinstance(item, dict) and item.get("candidate_id")
+    ]
     return {
         "status": str(review.get("ai_review_status") or "unknown"),
         "error": str(review.get("ai_review_error") or "")[:500],
         "attempts": attempts,
-        "accepted_candidate_ids": [
-            str(item.get("candidate_id"))
-            for item in proposals
-            if isinstance(item, dict) and item.get("candidate_id")
+        "accepted_candidate_ids": accepted_ids,
+        "rejected_candidate_ids": list(dict.fromkeys(rejected_ids)),
+        "active_candidate_ids": [
+            str(value)
+            for value in (review.get("active_candidate_ids") or [])
+            if str(value)
         ],
         "deferred_candidate_ids": [
             str(value)
             for value in (review.get("deferred_candidate_ids") or [])
             if str(value)
         ],
+        "selection_diagnostics": list(
+            review.get("candidate_selection_diagnostics") or []
+        ),
+        "validation_diagnostics": validation_diagnostics,
         "selected_evidence_families": [
             str(value)
             for value in (review.get("selected_evidence_families") or [])

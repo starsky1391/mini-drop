@@ -214,6 +214,51 @@ def _candidate_generation_attempt_record(
     }
 
 
+def _candidate_selection_diagnostics(
+    proposals: list[dict],
+    active_candidate_ids: list[str],
+    deferred_candidate_ids: list[str],
+) -> list[dict]:
+    """Explain investigation scheduling without changing conclusion eligibility."""
+    active = {str(value) for value in active_candidate_ids if str(value)}
+    deferred = {str(value) for value in deferred_candidate_ids if str(value)}
+    result: list[dict] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for index, item in enumerate(proposals, start=1):
+        candidate_id = str(item.get("candidate_id") or "")
+        if not candidate_id:
+            continue
+        key = (
+            str(item.get("mechanism") or "").strip(),
+            str(item.get("target") or "").strip(),
+        )
+        duplicate = key in seen_keys
+        seen_keys.add(key)
+        if candidate_id in active:
+            selection = "active"
+            reason = "按首轮返回顺序、证据数量、可探测性和机制/目标去重后进入深探。"
+        elif candidate_id in deferred:
+            selection = "deferred"
+            reason = "保留为 AI 调查方向，但本轮深探预算只选择少数候选。"
+        else:
+            selection = "not_selected"
+            reason = "候选没有进入本轮 active 调查集合。"
+        if duplicate:
+            reason = "机制和目标与更早候选重复，本轮不重复调度。"
+            selection = "deferred"
+        result.append({
+            "candidate_id": candidate_id,
+            "source_order": index,
+            "selection": selection,
+            "reason": reason,
+            "probeable": bool(item.get("probe_requests") or item.get("missing_evidence")),
+            "evidence_ref_count": len(item.get("evidence_refs") or []),
+            "mechanism": str(item.get("mechanism") or "")[:240],
+            "target": str(item.get("target") or "")[:240],
+        })
+    return result
+
+
 def _active_candidate_ids(proposals: list[dict], max_active: int = 3) -> tuple[list[str], list[str]]:
     """Choose investigation directions without granting conclusion eligibility."""
     ranked: list[tuple[tuple[int, int, int], str, dict]] = []
@@ -319,13 +364,6 @@ def generate_session_candidate_review(
         "validation_diagnostics": [],
         "candidate_generation_attempts": [],
     }
-    if not is_feature_enabled("rca"):
-        return {
-            **base,
-            "ai_review_status": "fallback",
-            "ai_review_attempts": 0,
-            "ai_review_error": "AI RCA is disabled or no API key is configured",
-        }
     valid_refs = {
         str(item.get(key) or "")
         for item in evidence_catalog
@@ -335,6 +373,13 @@ def generate_session_candidate_review(
     }
     initial_evidence_context = _initial_evidence_context(evidence_catalog, valid_refs)
     base["initial_evidence_context"] = initial_evidence_context
+    if not is_feature_enabled("rca"):
+        return {
+            **base,
+            "ai_review_status": "fallback",
+            "ai_review_attempts": 0,
+            "ai_review_error": "AI RCA is disabled or no API key is configured",
+        }
     known_candidate_ids = {
         node.candidate_id
         for layer in session_tree.layers
@@ -529,7 +574,18 @@ def generate_session_candidate_review(
                             candidate_evidence_refs=item["evidence_refs"],
                             candidate_parent_candidate_ids=item["parent_candidate_ids"],
                         ))
-                        continue
+                        # The candidate remains a valid investigation
+                        # direction. Only unsupported probe requests are
+                        # removed; selection is scheduling, not a root-cause
+                        # eligibility gate.
+                        item = {
+                            **item,
+                            "probe_requests": [
+                                value
+                                for value in item["probe_requests"]
+                                if value not in invalid_candidate_probes
+                            ],
+                        }
                     kept.append(item)
                 normalized = kept
             if not normalized:
@@ -546,6 +602,11 @@ def generate_session_candidate_review(
                 ),
             ]))
             probe_inputs = _candidate_probe_inputs(normalized, active_ids)
+            selection_diagnostics = _candidate_selection_diagnostics(
+                normalized,
+                active_ids,
+                deferred_ids,
+            )
             candidate_generation_attempts.append(_candidate_generation_attempt_record(
                 attempt=attempt,
                 raw=raw,
@@ -564,6 +625,7 @@ def generate_session_candidate_review(
                 "probe_inputs": probe_inputs,
                 "active_candidate_ids": active_ids,
                 "deferred_candidate_ids": deferred_ids,
+                "candidate_selection_diagnostics": selection_diagnostics,
                 "validation_diagnostics": validation_diagnostics,
                 "candidate_generation_attempts": candidate_generation_attempts,
             }
@@ -614,6 +676,7 @@ def generate_session_candidate_review(
         "ai_review_status": "failed",
         "ai_review_attempts": attempt_limit,
         "ai_review_error": last_error[:500],
+        "candidate_selection_diagnostics": [],
         "validation_diagnostics": validation_diagnostics,
         "candidate_generation_attempts": candidate_generation_attempts,
     }

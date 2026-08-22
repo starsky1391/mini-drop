@@ -194,6 +194,24 @@ def _run_memray_attach(
         ),
         encoding="utf-8",
     )
+    process: subprocess.Popen | None = None
+
+    def _terminate_child(_signum, _frame):
+        try:
+            if process is not None and process.poll() is None:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+        raise SystemExit(143)
+
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGTERM, _terminate_child)
+    signal.signal(signal.SIGINT, _terminate_child)
     try:
         process = subprocess.Popen(
             [
@@ -234,6 +252,8 @@ def _run_memray_attach(
                 shutil.copy2(source, output)
         return result
     finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        signal.signal(signal.SIGINT, previous_sigint)
         try:
             script.unlink()
         except OSError:

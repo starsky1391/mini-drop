@@ -498,3 +498,48 @@ test("source labels and observation lineage remain visible in the canonical tree
   assert.ok(graph.edges.some((edge) => edge.source.endsWith("__verified-line") && edge.target.endsWith("__runtime-observation")));
   assert.equal(graph.edges.some((edge) => edge.data?.edgeId === "coarse-overview"), false);
 });
+
+test("unparented runtime observations are data-quality orphans, never guessed into the main tree", () => {
+  const graph = buildControlledAITreeGraph({
+    final_supported_level: "process",
+    layers: [{
+      layer_id: "layer-0",
+      depth: 0,
+      generated_by: "analyzer_observation",
+      unknown_causes: [
+        candidate({
+          candidate_id: "python_runtime_stack_hotspot",
+          supported_level: "process",
+          node_type: "observation",
+          relation: "evidence_context",
+          claim_type: "observation_only",
+        }),
+        candidate({
+          candidate_id: "python_userland_hotspot",
+          supported_level: "process",
+          node_type: "observation",
+          relation: "evidence_context",
+          claim_type: "observation_only",
+        }),
+      ],
+    }],
+    probe_edges: [{
+      edge_id: "coarse-probe",
+      from_candidate_ids: ["python_runtime_stack_hotspot"],
+      to_candidate_ids: ["python_userland_hotspot"],
+      transition_type: "refine",
+      effect: "refined",
+      status: "completed",
+    }],
+  });
+
+  assert.equal(graph.nodes.some((node) => (
+    node.data?.candidate?.candidate_id === "python_runtime_stack_hotspot"
+  )), false);
+  assert.equal(graph.nodes.some((node) => (
+    node.data?.candidate?.candidate_id === "python_userland_hotspot"
+  )), false);
+  assert.equal(graph.orphanNodes.length, 2);
+  assert.equal(graph.layoutEdges.length, 0);
+  assert.equal(graph.edges.length, 0);
+});

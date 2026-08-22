@@ -6,6 +6,7 @@ import csv
 import json
 import os
 import re
+import signal
 import shutil
 import subprocess
 from pathlib import Path
@@ -79,7 +80,11 @@ class PythonHeapCollector:
                 # to fail later with "already traced" even when the target is
                 # healthy.
                 if managed_helper:
-                    result = self._run(managed_helper, task.duration_sec + 45)
+                    result = self._run(
+                        managed_helper,
+                        task.duration_sec + 45,
+                        process_group=True,
+                    )
                     if result.returncode == 0 and capture.is_file() and capture.stat().st_size > 0:
                         attach_preflight = {
                             **preflight,
@@ -88,13 +93,30 @@ class PythonHeapCollector:
                         retry = subprocess.CompletedProcess([], 0, stdout=b"", stderr=b"")
                     else:
                         retry_capture = output_dir / "memray-retry.bin"
+                        helper_failure_type = self._failure_type(result, capture)
+                        retry_skipped_reason = self._retry_skip_reason(
+                            result,
+                            helper_failure_type,
+                        )
+                        retry_was_attempted = not bool(retry_skipped_reason)
                         retry = (
-                            self._run(
+                            subprocess.CompletedProcess(
+                                managed_helper,
+                                125,
+                                stdout=b"",
+                                stderr=retry_skipped_reason.encode(),
+                            )
+                            if retry_skipped_reason
+                            else self._run(
                                 self._attach_command(memray, retry_capture, task, min(task.duration_sec, 5)),
                                 max(30, min(task.duration_sec, 5) + 20),
+                                process_group=True,
                             )
-                            if memray
-                            else subprocess.CompletedProcess([], 127, stdout=b"", stderr=b"memray command not found")
+                        ) if memray else subprocess.CompletedProcess(
+                            [],
+                            127,
+                            stdout=b"",
+                            stderr=b"memray command not found",
                         )
                         if retry.returncode == 0 and retry_capture.is_file() and retry_capture.stat().st_size > 0:
                             capture = retry_capture
@@ -122,10 +144,12 @@ class PythonHeapCollector:
                                 exit_code=result.returncode,
                                 stdout_excerpt=self._stdout_excerpt(result),
                                 stderr_excerpt=self._stderr_excerpt(result),
-                                retry_attempted=True,
+                                retry_attempted=retry_was_attempted,
                                 retry_exit_code=retry.returncode,
                                 retry_stdout_excerpt=self._stdout_excerpt(retry),
                                 retry_stderr_excerpt=self._stderr_excerpt(retry),
+                                retry_skipped_reason=retry_skipped_reason,
+                                helper_timeout=helper_failure_type == "timeout",
                                 preflight={
                                     **preflight,
                                     "attach_strategy": "managed_helper_then_memray_retry",
@@ -135,12 +159,26 @@ class PythonHeapCollector:
                     result = self._run(
                         self._attach_command(memray, capture, task, task.duration_sec),
                         task.duration_sec + 45,
+                        process_group=True,
                     )
                     if result.returncode != 0 or not capture.is_file() or capture.stat().st_size <= 0:
                         retry_capture = output_dir / "memray-retry.bin"
-                        retry = self._run(
-                            self._attach_command(memray, retry_capture, task, min(task.duration_sec, 5)),
-                            max(30, min(task.duration_sec, 5) + 20),
+                        failure_type = self._failure_type(result, capture)
+                        retry_skipped_reason = self._retry_skip_reason(result, failure_type)
+                        retry_was_attempted = not bool(retry_skipped_reason)
+                        retry = (
+                            subprocess.CompletedProcess(
+                                self._attach_command(memray, retry_capture, task, min(task.duration_sec, 5)),
+                                125,
+                                stdout=b"",
+                                stderr=retry_skipped_reason.encode(),
+                            )
+                            if retry_skipped_reason
+                            else self._run(
+                                self._attach_command(memray, retry_capture, task, min(task.duration_sec, 5)),
+                                max(30, min(task.duration_sec, 5) + 20),
+                                process_group=True,
+                            )
                         )
                         if retry.returncode == 0 and retry_capture.is_file() and retry_capture.stat().st_size > 0:
                             capture = retry_capture
@@ -167,10 +205,12 @@ class PythonHeapCollector:
                                 exit_code=result.returncode,
                                 stdout_excerpt=self._stdout_excerpt(result),
                                 stderr_excerpt=self._stderr_excerpt(result),
-                                retry_attempted=True,
+                                retry_attempted=retry_was_attempted,
                                 retry_exit_code=retry.returncode,
                                 retry_stdout_excerpt=self._stdout_excerpt(retry),
                                 retry_stderr_excerpt=self._stderr_excerpt(retry),
+                                retry_skipped_reason=retry_skipped_reason,
+                                helper_timeout=failure_type == "timeout",
                                 preflight={**preflight, "attach_strategy": "memray_attach_retry"},
                             )
 
@@ -254,7 +294,14 @@ class PythonHeapCollector:
         return CollectorResult(ok=payload["evidence_validity"]["evidence_status"] == "valid", reason="Memray Heap 证据结构化完成", artifacts=artifacts)
 
     @staticmethod
-    def _run(command: list[str], timeout: int):
+    def _run(
+        command: list[str],
+        timeout: int,
+        *,
+        process_group: bool = False,
+    ):
+        if process_group:
+            return PythonHeapCollector._run_process_group(command, timeout)
         try:
             return subprocess.run(command, capture_output=True, timeout=timeout)
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -270,6 +317,80 @@ class PythonHeapCollector:
                 stdout=stdout,
                 stderr=stderr + str(exc).encode(),
             )
+
+    @staticmethod
+    def _run_process_group(command: list[str], timeout: int):
+        """Run attach helpers in an isolated process group and clean children on timeout."""
+        if os.name != "posix":
+            # The real attach path runs on Linux. Keep Windows development
+            # tests on the existing subprocess.run seam.
+            try:
+                return subprocess.run(command, capture_output=True, timeout=timeout)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                stdout = getattr(exc, "stdout", b"") or b""
+                stderr = getattr(exc, "stderr", b"") or b""
+                if isinstance(stdout, str):
+                    stdout = stdout.encode()
+                if isinstance(stderr, str):
+                    stderr = stderr.encode()
+                return subprocess.CompletedProcess(
+                    command,
+                    124 if isinstance(exc, subprocess.TimeoutExpired) else 127,
+                    stdout=stdout,
+                    stderr=stderr + str(exc).encode(),
+                )
+        return PythonHeapCollector._run_posix_process_group(command, timeout)
+
+    @staticmethod
+    def _run_posix_process_group(command: list[str], timeout: int):
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=(os.name == "posix"),
+            )
+        except OSError as exc:
+            return subprocess.CompletedProcess(
+                command,
+                127,
+                stdout=b"",
+                stderr=str(exc).encode(),
+            )
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            PythonHeapCollector._kill_process_group(process)
+            stdout, stderr = process.communicate()
+            stdout = stdout or getattr(exc, "stdout", b"") or b""
+            stderr = stderr or getattr(exc, "stderr", b"") or b""
+            return subprocess.CompletedProcess(
+                command,
+                124,
+                stdout=stdout,
+                stderr=stderr + b"\nmini_drop_attach_process_group_timeout",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            process.returncode,
+            stdout=stdout or b"",
+            stderr=stderr or b"",
+        )
+
+    @staticmethod
+    def _kill_process_group(process: subprocess.Popen) -> None:
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=2)
+                    return
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, getattr(signal, "SIGKILL", 9))
+            else:
+                process.kill()
+        except (OSError, ProcessLookupError):
+            pass
 
     @staticmethod
     def _attach_command(memray: str, capture: Path, task: CollectorTask, duration: int) -> list[str]:
@@ -333,6 +454,7 @@ class PythonHeapCollector:
                 str(raw_path),
             ],
             task.duration_sec + 45,
+            process_group=True,
         )
         if result.returncode != 0 or not raw_path.is_file() or raw_path.stat().st_size <= 0:
             return self._failed(
@@ -348,6 +470,9 @@ class PythonHeapCollector:
                 retry_exit_code=retry_failure.returncode,
                 retry_stdout_excerpt=self._stdout_excerpt(retry_failure),
                 retry_stderr_excerpt=self._stderr_excerpt(retry_failure),
+                retry_skipped_reason=self._stderr_excerpt(retry_failure)
+                if retry_failure.returncode == 125
+                else "",
                 preflight={
                     **preflight,
                     "native_live_attempted": True,
@@ -502,6 +627,27 @@ class PythonHeapCollector:
         if not output_path.is_file() or output_path.stat().st_size <= 0:
             return "output_missing"
         return "collector_failed"
+
+    @classmethod
+    def _retry_skip_reason(
+        cls,
+        result: subprocess.CompletedProcess,
+        failure_type: str,
+    ) -> str:
+        output = cls._combined_output_excerpt(result).lower()
+        if failure_type == "timeout":
+            return "retry_skipped_reason=managed_attach_timeout_process_state_uncertain"
+        if failure_type == "permission_denied" and any(
+            token in output
+            for token in (
+                "ptrace",
+                "already traced",
+                "operation not permitted",
+                "failed to attach",
+            )
+        ):
+            return "retry_skipped_reason=ptrace_conflict_or_attach_permission_denied"
+        return ""
 
     @staticmethod
     def _normalize_stats(
@@ -693,6 +839,8 @@ class PythonHeapCollector:
         retry_exit_code: int | None = None,
         retry_stdout_excerpt: str = "",
         retry_stderr_excerpt: str = "",
+        retry_skipped_reason: str = "",
+        helper_timeout: bool = False,
         preflight: dict[str, Any] | None = None,
     ) -> CollectorResult:
         payload = {
@@ -720,6 +868,8 @@ class PythonHeapCollector:
                 "retry_exit_code": retry_exit_code,
                 "retry_stdout_excerpt": retry_stdout_excerpt,
                 "retry_stderr_excerpt": retry_stderr_excerpt,
+                "retry_skipped_reason": retry_skipped_reason,
+                "helper_timeout": helper_timeout,
             },
         }
         return self._write_status_result(output_dir, task, payload, detail)

@@ -1,8 +1,12 @@
 """Memray-backed Python heap collector tests."""
 
 import json
+import os
+import signal
+import subprocess
 from unittest import mock
 
+import agent.mini_drop_agent.collectors.python_heap as python_heap_module
 from agent.mini_drop_agent.collectors.base import CollectorTask
 from agent.mini_drop_agent.collectors.python_heap import PythonHeapCollector
 
@@ -52,14 +56,18 @@ def test_memray_attach_failure_is_failed_after_one_light_retry(tmp_path):
         result = collector.collect(task)
 
     assert result.ok is False
-    assert run.call_count == 2
+    # Attach permission/ptrace failures do not trigger a blind second attach.
+    assert run.call_count == 1
     payload = result.artifacts[0]["metadata"]["data"]
     validity = payload["evidence_validity"]
     assert payload["mode"] == "failed"
     assert validity["evidence_status"] == "failed"
     assert validity["reason"] == "memray_attach_failed"
     assert validity["failure_type"] == "permission_denied"
-    assert validity["retry_attempted"] is True
+    assert validity["retry_attempted"] is False
+    assert validity["retry_skipped_reason"] == (
+        "retry_skipped_reason=ptrace_conflict_or_attach_permission_denied"
+    )
     assert validity["stdout_excerpt"] == ""
     assert payload["retained_allocation_hotspots"] == []
     assert "attach_preflight" in payload
@@ -100,6 +108,36 @@ def test_memray_attach_failure_preserves_stdout_for_diagnosis(tmp_path, monkeypa
     assert validity["failure_type"] == "collector_exit_nonzero"
     assert "target process couldn't open" in validity["stdout_excerpt"]
     assert "target process couldn't open" in validity["detail"]
+
+
+def test_attach_process_group_timeout_kills_the_group_and_marks_timeout(monkeypatch):
+    collector = PythonHeapCollector()
+    process = mock.MagicMock(pid=4321, returncode=-9)
+    process.communicate.side_effect = [
+        subprocess.TimeoutExpired(["helper"], 1),
+        (b"", b""),
+    ]
+    process.wait.side_effect = subprocess.TimeoutExpired(["helper"], 2)
+    killpg = mock.Mock()
+    fake_os = mock.Mock(
+        killpg=killpg,
+        SIGTERM=signal.SIGTERM,
+        SIGKILL=9,
+    )
+    fake_os.name = "posix"
+    monkeypatch.setattr(
+        python_heap_module.subprocess,
+        "Popen",
+        mock.Mock(return_value=process),
+    )
+    monkeypatch.setattr(python_heap_module, "os", fake_os)
+
+    result = collector._run_posix_process_group(["helper"], 1)
+
+    assert result.returncode == 124
+    assert "mini_drop_attach_process_group_timeout" in result.stderr.decode()
+    assert killpg.call_count == 2
+    assert killpg.call_args_list[0].args == (4321, mock.ANY)
 
 
 def test_attach_preflight_records_managed_helper_availability(tmp_path):

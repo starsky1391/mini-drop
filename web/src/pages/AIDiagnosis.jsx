@@ -696,6 +696,61 @@ function DiagnosisDetail({ detail }) {
               style={{ marginBottom: 12 }}
             />
           )}
+          {(candidateGenerationOutput.status === "failed"
+            || candidateGenerationOutput.status === "fallback"
+            || candidateGenerationOutput.status === "not_started"
+            || candidateGenerationOutput.status === "succeeded") && (
+            <Alert
+              type={candidateGenerationOutput.status === "succeeded" ? "info" : "warning"}
+              showIcon
+              message={
+                candidateGenerationOutput.status === "succeeded"
+                  ? "AI 首轮候选结果"
+                  : candidateGenerationOutput.status === "not_started"
+                    ? "AI 首轮候选尚未执行"
+                    : "AI 首轮候选未形成可用主调查方向，已保留 Analyzer fallback"
+              }
+              description={(
+                <Space direction="vertical" size={4}>
+                  <Typography.Text>
+                    有效候选：{candidateGenerationOutput.accepted_candidate_ids?.length || 0} 个；
+                    active 深探：{candidateGenerationOutput.active_candidate_ids?.length || 0} 个；
+                    延后调查：{candidateGenerationOutput.deferred_candidate_ids?.length || 0} 个；
+                    校验失败：{candidateGenerationOutput.rejected_candidate_ids?.length || 0} 个。
+                  </Typography.Text>
+                  {candidateGenerationOutput.accepted_candidate_ids?.length > 0 && (
+                    <Typography.Text type="secondary">
+                      AI 候选：{candidateGenerationOutput.accepted_candidate_ids.join("、")}
+                    </Typography.Text>
+                  )}
+                  {candidateGenerationOutput.active_candidate_ids?.length > 0 && (
+                    <Typography.Text type="secondary">
+                      本轮进入深探：{candidateGenerationOutput.active_candidate_ids.join("、")}
+                    </Typography.Text>
+                  )}
+                  {candidateGenerationOutput.rejected_candidate_ids?.length > 0 && (
+                    <Typography.Text type="secondary">
+                      未通过结构校验：{candidateGenerationOutput.rejected_candidate_ids.join("、")}
+                    </Typography.Text>
+                  )}
+                  {candidateGenerationOutput.selection_diagnostics?.map((item) => (
+                    <Typography.Text key={`selection-${item.candidate_id}`}>
+                      {item.candidate_id}：{item.selection}；{item.reason}
+                    </Typography.Text>
+                  ))}
+                  {candidateGenerationOutput.status !== "succeeded"
+                    && candidateGenerationOutput.accepted_candidate_ids?.length === 0
+                    && (
+                      <Typography.Text type="secondary">
+                        当前主树中的 Analyzer 方向仅作为 fallback investigation candidate，
+                        不代表正式根因。
+                      </Typography.Text>
+                    )}
+                </Space>
+              )}
+              style={{ marginBottom: 12 }}
+            />
+          )}
           {candidateGenerationOutput.initial_evidence_context?.evidence_refs?.length > 0 && (
             <Alert
               type="info"

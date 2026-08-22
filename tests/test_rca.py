@@ -203,6 +203,54 @@ def test_session_candidate_review_limits_active_investigation_to_three_deduplica
     assert len(result["candidate_proposals"]) == 4
     assert len(result["active_candidate_ids"]) == 3
     assert len(result["deferred_candidate_ids"]) == 1
+    assert len(result["candidate_selection_diagnostics"]) == 4
+    assert {
+        item["selection"]
+        for item in result["candidate_selection_diagnostics"]
+    } == {"active", "deferred"}
+
+
+def test_session_candidate_review_keeps_candidate_when_only_probe_request_is_invalid():
+    evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
+    analysis = analyze_evidence(evidence, [])
+    parent_id = next(
+        node.candidate_id
+        for layer in analysis.controlled_ai_tree.layers
+        for node in [*layer.primary_causes, *layer.secondary_causes, *layer.unknown_causes, *layer.rejected_causes]
+    )
+    response = {
+        "probe_requests": [],
+        "candidates": [{
+            "candidate_id": "ai_candidate_probe_filtered",
+            "claim": "候选本身仍需要调查",
+            "mechanism": "runtime_task_path",
+            "target": "worker",
+            "supported_level": "process",
+            "decision": "needs_more_evidence",
+            "causal_status": "needs_more_evidence",
+            "evidence_refs": ["ev-top"],
+            "parent_candidate_ids": [parent_id],
+            "probe_requests": ["not_registered_probe"],
+        }],
+    }
+    with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key", "MINI_DROP_AI_ENABLED": "1"}), mock.patch(
+        "server.app.rca.llm_client._call_deepseek",
+        return_value=json.dumps(response),
+    ):
+        result = generate_session_candidate_review(
+            diagnosis_id="diag-probe-filter",
+            fact_context={},
+            session_tree=analysis.controlled_ai_tree,
+            evidence_catalog=[{"evidence_id": "ev-top"}],
+            probe_manifest=build_probe_manifest(),
+        )
+
+    assert result["ai_review_status"] == "succeeded"
+    assert [item["candidate_id"] for item in result["candidate_proposals"]] == [
+        "ai_candidate_probe_filtered"
+    ]
+    assert result["candidate_proposals"][0]["probe_requests"] == []
+    assert result["validation_diagnostics"][0]["failure_code"] == "invalid_probe_request"
 
 
 def test_session_candidate_review_rejects_hint_id_and_unknown_evidence():
