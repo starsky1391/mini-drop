@@ -1,0 +1,17 @@
+{
+  "case_id": "playwright_3004",
+  "repo": "https://github.com/microsoft/playwright-python.git",
+  "vulnerable_revision": "47a5d35ef4f815a2021349f86ae391f7c20c02d6",
+  "fixed_revision": "e89be167f66b6021c251f83550949589d081a153",
+  "compose_project": "pr_playwright_3004",
+  "service_id": "playwright-case",
+  "language": "python",
+  "container_workdir": "/opt/project",
+  "target_pattern": "playwright_workload.py",
+  "diagnosis_query": "A Python browser automation process becomes stuck during asynchronous shutdown while concurrent browser operations are active. Determine the runtime stall and the strongest evidence-backed source boundary.",
+  "workload": {
+    "api": "async_playwright.start, chromium.launch, browser.new_page, playwright.stop",
+    "signal": "shutdown stall or event-loop wait",
+    "duration_sec": 180
+  }
+}

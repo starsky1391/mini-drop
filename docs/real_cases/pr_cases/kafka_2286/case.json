@@ -1,0 +1,17 @@
+{
+  "case_id": "kafka_2286",
+  "repo": "https://github.com/dpkp/kafka-python.git",
+  "vulnerable_revision": "4d598055dab7da99e41bfcceffa8462b32931cdd",
+  "fixed_revision": "e0dda8393cebc28bbad3404025115ef6c455d44c",
+  "compose_project": "pr_kafka_2286",
+  "service_id": "kafka-admin-case",
+  "language": "python",
+  "container_workdir": "/opt/project",
+  "target_pattern": "kafka_workload.py",
+  "diagnosis_query": "A kafka-python administration process experiences broker request wakeup delays and KafkaTimeoutError under repeated cluster metadata operations. Identify the blocking or dependency path supported by runtime evidence.",
+  "workload": {
+    "api": "KafkaAdminClient.list_topics, create_topics, delete_topics",
+    "signal": "wakeup socket timeout or broker request timeout",
+    "duration_sec": 180
+  }
+}

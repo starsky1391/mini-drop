@@ -1,0 +1,25 @@
+services:
+  dependency:
+    image: rayproject/ray:2.40.0-py311
+    command: ["ray", "start", "--head", "--node-ip-address=0.0.0.0", "--port=6379", "--dashboard-host=0.0.0.0", "--block"]
+    ports: ["8265:8265"]
+  target:
+    build: {context: ., dockerfile: Dockerfile}
+    environment:
+      CASE_EVIDENCE_ROOT: /evidence
+      CASE_DURATION_SEC: ${CASE_DURATION_SEC:-180}
+      RAY_ADDRESS: dependency:6379
+    volumes:
+      - ${PROJECT_SOURCE_ROOT:?set PROJECT_SOURCE_ROOT}:/opt/project:ro
+      - ${CASE_EVIDENCE_ROOT:-./evidence}:/evidence
+    depends_on: [dependency]
+    command: ["python", "/case/vllm_workload.py"]
+  monitor:
+    image: pr_vllm_38602-target
+    pid: "service:target"
+    environment:
+      CASE_EVIDENCE_ROOT: /evidence
+      CASE_DURATION_SEC: ${CASE_DURATION_SEC:-180}
+      TARGET_PROCESS_PATTERN: vllm_workload.py
+    volumes: ["${CASE_EVIDENCE_ROOT:-./evidence}:/evidence"]
+    command: ["python", "/case/monitor.py"]

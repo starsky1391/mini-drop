@@ -1,0 +1,17 @@
+{
+  "case_id": "aiohttp_10570",
+  "repo": "https://github.com/aio-libs/aiohttp.git",
+  "vulnerable_revision": "9d4e11617a1e596926d11e483280183224fc7ee6",
+  "fixed_revision": "a6969b40e64d69fc6b038355203984ded0415a8f",
+  "compose_project": "pr_aiohttp_10570",
+  "service_id": "aiohttp-stream-case",
+  "language": "python",
+  "container_workdir": "/opt/project",
+  "target_pattern": "aiohttp_workload.py",
+  "diagnosis_query": "An aiohttp service stalls while reading a response stream larger than its configured limit. Identify whether the process is blocked in stream draining, subprocess-style pipe handling, or another supported mechanism.",
+  "workload": {
+    "api": "aiohttp.web.StreamResponse and ClientResponse.read",
+    "signal": "large response read stall",
+    "duration_sec": 180
+  }
+}

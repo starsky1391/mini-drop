@@ -1,0 +1,18 @@
+{
+  "case_id": "vllm_38602",
+  "repo": "https://github.com/vllm-project/vllm.git",
+  "vulnerable_revision": "5371d6fb4023a1a08021135e46e9354ba0923e50",
+  "fixed_revision": "d39a48ffa3f134e4f5e0fb27459fb2c9a60b78f6",
+  "compose_project": "pr_vllm_38602",
+  "service_id": "vllm-ray-case",
+  "language": "python",
+  "container_workdir": "/opt/project",
+  "target_pattern": "vllm_workload.py",
+  "requires_gpu": true,
+  "diagnosis_query": "A multi-node Ray inference request hangs only when logprobs are enabled. Determine whether the target is blocked in cross-node result transport, model execution, or an external dependency.",
+  "workload": {
+    "api": "vLLM distributed Ray inference with logprobs enabled",
+    "signal": "request hang with zero GPU progress",
+    "duration_sec": 180
+  }
+}

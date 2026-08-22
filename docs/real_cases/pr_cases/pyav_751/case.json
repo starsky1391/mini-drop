@@ -1,0 +1,17 @@
+{
+  "case_id": "pyav_751",
+  "repo": "https://github.com/PyAV-Org/PyAV.git",
+  "vulnerable_revision": "defce2380c3962bd3b61d853f63cd381e37b1947",
+  "fixed_revision": "7042f092b0f46d66a6f763a8b4629664400cdeac",
+  "compose_project": "pr_pyav_751",
+  "service_id": "pyav-logging-case",
+  "language": "python",
+  "container_workdir": "/opt/project",
+  "target_pattern": "pyav_workload.py",
+  "diagnosis_query": "A PyAV media process becomes unresponsive or slow during threaded FFmpeg logging and media operations. Identify the runtime lock or logging path supported by direct evidence.",
+  "workload": {
+    "api": "av.open, av.logging.Capture, av.logging.set_level",
+    "signal": "threaded media/logging stall",
+    "duration_sec": 180
+  }
+}
