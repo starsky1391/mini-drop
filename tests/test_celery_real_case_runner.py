@@ -33,6 +33,48 @@ class FakeRemote:
         local_root.mkdir(parents=True, exist_ok=True)
 
 
+def test_inspect_worker_target_falls_back_to_container_main_pid():
+    runner = load_module("celery_case_inspect_fallback", "run_case_vm.py")
+
+    class InspectRemote:
+        def __init__(self):
+            self.commands: list[str] = []
+
+        def run(self, command: str, *, timeout: int = 600) -> str:
+            self.commands.append(command)
+            return f"|5678|{'a' * 64}|cid={'b' * 64} name=python_worker_failure_case-worker-1\n"
+
+    inspected = runner.inspect_worker_target(
+        InspectRemote(), "/tmp/python_worker_failure_case", "python_worker_failure_case"
+    )
+
+    assert inspected == {"pid": 5678, "main_pid": 5678, "container_id": "a" * 64}
+
+
+def test_inspect_worker_target_retries_until_main_pid_is_available(monkeypatch):
+    runner = load_module("celery_case_inspect_retry", "run_case_vm.py")
+
+    class RetryRemote:
+        def __init__(self):
+            self.calls = 0
+
+        def run(self, command: str, *, timeout: int = 600) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                return "|||cid= name=python_worker_failure_case-worker-1\n"
+            return f"4321|5678|{'a' * 64}|cid={'b' * 64} name=python_worker_failure_case-worker-1\n"
+
+    remote = RetryRemote()
+    monkeypatch.setattr(runner.time, "sleep", lambda _: None)
+
+    inspected = runner.inspect_worker_target(
+        remote, "/tmp/python_worker_failure_case", "python_worker_failure_case"
+    )
+
+    assert remote.calls == 2
+    assert inspected == {"pid": 4321, "main_pid": 5678, "container_id": "a" * 64}
+
+
 def test_pair_stage_modes_create_only_one_diagnosis(tmp_path, monkeypatch):
     runner = load_module("celery_case_runner", "run_case_vm.py")
     calls = {"api": 0, "diagnosis": 0, "diagnosis_revision": None}

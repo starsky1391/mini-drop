@@ -231,6 +231,42 @@ def diagnosis(
     }
 
 
+def inspect_worker_target(remote: Remote, remote_root_value: str, project_name: str) -> dict:
+    project = shlex.quote(project_name)
+    container_name = shlex.quote(f"{project_name}-worker-1")
+    remote_root = shlex.quote(remote_root_value)
+    command = (
+        f"cd {remote_root}; "
+        f"cid=$(docker inspect -f '{{{{.Id}}}}' {container_name} 2>/dev/null || true); "
+        f"if [ -z \"$cid\" ]; then cid=$(docker compose -p {project} -f compose.yml ps -q worker 2>/dev/null | head -n 1); fi; "
+        "if [ -n \"$cid\" ]; then "
+        "  main_pid=$(docker inspect -f '{{.State.Pid}}' \"$cid\" 2>/dev/null || true); "
+        "  container_id=$(docker inspect -f '{{.Id}}' \"$cid\" 2>/dev/null || true); "
+        "fi; "
+        "if [ -n \"$main_pid\" ] && [ \"$main_pid\" != \"0\" ]; then "
+        "  target_pid=$(ps --no-headers -o pid=,ppid=,rss=,args= --ppid \"$main_pid\" 2>/dev/null | sort -k3 -nr | awk 'NR==1 {print $1}'); "
+        "fi; "
+        "printf '%s|%s|%s|cid=%s name=%s\\n' \"${target_pid:-$main_pid}\" \"$main_pid\" \"$container_id\" \"$cid\" "
+        f"{container_name}"
+    )
+    last_raw = ""
+    for _ in range(60):
+        raw = remote.run(command).strip()
+        last_raw = raw
+        parts = raw.split("|", 3)
+        if len(parts) < 3:
+            time.sleep(2)
+            continue
+        pid, main_pid, container_id = (part.strip() for part in parts[:3])
+        if not main_pid or main_pid == "0" or not container_id:
+            time.sleep(2)
+            continue
+        if not pid:
+            pid = main_pid
+        return {"pid": int(pid), "main_pid": int(main_pid), "container_id": container_id}
+    raise RuntimeError(f"failed to inspect worker process: {last_raw!r}")
+
+
 def run_stage(
     remote: Remote,
     api_key: str | None,
@@ -316,18 +352,10 @@ def run_stage(
                 vm_now + timedelta(seconds=max(90, duration_sec + 60))
             ).astimezone(timezone.utc).isoformat(),
         }
-        inspected = remote.run(
-            f"cd {remote_root}; export CELERY_SOURCE_ROOT={source_root} CELERY_EVIDENCE_ROOT={evidence_root}; "
-            f"cid=$(docker compose -p {project_name} -f compose.yml ps -q worker); "
-            "test -n \"$cid\"; "
-            "main_pid=$(docker inspect -f '{{{{.State.Pid}}}}' \"$cid\"); "
-            "container_id=$(docker inspect -f '{{{{.Id}}}}' \"$cid\"); "
-            "target_pid=$(ps --no-headers -o pid=,ppid=,rss=,args= --ppid \"$main_pid\" "
-            "| sort -k3 -nr | awk 'NR==1 {print $1}'); "
-            "printf '%s|%s|%s\\n' \"${target_pid:-$main_pid}\" \"$main_pid\" \"$container_id\""
-        ).strip().split("|", 1)
-        pid = int(inspected[0])
-        worker_main_pid, container_id = inspected[1].split("|", 1)
+        inspected = inspect_worker_target(remote, remote_root_value, project_name)
+        pid = inspected["pid"]
+        worker_main_pid = inspected["main_pid"]
+        container_id = inspected["container_id"]
         source_context = {
             "source_paths": [f"/host{source_root_value}"],
             "repo_revision": revision,
@@ -347,7 +375,7 @@ def run_stage(
             "stage_role": stage_role,
             "diagnosis_mode": diagnosis_mode,
             "worker_pid": pid,
-            "worker_main_pid": int(worker_main_pid),
+            "worker_main_pid": worker_main_pid,
             "container_id": container_id,
             "source_context": source_context,
             "target": target,
