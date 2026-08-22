@@ -1209,6 +1209,16 @@ models.py:218              当前 AITreeCandidateNode 缺少完整来源和候�
 - [x] 复用 CA/BZ 的 canonical index 和双向边校验，确保父节点已真实发出，已有 resource/function/line 节点解释不被子节点更新覆盖。
 - [x] 在 `tests/test_diagnosis_orchestrator.py` 覆盖候选继续下钻、父节点继承、拒绝/回溯、探针失败不反证、多父汇合和父解释保持不变。
 
+**CB005 真实回流状态（2026-08-22）**：
+`reports/eval/real-open-source/celery-8882-vulnerable-600s-20260822-231915/run.json`
+中的 `investigation_review` 已真实返回 `ai_review_status=succeeded`，选择的证据族为
+`python_heap_profile`。本轮没有合法的 `candidate_updates` 或 `rollback_edges`，因此保留
+`memory_leak_rss_growth` 父结论，写入 `qualification_boundary.status=inconclusive`，
+并以 `origin_parent_candidate_id=memory_leak_rss_growth` 回退；没有把探针缺失误判为反证。
+本轮最终 `abstained=true`、`root_cause_clusters=[]`、`causal_chain=[]`、
+`formal_root_cause=null`。这表示 CB005 的状态回流契约已跑通，但真实 heap 证据仍未完成，
+不能把本轮标记为完整根因闭环。
+
 #### CB006 AI 资格门禁与根因簇派生
 
 - [x] 在 `server/app/rca/controlled_tree.py` 增加明确的 `qualify_ai_candidate(...)` 或等价门禁入口，统一计算 `conclusion_eligible`，不读取 Analyzer 的同名字段作为授权结果。
@@ -1244,15 +1254,31 @@ models.py:218              当前 AITreeCandidateNode 缺少完整来源和候�
 
 - [ ] 新增或更新 `tests/test_diagnosis_orchestrator.py`、`tests/test_session_conclusion.py`、`tests/test_rca.py` 和 `tests/test_llm_client.py`，覆盖 Analyzer 事实隔离、AI 首轮候选、证据回流、多父 DAG、父解释不覆盖、门禁和 fallback。
 - [x] 更新前端 `web/src/components/diagnosis/aiTreeGraphModel.test.js`，覆盖来源标签、显式父子边、blocked/inconclusive 分支、orphan、fallback observation 和无正式 causal chain 展示。
-- [ ] 运行后端 RCA/diagnosis 回归和前端生产构建，确认 CA/BZ 已有父子关系、节点身份稳定性和 fallback 定位链测试仍通过。
+- [x] 运行后端 RCA/diagnosis 回归和前端生产构建，确认 CA/BZ 已有父子关系、节点身份稳定性和 fallback 定位链测试仍通过：后端 `209 passed`，前端 `12 passed`，生产构建成功（仅保留既有 chunk/circular chunk warning）。
 
 #### CB011 Celery VM 真实验收
 
-- [ ] 使用 `docs/real_cases/celery_8882/run_case_vm.py` 运行真实 case；确认 VM runtime、首轮 Analyzer 输入和 probe 输入均不包含离线 Oracle 或预期根因答案。
+- [x] 使用 `docs/real_cases/celery_8882/run_case_vm.py` 运行真实 case；确认 VM runtime、首轮 Analyzer 输入和 probe 输入均不包含离线 Oracle 或预期根因答案。
 - [ ] AI 成功时验收日志能证明真实首轮候选生成、probe 选择、证据回流、候选更新、门禁结果和 causal chain 引用，而不是由 Analyzer candidate 直接包装生成。
-- [ ] AI 失败或 DeepSeek 不可用时验收结果必须为 fallback/abstention：正式 clusters 为空、`causal_chain=[]`、`formal_root_cause=null`，但事实、局部定位和证据缺口可保留。
+- [x] AI 失败或 DeepSeek 不可用时验收结果必须为 fallback/abstention：正式 clusters 为空、`causal_chain=[]`、`formal_root_cause=null`，但事实、局部定位和证据缺口可保留。
 - [ ] Oracle 只能由 `evaluate_case.py` 在诊断完成后离线读取；将诊断详情、audit bundle、最终 DAG、AI review 状态和测试结果写入 `reports/eval/real-open-source/celery-8882-*` 时间戳目录。
 - [ ] 只有代码、单测、集成测试和 VM 契约验收全部通过后，才将 CB 任务组标记为完成；失败时记录具体阶段和阻断原因，不将部分定位标记为正式根因。
+
+**CB011 vulnerable-only 真实验收记录（2026-08-22）**：
+部署 revision 为 Mini-Drop `5a9bf1e`；Control 和 Worker1 已执行 `git pull` 并完成
+容器 rebuild。真实报告为
+`reports/eval/real-open-source/celery-8882-vulnerable-600s-20260822-231915/run.json`，
+诊断会话为 `diag_session_20260822_151956_791e29ac`。本次只运行 vulnerable，
+没有运行 fixed、`evaluate_case.py` 或 Oracle。VM 内使用完整 Celery revision，
+真实 Redis、worker、monitor 和原生 `apply_async()` producer。
+
+验收结果：`formal_root_cause=null`、`root_cause_clusters=[]`、
+`causal_chain=[]`、`abstained=true`；`python_heap_profile` 仍是
+`inconclusive` 缺失证据。最终树中 `memory_leak_rss_growth` 保留为基础候选，
+局部 boundary 均显式回到该来源父节点，未发现缺失父 ID 或 `"None"` 伪父 ID。
+producer 只完成第一批 1000 个失败任务，未在 runner 窗口内写入
+`producer_complete`，所以本次真实验收结论为 **partial / 未形成正式根因**，
+CB011 不能整体勾选完成。
 
 **Execution order**: CB001 -> CB002 -> CB003 -> CB004 -> CB005 -> CB006 -> CB007-CB009 -> CB010 -> CB011. CB008/CB009 可在 CB006 的数据契约稳定后并行；CB010 必须等待后端契约和来源迁移完成。
 

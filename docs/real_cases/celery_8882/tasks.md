@@ -79,7 +79,7 @@
 **Purpose**: Validate the complete Celery case end-to-end and record the accepted bundle.
 
 - [x] T014 Run focused tests for `tests/test_pyspy_collector.py`, `tests/test_python_heap_collector.py`, `tests/test_evidence_structurer.py`, `tests/test_rca_attribution.py`, `tests/test_celery_real_case_runner.py`, and `tests/test_diagnosis_orchestrator.py`
-- [ ] T015 Run the real Celery vulnerable-only 600s VM case and save the timestamped results under `reports/eval/real-open-source/celery-8882-*`
+- [x] T015 Run the real Celery vulnerable-only 600s VM case and save the timestamped results under `reports/eval/real-open-source/celery-8882-*`
 - [ ] T016 Optionally run `docs/real_cases/celery_8882/run_case_vm.py --with-fixed-control` and `evaluate_case.py` only when an explicit offline pair comparison is needed
 
 ---
