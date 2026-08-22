@@ -1316,8 +1316,18 @@ VM runtime 和首轮输入不含 Oracle，Oracle 仅离线评估
 - [x] CC009 增加受控 native allocator live helper 降级；该路径只输出 `native_allocation_observation` partial evidence，不生成 Python retention 或源码行根因。
 - [x] CC010 补齐后端、前端、heap、AI 门禁和 sample-quality 回归；完成前端 production build。
 - [ ] CC011 在 VM 部署后执行 Worker1 heap collector smoke，保存 helper/preflight/structured evidence 产物。
-- [ ] CC012 使用最新 Celery 原始证据离线回放，确认 AI 候选失败原因和 gate failure 与初始证据一致。
+- [x] CC012 使用最新 Celery 原始证据离线回放，确认 AI 候选失败原因和 gate failure 与初始证据一致。
 - [ ] CC013 仅运行 vulnerable-only Celery 600s 真实 case，确认 heap 失败可继续探测、主树无历史快照污染、无正式根因时 abstained 正确。
+
+**CC012 离线回放记录（2026-08-22）**：
+使用 `docs/real_cases/celery_8882/replay_original_evidence.py` 只读回放
+`reports/eval/real-open-source/celery-8882-vulnerable-600s-20260822-231915/run.json`，
+输出 `offline-replay.json`。回放未读取 issue、PR、修复 commit 或 Oracle。
+结果确认：初始证据支持 RSS 增长和 function 层观察，但首轮没有真实
+`ai_candidate_*`，`python_heap_profile` 为 `FAILED/memray_attach_failed`，
+`primary_anchor` 没有 verified file/line，最终 `formal_root_cause=null`、
+`root_cause_clusters=[]`、`abstained=true`；保留结论为
+`memory_leak_rss_growth` 的 `inherit_parent`，没有生成新的 fallback claim。
 
 **Acceptance criteria**:
 
