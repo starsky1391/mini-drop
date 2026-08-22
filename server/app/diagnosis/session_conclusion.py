@@ -545,10 +545,13 @@ def build_fallback_explanation(
     classification = classify_cluster_set(clusters)
     if classification == "insufficient_evidence" and assessment.get("classification"):
         classification = str(assessment["classification"])
+    formal_chain = [step for cluster in eligible for step in cluster.causal_chain]
+    localization_chain = _build_localization_chain(session_tree, retained)
     return {
         "headline": headline,
         "why_it_happened": why,
-        "causal_chain": [step for cluster in eligible for step in cluster.causal_chain],
+        "causal_chain": formal_chain,
+        "localization_chain": localization_chain,
         "root_cause_clusters": clusters,
         "ruled_out_summary": [
             str(item.get("reason"))
@@ -573,6 +576,63 @@ def build_fallback_explanation(
         ),
         "active_retained_candidate_id": (retained or {}).get("candidate_id"),
     }
+
+
+def _build_localization_chain(
+    session_tree: dict[str, Any] | None,
+    retained: dict[str, Any] | None,
+) -> list[CausalExplanationStep]:
+    """Return the retained node's real DAG lineage without claiming causality."""
+    if not isinstance(session_tree, dict) or not isinstance(retained, dict):
+        return []
+    nodes: dict[str, dict[str, Any]] = {}
+    for layer in session_tree.get("layers", []):
+        if not isinstance(layer, dict):
+            continue
+        for group in ("primary_causes", "secondary_causes", "rejected_causes", "unknown_causes"):
+            for node in layer.get(group, []):
+                if isinstance(node, dict) and node.get("candidate_id"):
+                    nodes.setdefault(str(node["candidate_id"]), node)
+    retained_id = str(retained.get("candidate_id") or "")
+    if retained_id not in nodes:
+        return []
+    ancestors: set[str] = set()
+    stack = [retained_id]
+    while stack:
+        current_id = stack.pop()
+        if current_id in ancestors or current_id not in nodes:
+            continue
+        ancestors.add(current_id)
+        stack.extend(
+            str(parent_id)
+            for parent_id in nodes[current_id].get("parent_candidate_ids", [])
+            if str(parent_id) in nodes
+        )
+    ordered: list[dict[str, Any]] = []
+    emitted: set[str] = set()
+    while len(emitted) < len(ancestors):
+        ready = sorted(
+            candidate_id
+            for candidate_id in ancestors - emitted
+            if all(
+                str(parent_id) not in ancestors or str(parent_id) in emitted
+                for parent_id in nodes[candidate_id].get("parent_candidate_ids", [])
+            )
+        )
+        if not ready:
+            break
+        for candidate_id in ready:
+            emitted.add(candidate_id)
+            ordered.append(nodes[candidate_id])
+    return [
+        CausalExplanationStep(
+            step_id=f"localization_{node['candidate_id']}",
+            statement=str(node.get("claim") or ""),
+            evidence_refs=_unique(node.get("evidence_refs") or []),
+        )
+        for node in ordered
+        if str(node.get("claim") or "").strip()
+    ]
 
 
 def apply_session_review(

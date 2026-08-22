@@ -15,7 +15,7 @@ from server.app.diagnosis import orchestrator as orchestrator_module
 from server.app.main import app, repo
 from server.app.main import diagnosis_orchestrator
 from server.app.models import Base
-from server.app.rca.models import RootCauseCluster
+from server.app.rca.models import AITreeCandidateNode, AITreeLayer, RootCauseCluster
 from server.app.state_machine import Actor, TaskStatus
 
 
@@ -3642,8 +3642,8 @@ def test_source_mechanism_is_attached_only_after_verified_line_base_node():
     )
     assert mechanism.depth_kind == "mechanism"
     assert mechanism.supported_level == "call_path"
-    assert mechanism.parent_candidate_ids == [line_id]
-    assert mechanism.origin_parent_candidate_id == line_id
+    assert mechanism.parent_candidate_ids == ["celery-trace-line"]
+    assert mechanism.origin_parent_candidate_id == "celery-trace-line"
 
     invalid_origin = [
         {**item, "origin_parent_candidate_id": "coarse_python_memory_retention"}
@@ -3741,14 +3741,13 @@ def test_duplicate_verified_line_hotspots_collapse_and_failed_deep_probe_returns
             *layer.unknown_causes,
         ]
     }
-    assert line_id in nodes
-    assert nodes["celery-worker"].supported_level == "function"
-    assert nodes[line_id].parent_candidate_ids == ["coarse_self_code_or_process_pressure"]
-    assert nodes[line_id].origin_parent_candidate_id == "coarse_self_code_or_process_pressure"
+    assert line_id not in nodes
+    assert nodes["celery-worker"].supported_level == "line"
+    assert line_id not in nodes
     boundary = nodes["gap_source_mechanism_query_ai_proposal_trace_retention"]
-    assert boundary.parent_candidate_ids == [line_id]
+    assert boundary.parent_candidate_ids == ["celery-worker"]
     rollback = next(edge for edge in tree.probe_edges if edge.effect == "rollback")
-    assert rollback.to_candidate_ids == [line_id]
+    assert rollback.to_candidate_ids == ["celery-worker"]
 
 
 def test_verified_source_line_is_synthesized_as_base_parent_for_mechanism():
@@ -4107,9 +4106,9 @@ def test_werkzeug_1521_fixture_closes_bound_method_branch_and_greys_defaults():
     assert nodes["ai_proposal_bound_method_code_constant"].conclusion_eligible is False
     assert nodes["ai_proposal_bound_method_code_constant"].depth_kind == "mechanism"
     line_id = orchestrator_module._verified_line_candidate_id(anchor, "python_memory_retention")
-    assert nodes["ai_proposal_bound_method_code_constant"].origin_parent_candidate_id == line_id
-    assert "python_memory_retention" in tree.final_primary_causes
-    assert line_id in tree.final_unknown_causes
+    assert nodes["ai_proposal_bound_method_code_constant"].origin_parent_candidate_id == "python_memory_retention"
+    assert "python_memory_retention" not in tree.final_primary_causes
+    assert line_id not in tree.final_unknown_causes
     assert nodes["ai_proposal_defaults"].role == "rejected"
     assert nodes["ai_proposal_defaults"].status == "contradicted"
 
@@ -4314,11 +4313,11 @@ def test_blocked_deep_probe_rolls_back_to_its_origin_parent_only():
         node for layer in tree.layers for node in layer.unknown_causes
         if node.candidate_id == "bound_method_retention"
     )
-    assert mechanism.origin_parent_candidate_id == line_id
-    assert tree.final_primary_causes == ["line_rule_compile"]
+    assert mechanism.origin_parent_candidate_id == "line_rule_compile"
+    assert tree.final_primary_causes == []
     rollback = next(edge for edge in tree.probe_edges if edge.effect == "rollback")
     assert rollback.from_candidate_ids == ["bound_method_retention"]
-    assert rollback.to_candidate_ids == [line_id]
+    assert rollback.to_candidate_ids == ["line_rule_compile"]
     assert "coarse_" not in rollback.to_candidate_ids[0]
 
 
@@ -4346,10 +4345,10 @@ def test_multiple_lineage_parents_collapse_to_the_single_origin_for_mechanism():
         node for layer in tree.layers for node in layer.unknown_causes
         if node.candidate_id == "bound_method_retention"
     )
-    assert mechanism.parent_candidate_ids == [line_id]
+    assert mechanism.parent_candidate_ids == ["line_rule_compile"]
     rollback = next(edge for edge in tree.probe_edges if edge.effect == "rollback")
-    assert rollback.to_candidate_ids == [line_id]
-    assert tree.final_primary_causes == ["line_rule_compile"]
+    assert rollback.to_candidate_ids == ["line_rule_compile"]
+    assert tree.final_primary_causes == []
 
 
 def test_supported_mechanism_is_additional_and_cannot_replace_base_primary():
@@ -4370,4 +4369,59 @@ def test_supported_mechanism_is_additional_and_cannot_replace_base_primary():
     assert mechanism_path.depth_kind == "mechanism"
     assert mechanism_path.conclusion_eligible is False
     assert mechanism_path.candidate_id not in tree.final_primary_causes
-    assert tree.final_primary_causes == ["line_rule_compile"]
+    assert tree.final_primary_causes == []
+
+
+def _dag_node(candidate_id, *, parents=None, role="unknown", relation="alternative", depth_kind="base"):
+    return AITreeCandidateNode(
+        candidate_id=candidate_id,
+        lineage_id=candidate_id,
+        parent_candidate_ids=parents or [],
+        origin_parent_candidate_id=(parents or [None])[0],
+        relation=relation,
+        role=role,
+        claim=candidate_id,
+        depth_kind=depth_kind,
+    )
+
+
+def test_dag_lineage_rebuilds_bidirectional_edges_for_multiple_parents_and_children():
+    layers = [
+        AITreeLayer(layer_id="l0", depth=0, unknown_causes=[_dag_node("root")]),
+        AITreeLayer(
+            layer_id="l1",
+            depth=1,
+            unknown_causes=[
+                _dag_node("left", parents=["root"]),
+                _dag_node("right", parents=["root"]),
+            ],
+        ),
+        AITreeLayer(
+            layer_id="l2",
+            depth=2,
+            unknown_causes=[_dag_node("merge", parents=["left", "right"], relation="causal_convergence")],
+        ),
+    ]
+    validated = orchestrator_module._validate_tree_lineage(layers)
+    nodes = {
+        node.candidate_id: node
+        for layer in validated
+        for node in [*layer.primary_causes, *layer.secondary_causes, *layer.rejected_causes, *layer.unknown_causes]
+    }
+    assert nodes["root"].child_candidate_ids == ["left", "right"]
+    assert nodes["merge"].parent_candidate_ids == ["left", "right"]
+    assert nodes["left"].child_candidate_ids == ["merge"]
+    assert nodes["right"].child_candidate_ids == ["merge"]
+
+
+def test_dag_lineage_rejects_self_loop_and_missing_child_reference():
+    with pytest.raises(ValueError, match="自身"):
+        orchestrator_module._validate_tree_lineage([
+            AITreeLayer(layer_id="l0", depth=0, unknown_causes=[_dag_node("root", parents=["root"])])
+        ])
+    orphan = _dag_node("root")
+    orphan = orphan.model_copy(update={"child_candidate_ids": ["missing"]})
+    with pytest.raises(ValueError, match="child_candidate_id 不存在"):
+        orchestrator_module._validate_tree_lineage([
+            AITreeLayer(layer_id="l0", depth=0, unknown_causes=[orphan])
+        ])

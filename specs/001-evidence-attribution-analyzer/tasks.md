@@ -1106,6 +1106,20 @@ This group supersedes the old qualification wording in BJ001-BJ002; remaining im
 
 **Outcome**: Deep investigation refines or refutes an existing candidate instead of erasing it. Tool failure means “not verified”, explicit counterevidence means “refuted”, and every backend/API/frontend completion and confidence field agrees with the same final-cause eligibility decision.
 
+### Task Group CA - DAG 证据节点与定位链修复
+
+**Purpose**: 将会话级候选从隐式树和复制节点收口为稳定的 DAG，保留真实父节点解释，并在正式因果资格不足时输出独立的定位链。
+
+- [x] CA001 为候选节点增加稳定的 `child_candidate_ids`，并为定位链和多父汇合补充模型契约。
+- [x] CA002 在树归一化阶段建立 canonical candidate index，拒绝重复 ID，并将所有 layer 分类回填到唯一节点对象。
+- [x] CA003 根据显式 `parent_candidate_ids` 重建双向父子边，支持多父、多子、共享节点，并拒绝缺失父子、自引用和环。
+- [x] CA004 移除 line/function/resource 复制和 alias 改写，新增节点只挂载到当前树中真实存在的来源节点，保留父节点解释字段。
+- [x] CA005 分离正式 `causal_chain` 与非正式 `localization_chain`，fallback 按实际 DAG 祖先拓扑回溯并去重。
+- [x] CA006 增加多父汇合、反向边、非法引用和节点身份稳定性回归测试。
+- [x] CA007 完成核心后端回归测试并更新旧测试至 DAG 契约。
+
+**Outcome**: 同一候选只发出一次；一个节点可以同时作为上游子节点和下游父节点；line 子节点不再覆盖 resource/function 父节点解释；证据不足时正式因果链为空但定位链仍可追溯。
+
 ### Task Group BZ - 真实父节点闭环与低质量候选隔离
 
 **Purpose**: 修复 `diag_session_20260822_032023_9241046c` 暴露的候选先错分类、line 错挂 coarse、低质量 call_path 被 fallback 继承以及 probe 完成状态冒充有效源码锚点的问题。

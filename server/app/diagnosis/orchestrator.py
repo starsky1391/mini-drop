@@ -47,6 +47,7 @@ from server.app.rca.models import (
     AITreeProbeResult,
     AITreeSelfChallenge,
     CandidateCause,
+    CausalExplanationStep,
     ControlledAITree,
     EvidenceInput,
 )
@@ -1544,6 +1545,7 @@ class DiagnosisOrchestrator:
             "headline": explanation["headline"],
             "why_it_happened": explanation["why_it_happened"],
             "causal_chain": [item.model_dump(mode="json") for item in explanation["causal_chain"]],
+            "localization_chain": [item.model_dump(mode="json") for item in explanation.get("localization_chain", [])],
             "root_cause_clusters": [item.model_dump(mode="json") for item in explanation["root_cause_clusters"]],
             "ruled_out_summary": explanation["ruled_out_summary"],
             "residual_unknowns": explanation["residual_unknowns"],
@@ -5087,7 +5089,6 @@ def _build_session_controlled_ai_tree(
         for node in [*primary_nodes, *secondary_nodes, *rejected_nodes, *unknown_nodes]
         if node.depth_kind == "base" and node.supported_level == "line"
     }
-    line_id_aliases: dict[str, str] = {}
     if has_verified_line_anchor:
         line_candidate_id = _verified_line_candidate_id(
             primary_anchor,
@@ -5137,43 +5138,30 @@ def _build_session_controlled_ai_tree(
             line_node = matching_line_nodes[0]
         if line_node is not None:
             line_parent_id = line_node.candidate_id
-            line_parent_id = line_node.candidate_id
-            line_parent_node = line_node.model_copy(update={
-                "supported_level": "function" if line_node.supported_level == "line" else line_node.supported_level,
-                "eligibility_reason": line_node.eligibility_reason or "该节点是源码行细化的来源父节点。",
-                "parent_candidate_ids": [resolved_coarse_parent_id],
-                "origin_parent_candidate_id": resolved_coarse_parent_id,
-            })
-            for node_group in (primary_nodes, secondary_nodes, rejected_nodes, unknown_nodes):
-                for index, node in enumerate(node_group):
-                    if node.candidate_id == line_node.candidate_id:
-                        node_group[index] = line_parent_node
-                        break
-            line_refinement_node = line_node.model_copy(update={
-                "candidate_id": line_candidate_id,
-                "lineage_id": line_candidate_id,
-                "relation": "refinement",
-                "role": "unknown",
-                "target": anchor_label,
-                "depth_kind": "base",
-                "supported_level": "line",
-                "parent_candidate_ids": [resolved_coarse_parent_id],
-                "origin_parent_candidate_id": resolved_coarse_parent_id,
-                "conclusion_eligible": False,
-                "eligibility_reason": (
-                    "源码行只作为可验证细化锚点，不能单独进入最终主因。"
-                ),
-            })
-            line_id_aliases[line_node.candidate_id] = line_candidate_id
-            line_refinement_nodes.append(line_refinement_node)
-            existing_node_ids.add(line_candidate_id)
-            base_line_nodes[line_candidate_id] = line_refinement_node
+            # The matched node is already the canonical source node. It may
+            # itself be a child from an earlier round, so never copy it into a
+            # synthetic parent or rewrite its claim/level. A later mechanism
+            # node can use this stable ID as its parent.
+            base_line_nodes[line_parent_id] = line_node
         else:
             line_refs = _unique_strings([
                 *evidence_refs,
                 *primary_anchor.get("source_evidence_refs", []),
                 *primary_anchor.get("evidence_refs", []),
             ])
+            source_parent_id = next(
+                (
+                    node.candidate_id
+                    for node in [*primary_nodes, *secondary_nodes, *unknown_nodes]
+                    if node.supported_level != "line"
+                    and node.node_type not in {"observation", "orphan"}
+                    and (
+                        node.candidate_id in declared_line_origins
+                        or not declared_line_origins
+                    )
+                ),
+                resolved_coarse_parent_id,
+            )
             line_node = AITreeCandidateNode(
                 candidate_id=line_candidate_id,
                 lineage_id=line_candidate_id,
@@ -5192,8 +5180,8 @@ def _build_session_controlled_ai_tree(
                 decision="conclude" if assessment_eligible else "continue_probe",
                 mechanism=str(cluster_assessment.get("mechanism") or "verified_source_line"),
                 target=anchor_label,
-                parent_candidate_ids=[resolved_coarse_parent_id],
-                origin_parent_candidate_id=resolved_coarse_parent_id,
+                parent_candidate_ids=[source_parent_id],
+                origin_parent_candidate_id=source_parent_id,
                 conclusion_eligible=assessment_eligible,
                 eligibility_reason=(
                     "源码行已验证，但尚未完成会话级因果门禁。"
@@ -5209,15 +5197,9 @@ def _build_session_controlled_ai_tree(
                 ),
             )
             line_refinement_nodes.append(line_node)
-            for declared_origin in declared_probe_origins:
-                if declared_origin:
-                    line_id_aliases[declared_origin] = line_candidate_id
             base_line_nodes[line_candidate_id] = line_node
 
-    deep_origins = {
-        candidate_id: line_id_aliases.get(origin_parent, origin_parent)
-        for candidate_id, origin_parent in _deep_probe_provenance(probes).items()
-    }
+    deep_origins = _deep_probe_provenance(probes)
     mechanism_paths = (
         primary_anchor.get("mechanism_paths") or []
         if has_verified_line_anchor
@@ -5238,7 +5220,6 @@ def _build_session_controlled_ai_tree(
             or deep_origins.get(candidate_id)
             or ""
         ).strip()
-        mechanism_parent_id = line_id_aliases.get(mechanism_parent_id, mechanism_parent_id)
         if not mechanism_parent_id:
             continue
         parent_node = base_line_nodes.get(mechanism_parent_id)
@@ -5448,6 +5429,19 @@ def _build_session_controlled_ai_tree(
             unknown_causes=[_classify_tree_node(node) for node in mechanism_nodes],
         ))
     layers = _validate_tree_lineage(layers)
+    retained_candidate_id = str(cluster_assessment.get("active_retained_candidate_id") or "")
+    if not retained_candidate_id:
+        retained_candidate_id = next(
+            (
+                node.candidate_id
+                for node in [*primary_nodes, *secondary_nodes, *unknown_nodes]
+                if node.role in {"primary", "secondary", "unknown"}
+                and node.node_type not in {"observation", "mechanism_explanation", "stop_boundary", "evidence_gap", "orphan"}
+                and node.depth_kind == "base"
+            ),
+            "",
+        )
+    localization_chain = _tree_localization_chain(layers, retained_candidate_id)
     completed_probe_requests = _completed_session_probe_requests(probes)
     edges: list[AITreeProbeEdge] = [
         AITreeProbeEdge(
@@ -5554,10 +5548,7 @@ def _build_session_controlled_ai_tree(
             provenance_pairs = {
                 (
                     str((probe.get("parameters") or {}).get("candidate_id") or "").strip(),
-                    line_id_aliases.get(
-                        str((probe.get("parameters") or {}).get("origin_parent_candidate_id") or "").strip(),
-                        str((probe.get("parameters") or {}).get("origin_parent_candidate_id") or "").strip(),
-                    ),
+                    str((probe.get("parameters") or {}).get("origin_parent_candidate_id") or "").strip(),
                 )
                 for probe in probes
                 if isinstance(probe, dict)
@@ -5727,6 +5718,7 @@ def _build_session_controlled_ai_tree(
         final_secondary_causes=final_secondary,
         final_rejected_causes=final_rejected,
         final_unknown_causes=final_unknown,
+        localization_chain=localization_chain,
     )
     guarded_tree = enforce_conclusion_eligibility(tree)
     if guarded_tree is None:
@@ -5743,6 +5735,38 @@ def _attach_coarse_parent_if_missing(node: AITreeCandidateNode, coarse_id: str) 
         "cluster_id": node.cluster_id or coarse_id,
         "branch_id": node.branch_id or coarse_id,
     })
+
+
+def _tree_localization_chain(
+    layers: list[AITreeLayer],
+    retained_candidate_id: str,
+) -> list[CausalExplanationStep]:
+    nodes = {
+        node.candidate_id: node
+        for layer in layers
+        for node in _layer_nodes_for_validation(layer)
+    }
+    current_id = retained_candidate_id
+    ordered: list[AITreeCandidateNode] = []
+    visited: set[str] = set()
+    while current_id and current_id not in visited and current_id in nodes:
+        visited.add(current_id)
+        node = nodes[current_id]
+        ordered.append(node)
+        current_id = next(
+            (parent_id for parent_id in node.parent_candidate_ids if parent_id in nodes),
+            "",
+        )
+    ordered.reverse()
+    return [
+        CausalExplanationStep(
+            step_id=f"localization_{node.candidate_id}",
+            statement=node.claim,
+            evidence_refs=_unique_strings(node.evidence_refs),
+        )
+        for node in ordered
+        if node.claim.strip()
+    ]
 
 
 def _resolve_real_coarse_parent_id(
@@ -5797,12 +5821,30 @@ def _attach_observation_parent(node: AITreeCandidateNode, parent_id: str) -> AIT
 
 
 def _validate_tree_lineage(layers: list[AITreeLayer]) -> list[AITreeLayer]:
-    """Keep only explicit edges whose parent is emitted in the same tree."""
+    """Validate explicit DAG edges and rebuild their reverse child links."""
     emitted_ids = {
         node.candidate_id
         for layer in layers
         for node in _layer_nodes_for_validation(layer)
     }
+    occurrences: dict[str, int] = {}
+    for layer in layers:
+        for node in _layer_nodes_for_validation(layer):
+            occurrences[node.candidate_id] = occurrences.get(node.candidate_id, 0) + 1
+    duplicates = [candidate_id for candidate_id, count in occurrences.items() if count > 1]
+    if duplicates:
+        raise ValueError(f"DAG candidate_id 重复发出: {', '.join(sorted(duplicates))}")
+    declared_child_ids = {
+        child_id
+        for layer in layers
+        for node in _layer_nodes_for_validation(layer)
+        for child_id in node.child_candidate_ids
+    }
+    missing_children = sorted(declared_child_ids - emitted_ids)
+    if missing_children:
+        raise ValueError(f"DAG child_candidate_id 不存在: {', '.join(missing_children)}")
+
+    parents_by_child: dict[str, list[str]] = {}
     validated: list[AITreeLayer] = []
     for layer in layers:
         groups: dict[str, list[AITreeCandidateNode]] = {}
@@ -5830,10 +5872,57 @@ def _validate_tree_lineage(layers: list[AITreeLayer]) -> list[AITreeLayer]:
                         "parent_candidate_ids": parent_ids,
                         "origin_parent_candidate_id": origin,
                     })
+                    for parent_id in parent_ids:
+                        if parent_id == node.candidate_id:
+                            raise ValueError(f"DAG 节点不能指向自身: {node.candidate_id}")
+                        parents_by_child.setdefault(node.candidate_id, []).append(parent_id)
                 nodes.append(node)
             groups[group_name] = nodes
         validated.append(layer.model_copy(update=groups))
-    return validated
+    canonical = {
+        node.candidate_id: node
+        for layer in validated
+        for node in _layer_nodes_for_validation(layer)
+    }
+    children_by_parent: dict[str, list[str]] = {}
+    for child_id, parent_ids in parents_by_child.items():
+        for parent_id in parent_ids:
+            children_by_parent.setdefault(parent_id, []).append(child_id)
+    for child_id, parent_ids in parents_by_child.items():
+        canonical[child_id] = canonical[child_id].model_copy(update={
+            "parent_candidate_ids": _unique_strings(parent_ids),
+        })
+    for parent_id, parent_node in canonical.items():
+        canonical[parent_id] = parent_node.model_copy(update={
+            "child_candidate_ids": _unique_strings(children_by_parent.get(parent_id, [])),
+        })
+    # Validate the resulting directed graph instead of relying on layer order.
+    adjacency = {candidate_id: list(node.child_candidate_ids) for candidate_id, node in canonical.items()}
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(candidate_id: str) -> None:
+        if candidate_id in visiting:
+            raise ValueError(f"DAG lineage 存在环: {candidate_id}")
+        if candidate_id in visited:
+            return
+        visiting.add(candidate_id)
+        for child_id in adjacency.get(candidate_id, []):
+            if child_id not in canonical:
+                raise ValueError(f"DAG child_candidate_id 不存在: {child_id}")
+            visit(child_id)
+        visiting.remove(candidate_id)
+        visited.add(candidate_id)
+
+    for candidate_id in canonical:
+        visit(candidate_id)
+    return [
+        layer.model_copy(update={
+            group: [canonical[node.candidate_id] for node in getattr(layer, group)]
+            for group in ("primary_causes", "secondary_causes", "rejected_causes", "unknown_causes")
+        })
+        for layer in validated
+    ]
 
 
 def _layer_nodes_for_validation(layer: AITreeLayer) -> list[AITreeCandidateNode]:

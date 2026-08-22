@@ -223,6 +223,7 @@ class AITreeCandidateNode(BaseModel):
     cluster_id: str = ""
     branch_id: str = ""
     parent_candidate_ids: list[str] = Field(default_factory=list)
+    child_candidate_ids: list[str] = Field(default_factory=list)
     origin_parent_candidate_id: Optional[str] = None
     relation: Literal[
         "root",
@@ -232,6 +233,8 @@ class AITreeCandidateNode(BaseModel):
         "mechanism",
         "boundary",
         "rejected_alternative",
+        "causal_convergence",
+        "shared_evidence",
     ] = "alternative"
     node_type: Literal[
         "cluster_root",
@@ -410,6 +413,7 @@ class ControlledAITree(BaseModel):
     final_secondary_causes: list[str] = Field(default_factory=list)
     final_rejected_causes: list[str] = Field(default_factory=list)
     final_unknown_causes: list[str] = Field(default_factory=list)
+    localization_chain: list["CausalExplanationStep"] = Field(default_factory=list)
 
 
 class CausalExplanationStep(BaseModel):
@@ -494,6 +498,7 @@ class SessionConclusionReview(BaseModel):
     primary_cluster_id: Optional[str] = None
     cluster_roles: dict[str, Literal["primary", "contributing", "independent"]] = Field(default_factory=dict)
     causal_chain: list[CausalExplanationStep] = Field(default_factory=list)
+    localization_chain: list[CausalExplanationStep] = Field(default_factory=list)
     ruled_out_summary: list[str] = Field(default_factory=list)
     residual_unknowns: list[str] = Field(default_factory=list)
     recommendations: dict[str, list[RootCauseRecommendation]] = Field(default_factory=dict)
