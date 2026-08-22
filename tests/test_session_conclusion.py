@@ -655,6 +655,39 @@ def test_child_contradiction_keeps_parent_as_retained_candidate():
     assert retained["claim"] == "父节点结论仍由同窗证据支持。"
 
 
+def test_explicit_ai_tree_retained_candidate_precedes_analyzer_active_candidate():
+    retained = build_retained_conclusion(
+        [],
+        {
+            "active_retained_candidate_id": "analyzer-memory-hint",
+            "evidence_refs": ["ev-ai"],
+        },
+        {
+            "retained_candidate_id": "ai-runtime-direction",
+            "layers": [{
+                "layer_id": "ai",
+                "depth": 1,
+                "unknown_causes": [{
+                    "candidate_id": "ai-runtime-direction",
+                    "generated_by": "ai_candidate",
+                    "node_type": "base_cause",
+                    "depth_kind": "base",
+                    "claim": "AI 选择的运行时方向仍需补证。",
+                    "supported_level": "process",
+                    "status": "missing_evidence",
+                    "confidence": 0.45,
+                    "evidence_refs": ["ev-ai"],
+                    "parent_candidate_ids": ["coarse"],
+                    "origin_parent_candidate_id": "coarse",
+                }],
+            }],
+        },
+    )
+
+    assert retained["candidate_id"] == "ai-runtime-direction"
+    assert retained["claim"] == "AI 选择的运行时方向仍需补证。"
+
+
 def test_contradicted_previous_retained_claim_is_not_reused():
     retained = build_retained_conclusion(
         [],

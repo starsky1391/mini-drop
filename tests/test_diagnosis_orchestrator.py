@@ -409,6 +409,7 @@ def test_successful_candidate_generation_keeps_analyzer_observation_distinct_fro
 
     assert not any(layer.generated_by == "analyzer_fallback" for layer in updated.layers)
     assert updated.layers[-1].generated_by == "ai_candidate"
+    assert updated.retained_candidate_id == "ai_candidate_runtime_path"
     ai_node = next(
         node
         for node in updated.layers[-1].unknown_causes
@@ -462,6 +463,7 @@ def test_initial_ai_candidate_stays_investigation_only_even_if_model_says_conclu
     assert node.causal_status == "unproven"
     assert node.decision == "continue_probe"
     assert node.conclusion_eligible is False
+    assert updated.retained_candidate_id == "ai_candidate_premature"
 
 
 def test_candidate_tree_ingestion_records_deferred_and_missing_parent_candidates():

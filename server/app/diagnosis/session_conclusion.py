@@ -494,9 +494,12 @@ def build_retained_conclusion(
         if isinstance(session_tree, dict)
         else ""
     )
+    # Once AI has produced usable candidates, the current session tree owns
+    # the active investigation direction. The Analyzer assessment is only the
+    # fallback source when the tree has no explicit retained candidate.
     active_id = str(
-        assessment.get("active_retained_candidate_id")
-        or tree_retained_id
+        tree_retained_id
+        or assessment.get("active_retained_candidate_id")
         or ""
     ).strip()
     selected_node = next(

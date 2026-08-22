@@ -6797,6 +6797,40 @@ def _mark_analyzer_fallback_tree(tree: ControlledAITree | None) -> ControlledAIT
     return tree.model_copy(update={"layers": layers})
 
 
+def _retained_parent_candidate_id(
+    nodes: list[AITreeCandidateNode],
+    candidate_id: str,
+) -> str:
+    """Return the nearest retained base candidate for an investigation node."""
+    by_id = {node.candidate_id: node for node in nodes}
+    current_id = str(candidate_id or "").strip()
+    visited: set[str] = set()
+    while current_id and current_id not in visited:
+        visited.add(current_id)
+        node = by_id.get(current_id)
+        if node is None:
+            return ""
+        if (
+            node.generated_by in {"ai_candidate", "ai_guarded"}
+            and node.node_type not in {
+                "observation",
+                "mechanism_explanation",
+                "stop_boundary",
+                "evidence_gap",
+                "orphan",
+            }
+            and node.depth_kind not in {"mechanism", "boundary"}
+            and node.role != "rejected"
+        ):
+            return node.candidate_id
+        current_id = str(
+            node.origin_parent_candidate_id
+            or _single_parent_id(node.parent_candidate_ids)
+            or ""
+        ).strip()
+    return ""
+
+
 def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> ControlledAITree:
     """Attach first-round AI candidates to the existing canonical DAG."""
     proposals = review.get("candidate_proposals") if isinstance(review.get("candidate_proposals"), list) else []
@@ -6975,7 +7009,33 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
         rejected_causes=[node for node in nodes if node.role == "rejected"],
         unknown_causes=[node for node in nodes if node.role == "unknown"],
     )
-    updated = tree.model_copy(update={"layers": [*layers, proposal_layer]})
+    all_emitted_nodes = [
+        node
+        for layer in [*layers, proposal_layer]
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    ]
+    retained_candidate_id = next(
+        (
+            retained_id
+            for candidate_id in review.get("active_candidate_ids", [])
+            if (
+                retained_id := _retained_parent_candidate_id(
+                    all_emitted_nodes,
+                    str(candidate_id),
+                )
+            )
+        ),
+        tree.retained_candidate_id,
+    )
+    updated = tree.model_copy(update={
+        "layers": [*layers, proposal_layer],
+        "retained_candidate_id": retained_candidate_id or None,
+    })
     review["tree_ingestion_diagnostics"] = ingestion_diagnostics
     return enforce_conclusion_eligibility(updated)
 
@@ -7170,9 +7230,32 @@ def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) 
             transition_type="backtrack",
             reason=str(spec.get("reason") or "AI 依据证据回流回到来源父节点。"),
         ))
+    retained_candidate_id = tree.retained_candidate_id
+    probe_inputs = review.get("probe_inputs") if isinstance(review.get("probe_inputs"), dict) else {}
+    all_emitted_nodes = [
+        node
+        for layer in layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    ]
+    for value in probe_inputs.values():
+        if not isinstance(value, dict):
+            continue
+        candidate_id = _retained_parent_candidate_id(
+            all_emitted_nodes,
+            str(value.get("candidate_id") or ""),
+        )
+        if candidate_id:
+            retained_candidate_id = candidate_id
+            break
     updated = tree.model_copy(update={
         "layers": layers,
         "probe_edges": edges,
+        "retained_candidate_id": retained_candidate_id,
         "final_unknown_causes": list(dict.fromkeys([
             *tree.final_unknown_causes,
             *(str(item.get("candidate_id")) for item in proposals),

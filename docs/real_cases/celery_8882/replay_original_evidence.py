@@ -123,7 +123,19 @@ def _tree_summary(tree: dict[str, Any] | None) -> dict[str, Any]:
                     node.get("relation") not in {None, "root"} and not parents
                 ):
                     orphan_nodes.append(candidate_id)
-                if node.get("supported_level") == "line" or node.get("node_type") == "line_anchor":
+                if (
+                    node.get("node_type") == "line_anchor"
+                    or (
+                        node.get("supported_level") == "line"
+                        and node.get("relation") == "refinement"
+                        and node.get("node_type") not in {
+                            "observation",
+                            "mechanism_explanation",
+                            "stop_boundary",
+                            "orphan",
+                        }
+                    )
+                ):
                     line_nodes.append(candidate_id)
                 for parent_id in node.get("parent_candidate_ids", []):
                     parent_refs.append((candidate_id, str(parent_id)))
