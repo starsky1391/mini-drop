@@ -38,7 +38,7 @@ services:
       MINI_DROP_BLACKBOX_URL: ${MINI_DROP_BLACKBOX_URL:-http://blackbox-exporter:9115}
       MINI_DROP_REDIS_EXPORTER_URL: ${MINI_DROP_REDIS_EXPORTER_URL:-}
       MINI_DROP_MEMRAY_ROOTS: ${MINI_DROP_MEMRAY_ROOTS:-/var/lib/mini-drop/profiles,/tmp/mini-drop}
-      MINI_DROP_MEMRAY_HELPER: ${MINI_DROP_MEMRAY_HELPER:-}
+      MINI_DROP_MEMRAY_HELPER: ${MINI_DROP_MEMRAY_HELPER:-/usr/local/bin/mini-drop-memray-attach}
       MINI_DROP_NATIVE_HEAP_LIVE_HELPER: ${MINI_DROP_NATIVE_HEAP_LIVE_HELPER:-/usr/local/bin/mini-drop-native-heap-live}
       MINI_DROP_SOURCE_ROOTS: ${MINI_DROP_SOURCE_ROOTS:-/host/home,/usr/src}
       MINI_DROP_CODEQL_QUERY_SUITE: ${MINI_DROP_CODEQL_QUERY_SUITE:-}

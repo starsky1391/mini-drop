@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     perl \
     systemd \
     unzip \
+    util-linux \
     universal-ctags \
     && rm -rf /var/lib/apt/lists/*
 
@@ -43,6 +44,9 @@ RUN chmod 0755 /usr/local/bin/pyheap_dump
 
 COPY deploy/collectors/native_heap_live/native_heap_live_helper.py /usr/local/bin/mini-drop-native-heap-live
 RUN chmod 0755 /usr/local/bin/mini-drop-native-heap-live
+
+COPY deploy/collectors/memray_live/memray_attach_helper.py /usr/local/bin/mini-drop-memray-attach
+RUN chmod 0755 /usr/local/bin/mini-drop-memray-attach
 
 WORKDIR /app
 COPY pyproject.toml README.md ./

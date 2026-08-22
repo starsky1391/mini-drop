@@ -7,6 +7,7 @@ import pytest
 from agent.mini_drop_agent.config import load_config
 from agent.mini_drop_agent.collector_profile import build_collector_profile
 from agent.mini_drop_agent.main import CAPABILITIES, COLLECTORS, _apply_cos_config, _run_collector
+from agent.mini_drop_agent.collectors.base import CollectorResult
 from server.app.generated import common_pb2
 
 
@@ -143,3 +144,35 @@ class TestAgentCollectorDispatch:
         assert ok is False
         assert "未在此 Agent 构建中注册" in reason
         assert artifacts == []
+
+    def test_failed_collector_uploads_structured_artifact(self, monkeypatch):
+        collector = COLLECTORS["python_heap_profile"]
+        monkeypatch.setattr(
+            collector,
+            "collect",
+            lambda _task: CollectorResult(
+                ok=False,
+                reason="memray_attach_failed",
+                artifacts=[{"artifact_type": "python_heap_profile_json", "local_path": "/tmp/failure.json"}],
+            ),
+        )
+        uploaded = []
+        monkeypatch.setattr(
+            "agent.mini_drop_agent.main.maybe_upload_artifacts",
+            lambda task_id, artifacts, _config: uploaded.append((task_id, artifacts)) or artifacts,
+        )
+
+        ok, reason, artifacts = _run_collector(
+            {
+                "id": "task_failed_upload",
+                "collector_type": "python_heap_profile",
+                "target_pid": 1234,
+                "request_params": {"options": {}},
+            },
+            config=object(),
+        )
+
+        assert ok is False
+        assert reason == "memray_attach_failed"
+        assert artifacts[0]["artifact_type"] == "python_heap_profile_json"
+        assert uploaded[0][0] == "task_failed_upload"

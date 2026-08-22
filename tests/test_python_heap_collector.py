@@ -64,6 +64,27 @@ def test_memray_attach_failure_is_failed_after_one_light_retry(tmp_path):
     assert "attach_preflight" in payload
 
 
+def test_attach_preflight_records_managed_helper_availability(tmp_path):
+    collector = PythonHeapCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    task = CollectorTask(
+        id="heap-preflight-helper",
+        collector_type="python_heap_profile",
+        target_pid=1234,
+        sample_rate=1,
+        duration_sec=5,
+        options={},
+    )
+
+    with mock.patch.object(collector, "_pid_exists", return_value=True), mock.patch(
+        "os.stat",
+        side_effect=FileNotFoundError,
+    ):
+        result = collector._attach_preflight(task, helper_available=True)
+
+    assert result["helper_available"] is True
+
+
 def test_memray_helper_can_attach_without_preloading_target(tmp_path, monkeypatch):
     collector = PythonHeapCollector()
     collector.OUTPUT_BASE = str(tmp_path / "out")

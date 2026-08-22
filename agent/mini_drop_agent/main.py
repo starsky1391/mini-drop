@@ -133,11 +133,11 @@ def _run_collector(task_payload: dict[str, Any], config: AgentConfig | None = No
     )
     result = collector.collect(collector_task)
     artifacts = result.artifacts
-    if result.ok and config is not None:
+    if config is not None and artifacts:
         try:
             artifacts = maybe_upload_artifacts(task_payload["id"], result.artifacts, config)
         except Exception as exc:
-            return False, f"artifact upload failed: {exc}", result.artifacts
+            return False, f"{result.reason}; artifact upload failed: {exc}", result.artifacts
     return result.ok, result.reason, artifacts
 
 

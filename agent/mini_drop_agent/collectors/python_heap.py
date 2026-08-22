@@ -339,6 +339,7 @@ class PythonHeapCollector:
             "same_pid_namespace": None,
             "same_mount_namespace": None,
             "ptrace_scope": None,
+            "helper_available": bool(helper_available),
             "blocked_reason": "",
             "detail": "",
         }
