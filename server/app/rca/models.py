@@ -456,11 +456,14 @@ class ControlledAITree(BaseModel):
 
     tree_id: str
     schema_version: str = "1.1"
-    tree_kind: Literal["session_main", "child_snapshot"] = "session_main"
+    tree_kind: Literal["session_main", "child_snapshot", "probe_history", "data_quality"] = "session_main"
     renderable: bool = True
     emitted_coarse_ids: list[str] = Field(default_factory=list)
     coarse_aliases: dict[str, str] = Field(default_factory=dict)
     source_context_hash: Optional[str] = None
+    line_anchor_eligibility: dict[str, Any] = Field(default_factory=dict)
+    heap_probe_outcome: dict[str, Any] = Field(default_factory=dict)
+    data_quality: dict[str, Any] = Field(default_factory=dict)
     final_supported_level: Literal["resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"] = "resource"
     stop_reason: str = ""
     stop_source_candidate_ids: list[str] = Field(default_factory=list)

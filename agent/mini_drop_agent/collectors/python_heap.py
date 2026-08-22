@@ -27,7 +27,8 @@ class PythonHeapCollector:
         supplied_reports = bool(supplied_stats or supplied_leaks)
         memray = shutil.which("memray")
         native_live_tool = self._native_live_tool()
-        if not memray and not supplied_reports and not native_live_tool:
+        managed_helper = self._helper_command(task, output_dir / "memray.bin")
+        if not memray and not supplied_reports and not native_live_tool and not managed_helper:
             return self._blocked(output_dir, task, "memray_not_installed", "Memray 命令不可用")
 
         mode = "official_reports" if supplied_reports else "instrumented_result" if supplied else "attach"
@@ -42,7 +43,7 @@ class PythonHeapCollector:
         elif not supplied_reports:
             if not task.target_pid or not self._pid_exists(task.target_pid):
                 return self._blocked(output_dir, task, "missing_target_pid", "目标 PID 不存在或不可访问")
-            preflight = self._attach_preflight(task, helper_available=bool(self._helper_command(task, output_dir / "memray.bin")))
+            preflight = self._attach_preflight(task, helper_available=bool(managed_helper))
             attach_preflight = preflight
             if preflight["blocked_reason"]:
                 return self._blocked(
@@ -71,17 +72,22 @@ class PythonHeapCollector:
                         stderr=b"memray command not found",
                     ),
                 )
-            capture = output_dir / "memray.bin"
-            result = self._run(
-                self._attach_command(memray, capture, task, task.duration_sec),
-                task.duration_sec + 45,
-            )
+            else:
+                capture = output_dir / "memray.bin"
+                result = self._run(
+                    self._attach_command(memray, capture, task, task.duration_sec),
+                    task.duration_sec + 45,
+                )
             if result.returncode != 0 or not capture.is_file() or capture.stat().st_size <= 0:
-                helper = self._helper_command(task, capture)
+                helper = managed_helper
                 if helper:
                     helper_result = self._run(helper, task.duration_sec + 45)
                     if helper_result.returncode == 0 and capture.is_file() and capture.stat().st_size > 0:
                         result = helper_result
+                        attach_preflight = {
+                            **preflight,
+                            "attach_strategy": "managed_helper",
+                        }
                     else:
                         result = helper_result
                 retry_capture = output_dir / "memray-retry.bin"
@@ -95,6 +101,10 @@ class PythonHeapCollector:
                 )
                 if retry.returncode == 0 and retry_capture.is_file() and retry_capture.stat().st_size > 0:
                     capture = retry_capture
+                    attach_preflight = {
+                        **attach_preflight,
+                        "attach_strategy": "memray_attach_retry",
+                    }
                 elif capture.is_file() and capture.stat().st_size > 0:
                     pass
                 else:
@@ -120,7 +130,7 @@ class PythonHeapCollector:
                         retry_exit_code=retry.returncode,
                         retry_stdout_excerpt=self._stdout_excerpt(retry),
                         retry_stderr_excerpt=self._stderr_excerpt(retry),
-                        preflight=preflight,
+                        preflight={**preflight, "attach_strategy": "memray_attach_then_helper"},
                     )
 
         stats_path: Path | None = None

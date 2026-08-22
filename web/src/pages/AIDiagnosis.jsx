@@ -580,6 +580,9 @@ function DiagnosisDetail({ detail }) {
   const qualificationBoundary = conclusion?.qualification_boundary || {};
   const candidateReview = conclusion?.candidate_review || {};
   const candidateGenerationAttempts = candidateReview.candidate_generation_attempts || [];
+  const controlledTree = conclusion?.controlled_ai_tree || {};
+  const lineAnchorEligibility = controlledTree.line_anchor_eligibility || {};
+  const heapProbeOutcome = controlledTree.heap_probe_outcome || {};
   const displayedConclusion = retainedConclusion.claim || formalRootCause?.claim || conclusion?.headline || conclusion?.summary;
   const displayedLevel = retainedConclusion.supported_level || conclusion?.cluster_assessment?.supported_level;
   const displayedQualification = retainedConclusion.qualification || (
@@ -686,6 +689,44 @@ function DiagnosisDetail({ detail }) {
               )}
               style={{ marginBottom: 12 }}
             />
+          )}
+          {(lineAnchorEligibility.status || heapProbeOutcome.status) && (
+            <Space direction="vertical" size={6} style={{ width: "100%", marginBottom: 12 }}>
+              {lineAnchorEligibility.status && (
+                <Alert
+                  type={lineAnchorEligibility.status === "verified" ? "success" : "info"}
+                  showIcon
+                  message={lineAnchorEligibility.status === "verified" ? "Line 锚点已通过验证" : "Line 层资格边界"}
+                  description={(
+                    <Space direction="vertical" size={2}>
+                      <Typography.Text>{lineAnchorEligibility.reason || "当前证据尚未形成可验证源码行。"}</Typography.Text>
+                      {lineAnchorEligibility.file && (
+                        <Typography.Text type="secondary">
+                          当前候选：{lineAnchorEligibility.file}:{lineAnchorEligibility.line || "?"}
+                        </Typography.Text>
+                      )}
+                    </Space>
+                  )}
+                />
+              )}
+              {heapProbeOutcome.status && heapProbeOutcome.status !== "not_started" && (
+                <Alert
+                  type={heapProbeOutcome.evidence_status === "valid" ? "success" : "warning"}
+                  showIcon
+                  message={heapProbeOutcome.evidence_status === "valid" ? "Heap 证据已返回" : "Heap 采集结果已降级记录"}
+                  description={(
+                    <Space direction="vertical" size={2}>
+                      <Typography.Text>
+                        状态：{heapProbeOutcome.status}
+                        {heapProbeOutcome.evidence_status ? ` / ${heapProbeOutcome.evidence_status}` : ""}
+                        {heapProbeOutcome.failure_type ? `；失败类型：${heapProbeOutcome.failure_type}` : ""}
+                      </Typography.Text>
+                      {heapProbeOutcome.reason && <Typography.Text type="secondary">{heapProbeOutcome.reason}</Typography.Text>}
+                    </Space>
+                  )}
+                />
+              )}
+            </Space>
           )}
           {conclusion.ai_gate_failures?.length > 0 && (
             <Alert

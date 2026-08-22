@@ -519,6 +519,148 @@ tests/
 
 **Structure Decision**: Keep evidence-to-attribution processing in one `server/app/rca/attribution.py` module. It is a single cohesive transformation over the existing `EvidenceInput` and candidate models, avoiding unnecessary submodules. Existing strategies only orchestrate it; LLM validation remains in `llm_client.py`.
 
+## Follow-up Closure Plan
+
+This follow-up closes the remaining gaps exposed by the vulnerable-only Celery
+run. A normal real case runs the vulnerable workload only, keeps the target
+alive for the diagnosis window, and does not run fixed replay or the offline
+Oracle.
+
+### Output Domains
+
+The result is split into four domains:
+
+```text
+session_main
+  canonical candidate tree used by the primary frontend layout
+probe_history
+  attempted probes, retries, rollback and local boundary transitions
+data_quality
+  orphan, duplicate ID, missing provenance and invalid relation records
+candidate_diagnostics
+  AI output, validation failures, gate checks and initial evidence
+```
+
+Only `session_main` can create main-tree layout edges. The other three domains
+may be displayed beside the tree and retained for audit/replay, but cannot
+create or replace a tree parent.
+
+### Canonical Lineage
+
+Every refinement, line, observation, mechanism and boundary node resolves its
+parent against the current emitted candidate index before persistence.
+`coarse_insufficient_evidence` is an alias only and must be normalized to the
+actual emitted coarse ID. The resolver never uses layer order, rank,
+`primary_nodes[0]`, `next_candidates[0]`, a global most-specific node or a root
+entity to guess a parent.
+
+An explicit refinement with no resolvable parent becomes
+`missing_provenance/orphan`. Only an explicitly independent
+`alternative/rejected_alternative` may attach to the emitted coarse root.
+Line nodes must have a real emitted parent; a conceptual ID is invalid.
+
+### Main Tree and History
+
+`tree_kind=session_main` and `renderable=true` identify the only tree sent to
+the primary layout. Child probe snapshots use
+`tree_kind=child_snapshot`, `renderable=false`; probe history remains available
+for audit and replay but is never merged into the session tree.
+
+The main layout uses explicit lineage only. Coarse summary edges and ordinary
+probe/refine edges are annotations. Rollback and local boundary edges may be
+shown as non-layout edges. Orphan and duplicate-ID records are shown in a
+data-quality area rather than as tree nodes.
+
+### Line Eligibility
+
+`source_snapshot=valid` only proves that source context was read. A
+`line_anchor` is emitted only when revision, file, positive line number,
+runtime/source match, stable source hash and real parent checks all pass.
+Otherwise the system emits a source/line boundary under the origin parent and
+records the exact failed checks. A completed source snapshot is never treated
+as a line conclusion.
+
+Mechanism and object-call-chain nodes are legal only below a verified line
+anchor. They explain the line; they cannot replace the line or base conclusion.
+
+### Candidate Failure and Gate Diagnostics
+
+Every candidate-generation and eligibility attempt persists the phase, attempt,
+field path, sanitized actual value, response summary hash, accepted/rejected
+counts, initial evidence context, valid and missing evidence refs, emitted
+parent IDs, missing parent IDs and per-check gate results.
+
+The UI and audit output must answer:
+
+```text
+AI returned what
+which field failed
+what initial evidence existed
+what evidence or parent was missing
+which gate blocked promotion
+which parent conclusion was retained
+```
+
+One invalid candidate does not invalidate other valid candidates. Analyzer
+fallback is created only when every candidate and retry is unusable. Analyzer
+facts/hints never become formal AI candidates or root-cause clusters.
+
+### Live Heap Collection
+
+Memray remains the Python heap producer. The target process must not preload
+Memray; the Agent invokes a managed in-container helper to attach during the
+diagnosis window, records namespace/UID/ptrace/runtime preflight, allows one
+bounded retry, and retains official Memray artifacts and stdout/stderr.
+
+```text
+valid
+  -> allocation/retained-allocation evidence may be used
+blocked/failed/attach_failed/timeout/target_exit
+  -> boundary only, then continue runtime and source follow-up
+native_allocation_observation
+  -> optional live fallback, never Python retention or source-line root cause
+```
+
+`py-spy` remains the runtime-stack producer and RSS/smaps remains process-memory
+evidence. No GC referrer scan, objgraph, Pympler or hand-written object graph
+may masquerade as Memray heap evidence.
+
+### Fallback and Final Conclusion
+
+Deep probe failure creates a boundary child whose parent is the actual
+`origin_parent_candidate_id`. The parent claim, evidence and conclusion state
+remain unchanged. A child failure cannot contradict its parent; only direct
+parent evidence can trigger a parent-level backtrack. If the origin parent is
+missing, the result is data-quality orphan plus abstention.
+
+`formal_root_cause`, `root_cause_clusters`, `final_primary_causes`, `headline`,
+`confidence`, `causal_chain` and `abstained` must be derived from one
+eligibility result. With no eligible AI candidate:
+
+```text
+root_cause_clusters=[]
+causal_chain=[]
+formal_root_cause=null
+abstained=true
+```
+
+Localization, observations, boundaries, retained parent conclusion and failure
+diagnostics remain available.
+
+### Validation and Deployment
+
+Local checks are focused Python diagnosis/RCA/heap tests, frontend graph-model
+tests, frontend production build, `compileall`, and `git diff --check`.
+After commit/push, Control and Worker1 pull and rebuild. Worker1 then runs a
+non-preloaded managed-Memray smoke against a long-lived target.
+
+The final real case is vulnerable-only Celery for 600 seconds with a full
+Celery checkout, real Redis, real worker and native `apply_async()` producer.
+It does not run fixed replay, Oracle or `evaluate_case.py`. The report must
+include tree kind, parent validation, candidate diagnostics, line eligibility,
+heap outcome, probe history, data-quality records, retained conclusion and
+final abstention state.
+
 ## Complexity Tracking
 
 | Violation | Why Needed | Simpler Alternative Rejected Because |

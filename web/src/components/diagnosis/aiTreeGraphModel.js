@@ -20,20 +20,26 @@ export const ROLE_LABELS = {
 };
 
 export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = []) {
-  if (tree?.renderable === false || tree?.tree_kind === "child_snapshot") {
+  if (
+    tree?.renderable === false
+    || ["child_snapshot", "probe_history", "data_quality"].includes(tree?.tree_kind)
+  ) {
     return {
       nodes: [],
       edges: [],
       layoutEdges: [],
       orphanNodes: [],
+      historyEdges: [],
+      dataQuality: [],
       hasEligiblePrimary: false,
-      dataQualityErrors: ["child_snapshot_not_renderable"],
+      dataQualityErrors: [`${tree?.tree_kind || "tree"}_not_renderable`],
     };
   }
   const layers = tree.layers || [];
   const highlighted = new Set(highlightedCandidateIds);
   const graphNodes = [];
   const orphanNodes = [];
+  const dataQuality = [];
   const graphEdges = [];
   const layoutEdges = [];
   const candidateIndex = new Map();
@@ -85,13 +91,15 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
         || (candidate.relation && candidate.relation !== "root" && declaredParentIds.length === 0)
         || (missingDeclaredParent && !originParentIsValid);
       if (isOrphan) {
-        orphanNodes.push(orphanNodeFor(
+        const orphan = orphanNodeFor(
           layer,
           candidate,
           originParentId || declaredParentIds.find((parentId) => (
             !allCandidateCounts.has(parentId) || duplicateCandidateIds.has(parentId)
           )) || "missing_parent_provenance",
-        ));
+        );
+        orphanNodes.push(orphan);
+        dataQuality.push(orphan.data);
         continue;
       }
       const boundaryStatus = ["blocked", "partial", "inconclusive"].includes(candidate.status)
@@ -267,6 +275,8 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
     edges: graphEdges,
     layoutEdges,
     orphanNodes,
+    historyEdges: graphEdges.filter((edge) => edge.data?.layoutRole === "annotation"),
+    dataQuality,
     hasEligiblePrimary,
     dataQualityErrors: [
       ...duplicateCandidateIds,
@@ -337,15 +347,15 @@ function orphanNodeFor(layer, candidate, missingParentId) {
     type: "aiTreeNode",
     data: {
       nodeKind: "orphan",
-      layoutRole: "tree",
+      layoutRole: "annotation",
       layerId: layer.layer_id,
       layerDepth: layer.depth,
       generatedBy: layer.generated_by,
       layerSummary: layer.summary,
       role: "orphan",
       nodeType: "orphan",
-      title: `missing parent: ${missingParentId}`,
-      claim: `后端声明的父节点 ${missingParentId} 不存在，未把该节点挂到 index 0。`,
+      title: `缺失父节点：${missingParentId}`,
+      claim: `后端声明的父节点 ${missingParentId} 不存在，该节点没有进入主树。`,
       level: candidate.supported_level,
       confidence: 0,
       status: "missing_parent",

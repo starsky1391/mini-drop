@@ -1370,3 +1370,223 @@ active 选择不改变 conclusion_eligible
 Analyzer fallback 不进入正式 cluster
 门禁失败能关联最初证据和实际缺失项
 ```
+
+---
+
+## Task Group CE - 完整闭环：主树渲染、Line 探测、实时 Heap 与候选失败解释
+
+**Purpose**: 收口最新 Celery vulnerable-only case 暴露的剩余问题：前端把
+orphan/历史子树混入可视树、`source_snapshot` 完成后没有形成可验证 line
+锚点、heap attach 失败会中断深探链路，以及 AI 候选/门禁失败无法用最初证据
+解释。该任务组不改变普通真实 case 的运行模型，不增加 fixed、Oracle 或第二套
+runner。
+
+### CE001 统一会话输出域与兼容契约
+
+- [x] 在 `server/app/rca/models.py` 或现有诊断 schema 中补齐
+  `tree_kind`、`renderable`、`line_anchor_eligibility`、
+  `candidate_diagnostics`、`ai_gate_failures`、`heap_probe_outcome` 和
+  `data_quality` 的读写契约。
+- [x] 约束 `tree_kind` 至少支持 `session_main`、`child_snapshot`、
+  `probe_history`、`data_quality`；只有 `session_main` 默认
+  `renderable=true`。
+- [x] 保持旧会话字段兼容：旧 `analyzer_fallback` 只能迁移为观察/回退展示，
+  不得因此获得正式根因资格。
+- [x] 增加模型序列化测试，确保新增字段缺失时旧报告仍可读，新报告不会把
+  历史子树当成主树。
+
+### CE002 当前 emitted candidate 的唯一父节点解析
+
+- [x] 在 `_build_session_controlled_ai_tree()` 入口先建立 emitted candidate
+  index，并把 `coarse_insufficient_evidence` 等概念父 ID 映射到实际 emitted
+  coarse ID。
+- [x] 所有 `refinement`、`line_anchor`、`observation`、`mechanism`、
+  `boundary` 节点必须在写入 layer 前解析到当前真实父节点；解析失败标记
+  `missing_provenance/orphan`，不得补 coarse。
+- [x] `alternative/rejected_alternative` 只有在明确表示独立候选且 relation
+  合法时才允许挂真实 coarse；没有来源的备选分支保持 orphan。
+- [x] 删除或封锁任何按 `primary_nodes[0]`、rank、layer 顺序、全局最具体候选
+  或 root entity 猜父的路径。
+- [x] 对 line 节点增加硬断言：其 parent 必须存在于当前树，且不能是概念 ID。
+- [x] 增加回归：line 挂真实 emitted coarse、概念 coarse 映射、缺失父节点
+  orphan、不同 branch 不共享父节点。
+
+### CE003 Fallback 与局部边界回退
+
+- [x] 深探 `blocked/failed/partial/inconclusive/target_exit` 统一生成 boundary
+  子节点，`parent_candidate_ids` 和 `origin_parent_candidate_id` 必须指向
+  实际来源父节点。
+- [x] 父节点的 claim、mechanism、evidence refs 和结论状态在子探针失败时保持
+  不变；boundary 只能说明停止原因，不能生成新的 claim。
+- [x] 父节点本身被直接反驳时，才沿其 `origin_parent_candidate_id` 回退；
+  子节点失败不得反证父节点。
+- [x] 来源父节点缺失时只输出 data-quality orphan 和 `abstained=true`，不能
+  创建新的“当前证据不足”根因节点。
+- [x] 增加 `retained_conclusion`、`qualification_boundary`、
+  `localization_chain` 和 formal conclusion 一致性测试。
+
+### CE004 AI 候选生成与门禁失败的证据化输出
+
+- [x] 为每次首轮/重试/调查轮保存阶段、attempt、field path、脱敏
+  `actual_value`、响应摘要 hash、候选数、接受/拒绝数、失败 code 和重试状态。
+- [x] 将当时的 `initial_evidence_context`、有效 evidence refs、证据族、证据
+  状态、缺失 evidence refs 和 emitted parent IDs 固定写入诊断记录。
+- [x] 为每个 `ai_gate_failure` 输出结构化 `gate_checks`，至少区分：
+  `source_is_ai`、`candidate_id`、`evidence_refs`、`target/window`、
+  `supported_level`、`mechanism`、`causal_status`、`decision`、
+  `required_probe`、`parent_exists`、`origin_parent`、`causal_chain`。
+- [x] 明确“模型返回了什么”和“为什么不能进入正式结论”两层内容；不能只
+  输出一个总的 `no_usable_ai_candidate`。
+- [x] 单个候选失败时保留其他合法候选；只有所有候选和重试都不可用时才写
+  `analyzer_fallback`。
+- [x] 增加 API/audit 序列化测试，确保不泄漏 issue、PR、fix revision、Oracle
+  或密钥。
+
+### CE005 Probe family 映射与 Line 探测闭环
+
+- [x] 建立 AI evidence family 到注册 probe ID 的单一映射，至少覆盖
+  `cpu_profile -> process_cpu_profile`、`python_runtime_profile ->
+  process_python_runtime_profile`、`python_heap_profile ->
+  process_python_heap_profile` 和 `source_snapshot ->
+  process_source_snapshot`。
+- [x] 对未知 family 直接生成 `unknown_probe_family` 诊断，不创建一个不会执行
+  的任务；执行结果必须回绑定 `candidate_id` 和
+  `origin_parent_candidate_id`。
+- [x] 定义 `line_anchor_eligibility` 检查：revision、file、positive line、
+  runtime/source 匹配、source hash、真实父节点、同窗关系。
+- [x] `source_snapshot=valid` 仅验证源码上下文；只有通过
+  `line_anchor_eligibility` 才创建 `line_anchor` 节点。
+- [x] 未通过时生成挂在来源父节点下的 source/line boundary，并输出具体失败
+  检查；不把 `source_snapshot` 成功伪装成 line 层完成。
+- [x] 只有 `line_anchor` 通过后才允许 source mechanism、对象调用链或机制解释
+  继续下钻；机制节点不允许挂在 service/function 旁支。
+- [x] 增加 Celery frame 优先级测试，确保异常处理真实源码帧优先于通用 exception
+  helper，并验证 line 节点父 ID 是当前 emitted 节点。
+
+### CE006 实时 Heap 采集器与结构化降级
+
+- [x] 固化 Memray live attach 为 Python heap 主路径；目标进程不预加载
+  Memray，Agent 通过容器内 managed helper 在诊断窗口内触发 attach。
+- [x] 完整记录 attach preflight：PID/mount namespace、UID、ptrace 权限、
+  helper 可用性、目标稳定性、runtime 版本、输出路径和 blocked reason。
+- [x] attach 失败允许一次有界 retry；保存 stdout/stderr、exit code、failure
+  type、retry outcome 和产物缺失原因，禁止只返回一个布尔失败。
+- [x] 成功时保留官方 `memray.bin`、stats/leaks JSON/CSV 和结构化热点；
+  失败时继续 `python_runtime_profile`、RSS/smaps 和 `source_snapshot`，不让
+  heap 失败终止诊断会话。
+- [x] native live helper 只能输出 `native_allocation_observation` partial；
+  不得生成 Python retention、对象引用链或源码 line 根因。
+- [x] 不引入 `gc.get_referrers`、objgraph、Pympler 或自研对象图作为 Memray
+  替代；py-spy 负责运行时栈，smaps/RSS 负责进程内存，工具语义保持分离。
+- [x] 增加 collector 测试：未预加载 attach 成功、namespace blocked、permission
+  failure、retry、target exit、native fallback、产物不完整和继续 follow-up。
+
+### CE007 主树、历史子树与数据质量前端分离
+
+- [x] `buildControlledAITreeGraph()` 只接受 `session_main/renderable=true`
+  作为主图输入；`child_snapshot` 和 `probe_history` 不进入 ELK 主布局。
+- [x] 主树只使用 explicit lineage edge；coarse summary/probe edge 降级为注释，
+  rollback/boundary 作为非布局边；不再用任何 index 0 或 layer 顺序补边。
+- [x] `orphan`、重复 candidate ID、missing parent 和 invalid relation 独立进入
+  `dataQuality` 面板，不作为主树节点，也不伪装成真实层级。
+- [x] Observation、mechanism、STOP、boundary 的样式和语义分开；blocked/partial/
+  inconclusive 不得显示成灰色 rejected。
+- [x] 历史子树提供审计/回放入口，明确展示“尝试过什么、回退到谁、为什么停止”，
+  但不能改变当前 session main tree。
+- [x] 增加前端测试：orphan 不进主布局、历史子树不污染当前图、显式 line parent、
+  mechanism 只能在线下、多个 probe 不混成同一层、STOP 不是全局终点。
+
+### CE008 候选失败与门禁失败前端诊断视图
+
+- [x] 在诊断详情页增加候选生成诊断区，按 attempt 展示模型阶段、候选输出摘要、
+  实际失败字段、初始证据、缺失证据、父节点解析和重试结果。
+- [x] 增加门禁失败区，展示每个候选的逐项 gate check、失败原因和“保留到哪个
+  父结论/边界”的结果。
+- [x] 增加 line eligibility 和 heap outcome 摘要，明确区分“采集成功”“证据有效”
+  和“允许升级到 line/root cause”。
+- [x] 没有 formal root cause 时，页面必须显示明确 abstention/retained conclusion，
+  不使用一个新造的模糊 fallback headline。
+- [x] 增加前端 API fixture 测试，确保失败诊断可读且不把观察/边界显示成正式主因。
+
+### CE009 审计与 API 回流闭环
+
+- [x] 在 `audit_bundle.py` 记录 Analyzer facts、AI attempts、candidate diagnostics、
+  gate failures、probe outcomes、line eligibility、tree kind、orphan/data quality、
+  retained conclusion 和 final eligibility。
+- [x] 每个深探结果绑定 `diagnosis_id`、`parent_task_id`、`candidate_id`、
+  `origin_parent_candidate_id`、evidence family、probe ID 和 fingerprint。
+- [x] 确保旧报告读取兼容，新报告能区分 Analyzer 观察、AI 候选、门禁通过、
+  fallback 保留和最终输出；不让前端自行推导结论资格。
+- [x] 增加 audit/API round-trip 测试，验证 AI 失败时 formal clusters/causal chain
+  为空但 localization/diagnostics 可用。
+
+### CE010 本地回归与离线真实数据回放
+
+- [x] 新增/更新后端测试：`test_diagnosis_orchestrator.py`、
+  `test_session_conclusion.py`、`test_rca.py`、`test_llm_client.py`、
+  `test_python_heap_collector.py`。
+- [x] 新增/更新前端 `aiTreeGraphModel.test.js` 和诊断详情 fixture 测试。
+- [x] 使用最新 Celery `run.json` 只读回放，输出：
+  `initial_evidence_context`、候选失败/成功、gate failures、line eligibility、
+  heap outcome、orphan/data-quality 和 retained conclusion。
+- [x] 离线回放不读取 issue、PR、fix commit、Oracle 或测试答案；回放只验证当前
+  证据能否解释为什么通过/不通过门禁。
+- [x] 通过 `compileall`、`git diff --check`、focused pytest 和前端 production build。
+
+### CE011 提交、部署与 Worker1 Heap Smoke
+
+- [ ] 代码和测试通过后提交并推送 mini-drop 仓库，不提交本地报告、密钥、临时
+  回放文件或 VM 私有配置。
+- [ ] Control 执行 `git pull` 并 rebuild mini-drop；Worker1 执行 `git pull` 并
+  rebuild Agent/采集器相关容器；保留并核对 worker 原有未提交 helper 改动。
+- [ ] Worker1 使用未预加载 Memray 的受控长寿命 Python 目标执行 heap smoke，
+  保存 preflight、helper、产物和结构化 evidence；确认目标运行期间完成 attach。
+- [ ] Heap smoke 失败时只记录具体 capability/namespace/permission 原因，不能
+  把失败写成 heap retention 成功。
+
+### CE012 Vulnerable-only Celery 600s 真实验收
+
+- [ ] VM 内使用完整 Celery checkout、真实 Redis、Celery worker 和原生
+  `apply_async()` producer；runner 只运行 vulnerable workload，持续 600 秒覆盖
+  诊断窗口。
+- [ ] 不运行 fixed replay、Oracle 或 `evaluate_case.py`；普通跑测不重复设置这三
+  个阶段。
+- [ ] 验收主树：`session_main` 可渲染；line 若通过则挂到真实 emitted parent；
+  observation/机制/STOP 只挂到各自来源；orphan 和历史子树不进入主布局。
+- [ ] 验收候选诊断：能看到 AI 实际返回/失败字段、初始证据、合法候选数、门禁失败
+  清单和 fallback 保留父节点；不能把 Analyzer fallback 伪装成 AI root cause。
+- [ ] 验收 heap：attach 成功时有真实 Memray 产物；失败时有结构化边界且
+  runtime/source follow-up 仍完成。
+- [ ] 无 eligible AI candidate 时必须为
+  `root_cause_clusters=[]`、`causal_chain=[]`、`formal_root_cause=null`、
+  `abstained=true`；保留结论只能是实际来源父节点的原结论。
+- [ ] 报告保存 runner manifest、producer barrier、diagnosis terminal state、
+  probe outcomes、AI review、tree/data-quality 和最终结论字段，作为本次 vulnerable-only
+  跑测记录。
+
+**Execution order**:
+
+```text
+CE001 -> CE002 -> CE003
+CE004 -> CE005
+CE006
+CE007 -> CE008 -> CE009
+CE010 -> CE011 -> CE012
+```
+
+CE004、CE006 可在 CE002 的候选契约稳定后并行；CE007/CE008 依赖后端输出字段；
+CE011 必须在本地回归通过后执行；CE012 必须在部署和 Worker1 heap smoke 通过后执行。
+
+**Completion gate**:
+
+```text
+主树只包含 session_main canonical lineage
+历史子树、probe edge、orphan 不参与主布局
+line 只有通过真实 file:line eligibility 才生成
+机制链只能挂在 verified line 下
+深探失败只生成 boundary 并继承来源父结论
+AI 失败/门禁失败能用初始证据解释
+heap live attach 不要求预加载，失败结构化降级并继续诊断
+普通真实 case 只跑 vulnerable-only 600s
+未形成正式根因时 abstention 字段一致
+```

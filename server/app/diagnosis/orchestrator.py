@@ -1698,11 +1698,15 @@ class DiagnosisOrchestrator:
         self._append_conclusion(diagnosis_id, conclusion)
         self._update_hypotheses(diagnosis_id, hypothesis_candidates)
         if followup_requests and tasks:
+            probe_inputs = _merge_probe_input_maps(
+                (candidate_review or {}).get("probe_inputs") if isinstance(candidate_review, dict) else {},
+                (investigation_review or {}).get("probe_inputs") if isinstance(investigation_review, dict) else {},
+            )
             self._plan_followup_requests(
                 diagnosis_id,
                 followup_requests,
                 tasks[-1],
-                probe_inputs=(investigation_review or {}).get("probe_inputs") or {},
+                probe_inputs=probe_inputs,
             )
         return True
 
@@ -1861,7 +1865,18 @@ class DiagnosisOrchestrator:
                 evidence_gap,
                 guarded_probe_input,
             )
-            if evidence_gap in {"source_mechanism_query", "python_heap_reference"} and (
+            provenance_required = bool(guarded_probe_input) or evidence_gap in {
+                "source_mechanism_query",
+                "python_heap_reference",
+            }
+            if provenance_required and evidence_gap in {
+                "cpu_profile",
+                "python_runtime_profile",
+                "python_heap_profile",
+                "source_snapshot",
+                "source_mechanism_query",
+                "python_heap_reference",
+            } and (
                 not deep_candidate_id or not origin_parent_candidate_id
             ):
                 self.store.record_event(
@@ -5002,6 +5017,22 @@ def _build_session_controlled_ai_tree(
         candidate_relation = str(item.get("relation") or "").strip()
         if not candidate_relation:
             candidate_relation = "refinement" if candidate_parent_ids else "alternative"
+        # Analyzer base candidates are independent directions from the
+        # current assessment. They have a real coarse parent even when the
+        # Analyzer did not carry an explicit lineage field. Other sources
+        # (alternative hypotheses, mechanisms, boundaries) must retain an
+        # orphan instead of receiving this fallback.
+        if (
+            not candidate_parent_ids
+            and candidate_relation == "alternative"
+            and candidate_id not in {
+                "python_runtime_stack_hotspot",
+                "python_userland_hotspot",
+                "off_cpu_wait_hotspot",
+            }
+        ):
+            candidate_parent_ids = [coarse_id]
+            candidate_origin_parent = coarse_id
         node_evidence_refs = _unique_strings([
             *item.get("evidence_refs", []),
             *(evidence_refs if candidate_eligible and int(item.get("rank") or 999) == 1 else []),
@@ -5199,6 +5230,11 @@ def _build_session_controlled_ai_tree(
         and primary_anchor.get("source_revision")
         and primary_anchor.get("file")
         and int(primary_anchor.get("line") or 0) > 0
+    )
+    line_anchor_eligibility = _line_anchor_eligibility_summary(
+        primary_anchor,
+        has_verified_line_anchor=has_verified_line_anchor,
+        source_snapshot_hashes=source_snapshot_hashes or [],
     )
 
     # A verified source line is itself a base localization node. Mechanism
@@ -5842,6 +5878,17 @@ def _build_session_controlled_ai_tree(
             coarse_id: coarse_id,
         },
         source_context_hash=source_context_hash,
+        line_anchor_eligibility=line_anchor_eligibility,
+        heap_probe_outcome=_heap_probe_outcome(probes),
+        data_quality={
+            "orphan_candidate_ids": [
+                node.candidate_id
+                for layer in layers
+                for node in _layer_nodes_for_validation(layer)
+                if node.node_type == "orphan"
+            ],
+            "child_snapshot_count": len(child_trees),
+        },
         stop_reason=stop_reason,
         stop_source_candidate_ids=[],
         budget=AITreeBudgetSnapshot(
@@ -6317,6 +6364,23 @@ def _followup_provenance(evidence_gap: str, probe_input: dict[str, Any]) -> tupl
         or ""
     ).strip()
     return candidate_id, origin_parent
+
+
+def _merge_probe_input_maps(*maps: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Merge explicit probe provenance without selecting a parent by position."""
+    merged: dict[str, dict[str, Any]] = {}
+    for source in maps:
+        if not isinstance(source, dict):
+            continue
+        for family, value in source.items():
+            if not isinstance(value, dict):
+                continue
+            candidate_id, origin = _followup_provenance(str(family), value)
+            if not candidate_id or not origin:
+                continue
+            if str(family) not in merged:
+                merged[str(family)] = dict(value)
+    return merged
 
 
 def _deep_probe_provenance(probes: list[dict[str, Any]]) -> dict[str, str]:
@@ -6813,6 +6877,91 @@ def _blocked_upgrade_node(
             what_would_change_my_mind="提供源码上下文、符号映射、锁持有者线程或行级采样证据后，才允许从函数/调用路径升级到代码行。",
         ),
     )
+
+
+def _line_anchor_eligibility_summary(
+    anchor: dict[str, Any],
+    *,
+    has_verified_line_anchor: bool,
+    source_snapshot_hashes: list[str],
+) -> dict[str, Any]:
+    anchor = anchor if isinstance(anchor, dict) else {}
+    file_name = str(anchor.get("file") or "").replace("\\", "/")
+    line_number = int(_num(anchor.get("line")))
+    runtime_candidates = [
+        item for item in anchor.get("runtime_line_candidates", [])
+        if isinstance(item, dict) and item.get("file") and int(_num(item.get("line"))) > 0
+    ]
+    checks = {
+        "source_revision": bool(anchor.get("source_revision")),
+        "source_context_hash": bool(anchor.get("source_context_hash") or source_snapshot_hashes),
+        "file": bool(file_name),
+        "positive_line": line_number > 0,
+        "runtime_line_candidate": bool(runtime_candidates),
+        "runtime_source_match": has_verified_line_anchor,
+    }
+    if has_verified_line_anchor:
+        return {
+            "status": "verified",
+            "checks": checks,
+            "file": file_name,
+            "line": line_number,
+            "reason": "运行时行候选、源码 revision、文件和正行号已形成可验证锚点。",
+        }
+    if not runtime_candidates:
+        reason = "没有运行时 file:line 候选，source_snapshot 不能单独制造 line 锚点。"
+    elif not source_snapshot_hashes and not anchor.get("source_context_hash"):
+        reason = "没有有效 source_snapshot revision/hash，不能验证运行时行对应的真实源码。"
+    elif not file_name or line_number <= 0:
+        reason = "当前运行时定位只有函数/调用路径，缺少真实 file:line。"
+    else:
+        reason = (
+            "运行时 file:line 与 source_snapshot 的源码片段未匹配；"
+            "source_snapshot 只证明源码存在，不能替运行时证据选择主因行。"
+        )
+    return {
+        "status": "blocked",
+        "checks": checks,
+        "file": file_name,
+        "line": line_number,
+        "runtime_candidates": runtime_candidates[:12],
+        "reason": reason,
+    }
+
+
+def _heap_probe_outcome(probes: list[dict[str, Any]]) -> dict[str, Any]:
+    relevant = [
+        probe for probe in probes
+        if str((probe.get("parameters") or {}).get("evidence_gap") or "") == "python_heap_profile"
+    ]
+    if not relevant:
+        return {"status": "not_started", "attempts": 0}
+    probe = relevant[-1]
+    parameters = probe.get("parameters") if isinstance(probe.get("parameters"), dict) else {}
+    outcome = probe.get("outcome") if isinstance(probe.get("outcome"), dict) else {}
+    return {
+        "status": str(probe.get("status") or "unknown").lower(),
+        "evidence_status": str(probe.get("evidence_status") or outcome.get("evidence_status") or "unknown"),
+        "attempts": len(relevant),
+        "candidate_id": str(parameters.get("candidate_id") or ""),
+        "origin_parent_candidate_id": str(parameters.get("origin_parent_candidate_id") or ""),
+        "failure_type": str(
+            probe.get("failure_type")
+            or outcome.get("failure_type")
+            or (outcome.get("evidence_validity") or {}).get("failure_type")
+            or "",
+        ),
+        "reason": str(
+            probe.get("reason")
+            or outcome.get("reason")
+            or (outcome.get("evidence_validity") or {}).get("detail")
+            or "",
+        )[:500],
+        "retry_attempted": bool(
+            outcome.get("retry_attempted")
+            or (outcome.get("evidence_validity") or {}).get("retry_attempted")
+        ),
+    }
 
 
 def _best_supported_level(*levels: Any) -> str:

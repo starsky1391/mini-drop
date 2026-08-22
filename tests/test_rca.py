@@ -156,6 +156,10 @@ def test_session_candidate_review_keeps_valid_candidates_when_one_candidate_is_i
     assert result["validation_diagnostics"][0]["failure_code"] == "invalid_decision"
     assert result["candidate_generation_attempts"][0]["accepted_candidate_count"] == 1
     assert result["candidate_generation_attempts"][0]["rejected_candidate_count"] == 1
+    assert result["probe_inputs"]["python_heap_profile"] == {
+        "candidate_id": "ai_candidate_valid",
+        "origin_parent_candidate_id": parent_id,
+    }
 
 
 def test_session_candidate_review_limits_active_investigation_to_three_deduplicated_candidates():

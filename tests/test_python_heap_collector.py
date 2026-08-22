@@ -159,6 +159,42 @@ def test_memray_helper_can_attach_without_preloading_target(tmp_path, monkeypatc
     assert any(call.args[0][0] == str(helper) for call in run.call_args_list)
 
 
+def test_memray_helper_can_run_when_cli_is_not_installed(tmp_path, monkeypatch):
+    collector = PythonHeapCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    helper = tmp_path / "memray-helper"
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    helper.chmod(0o755)
+    monkeypatch.setenv("MINI_DROP_MEMRAY_HELPER", str(helper))
+    task = CollectorTask(
+        id="heap-helper-without-cli",
+        collector_type="python_heap_profile",
+        target_pid=1234,
+        sample_rate=1,
+        duration_sec=5,
+        options={},
+    )
+    capture = tmp_path / "out" / task.id / "memray.bin"
+
+    def fake_run(command, **_kwargs):
+        if command[0] == str(helper):
+            capture.parent.mkdir(parents=True, exist_ok=True)
+            capture.write_bytes(b"memray")
+        elif "stats" in command:
+            stats_path = command[command.index("-o") + 1]
+            with open(stats_path, "w", encoding="utf-8") as handle:
+                json.dump({"top_allocations_by_size": [{"location": "worker:worker.py:10", "size": 1, "count": 1}]}, handle)
+        return mock.MagicMock(returncode=0, stdout=b"", stderr=b"")
+
+    with mock.patch("shutil.which", return_value=None), mock.patch.object(
+        collector, "_pid_exists", return_value=True
+    ), mock.patch("subprocess.run", side_effect=fake_run) as run:
+        result = collector.collect(task)
+
+    assert result.ok is True
+    assert any(call.args[0][0] == str(helper) for call in run.call_args_list)
+
+
 def test_native_live_fallback_is_partial_and_never_emits_python_retention(tmp_path, monkeypatch):
     collector = PythonHeapCollector()
     collector.OUTPUT_BASE = str(tmp_path / "out")

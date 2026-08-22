@@ -240,6 +240,8 @@ test("missing parent renders an orphan marker instead of attaching to index zero
 
   assert.ok(orphan);
   assert.equal(orphan.data.role, "orphan");
+  assert.equal(graph.dataQuality.length, 1);
+  assert.equal(graph.historyEdges.length, 0);
   assert.equal(graph.nodes.some((node) => node.data?.candidate?.candidate_id === "child-with-missing-parent"), false);
   assert.equal(guessedEdge, undefined);
 });
@@ -368,6 +370,8 @@ test("child snapshot is not rendered as the session main tree", () => {
 
   assert.deepEqual(graph.nodes, []);
   assert.deepEqual(graph.edges, []);
+  assert.deepEqual(graph.historyEdges, []);
+  assert.deepEqual(graph.dataQuality, []);
   assert.deepEqual(graph.dataQualityErrors, ["child_snapshot_not_renderable"]);
 });
 

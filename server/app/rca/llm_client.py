@@ -242,6 +242,33 @@ def _active_candidate_ids(proposals: list[dict], max_active: int = 3) -> tuple[l
     return active, deferred
 
 
+def _candidate_probe_inputs(
+    proposals: list[dict],
+    active_candidate_ids: list[str],
+) -> dict[str, dict[str, str]]:
+    """Bind each selected evidence family to the candidate that requested it."""
+    active = {str(value) for value in active_candidate_ids if str(value)}
+    by_family: dict[str, dict[str, str]] = {}
+    for item in proposals:
+        candidate_id = str(item.get("candidate_id") or "").strip()
+        if not candidate_id or candidate_id not in active:
+            continue
+        origin = str(item.get("origin_parent_candidate_id") or "").strip()
+        if not origin:
+            parents = [str(value) for value in item.get("parent_candidate_ids", []) if str(value)]
+            origin = _single_explicit_parent(parents)
+        if not origin:
+            continue
+        for family in item.get("probe_requests", []):
+            family = str(family or "").strip()
+            if family and family not in by_family:
+                by_family[family] = {
+                    "candidate_id": candidate_id,
+                    "origin_parent_candidate_id": origin,
+                }
+    return by_family
+
+
 def _normalize_initial_candidate_decision(value: Any) -> str:
     """Normalize common model vocabulary without granting conclusion eligibility."""
     decision = str(value or "").strip().lower()
@@ -312,11 +339,19 @@ def generate_session_candidate_review(
         node.candidate_id
         for layer in session_tree.layers
         for node in [*layer.primary_causes, *layer.secondary_causes, *layer.rejected_causes, *layer.unknown_causes]
+        if node.node_type not in {
+            "orphan",
+            "observation",
+            "mechanism_explanation",
+            "stop_boundary",
+            "evidence_gap",
+        }
     } if session_tree else set()
     payload = {
         "diagnosis_id": diagnosis_id,
         "fact_context": fact_context,
         "current_ai_tree": session_tree.model_dump(mode="json") if session_tree else None,
+        "allowed_parent_candidate_ids": sorted(known_candidate_ids),
         "valid_evidence_refs": sorted(valid_refs),
         "probe_manifest": probe_manifest,
     }
@@ -329,7 +364,8 @@ def generate_session_candidate_review(
                 "候选字段为 candidate_id、claim、mechanism、target、supported_level、decision、causal_status、"
                 "evidence_refs、missing_evidence、parent_candidate_ids、origin_parent_candidate_id、probe_requests、role。"
                 "candidate_id 必须以 ai_candidate_ 开头；evidence_refs 只能使用 valid_evidence_refs；"
-                "parent_candidate_ids 只能逐字选择 current_ai_tree 中已有 candidate_id；"
+                "parent_candidate_ids 只能逐字选择 allowed_parent_candidate_ids 中的 canonical 基础节点；"
+                "orphan、observation、mechanism、boundary 节点不能作为首轮候选父节点；"
                 "origin_parent_candidate_id 必须是其中唯一来源父节点（只有一个父节点时可直接使用该节点）；"
                 "probe_requests 只能使用 probe_manifest 中注册的 evidence_family；role 只能是 primary、secondary、unknown 或 rejected。"
             ),
@@ -509,6 +545,7 @@ def generate_session_candidate_review(
                     for value in item["probe_requests"]
                 ),
             ]))
+            probe_inputs = _candidate_probe_inputs(normalized, active_ids)
             candidate_generation_attempts.append(_candidate_generation_attempt_record(
                 attempt=attempt,
                 raw=raw,
@@ -524,6 +561,7 @@ def generate_session_candidate_review(
                 "ai_review_error": "",
                 "candidate_proposals": normalized,
                 "selected_evidence_families": selected,
+                "probe_inputs": probe_inputs,
                 "active_candidate_ids": active_ids,
                 "deferred_candidate_ids": deferred_ids,
                 "validation_diagnostics": validation_diagnostics,
