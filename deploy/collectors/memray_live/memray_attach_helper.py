@@ -100,7 +100,7 @@ def _memray_distributions() -> list[str]:
         for requirement in requirements:
             if ";" in requirement:
                 expression = requirement.split(";", 1)[1].strip()
-                if "python_version" in expression:
+                if "extra" in expression:
                     continue
             dependency = _requirement_name(requirement)
             if dependency:
