@@ -1707,10 +1707,21 @@ class DiagnosisOrchestrator:
             if isinstance(item, dict)
             and str(item.get("stage") or "").startswith(("candidate_generation", "candidate_tree_ingestion"))
         ]
+        conclusion_summary = explanation["headline"]
+        retained_claim = str(
+            (explanation.get("retained_conclusion") or {}).get("claim") or ""
+        ).strip()
+        observation_claim = str(
+            cluster_assessment.get("diagnostic_claim") or retained_claim
+        ).strip()
+        if explanation.get("abstained") and observation_claim:
+            conclusion_summary = (
+                f"{conclusion_summary} 原始分析摘要（未作为正式根因）：{observation_claim}"
+            )
         conclusion = {
             "version": len((self.store.get_session(diagnosis_id) or {}).get("conclusion_versions", [])) + 1,
             "generated_at": utcnow().isoformat(),
-            "summary": explanation["headline"],
+            "summary": conclusion_summary,
             "classification": explanation["classification"],
             "headline": explanation["headline"],
             "why_it_happened": explanation["why_it_happened"],

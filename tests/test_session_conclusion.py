@@ -537,7 +537,8 @@ def test_ineligible_memory_fallback_is_possible_cause_not_confirmed_root():
 
     assert explanation["root_cause_clusters"][0].qualification == "possible_root_cause"
     assert explanation["root_cause_clusters"][0].role == "independent"
-    assert explanation["headline"] == assessment["diagnostic_claim"]
+    assert "未形成正式根因" in explanation["headline"]
+    assert explanation["headline"] != assessment["diagnostic_claim"]
     assert explanation["retained_conclusion"]["claim"] == assessment["diagnostic_claim"]
     assert explanation["retained_conclusion"]["qualification"] == "possible_root_cause"
     assert explanation["formal_root_cause"] is None
@@ -604,7 +605,8 @@ def test_fallback_retains_emitted_tree_candidate_instead_of_diagnostic_claim():
 
     assert explanation["retained_conclusion"]["candidate_id"] == "fallback-memory"
     assert explanation["retained_conclusion"]["claim"] == tree["layers"][0]["unknown_causes"][0]["claim"]
-    assert explanation["headline"] == tree["layers"][0]["unknown_causes"][0]["claim"]
+    assert "未形成正式根因" in explanation["headline"]
+    assert explanation["headline"] != tree["layers"][0]["unknown_causes"][0]["claim"]
     assert explanation["formal_root_cause"] is None
     assert explanation["abstained"] is True
 

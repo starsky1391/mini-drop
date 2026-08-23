@@ -903,18 +903,27 @@ def build_fallback_explanation(
     )
     if primary:
         retained = retained or build_retained_conclusion(clusters, assessment, session_tree)
-    # For observation-only assessments, the latest structured anchor is the
-    # useful retained explanation. A stale tree candidate may still contain
-    # the earlier generic process-level wording, so do not let it overwrite
-    # the more specific assessment claim.
     assessment_claim = str(assessment.get("diagnostic_claim") or "").strip()
-    if not primary and assessment.get("claim_type") == "observation_only" and assessment_claim:
-        headline = assessment_claim
+    if primary:
+        headline = primary.claim
     else:
-        headline = str(
-            (retained or {}).get("claim")
-            or assessment_claim
-            or "当前没有可继承的证据支持结论。"
+        retained_level = str((retained or {}).get("supported_level") or "").strip()
+        level_label = {
+            "resource": "资源",
+            "host": "主机",
+            "process": "进程",
+            "thread": "线程",
+            "syscall": "系统调用",
+            "dependency": "依赖",
+            "service": "服务",
+            "endpoint": "端点",
+            "function": "函数",
+            "call_path": "调用路径",
+            "line": "源码行",
+        }.get(retained_level, "观察/定位")
+        headline = (
+            f"未形成正式根因；当前证据只支持停在{level_label}级观察/定位层，"
+            "尚未闭合可验证的因果链。"
         )
     if primary:
         why = primary.why_it_happened
