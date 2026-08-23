@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import pickle
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -49,7 +50,7 @@ def main() -> None:
         cache_name=str(CACHE_ROOT / "case-cache"),
         backend="filesystem",
         expire_after=3600,
-        serializer="pickle",
+        serializer=pickle,
     )
     deadline = time.monotonic() + max(30, int(os.environ.get("CASE_DURATION_SEC", "180")))
     count = 0
