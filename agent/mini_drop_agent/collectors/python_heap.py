@@ -101,31 +101,53 @@ class PythonHeapCollector:
                             helper_failure_type,
                         )
                         retry_was_attempted = not bool(retry_skipped_reason)
+                        retry_command = (
+                            managed_helper
+                            if managed_helper
+                            else (
+                                self._attach_command(
+                                    memray,
+                                    retry_capture,
+                                    task,
+                                    min(task.duration_sec, 5),
+                                )
+                                if memray
+                                else []
+                            )
+                        )
                         retry = (
                             subprocess.CompletedProcess(
-                                managed_helper,
+                                retry_command,
                                 125,
                                 stdout=b"",
                                 stderr=retry_skipped_reason.encode(),
                             )
                             if retry_skipped_reason
-                            else self._run(
-                                self._attach_command(memray, retry_capture, task, min(task.duration_sec, 5)),
-                                max(30, min(task.duration_sec, 5) + 20),
-                                process_group=True,
+                            else (
+                                self._run(
+                                    retry_command,
+                                    max(30, min(task.duration_sec, 5) + 20),
+                                    process_group=True,
+                                )
+                                if retry_command
+                                else subprocess.CompletedProcess(
+                                    [],
+                                    127,
+                                    stdout=b"",
+                                    stderr=b"memray command not found",
+                                )
                             )
-                        ) if memray else subprocess.CompletedProcess(
-                            [],
-                            127,
-                            stdout=b"",
-                            stderr=b"memray command not found",
                         )
                         if retry.returncode == 0 and retry_capture.is_file() and retry_capture.stat().st_size > 0:
                             capture = retry_capture
                             result = retry
                             attach_preflight = {
                                 **preflight,
-                                "attach_strategy": "managed_helper_then_memray_retry",
+                                "attach_strategy": (
+                                    "managed_helper_retry"
+                                    if managed_helper
+                                    else "managed_helper_then_memray_retry"
+                                ),
                                 "helper_trace": helper_trace,
                                 "retry_trace": self._helper_trace(retry),
                             }
@@ -156,7 +178,11 @@ class PythonHeapCollector:
                                 helper_timeout=helper_failure_type == "timeout",
                                 preflight={
                                     **preflight,
-                                    "attach_strategy": "managed_helper_then_memray_retry",
+                                    "attach_strategy": (
+                                        "managed_helper_retry"
+                                        if managed_helper
+                                        else "managed_helper_then_memray_retry"
+                                    ),
                                     "helper_trace": helper_trace,
                                     "retry_trace": self._helper_trace(retry),
                                 },

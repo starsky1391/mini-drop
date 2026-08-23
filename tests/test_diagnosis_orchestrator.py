@@ -645,6 +645,8 @@ def test_verified_line_rewrites_emitted_parent_and_attaches_runtime_observations
                 "rank": 3,
                 "evidence_refs": ["ev-stack"],
                 "relation": "alternative",
+                "parent_candidate_ids": ["line-existing"],
+                "origin_parent_candidate_id": "line-existing",
             },
             {
                 "candidate_id": "python_userland_hotspot",
@@ -655,6 +657,8 @@ def test_verified_line_rewrites_emitted_parent_and_attaches_runtime_observations
                 "rank": 4,
                 "evidence_refs": ["ev-stack"],
                 "relation": "alternative",
+                "parent_candidate_ids": ["line-existing"],
+                "origin_parent_candidate_id": "line-existing",
             },
         ],
         followup_requests=[],
@@ -683,6 +687,123 @@ def test_verified_line_rewrites_emitted_parent_and_attaches_runtime_observations
     )
     assert nodes["python_runtime_stack_hotspot"].parent_candidate_ids == ["line-existing"]
     assert nodes["python_userland_hotspot"].parent_candidate_ids == ["line-existing"]
+
+
+def test_unbound_runtime_observations_use_only_the_unique_verified_line_cohort():
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag_line_observation_cohort",
+        cluster_assessment={
+            "classification": "python_memory_retention",
+            "summary": "worker 存在持续内存压力。",
+            "supported_level": "line",
+            "max_supported_level": "line",
+            "confidence": 0.42,
+            "evidence_refs": ["ev-stack"],
+            "conclusion_eligible": False,
+            "primary_anchor": {
+                "source_context_hash": "sha256:source",
+                "source_revision": "rev-1",
+                "file": "/opt/celery-src/celery/app/trace.py",
+                "line": 651,
+                "supported_level": "line",
+                "evidence_refs": ["ev-stack"],
+                "runtime_line_candidates": [{
+                    "file": "/opt/celery-src/celery/app/trace.py",
+                    "line": 651,
+                    "evidence_ref": "ev-stack",
+                }],
+            },
+        },
+        candidates=[
+            {
+                "candidate_id": "python_runtime_stack_hotspot",
+                "description": "运行时栈热点观察。",
+                "root_entity": "celery-worker",
+                "max_supported_level": "process",
+                "rank": 1,
+                "evidence_refs": ["ev-stack"],
+                "relation": "alternative",
+            },
+            {
+                "candidate_id": "python_userland_hotspot",
+                "description": "用户态热点观察。",
+                "root_entity": "celery-worker",
+                "max_supported_level": "process",
+                "rank": 2,
+                "evidence_refs": ["ev-stack"],
+                "relation": "alternative",
+            },
+        ],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+    )
+
+    assert tree is not None
+    line_node = next(
+        node
+        for layer in tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+        if node.node_type == "line_anchor"
+    )
+    observations = {
+        node.candidate_id: node
+        for layer in tree.layers
+        for node in layer.unknown_causes
+        if node.node_type == "observation"
+    }
+    assert observations["python_runtime_stack_hotspot"].origin_parent_candidate_id == line_node.candidate_id
+    assert observations["python_userland_hotspot"].parent_candidate_ids == [line_node.candidate_id]
+
+
+def test_unbound_runtime_observation_without_verified_cohort_remains_orphan():
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag_line_observation_orphan",
+        cluster_assessment={
+            "classification": "python_memory_retention",
+            "summary": "worker 存在持续内存压力。",
+            "supported_level": "line",
+            "max_supported_level": "line",
+            "confidence": 0.42,
+            "evidence_refs": ["ev-source"],
+            "conclusion_eligible": False,
+            "primary_anchor": {
+                "source_context_hash": "sha256:source",
+                "source_revision": "rev-1",
+                "file": "/opt/celery-src/celery/app/trace.py",
+                "line": 651,
+                "supported_level": "line",
+                "evidence_refs": ["ev-source"],
+            },
+        },
+        candidates=[{
+            "candidate_id": "python_runtime_stack_hotspot",
+            "description": "没有同窗来源的运行时观察。",
+            "root_entity": "celery-worker",
+            "max_supported_level": "process",
+            "rank": 1,
+            "evidence_refs": ["ev-other"],
+            "relation": "alternative",
+        }],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+    )
+
+    assert tree is not None
+    observation = next(
+        node
+        for layer in tree.layers
+        for node in layer.unknown_causes
+        if node.candidate_id == "python_runtime_stack_hotspot"
+    )
+    assert observation.node_type == "orphan"
+    assert observation.parent_candidate_ids == []
 
 
 def test_ai_candidate_uses_real_parent_depth_when_observation_layer_already_exists():
@@ -1391,8 +1512,44 @@ def test_candidate_generation_output_includes_bounded_accepted_candidate_claims(
     })
 
     assert output["accepted_candidate_ids"] == ["ai_candidate_memory"]
+    assert output["candidate_count"] == 1
+    assert output["candidate_ids"] == ["ai_candidate_memory"]
     assert output["accepted_candidates"][0]["claim"] == "RSS 增长需要堆证据验证"
     assert output["accepted_candidates"][0]["origin_parent_candidate_id"] == "coarse_memory"
+
+
+def test_line_probe_diagnostic_explains_requested_and_skipped_paths():
+    requested = orchestrator_module._line_probe_diagnostic(
+        {
+            "supported_level": "function",
+            "primary_anchor": {
+                "runtime_line_candidates": [],
+            },
+        },
+        {
+            "target_scope": {"source_paths": ["/opt/celery-src"]},
+            "probe_evidence_status": {},
+            "completed_depth_evidence_gaps": [],
+        },
+        requested_requests=["source_snapshot"],
+        final_requests=["source_snapshot"],
+    )
+    assert requested["status"] == "requested"
+    assert requested["requested"] is True
+    assert requested["skip_reason"] == ""
+
+    skipped = orchestrator_module._line_probe_diagnostic(
+        {"supported_level": "process", "primary_anchor": {}},
+        {
+            "target_scope": {},
+            "probe_evidence_status": {},
+            "completed_depth_evidence_gaps": [],
+        },
+        requested_requests=[],
+        final_requests=[],
+    )
+    assert skipped["status"] == "skipped"
+    assert skipped["skip_reason"] == "source_context_unavailable"
 
 
 def test_audit_structured_evidence_merges_task_families_without_last_empty_task_erasing_signals():
@@ -4139,7 +4296,10 @@ def test_session_tree_rebuilds_supported_and_refuted_codeql_candidates():
     assert nodes["python_memory_retention"].role == "unknown"
     assert nodes["python_memory_retention"].conclusion_eligible is False
     assert all(node.depth_kind != "mechanism" for node in nodes.values())
-    assert nodes["python_memory_retention"].node_type == "orphan"
+    assert nodes["python_memory_retention"].node_type == "line_anchor"
+    assert nodes["python_memory_retention"].parent_candidate_ids == [
+        "coarse_python_memory_retention"
+    ]
     line_anchor = next(
         node for node in nodes.values()
         if node.node_type == "line_anchor"

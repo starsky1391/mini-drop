@@ -19,6 +19,25 @@ export const ROLE_LABELS = {
   unknown: "未决",
 };
 
+export function selectSessionMainTree(conclusion = {}) {
+  const directTree = conclusion?.controlled_ai_tree;
+  if (
+    directTree
+    && directTree.renderable !== false
+    && (!directTree.tree_kind || directTree.tree_kind === "session_main")
+  ) {
+    return directTree;
+  }
+  const trees = Array.isArray(conclusion?.controlled_ai_trees)
+    ? conclusion.controlled_ai_trees
+    : [];
+  return trees.find((tree) => (
+    tree
+    && tree.tree_kind === "session_main"
+    && tree.renderable !== false
+  )) || null;
+}
+
 export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = []) {
   if (
     tree?.renderable === false
@@ -55,6 +74,9 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
   const historyEdgeKeys = new Set();
   const finalLevel = tree.final_supported_level || "resource";
   const allCandidateCounts = new Map();
+  const backendQualityRecords = Array.isArray(tree.data_quality?.records)
+    ? tree.data_quality.records
+    : [];
 
   for (const layer of layers) {
     for (const candidate of flattenLayerCandidates(layer)) {
@@ -206,6 +228,16 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
         layoutBand: "orphan",
         badges: ["数据质量错误", "重复节点"],
       },
+    });
+  }
+
+  for (const record of backendQualityRecords) {
+    if (!record || typeof record !== "object") continue;
+    dataQuality.push({
+      ...record,
+      status: record.status || "data_quality",
+      title: record.title || record.candidate_id || "数据质量记录",
+      claim: record.claim || record.reason || "后端记录了节点血缘或关系问题。",
     });
   }
 

@@ -39,6 +39,7 @@ import {
   runAIValidation,
 } from "../api/client";
 import ControlledAITreeGraph from "../components/diagnosis/ControlledAITreeGraph";
+import { selectSessionMainTree } from "../components/diagnosis/aiTreeGraphModel";
 import RootCauseClusters from "../components/diagnosis/RootCauseClusters";
 import "./AIDiagnosis.css";
 
@@ -526,9 +527,13 @@ function DiagnosisDetail({ detail }) {
   const conclusion = detail.latest_conclusion;
   const candidates = conclusion?.root_cause_candidates || [];
   const possibleCauses = conclusion?.possible_root_causes || [];
+  const sessionMainTree = useMemo(
+    () => selectSessionMainTree(conclusion || {}),
+    [conclusion],
+  );
   const hasEligiblePrimary = Boolean(
     !conclusion?.abstained
-    && (conclusion?.controlled_ai_tree?.final_primary_causes?.length || candidates.length),
+    && (sessionMainTree?.final_primary_causes?.length || candidates.length),
   );
   const displayedConfidence = hasEligiblePrimary
     ? conclusion?.confidence_level
@@ -571,8 +576,8 @@ function DiagnosisDetail({ detail }) {
     || item.status === "FAILED"
   ));
   const treeStats = useMemo(
-    () => countControlledTreeBranches(conclusion?.controlled_ai_tree),
-    [conclusion?.controlled_ai_tree],
+    () => countControlledTreeBranches(sessionMainTree),
+    [sessionMainTree],
   );
   const aiReviewStatus = conclusion?.ai_review_status || "fallback";
   const retainedConclusion = conclusion?.retained_conclusion || {};
@@ -586,7 +591,7 @@ function DiagnosisDetail({ detail }) {
   const gateFailures = conclusion?.gate_failures || conclusion?.ai_gate_failures || [];
   const retainedParentConclusions = conclusion?.retained_parent_conclusions || [];
   const conclusionBoundaries = conclusion?.boundaries || [];
-  const controlledTree = conclusion?.controlled_ai_tree || {};
+  const controlledTree = sessionMainTree || {};
   const lineAnchorEligibility = controlledTree.line_anchor_eligibility || {};
   const heapProbeOutcome = controlledTree.heap_probe_outcome || {};
   const displayedConclusion = retainedConclusion.claim || formalRootCause?.claim || conclusion?.headline || conclusion?.summary;
@@ -861,6 +866,27 @@ function DiagnosisDetail({ detail }) {
           )}
           {(lineAnchorEligibility.status || heapProbeOutcome.status) && (
             <Space direction="vertical" size={6} style={{ width: "100%", marginBottom: 12 }}>
+              {candidateGenerationOutput.line_probe_diagnostic?.status && (
+                <Alert
+                  type={candidateGenerationOutput.line_probe_diagnostic.status === "requested" ? "info" : candidateGenerationOutput.line_probe_diagnostic.eligibility_status === "verified" ? "success" : "warning"}
+                  showIcon
+                  message={`Line 探测链路：${candidateGenerationOutput.line_probe_diagnostic.status}`}
+                  description={(
+                    <Space direction="vertical" size={2}>
+                      <Typography.Text>
+                        runtime/analyzer anchor → source_snapshot → line eligibility；
+                        支持层级 {candidateGenerationOutput.line_probe_diagnostic.supported_level}；
+                        运行时行候选 {candidateGenerationOutput.line_probe_diagnostic.runtime_line_candidate_count || 0} 个。
+                      </Typography.Text>
+                      {candidateGenerationOutput.line_probe_diagnostic.skip_reason && (
+                        <Typography.Text type="secondary">
+                          跳过/终止原因：{candidateGenerationOutput.line_probe_diagnostic.skip_reason}
+                        </Typography.Text>
+                      )}
+                    </Space>
+                  )}
+                />
+              )}
               {lineAnchorEligibility.status && (
                 <Alert
                   type={lineAnchorEligibility.status === "verified" ? "success" : "info"}
@@ -1099,7 +1125,7 @@ function DiagnosisDetail({ detail }) {
         </Card>
       )}
 
-      {conclusion?.controlled_ai_tree && (
+      {sessionMainTree && (
         <Card
           id="controlled-ai-tree"
           title="受控 AI 树（当前状态）"
@@ -1109,21 +1135,21 @@ function DiagnosisDetail({ detail }) {
               <Tag color="default">反证 {treeStats.rejected}</Tag>
               <Tag color="cyan">未决/阻断 {treeStats.unknown}</Tag>
               <Tag color={hasEligiblePrimary ? "green" : "gold"}>
-                {hasEligiblePrimary ? "正式结论" : "当前证据边界"}：{conclusion.controlled_ai_tree.final_supported_level}
+                {hasEligiblePrimary ? "正式结论" : "当前证据边界"}：{sessionMainTree.final_supported_level}
               </Tag>
             </Space>
           )}
         >
           <Alert
-            type={conclusion.controlled_ai_tree.probe_edges?.length ? "warning" : "success"}
+            type={sessionMainTree.probe_edges?.length ? "warning" : "success"}
             showIcon
-            message={conclusion.controlled_ai_tree.stop_reason || "AI 树已按当前证据边界停止。"}
-            description={`树中会保留比正式结论更深的已观察节点，并标记为“未入终态”；这些节点不等于正式根因。预算：AI rounds ${conclusion.controlled_ai_tree.budget?.used_ai_rounds || 0}/${conclusion.controlled_ai_tree.budget?.max_ai_rounds || 0}，探针请求 ${conclusion.controlled_ai_tree.budget?.used_probe_requests || 0}/${conclusion.controlled_ai_tree.budget?.max_probe_requests_per_round || 0}`}
+            message={sessionMainTree.stop_reason || "AI 树已按当前证据边界停止。"}
+            description={`树中会保留比正式结论更深的已观察节点，并标记为“未入终态”；这些节点不等于正式根因。预算：AI rounds ${sessionMainTree.budget?.used_ai_rounds || 0}/${sessionMainTree.budget?.max_ai_rounds || 0}，探针请求 ${sessionMainTree.budget?.used_probe_requests || 0}/${sessionMainTree.budget?.max_probe_requests_per_round || 0}`}
             style={{ marginBottom: 12 }}
           />
           <ControlledAITreeGraph
-            key={`${detail.diagnosis_id}:${conclusion.controlled_ai_tree.tree_id || "tree"}`}
-            tree={conclusion.controlled_ai_tree}
+            key={`${detail.diagnosis_id}:${sessionMainTree.tree_id || "tree"}`}
+            tree={sessionMainTree}
             evidenceMap={evidenceMap}
             highlightedCandidateIds={highlightedTreeCandidates}
           />

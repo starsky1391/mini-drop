@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildControlledAITreeGraph } from "./aiTreeGraphModel.js";
+import { buildControlledAITreeGraph, selectSessionMainTree } from "./aiTreeGraphModel.js";
 
 const candidate = (overrides) => ({
   candidate_id: "candidate",
@@ -17,6 +17,32 @@ const candidate = (overrides) => ({
   evidence_refs: ["ev-source"],
   self_challenge: { missing_evidence: ["python_heap_reference"] },
   ...overrides,
+});
+
+test("session main selection ignores child snapshots and does not splice them into the page tree", () => {
+  const sessionMain = { tree_id: "session-main", tree_kind: "session_main", renderable: true };
+  const childSnapshot = { tree_id: "child", tree_kind: "child_snapshot", renderable: false };
+
+  assert.equal(
+    selectSessionMainTree({
+      controlled_ai_tree: childSnapshot,
+      controlled_ai_trees: [childSnapshot, sessionMain],
+    }),
+    sessionMain,
+  );
+});
+
+test("session main selection prefers the canonical single tree", () => {
+  const sessionMain = { tree_id: "session-main", tree_kind: "session_main", renderable: true };
+  const childSnapshot = { tree_id: "child", tree_kind: "child_snapshot", renderable: false };
+
+  assert.equal(
+    selectSessionMainTree({
+      controlled_ai_tree: sessionMain,
+      controlled_ai_trees: [childSnapshot],
+    }),
+    sessionMain,
+  );
 });
 
 test("inconclusive candidate remains unresolved and the graph does not invent a global stop", () => {
@@ -605,4 +631,29 @@ test("missing origin keeps a refinement out of the main tree even when a declare
   )), false);
   assert.equal(graph.orphanNodes.length, 1);
   assert.equal(graph.layoutEdges.length, 0);
+});
+
+test("backend data-quality records stay in the audit domain", () => {
+  const graph = buildControlledAITreeGraph({
+    data_quality: {
+      records: [{
+        candidate_id: "runtime-observation",
+        status: "missing_provenance",
+        reason: "未记录来源父节点",
+      }],
+    },
+    layers: [{
+      layer_id: "layer-0",
+      depth: 0,
+      unknown_causes: [candidate({
+        candidate_id: "coarse-root",
+        relation: "root",
+      })],
+    }],
+  });
+
+  assert.equal(graph.dataQuality.length, 1);
+  assert.equal(graph.dataQuality[0].candidate_id, "runtime-observation");
+  assert.equal(graph.dataQuality[0].status, "missing_provenance");
+  assert.equal(graph.nodes.some((node) => node.data?.candidate?.candidate_id === "runtime-observation"), false);
 });

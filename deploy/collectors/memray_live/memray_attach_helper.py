@@ -10,6 +10,7 @@ import os
 import re
 import signal
 import shutil
+import stat
 import subprocess
 import sys
 import sysconfig
@@ -131,6 +132,13 @@ def _stage_memray_runtime(host_pid: int, purelib: str) -> list[Path]:
                 continue
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
+            mode = destination.stat().st_mode
+            destination.chmod(
+                mode
+                | stat.S_IRUSR
+                | stat.S_IRGRP
+                | stat.S_IROTH
+            )
             staged.append(destination)
     if not (target_purelib / "memray" / "__init__.py").is_file():
         raise RuntimeError("target_memray_runtime_not_staged")
@@ -220,7 +228,9 @@ def _run_memray_attach(
             stdout=b"",
             stderr=b"agent_memray_native_module_missing",
         )
-    target_native = Path("/") / target_purelib.lstrip("/") / "memray" / native_candidates[0].name
+    target_root = Path(f"/proc/{host_pid}/root")
+    target_native = target_root / target_purelib.lstrip("/") / "memray" / native_candidates[0].name
+    target_executable_path = target_root / target_executable.lstrip("/")
     script_name = f"mini-drop-memray-attach-{uuid.uuid4().hex}.py"
     visible_script = Path("/tmp") / script_name
     visible_script.parent.mkdir(parents=True, exist_ok=True)
@@ -256,10 +266,10 @@ def _run_memray_attach(
             _attach_namespace_command(
                 nsenter=nsenter,
                 host_pid=host_pid,
-                # Run the Memray CLI from the Agent mount namespace so its
-                # gdb remains available. The injected library path still
-                # points at the staged target-runtime path.
-                target_executable=sys.executable,
+                # Keep the Agent mount namespace so its gdb remains
+                # available, while executing the target interpreter and
+                # staged runtime through the target root.
+                target_executable=str(target_executable_path),
                 visible_script=visible_script,
                 mount_namespace=False,
             ),
@@ -286,10 +296,44 @@ def _run_memray_attach(
                 stderr=stderr,
             )
         if result.returncode == 0:
-            source = target_source
+            # The attach helper runs in the Agent mount namespace, therefore
+            # the capture path passed to the script is Agent-visible. Keep
+            # target_source in the phase output for namespace diagnostics,
+            # but copy from the path the attach process actually wrote.
+            source = target_capture
             if source.is_file() and source.stat().st_size > 0:
+                print(
+                    json.dumps(
+                        {
+                            "phase": "artifact_written",
+                            "target_path": str(source),
+                            "target_root_path": str(target_source),
+                            "size_bytes": source.stat().st_size,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
                 output.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, output)
+                print(
+                    json.dumps(
+                        {
+                            "phase": "artifact_copied",
+                            "output_path": str(output),
+                            "size_bytes": output.stat().st_size,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+            else:
+                return subprocess.CompletedProcess(
+                    result.args,
+                    9,
+                    stdout=result.stdout,
+                    stderr=result.stderr + b"\nmemray_artifact_missing",
+                )
         return result
     finally:
         signal.signal(signal.SIGTERM, previous_sigterm)
@@ -319,12 +363,16 @@ def main() -> int:
 
     nsenter = shutil.which("nsenter")
     memray = shutil.which("memray")
+    gdb = shutil.which("gdb")
     if not nsenter:
         print("nsenter_not_installed", flush=True)
         return 4
     if not memray:
         print("memray_not_installed", flush=True)
         return 5
+    if not gdb:
+        print("gdb_unavailable", flush=True)
+        return 6
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -396,6 +444,17 @@ def main() -> int:
                 target_capture.unlink()
             except OSError:
                 pass
+        print(
+            json.dumps(
+                {
+                    "phase": "cleanup_completed",
+                    "staged_file_count": len(staged),
+                    "target_capture_removed": target_capture is None or not target_capture.exists(),
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
     if result is None:
         print("memray_attach_result_missing", flush=True)
         return 10

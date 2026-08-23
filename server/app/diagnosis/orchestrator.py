@@ -118,6 +118,11 @@ MEMORY_DEPTH_EVIDENCE_GAPS = {
     "source_mechanism_query",
     "python_heap_reference",
 }
+OBSERVATION_CANDIDATE_IDS = {
+    "python_runtime_stack_hotspot",
+    "python_userland_hotspot",
+    "off_cpu_wait_hotspot",
+}
 ALLOWED_DIAGNOSIS_TRANSITIONS = {
     "CREATED": {"UNDERSTANDING", "USER_CANCELED", "FAILED"},
     "UNDERSTANDING": {"PLANNING", "NEEDS_SCOPE_CONFIRMATION", "TOPOLOGY_UNAVAILABLE", "FAILED"},
@@ -1288,6 +1293,7 @@ class DiagnosisOrchestrator:
                     "description": candidate.description,
                     "evidence_refs": evidence_ids,
                     "missing_evidence": candidate.missing_evidence,
+                    "independent": True,
                     "score_components": {
                         "rule_match": _quality(candidate.rule_score),
                         "evidence_quality": _quality(candidate.evidence_quality),
@@ -1366,6 +1372,12 @@ class DiagnosisOrchestrator:
             assessment_followups,
             sufficient_dependency=sufficient_dependency,
             memory_only=str((followup_session.get("normalized_intent") or {}).get("symptom") or "") == "memory_pressure",
+        )
+        cluster_assessment["line_probe_diagnostic"] = _line_probe_diagnostic(
+            cluster_assessment,
+            followup_session,
+            requested_requests=assessment_followups,
+            final_requests=followup_requests,
         )
         if sufficient_dependency and _is_database_dependency_assessment(cluster_assessment):
             followup_requests = [
@@ -1687,6 +1699,9 @@ class DiagnosisOrchestrator:
         controlled_tree_payload = session_controlled_tree.model_dump(mode="json") if session_controlled_tree else None
         gate_failures = ai_gate_failures
         candidate_generation_output = _candidate_generation_output(candidate_review_summary)
+        candidate_generation_output["line_probe_diagnostic"] = (
+            cluster_assessment.get("line_probe_diagnostic") or {}
+        )
         candidate_generation_output["gate_failures"] = [
             item for item in gate_failures
             if isinstance(item, dict)
@@ -1728,6 +1743,7 @@ class DiagnosisOrchestrator:
             # replay explain why promotion stopped without reading raw probes.
             "gate_failures": gate_failures,
             "candidate_generation_output": candidate_generation_output,
+            "line_probe_diagnostic": cluster_assessment.get("line_probe_diagnostic") or {},
             "observations": _conclusion_observations(task_observations),
             "boundaries": _conclusion_boundaries(
                 controlled_tree_payload,
@@ -4738,6 +4754,48 @@ def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str,
             return ["python_heap_reference"]
         return []
     requests: list[str] = []
+    probe_status = (
+        session.get("probe_evidence_status")
+        if isinstance(session.get("probe_evidence_status"), dict)
+        else {}
+    )
+    completed_depth = set(session.get("completed_depth_evidence_gaps") or [])
+    source_context = (
+        target_scope.get("source_context")
+        if isinstance(target_scope.get("source_context"), dict)
+        else {}
+    )
+    source_available = bool(
+        source_context.get("source_paths")
+        or source_context.get("repo_revision")
+        or target_scope.get("source_paths")
+        or target_scope.get("repo_revision")
+    )
+    supported_level = str(
+        assessment.get("max_supported_level")
+        or assessment.get("supported_level")
+        or ""
+    )
+    source_status = str(probe_status.get("source_snapshot") or "").lower()
+    if (
+        source_available
+        and supported_level in {"function", "call_path", "line"}
+        and "source_snapshot" not in completed_depth
+        and source_status not in {
+            "valid",
+            "partial",
+            "blocked",
+            "failed",
+            "unavailable",
+            "invalid",
+            "empty_window",
+            "unparseable",
+            "target_exit",
+        }
+    ):
+        # This is the evidence bridge from a runtime/function observation to
+        # a verified file:line anchor; it is not an answer supplied by runner.
+        requests.append("source_snapshot")
     if classification == "downstream_dependency":
         requests.extend(["dependency_check", "log_scan"])
         if any(
@@ -4749,6 +4807,97 @@ def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str,
     if _needs_function_depth(assessment) and not _is_database_dependency_assessment(assessment):
         requests.extend(["cpu_profile", "off_cpu_wait_profile", "trace_endpoint_profile"])
     return requests
+
+
+def _line_probe_diagnostic(
+    assessment: dict[str, Any],
+    session: dict[str, Any],
+    *,
+    requested_requests: list[str],
+    final_requests: list[str],
+) -> dict[str, Any]:
+    """Explain the existing source_snapshot decision without changing scheduling."""
+    target_scope = session.get("target_scope", {}) if isinstance(session.get("target_scope"), dict) else {}
+    source_context = target_scope.get("source_context")
+    source_context = source_context if isinstance(source_context, dict) else {}
+    source_available = bool(
+        source_context.get("source_paths")
+        or source_context.get("repo_revision")
+        or target_scope.get("source_paths")
+        or target_scope.get("repo_revision")
+    )
+    supported_level = str(
+        assessment.get("max_supported_level")
+        or assessment.get("supported_level")
+        or "resource"
+    )
+    probe_status = session.get("probe_evidence_status")
+    probe_status = probe_status if isinstance(probe_status, dict) else {}
+    source_status = str(probe_status.get("source_snapshot") or "").lower()
+    completed_depth = set(session.get("completed_depth_evidence_gaps") or [])
+    anchor = assessment.get("primary_anchor")
+    anchor = anchor if isinstance(anchor, dict) else {}
+    runtime_line_candidates = [
+        item
+        for item in anchor.get("runtime_line_candidates", [])
+        if isinstance(item, dict) and item.get("file") and int(_num(item.get("line"))) > 0
+    ]
+    source_snapshot_terminal = {
+        "valid",
+        "partial",
+        "blocked",
+        "failed",
+        "unavailable",
+        "invalid",
+        "empty_window",
+        "unparseable",
+        "target_exit",
+    }
+    requested = "source_snapshot" in requested_requests or "source_snapshot" in final_requests
+    already_completed = "source_snapshot" in completed_depth or source_status in source_snapshot_terminal
+    verified_anchor = bool(
+        anchor.get("source_context_hash")
+        and anchor.get("source_revision")
+        and anchor.get("file")
+        and int(_num(anchor.get("line"))) > 0
+        and runtime_line_candidates
+    )
+    if verified_anchor and not requested:
+        status = "skipped"
+        skip_reason = "already_verified"
+    elif requested:
+        status = "requested"
+        skip_reason = ""
+    elif already_completed:
+        status = "completed" if source_status in {"valid", "partial"} else source_status
+        skip_reason = "terminal_source_snapshot_status"
+    elif not source_available:
+        status = "skipped"
+        skip_reason = "source_context_unavailable"
+    elif supported_level not in {"function", "call_path", "line"}:
+        status = "skipped"
+        skip_reason = "supported_level_below_function"
+    else:
+        status = "not_scheduled"
+        skip_reason = "source_snapshot_not_selected"
+    return {
+        "chain": [
+            "runtime_or_analyzer_anchor",
+            "source_snapshot",
+            "line_anchor_eligibility",
+        ],
+        "status": status,
+        "requested": requested,
+        "requested_by": "assessment_followup" if "source_snapshot" in requested_requests else "",
+        "skip_reason": skip_reason,
+        "source_available": source_available,
+        "supported_level": supported_level,
+        "source_snapshot_status": source_status or "not_started",
+        "source_snapshot_completed": already_completed,
+        "runtime_line_candidate_count": len(runtime_line_candidates),
+        "final_followup_requests": _unique_strings(final_requests),
+        "eligibility_status": "verified" if verified_anchor else "not_verified",
+    }
 
 
 def _merge_assessment_followups(
@@ -4941,6 +5090,7 @@ def _cluster_alternative_hypotheses(
             "supported_level": supported_level,
             "evidence_refs": _unique_strings(evidence_refs or []),
             "missing_evidence": _unique_strings(missing_evidence or []),
+            "independent": True,
         })
 
     if classification != "self_code_or_process_pressure":
@@ -5090,9 +5240,11 @@ def _build_session_controlled_ai_tree(
         candidate_relation = str(item.get("relation") or "").strip()
         if not candidate_relation:
             candidate_relation = "refinement" if candidate_parent_ids else "alternative"
-        # Only an explicitly independent alternative may attach to the
-        # emitted coarse root. A bare alternative is missing provenance and
-        # must remain visible as a data-quality orphan.
+        # Analyzer's calibrated candidate list is the explicit set of
+        # independent alternatives for this emitted coarse assessment.
+        # Preserve that root-level provenance instead of leaving the
+        # candidate orphaned merely because the upstream rule candidate has
+        # no parent field.
         if (
             not candidate_parent_ids
             and candidate_relation == "alternative"
@@ -5145,7 +5297,16 @@ def _build_session_controlled_ai_tree(
         else:
             unknown_nodes.append(node)
 
-    if not primary_nodes and not candidates and cluster_assessment.get("classification") and not any(
+    has_non_observational_candidate = any(
+        node.candidate_id not in OBSERVATION_CANDIDATE_IDS
+        for node in [
+            *primary_nodes,
+            *secondary_nodes,
+            *rejected_nodes,
+            *unknown_nodes,
+        ]
+    )
+    if not has_non_observational_candidate and cluster_assessment.get("classification") and not any(
         node.candidate_id == str(cluster_assessment.get("root_entity") or cluster_assessment.get("classification"))
         for node in [*secondary_nodes, *rejected_nodes, *unknown_nodes]
     ):
@@ -5156,7 +5317,9 @@ def _build_session_controlled_ai_tree(
             generated_by="fallback_observation",
             lineage_id=candidate_id,
             role=fallback_role,
-            relation="alternative" if fallback_role == "primary" else "alternative",
+            relation="alternative",
+            parent_candidate_ids=[coarse_id],
+            origin_parent_candidate_id=coarse_id,
             claim=str(cluster_assessment.get("diagnostic_claim") or cluster_assessment.get("summary") or candidate_id),
             supported_level=final_level,
             confidence=_num(cluster_assessment.get("confidence")),
@@ -5192,6 +5355,8 @@ def _build_session_controlled_ai_tree(
             or ""
         ).strip()
         if parent_id == "coarse_insufficient_evidence":
+            parent_id = coarse_id
+        if not parent_id and item.get("independent") is True:
             parent_id = coarse_id
         rejected_nodes.append(AITreeCandidateNode(
             candidate_id=f"ruled_out_{hypothesis}",
@@ -5231,6 +5396,8 @@ def _build_session_controlled_ai_tree(
             or ""
         ).strip()
         if parent_id == "coarse_insufficient_evidence":
+            parent_id = coarse_id
+        if not parent_id and item.get("independent") is True:
             parent_id = coarse_id
         node = AITreeCandidateNode(
             candidate_id=f"{role}_{hypothesis}",
@@ -5307,18 +5474,13 @@ def _build_session_controlled_ai_tree(
     # A verified source line is itself a base localization node. Mechanism
     # paths may attach to it, but they must never use a service/function node
     # as an inferred substitute parent.
-    observation_candidate_ids = {
-        "python_runtime_stack_hotspot",
-        "python_userland_hotspot",
-        "off_cpu_wait_hotspot",
-    }
     base_line_nodes = {
         node.candidate_id: node
         for node in [*primary_nodes, *secondary_nodes, *rejected_nodes, *unknown_nodes]
         if (
             node.depth_kind == "base"
             and node.supported_level == "line"
-            and node.candidate_id not in observation_candidate_ids
+            and node.candidate_id not in OBSERVATION_CANDIDATE_IDS
         )
     }
     if has_verified_line_anchor:
@@ -5614,32 +5776,16 @@ def _build_session_controlled_ai_tree(
             if node.parent_candidate_ids
             else _attach_observation_parent(
                 node,
-                explicit_source_parent_ids.get(node.candidate_id, ""),
+                explicit_source_parent_ids.get(node.candidate_id)
+                or _observation_parent_from_verified_line(
+                    node,
+                    line_refinement_nodes,
+                    primary_anchor,
+                ),
             )
         )
         for node in observation_nodes
     ]
-    if has_verified_line_anchor:
-        emitted_line_parent = next(
-            (
-                node.candidate_id
-                for node in [*line_refinement_nodes, *base_line_nodes.values()]
-                if node.node_type in {"line_anchor", "base_cause"}
-                and node.supported_level == "line"
-                and node.candidate_id not in observation_candidate_ids
-            ),
-            "",
-        )
-        if emitted_line_parent:
-            observation_nodes = [
-                _ensure_explicit_origin(
-                    node
-                    if node.parent_candidate_ids and node.origin_parent_candidate_id == emitted_line_parent
-                    else _attach_observation_parent(node, emitted_line_parent)
-                )
-                for node in observation_nodes
-            ]
-
     layer0 = AITreeLayer(
         layer_id="session_layer_0_coarse_assessment",
         depth=0,
@@ -5998,6 +6144,18 @@ def _build_session_controlled_ai_tree(
                 for node in _layer_nodes_for_validation(layer)
                 if node.node_type == "orphan"
             ],
+            "records": [
+                {
+                    "candidate_id": node.candidate_id,
+                    "status": "missing_provenance",
+                    "relation": node.relation,
+                    "parent_candidate_ids": list(node.parent_candidate_ids),
+                    "claim": node.eligibility_reason or "节点缺少当前 session_main 中可验证的来源父节点。",
+                }
+                for layer in layers
+                for node in _layer_nodes_for_validation(layer)
+                if node.node_type == "orphan"
+            ],
             "child_snapshot_count": len(child_trees),
         },
         stop_reason=stop_reason,
@@ -6131,11 +6289,7 @@ def _split_observation_context_nodes(
     observation_nodes: list[AITreeCandidateNode] = []
     base_nodes: list[AITreeCandidateNode] = []
     for node in nodes:
-        if node.candidate_id in {
-            "python_runtime_stack_hotspot",
-            "python_userland_hotspot",
-            "off_cpu_wait_hotspot",
-        }:
+        if node.candidate_id in OBSERVATION_CANDIDATE_IDS:
             observation_nodes.append(node.model_copy(update={
                 "node_type": "observation",
                 "claim_type": "observation_only",
@@ -6147,6 +6301,33 @@ def _split_observation_context_nodes(
     return observation_nodes, base_nodes
 
 
+def _observation_parent_from_verified_line(
+    node: AITreeCandidateNode,
+    line_nodes: list[AITreeCandidateNode],
+    anchor: dict[str, Any] | None,
+) -> str:
+    """Attach an unbound observation only when its evidence cohort names one line."""
+    if len(line_nodes) != 1:
+        return ""
+    observation_refs = set(_unique_strings(node.evidence_refs))
+    if not observation_refs:
+        return ""
+    anchor = anchor if isinstance(anchor, dict) else {}
+    line_node = line_nodes[0]
+    cohort_refs = set(_unique_strings([
+        *line_node.evidence_refs,
+        *anchor.get("evidence_refs", []),
+        *anchor.get("source_evidence_refs", []),
+        *anchor.get("runtime_source_evidence_refs", []),
+        *[
+            item.get("evidence_ref")
+            for item in anchor.get("runtime_line_candidates", [])
+            if isinstance(item, dict)
+        ],
+    ]))
+    return line_node.candidate_id if observation_refs & cohort_refs else ""
+
+
 def _attach_observation_parent(node: AITreeCandidateNode, parent_id: str) -> AITreeCandidateNode:
     if not parent_id:
         return node
@@ -6155,6 +6336,11 @@ def _attach_observation_parent(node: AITreeCandidateNode, parent_id: str) -> AIT
         "origin_parent_candidate_id": parent_id,
         "cluster_id": parent_id,
         "branch_id": parent_id,
+        "relation": "evidence_context",
+        "node_type": "observation",
+        "claim_type": "observation_only",
+        "conclusion_eligible": False,
+        "decision": "continue_probe",
     })
 
 
@@ -6306,6 +6492,9 @@ def _candidate_generation_output(review: dict[str, Any] | None) -> dict[str, Any
         return {
             "status": "not_started",
             "attempts": [],
+            "candidate_count": 0,
+            "candidate_ids": [],
+            "last_response_excerpt": "",
             "accepted_candidate_ids": [],
             "accepted_candidates": [],
             "rejected_candidate_ids": [],
@@ -6369,6 +6558,14 @@ def _candidate_generation_output(review: dict[str, Any] | None) -> dict[str, Any
         "status": str(review.get("ai_review_status") or "unknown"),
         "error": str(review.get("ai_review_error") or "")[:500],
         "attempts": attempts,
+        "candidate_count": len(accepted_candidates),
+        "candidate_ids": [
+            item["candidate_id"]
+            for item in accepted_candidates
+        ],
+        "last_response_excerpt": str(
+            attempts[-1].get("response_excerpt") or ""
+        )[:1200] if attempts and isinstance(attempts[-1], dict) else "",
         "accepted_candidate_ids": accepted_ids,
         "accepted_candidates": accepted_candidates,
         "rejected_candidate_ids": list(dict.fromkeys(rejected_ids)),
@@ -7230,7 +7427,11 @@ def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) 
         }))
     layers = updated_layers
 
-    if proposals and len(layers) < tree.budget.max_tree_depth:
+    if proposals:
+        layer_depth_by_id = {
+            layer.layer_id: layer.depth
+            for layer in layers
+        }
         proposal_nodes = [
             AITreeCandidateNode(
                 candidate_id=item["candidate_id"],
@@ -7268,34 +7469,69 @@ def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) 
             )
             for item in proposals
         ]
-        previous = layers[-1].layer_id if layers else ""
-        proposal_layer = AITreeLayer(
-            layer_id=f"session_ai_investigation_{len(layers)}",
-            depth=len(layers),
-            generated_by="ai_guarded",
-            summary="AI 基于当前证据提出可证伪机制，并从注册探针中选择下一轮补证。",
-            unknown_causes=proposal_nodes,
-        )
-        layers.append(proposal_layer)
-        all_nodes.update({
-            node.candidate_id: (proposal_layer.layer_id, node)
-            for node in proposal_nodes
-        })
-        edges.append(AITreeProbeEdge(
-            edge_id=f"session_ai_probe_{len(edges)}",
-            from_layer_id=previous,
-            to_layer_id=proposal_layer.layer_id,
-            from_candidate_ids=list(dict.fromkeys(
-                str(item["origin_parent_candidate_id"])
-                for item in proposals
-            )),
-            to_candidate_ids=[item.candidate_id for item in proposal_nodes],
-            probe_requests=selected,
-            status="not_started",
-            effect="added_candidate",
-            transition_type="probe",
-            reason="AI 调查轮选择注册探针验证新机制候选。",
-        ))
+        proposal_groups: dict[int, list[AITreeCandidateNode]] = {}
+        for node in proposal_nodes:
+            parent_depths = [
+                layer_depth_by_id[all_nodes[parent_id][0]]
+                for parent_id in node.parent_candidate_ids
+                if parent_id in all_nodes and all_nodes[parent_id][0] in layer_depth_by_id
+            ]
+            target_depth = max(parent_depths, default=-1) + 1
+            if target_depth > tree.budget.max_tree_depth:
+                review.setdefault("tree_ingestion_diagnostics", []).append({
+                    "candidate_id": node.candidate_id,
+                    "failure_code": "tree_depth_budget_exhausted",
+                    "reason": (
+                        "候选的真实来源父节点继续下钻会超过主树深度预算；"
+                        "辅助 observation/boundary 层不参与深度计算。"
+                    ),
+                    "parent_candidate_ids": list(node.parent_candidate_ids),
+                    "origin_parent_candidate_id": node.origin_parent_candidate_id,
+                    "target_depth": target_depth,
+                    "max_tree_depth": tree.budget.max_tree_depth,
+                })
+                continue
+            proposal_groups.setdefault(target_depth, []).append(node)
+
+        for target_depth, grouped_nodes in sorted(proposal_groups.items()):
+            parent_ids = list(dict.fromkeys(
+                parent_id
+                for node in grouped_nodes
+                for parent_id in node.parent_candidate_ids
+            ))
+            parent_layer_id = next(
+                (
+                    all_nodes[parent_id][0]
+                    for parent_id in parent_ids
+                    if parent_id in all_nodes
+                ),
+                layers[0].layer_id if layers else "",
+            )
+            proposal_layer = AITreeLayer(
+                layer_id=f"session_ai_investigation_{target_depth}_{len(layers)}",
+                depth=target_depth,
+                generated_by="ai_guarded",
+                summary="AI 基于当前证据提出可证伪机制，并从注册探针中选择下一轮补证。",
+                unknown_causes=grouped_nodes,
+            )
+            layers.append(proposal_layer)
+            all_nodes.update({
+                node.candidate_id: (proposal_layer.layer_id, node)
+                for node in grouped_nodes
+            })
+            edges.append(AITreeProbeEdge(
+                edge_id=f"session_ai_probe_{len(edges)}",
+                from_layer_id=parent_layer_id,
+                to_layer_id=proposal_layer.layer_id,
+                from_candidate_ids=parent_ids,
+                to_candidate_ids=[node.candidate_id for node in grouped_nodes],
+                probe_requests=selected,
+                status="not_started",
+                effect="added_candidate",
+                transition_type="probe",
+                reason="AI 调查轮选择注册探针验证新机制候选。",
+            ))
+        layers.sort(key=lambda layer: (layer.depth, layer.layer_id))
     elif selected and edges:
         edges[-1] = edges[-1].model_copy(update={
             "probe_requests": selected,
