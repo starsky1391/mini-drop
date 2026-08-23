@@ -321,6 +321,42 @@ def test_freeze_only_watch_creates_incident_without_collector_tasks():
     assert repo.tasks == {}
 
 
+def test_frozen_watch_analysis_does_not_schedule_delayed_followups():
+    repo = InMemoryRepository()
+    repo.register_agent(
+        "agent_1",
+        "host-1",
+        "10.0.0.1",
+        capabilities=["sys_metrics", "baseline_window_profile"],
+    )
+    registry = WatchRegistry()
+    runtime = PersistentAgentRuntime(registry, repo)
+    watch = registry.create(_watch_payload_with_action("auto_all_registered"))
+    now = datetime(2026, 8, 11, 10, 0, tzinfo=timezone.utc)
+    result = runtime.evaluate(
+        watch.watch_id,
+        WatchEvaluationRequest(
+            baseline_window=_window(now, cpu_percent=20.0),
+            trigger_window=_window(now + timedelta(minutes=5), cpu_percent=55.0),
+        ),
+    )
+    incident = result.incident
+    assert incident is not None
+    registry.update_incident_analysis(
+        incident.incident_id,
+        analysis_status="needs_evidence",
+        analysis_session_id="analysis_" + incident.incident_id,
+        analysis_result={"diagnosis_mode": "frozen_evidence"},
+    )
+    task_count = len(repo.tasks)
+
+    assert runtime.schedule_followup_tasks(
+        incident.incident_id,
+        ["baseline_window_profile"],
+    ) == []
+    assert len(repo.tasks) == task_count
+
+
 def test_auto_all_registered_watch_can_create_deeper_collector_tasks():
     repo = InMemoryRepository()
     repo.register_agent(

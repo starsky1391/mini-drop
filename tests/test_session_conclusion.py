@@ -677,6 +677,18 @@ def test_source_line_boundary_explains_why_line_upgrade_did_not_start():
     assert "源码行探测未进入正式升级" in boundary["message"]
 
 
+def test_empty_frozen_evidence_cannot_be_promoted_to_root_cause():
+    assert classify_cluster_set([]) == "insufficient_evidence"
+    assert build_retained_conclusion(
+        [],
+        {
+            "classification": "insufficient_evidence",
+            "evidence_refs": [],
+            "conclusion_eligible": False,
+        },
+    ) is None
+
+
 def test_child_contradiction_keeps_parent_as_retained_candidate():
     retained = build_retained_conclusion(
         [],

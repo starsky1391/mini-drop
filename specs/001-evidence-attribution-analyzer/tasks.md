@@ -1817,3 +1817,111 @@ main tree, history, probe edges and data quality do not contaminate each other
 formal conclusion fields share one eligibility result
 ordinary real-case validation is vulnerable-only 600 seconds
 ```
+
+## Task Group CH - Frozen Evidence Gap Closure (Reuse Existing Implementation)
+
+CH 不是重写冻结证据链路。当前工作区已经有一部分实现，后续任务必须先复用
+并验证现有代码；只有测试证明存在缺口时才补最小改动。已确认的现有实现包括：
+
+- `server/app/diagnosis/schemas.py` 已有 `live_collection|frozen_evidence`、
+  `evidence_package_id`、`evidence_cohort_id` 和 `source_incident_id` 字段；
+- `server/app/main.py` 已有 WatchIncident 冻结现场分析入口和
+  `_run_watch_incident_analysis()`，直接消费 `structured_evidence`；
+- `server/app/diagnosis/orchestrator.py` 已在初始计划、单探针调度、延迟调度、
+  follow-up 计划和 schedulable 判断处加入冻结模式拦截；
+- `server/app/diagnosis/watch_runtime.py` 已阻止冻结分析后的 Watch follow-up；
+- 冻结分析结果已记录 `diagnosis_mode`、`evidence_package_id`、
+  `evidence_cohort_id`、`same_window`、`rolling_snapshot`、`probe_count=0` 和
+  `evidence_package_exhausted`；
+- `docs/superpowers/specs/2026-08-23-frozen-evidence-diagnosis-design.md`
+  已记录本次设计边界。
+
+以下已存在项标记为完成，仅代表“代码已存在”，不代表测试和审计闭环已经完成。
+
+### CH001 - Define the two-mode diagnosis contract
+
+- [x] CH001 [P] Existing mode contract in `server/app/diagnosis/schemas.py` is limited to `live_collection|frozen_evidence`; do not add `hybrid` or a second mode enum.
+- [x] CH002 Existing `server/app/diagnosis/orchestrator.py` persists the mode and source package/cohort references in `target_scope`; retain this contract instead of adding a parallel session model.
+- [x] CH003 Add request and backward-compatibility tests in `tests/test_diagnosis_orchestrator.py` and `tests/test_server_api.py` proving old requests remain `live_collection`, `hybrid` is rejected, and existing mode fields survive serialization.
+
+### CH002 - Route WatchIncident analysis through frozen evidence
+
+- [x] CH004 Existing `server/app/main.py` routes `POST /api/v1/watch-incidents/{incident_id}/analyze` to the frozen analysis executor; do not route it back through `DiagnosisOrchestrator.create()`.
+- [x] CH005 Existing `_run_watch_incident_analysis()` in `server/app/main.py` consumes the saved `structured_evidence` and preserves `rolling_snapshot` plus `same_window`; do not create `frozen_evidence.py` unless a real shared caller is found.
+- [x] CH006 Add API regression coverage in `tests/test_server_api.py` proving a `freeze_only` incident can be analyzed after the window ends, retains the original evidence cohort, reports `diagnosis_mode=frozen_evidence`, and creates no live collector task.
+
+### CH003 - Resolve AI evidence requests inside the package
+
+- [x] CH007 First verify the existing `StructuredEvidence`/Analyzer path in `server/app/main.py`, `server/app/diagnosis/evidence_structurer.py`, and `server/app/rca/attribution.py` already consumes all evidence present in a WatchIncident package; do not introduce a new resolver or duplicate evidence model unless a failing test demonstrates that an in-package family is ignored.
+- [x] CH008 If CH007 identifies a real gap, add only the smallest mapping or audit metadata needed to distinguish package evidence that is `valid`/`partial` from package evidence that is missing; reuse existing `evidence_ref`, `evidence_status`, `reuse_status`, and controlled-tree probe-result contracts.
+- [x] CH009 Add focused tests in the existing Watch/diagnosis test modules, or a new `tests/test_frozen_evidence.py` only if no existing module is suitable, covering package-hit, partial, wrong target/window, invalid status, duplicate record, and deterministic missing-request behavior.
+
+### CH004 - Stop frozen analysis when the package is exhausted
+
+- [x] CH010 Existing frozen Watch analysis in `server/app/main.py` records `missing_evidence`, `qualification_boundary`, and `stop_reason=evidence_package_exhausted` without scheduling a collector.
+- [x] CH011 Verify the existing AI-tree boundary and conclusion qualification in `server/app/main.py`, `server/app/rca/models.py`, and `server/app/diagnosis/session_conclusion.py`; patch only a failing promotion or parent-retention case, and do not create a second stop-reason pipeline.
+- [x] CH012 Add end-to-end tests in `tests/test_server_api.py`, `tests/test_diagnosis_orchestrator.py`, and `tests/test_session_conclusion.py` proving package exhaustion ends with `insufficient_evidence` or `partial_completed`, no root-cause upgrade, and stable missing-evidence output.
+
+### CH005 - Enforce the no-new-probe gate
+
+- [x] CH013 Existing initial scheduling guards in `server/app/diagnosis/orchestrator.py` cover `_plan_and_schedule()`, `_schedule_probe()`, and deferred scheduling; do not add duplicate guards.
+- [x] CH014 Existing follow-up guards in `server/app/diagnosis/orchestrator.py` and `server/app/diagnosis/watch_runtime.py` cover `_plan_followup_requests()`, `_has_schedulable_followup_work()`, and `schedule_followup_tasks()`.
+- [x] CH015 Add regression assertions in `tests/test_diagnosis_orchestrator.py` and `tests/test_watch_runtime.py` proving the existing guards prevent initial probes, delayed follow-ups, approval items, and background rescheduling in frozen mode.
+
+### CH006 - Preserve auditability and test-package output
+
+- [x] CH016 Existing WatchIncident serialization in `server/app/main.py` already records mode, package/cohort identity, reused refs, missing gaps, stop reason, and probe count; do not duplicate those fields there.
+- [x] CH017 Extend only the existing audit export path in `server/app/diagnosis/audit_bundle.py` or add a thin WatchIncident-to-audit adapter, so frozen results are exportable without rerunning analysis or pretending the synthetic rolling-snapshot task is a live collector task.
+- [x] CH018 Add audit-bundle tests in `tests/test_server_api.py`, `tests/test_sql_repository.py`, and the relevant Watch tests proving frozen results retain same-window evidence refs, package identity, missing gaps, stop reason, and `probe_count=0`.
+- [x] CH019 Update `docs/ai_ops_v2_test/AI_OPS_V2_FULL_TEST_RUNBOOK_CN.md` and the relevant test-package README under `docs/运维Agent多赛道评测最终交付-20260822/` only where the current instructions do not already describe the existing frozen Watch flow; do not document a new collector or a hybrid mode.
+
+### CH007 - Validate the focused increment
+
+- [x] CH020 Run focused frozen-evidence, Watch, diagnosis-orchestrator, session-conclusion, audit-bundle, and evidence-structurer tests, then run `python -m compileall server tests`.
+- [x] CH021 Run `git diff --check` and verify ordinary `live_collection` diagnosis behavior is unchanged, including initial probe selection, `auto_execute_policy`, and existing delayed follow-up tests.
+
+### CH Completion Criteria
+
+```text
+existing ordinary diagnosis requests default to live_collection
+hybrid is rejected and is not added as a second mode contract
+existing WatchIncident analysis uses the saved rolling snapshot as same-window evidence
+existing guards create zero initial/follow-up probes for frozen analysis
+package-hit and package-miss semantics are proven by tests before any resolver code is added
+missing package evidence produces a bounded stop without recollection
+the existing frozen result is exported through the current audit contract or a thin adapter
+live_collection behavior and delayed follow-up tests remain unchanged
+```
+
+## Dependencies for Task Group CH
+
+- Existing CH001-CH002, CH004-CH005, CH010, CH013-CH014 are already implemented and must not be reimplemented.
+- CH003 and CH006 validate the existing contracts before further changes.
+- CH007-CH009 determine whether package resolution needs any code at all.
+- CH011-CH012 verify bounded conclusions and only patch a demonstrated defect.
+- CH015 verifies the existing no-new-probe guards.
+- CH017-CH019 close the actual audit/export gap and documentation gap.
+- CH020-CH021 are final validation and regression gates.
+
+## Parallel Opportunities for Task Group CH
+
+- CH003, CH006, and CH015 can be prepared in parallel because they validate separate existing paths.
+- CH007 and CH009 can proceed in parallel after the current structured-evidence contract is reviewed.
+- CH017 and CH019 can proceed in parallel after the existing result shape is confirmed.
+
+## Implementation Strategy for Task Group CH
+
+### MVP
+
+1. Treat existing CH001-CH002, CH004-CH005, CH010, CH013-CH014 as already implemented.
+2. Complete CH003, CH006, and CH015 to prove those paths without rewriting them.
+3. Complete CH007-CH012 to distinguish package hits from package misses and preserve bounded conclusions.
+4. Complete CH017-CH019 so the existing frozen result can enter the evaluation audit package.
+
+### Incremental Delivery
+
+1. Keep `live_collection` as the compatibility default.
+2. Reuse the existing `frozen_evidence` WatchIncident path.
+3. Test package-hit and package-miss behavior before adding code.
+4. Add only the missing audit adapter or boundary fix.
+5. Run CH020-CH021 before considering the first frozen-evidence evaluation ready.

@@ -10,6 +10,9 @@ from server.app.common_utils import json_safe
 def build_audit_bundle(diagnosis_id: str, orchestrator, repo) -> dict[str, Any] | None:
     detail = orchestrator.store.get_detail(diagnosis_id)
     if detail is None:
+        frozen = _frozen_watch_incident(repo, diagnosis_id)
+        if frozen is not None:
+            return frozen
         return None
 
     child_task_ids = list(detail.get("child_task_ids", []))
@@ -69,7 +72,149 @@ def build_audit_bundle(diagnosis_id: str, orchestrator, repo) -> dict[str, Any] 
     })
 
 
+def _frozen_watch_incident(repo, diagnosis_id: str) -> dict[str, Any] | None:
+    """Adapt a persisted frozen WatchIncident to the existing audit shape."""
+    if not diagnosis_id.startswith("analysis_") or not hasattr(repo, "get_watch_incident"):
+        return None
+    incident = repo.get_watch_incident(diagnosis_id.removeprefix("analysis_"))
+    if not incident or incident.get("analysis_session_id") != diagnosis_id:
+        return None
+
+    result = incident.get("analysis_result") or {}
+    report = result.get("report") if isinstance(result.get("report"), dict) else {}
+    structured = incident.get("structured_evidence") or result.get("structured_evidence") or {}
+    reused_refs = list(dict.fromkeys(
+        item
+        for item in (
+            result.get("reused_evidence_refs")
+            or [
+                ref.get("evidence_ref")
+                for ref in incident.get("snapshot_refs", [])
+                if isinstance(ref, dict) and ref.get("evidence_ref")
+            ]
+        )
+        if item
+    ))
+    missing = list(dict.fromkeys(
+        item
+        for item in (result.get("missing_evidence") or report.get("missing_evidence") or [])
+        if item
+    ))
+    boundary = (
+        result.get("qualification_boundary")
+        or result.get("conclusion_boundary")
+        or report.get("conclusion_boundary")
+    )
+    evidence_refs = list(dict.fromkeys([
+        *reused_refs,
+        *[
+            item.get("evidence_ref")
+            for item in structured.get("artifact_refs", [])
+            if isinstance(item, dict) and item.get("evidence_ref")
+        ],
+    ]))
+    trace = [{
+        "schema_version": "1.0",
+        "diagnosis_id": diagnosis_id,
+        "sequence": 1,
+        "stage": "evidence",
+        "component": "mini_drop.watch_runtime",
+        "decision": "frozen_evidence_reused",
+        "summary": "复用 WatchIncident 已保存的同窗冻结证据",
+        "input_refs": evidence_refs,
+        "output_refs": evidence_refs,
+        "evidence_refs": evidence_refs,
+        "alternatives": [],
+        "details": {
+            "incident_id": incident.get("incident_id"),
+            "evidence_package_id": incident.get("evidence_cohort_id"),
+            "evidence_cohort_id": incident.get("evidence_cohort_id"),
+            "collection_mode": structured.get("collection_mode") or "rolling_snapshot",
+            "timing_relation": structured.get("timing_relation") or "same_window",
+            "probe_count": result.get("probe_count", 0),
+            "missing_evidence": missing,
+            "stop_reason": result.get("stop_reason", ""),
+        },
+        "recorded_at": result.get("analysis_completed_at") or incident.get("created_at"),
+        "reconstructed": True,
+    }]
+    latest = report or result
+    normalized = _normalize_conclusion(latest) if isinstance(latest, dict) else {}
+    normalized.update({
+        "diagnosis_mode": "frozen_evidence",
+        "evidence_package_id": incident.get("evidence_cohort_id"),
+        "evidence_cohort_id": incident.get("evidence_cohort_id"),
+        "reused_evidence_refs": reused_refs,
+        "missing_evidence": missing,
+        "qualification_boundary": boundary,
+        "stop_reason": result.get("stop_reason", ""),
+        "probe_count": result.get("probe_count", 0),
+    })
+    bundle = {
+        "schema_version": "1.0",
+        "diagnosis_id": diagnosis_id,
+        "diagnosis_mode": "frozen_evidence",
+        "evidence_package_id": incident.get("evidence_cohort_id"),
+        "evidence_cohort_id": incident.get("evidence_cohort_id"),
+        "source_incident_id": incident.get("incident_id"),
+        "run": {
+            "status": incident.get("analysis_status"),
+            "created_at": incident.get("created_at"),
+            "updated_at": incident.get("created_at"),
+            "model_version": result.get("model"),
+            "planner_version": None,
+            "policy_profile": None,
+            "normalized_intent": {},
+            "target_scope": {
+                "diagnosis_mode": "frozen_evidence",
+                "evidence_package_id": incident.get("evidence_cohort_id"),
+                "source_evidence_cohort_id": incident.get("evidence_cohort_id"),
+                "source_incident_id": incident.get("incident_id"),
+            },
+            "budget_used": {"probe_count": result.get("probe_count", 0)},
+        },
+        "trace": trace,
+        "runtime_trace": trace,
+        "topology_snapshot": None,
+        "probes": [],
+        "child_task_ids": [],
+        "tasks": [],
+        "artifacts": [],
+        "evidence": [],
+        "structured_evidence": structured,
+        "evidence_refs": evidence_refs,
+        "conclusion": normalized,
+        "latest_conclusion": {
+            **(report if isinstance(report, dict) else {}),
+            **normalized,
+        },
+        "safety": {
+            "forbidden_action_executed": False,
+            "unsafe_action_count": 0,
+            "commands": [],
+        },
+        "rollback": {"required": False, "attempted": False, "succeeded": None},
+        "watch_incident": {
+            "incident_id": incident.get("incident_id"),
+            "watch_id": incident.get("watch_id"),
+            "trigger_event_id": incident.get("trigger_event_id"),
+            "snapshot_id": incident.get("snapshot_id"),
+            "snapshot_refs": incident.get("snapshot_refs", []),
+            "collector_tasks": incident.get("collector_tasks", []),
+        },
+        "reused_evidence_refs": reused_refs,
+        "missing_evidence": missing,
+        "qualification_boundary": boundary,
+        "stop_reason": result.get("stop_reason", ""),
+        "probe_count": result.get("probe_count", 0),
+    }
+    bundle["readiness_gate"] = build_readiness_gate(bundle)
+    return json_safe(bundle)
+
+
 def build_readiness_gate(bundle: dict[str, Any]) -> dict[str, Any]:
+    if bundle.get("diagnosis_mode") == "frozen_evidence":
+        return _build_frozen_readiness_gate(bundle)
     checks = [
         _check("audit_bundle_exists", True, "audit bundle was generated"),
         _check("runtime_trace_non_empty", bool(bundle.get("runtime_trace")), "runtime trace should not be empty"),
@@ -117,6 +262,61 @@ def build_readiness_gate(bundle: dict[str, Any]) -> dict[str, Any]:
             "completed_probe_evidence_valid",
             _completed_probes_have_valid_evidence(bundle),
             "completed probes must expose valid or partial structured evidence, not only a DONE task state",
+        ),
+    ]
+    status = "PASS" if all(item["status"] == "PASS" for item in checks) else "FAIL"
+    return {
+        "status": status,
+        "checks": checks,
+        "summary": f"{sum(item['status'] == 'PASS' for item in checks)}/{len(checks)} checks passed",
+    }
+
+
+def _build_frozen_readiness_gate(bundle: dict[str, Any]) -> dict[str, Any]:
+    structured = bundle.get("structured_evidence")
+    checks = [
+        _check("audit_bundle_exists", True, "audit bundle was generated"),
+        _check(
+            "frozen_mode_present",
+            bundle.get("diagnosis_mode") == "frozen_evidence",
+            "frozen analysis mode should be explicit",
+        ),
+        _check(
+            "evidence_package_identity_present",
+            bool(bundle.get("evidence_package_id") and bundle.get("evidence_cohort_id")),
+            "frozen evidence package and cohort identity should be preserved",
+        ),
+        _check(
+            "same_window_evidence_present",
+            isinstance(structured, dict)
+            and structured.get("collection_mode") == "rolling_snapshot"
+            and structured.get("timing_relation") == "same_window",
+            "frozen analysis should retain the same-window rolling snapshot",
+        ),
+        _check(
+            "structured_evidence_non_empty",
+            bool(structured),
+            "saved structured evidence should exist",
+        ),
+        _check(
+            "evidence_refs_recorded",
+            bool(bundle.get("evidence_refs") or bundle.get("reused_evidence_refs")),
+            "frozen analysis should preserve reusable evidence references",
+        ),
+        _check(
+            "missing_evidence_recorded",
+            "missing_evidence" in bundle,
+            "package gaps should be explicit even when the package is complete",
+        ),
+        _check(
+            "stop_reason_recorded",
+            "stop_reason" in bundle,
+            "frozen termination reason should be explicit",
+        ),
+        _check(
+            "probe_count_zero",
+            bundle.get("probe_count") == 0 and not bundle.get("probes"),
+            "frozen analysis must not create diagnosis probes",
         ),
     ]
     status = "PASS" if all(item["status"] == "PASS" for item in checks) else "FAIL"

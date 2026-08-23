@@ -130,6 +130,10 @@ class CreateDiagnosisRequest(StrictModel):
     budget_profile: Literal["production_safe", "staging", "development"] = "production_safe"
     auto_execute_policy: Literal["safe_only", "all_registered", "manual"] | None = None
     budget: Optional[DiagnosisBudget] = None
+    diagnosis_mode: Literal["live_collection", "frozen_evidence"] = "live_collection"
+    evidence_package_id: Optional[str] = Field(default=None, max_length=128)
+    evidence_cohort_id: Optional[str] = Field(default=None, max_length=128)
+    source_incident_id: Optional[str] = Field(default=None, max_length=128)
 
 
 class ApprovalRequest(StrictModel):

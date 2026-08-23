@@ -3,7 +3,7 @@
 使用 SQLite :memory: 后端，验证与 InMemoryRepository 的接口一致性。
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -267,6 +267,52 @@ class TestAuditPersistence:
         logs = repo2.audit_logs
         assert len(logs) >= 1
         assert any(l.event_type == "TASK_CREATED" for l in logs)
+
+
+class TestWatchIncidentPersistence:
+    def test_frozen_watch_analysis_roundtrip_preserves_audit_fields(self, repo: SqlRepository):
+        created_at = datetime(2026, 8, 11, 10, 5, tzinfo=timezone.utc)
+        repo.persist_watch_incident({
+            "incident_id": "inc-frozen-1",
+            "watch_id": "watch-1",
+            "trigger_event_id": "trigger-1",
+            "evidence_cohort_id": "cohort-1",
+            "trigger_type": "cpu_shift",
+            "window_start": "2026-08-11T10:00:00Z",
+            "window_end": "2026-08-11T10:05:00Z",
+            "trigger_observed_at": "2026-08-11T10:05:00Z",
+            "status": "analyzed",
+            "analysis_status": "analyzed",
+            "snapshot_id": "snapshot-1",
+            "snapshot_refs": [{"evidence_ref": "snapshot:cohort-1:metrics"}],
+            "structured_evidence": {
+                "collection_mode": "rolling_snapshot",
+                "timing_relation": "same_window",
+                "evidence_cohort_id": "cohort-1",
+            },
+            "collector_tasks": [],
+            "analysis_session_id": "analysis_inc-frozen-1",
+            "analysis_result": {
+                "diagnosis_mode": "frozen_evidence",
+                "evidence_package_id": "cohort-1",
+                "missing_evidence": ["dependency_check"],
+                "stop_reason": "evidence_package_exhausted",
+                "probe_count": 0,
+            },
+            "created_at": created_at.isoformat(),
+            "episode_status": "ACTIVE",
+            "diagnosis_eligible": True,
+        })
+
+        persisted = repo.get_watch_incident("inc-frozen-1")
+
+        assert persisted is not None
+        assert persisted["analysis_session_id"] == "analysis_inc-frozen-1"
+        assert persisted["structured_evidence"]["timing_relation"] == "same_window"
+        assert persisted["analysis_result"]["diagnosis_mode"] == "frozen_evidence"
+        assert persisted["analysis_result"]["missing_evidence"] == ["dependency_check"]
+        assert persisted["analysis_result"]["stop_reason"] == "evidence_package_exhausted"
+        assert persisted["analysis_result"]["probe_count"] == 0
 
 
 class TestRCAPersistence:

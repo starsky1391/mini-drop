@@ -152,6 +152,13 @@ class DiagnosisOrchestrator:
 
         target_scope = self._build_target_scope(request, intent, budget)
         target_scope["evidence_cohort_id"] = diagnosis_id
+        target_scope["diagnosis_mode"] = request.diagnosis_mode
+        if request.evidence_package_id:
+            target_scope["evidence_package_id"] = request.evidence_package_id
+        if request.evidence_cohort_id:
+            target_scope["source_evidence_cohort_id"] = request.evidence_cohort_id
+        if request.source_incident_id:
+            target_scope["source_incident_id"] = request.source_incident_id
         hypotheses = self._build_hypotheses(intent.symptom, target_scope)
         budget_usage = self._empty_budget_usage()
         budget_usage["model_calls"] = 0
@@ -229,6 +236,25 @@ class DiagnosisOrchestrator:
                     "diagnosis_completed",
                 )
                 return self.store.get_detail(diagnosis_id) or {}
+
+        if request.diagnosis_mode == "frozen_evidence":
+            self.store.record_event(
+                diagnosis_id,
+                "frozen_evidence_no_probe",
+                {
+                    "evidence_package_id": request.evidence_package_id,
+                    "evidence_cohort_id": request.evidence_cohort_id,
+                    "source_incident_id": request.source_incident_id,
+                    "reason": "冻结证据模式只消费已保存证据，不创建实时探针",
+                },
+            )
+            self._ensure_insufficient_conclusion(diagnosis_id, [])
+            self._transition(
+                diagnosis_id,
+                DiagnosisStatus.INSUFFICIENT_EVIDENCE,
+                "diagnosis_completed",
+            )
+            return self.store.get_detail(diagnosis_id) or {}
 
         self._plan_and_schedule(diagnosis_id, intent.symptom, target_scope, budget)
         self._advance_locked(diagnosis_id)
@@ -419,6 +445,7 @@ class DiagnosisOrchestrator:
         session = self.store.get_session(diagnosis_id)
         if session is None or session["status"] in TERMINAL_DIAGNOSIS_STATUSES:
             return
+        frozen_evidence = _is_frozen_evidence_session(session)
         probes = self.store.list_probes(diagnosis_id)
         child_ids = list(session.get("child_task_ids", []))
         self._expire_stale_child_tasks(child_ids)
@@ -443,7 +470,8 @@ class DiagnosisOrchestrator:
 
         if child_ids != session.get("child_task_ids", []):
             session = self.store.update_session(diagnosis_id, child_task_ids=child_ids)
-        self._schedule_deferred_followups(diagnosis_id)
+        if not frozen_evidence:
+            self._schedule_deferred_followups(diagnosis_id)
         session = self.store.get_session(diagnosis_id) or session
         child_ids = list(session.get("child_task_ids", []))
 
@@ -570,6 +598,9 @@ class DiagnosisOrchestrator:
         target_scope: dict[str, Any],
         budget: DiagnosisBudget,
     ) -> None:
+        session = self.store.get_session(diagnosis_id)
+        if _is_frozen_evidence_session(session):
+            return
         instances = target_scope["instances"][:budget.max_service_instances]
         probe_ids = _scope_probe_ids(symptom, target_scope)
         planned: list[ProbePlan] = []
@@ -585,7 +616,7 @@ class DiagnosisOrchestrator:
             min(budget.follow_up_reserve_seconds, total_limit),
         )
         duration_limit = max(0, total_limit - reserve)
-        session = self.store.get_session(diagnosis_id) or {}
+        session = session or {}
         collection_context = _session_collection_context(session)
         auto_policy = str((session.get("risk_budget") or {}).get("auto_execute_policy") or "safe_only")
         for index, instance in enumerate(instances):
@@ -682,6 +713,14 @@ class DiagnosisOrchestrator:
         if session is None:
             self.store.update_probe(step_id, status="INVALID")
             return
+        if _is_frozen_evidence_session(session):
+            self.store.update_probe(step_id, status="SKIPPED")
+            self.store.record_event(
+                step["diagnosis_id"],
+                "frozen_evidence_probe_blocked",
+                {"step_id": step_id, "probe_id": step.get("probe_id")},
+            )
+            return
         allowed_targets = {
             (item.get("instance_id"), item.get("agent_id"), item.get("pid"))
             for item in session.get("target_scope", {}).get("instances", [])
@@ -761,7 +800,7 @@ class DiagnosisOrchestrator:
     def _schedule_deferred_followups(self, diagnosis_id: str) -> None:
         """并发槽位释放后，继续调度已获准但暂时排队的 follow-up。"""
         session = self.store.get_session(diagnosis_id)
-        if session is None:
+        if session is None or _is_frozen_evidence_session(session):
             return
         policy = str((session.get("risk_budget") or {}).get("auto_execute_policy") or "safe_only")
         if policy != "all_registered":
@@ -1827,7 +1866,17 @@ class DiagnosisOrchestrator:
     ) -> int:
         """Map AI tree evidence requests to registered follow-up probe plans."""
         session = self.store.get_session(diagnosis_id)
-        if session is None or session["status"] in TERMINAL_DIAGNOSIS_STATUSES:
+        if (
+            session is None
+            or session["status"] in TERMINAL_DIAGNOSIS_STATUSES
+            or _is_frozen_evidence_session(session)
+        ):
+            if session is not None and _is_frozen_evidence_session(session):
+                self.store.record_event(
+                    diagnosis_id,
+                    "frozen_evidence_followup_blocked",
+                    {"requested_evidence_gaps": list(dict.fromkeys(request_ids))[:MAX_FOLLOWUP_REQUESTS_PER_ROUND]},
+                )
             return 0
         parent_target = self._target_for_task(diagnosis_id, parent_task)
         existing_probes = self.store.list_probes(diagnosis_id)
@@ -2061,10 +2110,10 @@ class DiagnosisOrchestrator:
         probes: list[dict[str, Any]],
         parent_task,
     ) -> bool:
-        if not requests or parent_task is None:
+        session = self.store.get_session(diagnosis_id) or {}
+        if _is_frozen_evidence_session(session) or not requests or parent_task is None:
             return False
         open_statuses = {"PLANNED", "APPROVED", "SCHEDULED", "RUNNING", "WAITING_APPROVAL"}
-        session = self.store.get_session(diagnosis_id) or {}
         parent_target = self._target_for_task(diagnosis_id, parent_task)
         bounded_requests = requests[:MAX_FOLLOWUP_REQUESTS_PER_ROUND]
         for request in bounded_requests:
@@ -8568,6 +8617,15 @@ def _probe_budget_phase(probe: dict[str, Any]) -> str:
     if phase in {"initial", "followup"}:
         return phase
     return "followup" if parameters.get("parent_task_id") else "initial"
+
+
+def _is_frozen_evidence_session(session: dict[str, Any] | None) -> bool:
+    if not isinstance(session, dict):
+        return False
+    mode = session.get("diagnosis_mode")
+    if mode is None:
+        mode = (session.get("target_scope") or {}).get("diagnosis_mode")
+    return mode == "frozen_evidence"
 
 
 def _candidate_location_fields(candidate: dict[str, Any], session: dict[str, Any]) -> dict[str, Any]:

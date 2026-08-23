@@ -436,12 +436,18 @@ class DiagnosisSessionModel(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False)
 
     def to_dict(self) -> dict:
+        target_scope = self.target_scope_json or {}
         return {
             "diagnosis_id": self.id,
             "creator_id": self.creator_id,
             "raw_query": self.raw_query,
             "normalized_intent": self.normalized_intent_json or {},
-            "target_scope": self.target_scope_json or {},
+            "target_scope": target_scope,
+            "diagnosis_mode": target_scope.get("diagnosis_mode", "live_collection"),
+            "evidence_package_id": target_scope.get("evidence_package_id"),
+            "evidence_cohort_id": target_scope.get("evidence_cohort_id"),
+            "source_evidence_cohort_id": target_scope.get("source_evidence_cohort_id"),
+            "source_incident_id": target_scope.get("source_incident_id"),
             "requested_time_range": self.requested_time_range_json or {},
             "effective_time_range": self.effective_time_range_json or {},
             "topology_snapshot_id": self.topology_snapshot_id,

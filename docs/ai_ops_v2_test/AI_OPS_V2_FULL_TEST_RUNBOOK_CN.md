@@ -62,6 +62,22 @@ python -m pytest -q
 
 如果这里不过，先不要跑 VM 测试集。后面的 VM 故障注入会把问题放大，排查成本会更高。
 
+### 冻结证据包 Watch 流程
+
+如果测试输入来自已经结束的 Persistent Watch 异常窗口，使用
+`POST /api/v1/watch-incidents/{incident_id}/analyze` 分析保存的
+`structured_evidence`。该入口属于 `frozen_evidence` 模式：
+
+- 复用原 `evidence_cohort_id`、`rolling_snapshot` 和 `same_window`；
+- 允许 AI 树报告包内已存在的证据，缺少的 evidence family 输出
+  `missing_evidence` 和 `evidence_package_exhausted`；
+- 不创建新的实时 collector、approval item 或 delayed follow-up；
+- 通过 `GET /api/v1/diagnoses/{analysis_id}/audit-bundle` 导出审计包；
+- 普通诊断请求仍默认 `live_collection`，不支持 `hybrid`。
+
+冻结分析的正确验收重点是证据复用、缺口边界和 `probe_count=0`，不能用
+“是否创建了实时采集任务”作为冻结分析成功条件。
+
 ## 三、确认测试集路径
 
 当前测试集已经整理为脚本友好的英文目录，不需要再做中文目录到英文目录的复制。

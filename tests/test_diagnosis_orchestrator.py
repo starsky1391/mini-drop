@@ -2223,6 +2223,32 @@ def _sys_metric_probe_by_instance(data: dict) -> dict:
 
 
 class TestDiagnosisSessionAPI:
+    def test_frozen_evidence_mode_creates_no_probe_or_approval_work(self, client: TestClient):
+        payload = _payload()
+        payload.update({
+            "diagnosis_mode": "frozen_evidence",
+            "evidence_package_id": "package-1",
+            "evidence_cohort_id": "cohort-1",
+            "source_incident_id": "incident-1",
+        })
+
+        response = client.post("/api/v1/diagnoses", json=payload)
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["status"] == "INSUFFICIENT_EVIDENCE"
+        assert data["target_scope"]["diagnosis_mode"] == "frozen_evidence"
+        assert data["target_scope"]["evidence_package_id"] == "package-1"
+        assert data["target_scope"]["source_evidence_cohort_id"] == "cohort-1"
+        assert data["target_scope"]["source_incident_id"] == "incident-1"
+        assert data["probes"] == []
+        assert data["child_task_ids"] == []
+        assert data["budget_used"]["probes"] == 0
+        assert any(
+            event["event_type"] == "frozen_evidence_no_probe"
+            for event in data["events"]
+        )
+
     def test_missing_instance_mapping_requires_scope_confirmation(self, client: TestClient):
         response = client.post("/api/v1/diagnoses", json={
             "query": "服务 service-a 为什么变慢",

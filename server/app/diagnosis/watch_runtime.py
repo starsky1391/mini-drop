@@ -742,6 +742,8 @@ class PersistentAgentRuntime:
         watch = self.registry.get(incident.watch_id)
         if watch is None:
             raise KeyError(incident.watch_id)
+        if (incident.analysis_result or {}).get("diagnosis_mode") == "frozen_evidence":
+            return []
         if watch.trigger_action != "auto_all_registered":
             return []
 

@@ -166,6 +166,8 @@ def _start_watch_episode_diagnosis_if_ready(
     incident_id: str,
     *,
     force: bool = False,
+    analysis_strategy: Optional[str] = None,
+    analysis_pipeline: Optional[str] = None,
 ) -> dict[str, Any] | None:
     incident = watch_registry.get_incident(incident_id)
     if incident is None:
@@ -186,13 +188,18 @@ def _start_watch_episode_diagnosis_if_ready(
     if not acquired:
         diagnosis_id = claimed.analysis_session_id
         return {
-            "mode": "ai_cluster_diagnosis",
+            "mode": "frozen_evidence_analysis",
+            "diagnosis_mode": "frozen_evidence",
             "diagnosis_id": diagnosis_id,
             "analysis_session_id": diagnosis_id,
             "incident": claimed.model_dump(mode="json"),
             "reused": True,
         }
-    return _create_watch_incident_diagnosis(incident_id, already_claimed=True)
+    return _execute_watch_incident_analysis(
+        incident_id,
+        analysis_strategy=analysis_strategy,
+        analysis_pipeline=analysis_pipeline,
+    )
 
 
 def _create_watch_incident_diagnosis(
@@ -504,11 +511,18 @@ def _execute_watch_incident_analysis(
             detail=str(exc)[:300],
         )
     result["analysis_attempt_id"] = attempt_id
-    return _finish_watch_incident_analysis(
+    updated = _finish_watch_incident_analysis(
         incident_id,
         result,
         attempt_id=attempt_id,
     )
+    if updated is None:
+        return None
+    return {
+        **result,
+        "analysis_status": updated.analysis_status,
+        "incident": updated.model_dump(mode="json"),
+    }
 
 
 def _persist_watch_analysis_failure(
@@ -525,8 +539,14 @@ def _persist_watch_analysis_failure(
     if incident is None:
         return None
     result = {
+        "mode": "ai_cluster_diagnosis",
         "analysis_session_id": f"analysis_{incident_id}",
+        "diagnosis_id": f"analysis_{incident_id}",
+        "diagnosis_mode": "frozen_evidence",
         "incident_id": incident_id,
+        "evidence_package_id": incident.evidence_cohort_id,
+        "evidence_cohort_id": incident.evidence_cohort_id,
+        "probe_count": 0,
         "analysis_attempt_id": attempt_id,
         "analysis_status": "analysis_failed",
         "auto_analysis_error": error_type,
@@ -542,12 +562,17 @@ def _persist_watch_analysis_failure(
         ],
         "structured_evidence": incident.structured_evidence,
     }
-    return watch_registry.update_incident_analysis(
+    updated = watch_registry.update_incident_analysis(
         incident_id,
         analysis_status="analysis_failed",
         analysis_session_id=result["analysis_session_id"],
         analysis_result=result,
     )
+    return {
+        **result,
+        "status": "analysis_failed",
+        "incident": updated.model_dump(mode="json"),
+    }
 
 
 def _finish_watch_incident_analysis(
@@ -572,7 +597,7 @@ def _finish_watch_incident_analysis(
         analysis_session_id=result["analysis_session_id"],
         analysis_result=result,
     )
-    if needs_evidence:
+    if needs_evidence and result.get("diagnosis_mode") != "frozen_evidence":
         watch = watch_registry.get(updated.watch_id)
         if watch is not None and watch.trigger_action == "auto_all_registered":
             watch_runtime.schedule_followup_tasks(
@@ -1553,24 +1578,48 @@ def _run_watch_incident_analysis(
     report = outcome.report
     ranked_causes = [cause.model_dump() for cause in report.report.ranked_causes]
     ai_tree = [item.model_dump(mode="json") for item in report.report.ai_tree]
-    next_evidence_requests = list(dict.fromkeys(
-        request
-        for item in ai_tree
-        for request in item.get("next_evidence_requests", [])
-        if request
-    ))
     analysis_result = report.report.analysis_result
     conclusion_boundary = (
         report.report.conclusion_boundary.model_dump(mode="json")
         if report.report.conclusion_boundary is not None
         else None
     )
+    missing_evidence = list(report.report.missing_evidence)
+    next_evidence_requests = list(dict.fromkeys(
+        request
+        for item in ai_tree
+        for request in item.get("next_evidence_requests", [])
+        if request
+    ))
+    reused_evidence_refs = list(dict.fromkeys(
+        [
+            *(
+                item.get("evidence_ref")
+                for item in incident.snapshot_refs
+                if item.get("evidence_ref")
+            ),
+            *(
+                item.get("evidence_ref")
+                for item in structured.model_dump(mode="json").get("artifact_refs") or []
+                if isinstance(item, dict) and item.get("evidence_ref")
+            ),
+        ]
+    ))
     analysis_session_id = f"analysis_{incident.incident_id}"
+    controlled_tree = report.report.controlled_ai_tree
+    stop_reason = (
+        "evidence_package_exhausted"
+        if report.report.not_enough_evidence and (missing_evidence or next_evidence_requests)
+        else (controlled_tree.stop_reason if controlled_tree is not None else "")
+    )
     return {
         "analysis_session_id": analysis_session_id,
+        "diagnosis_id": analysis_session_id,
+        "diagnosis_mode": "frozen_evidence",
         "incident_id": incident.incident_id,
         "watch_id": watch.watch_id,
         "trigger_event_id": incident.trigger_event_id,
+        "evidence_package_id": incident.evidence_cohort_id,
         "evidence_cohort_id": incident.evidence_cohort_id,
         "analysis_strategy": selected_strategy,
         "analysis_pipeline": selected_pipeline,
@@ -1585,10 +1634,13 @@ def _run_watch_incident_analysis(
         "not_enough_evidence": report.report.not_enough_evidence,
         "ai_tree": ai_tree,
         "next_evidence_requests": next_evidence_requests,
-        "missing_evidence": list(report.report.missing_evidence),
+        "missing_evidence": missing_evidence,
         "collection_gaps": list(report.report.collection_gaps),
         "blocked_upgrades": list(report.report.blocked_upgrades),
         "conclusion_boundary": conclusion_boundary,
+        "reused_evidence_refs": reused_evidence_refs,
+        "stop_reason": stop_reason,
+        "probe_count": 0,
         "analysis_result": (
             analysis_result.model_dump(mode="json")
             if analysis_result is not None
@@ -1822,8 +1874,12 @@ def analyze_watch_incident(
     analysis_strategy: Optional[str] = None,
     analysis_pipeline: Optional[str] = None,
 ) -> APIResponse:
-    _ = analysis_strategy, analysis_pipeline
-    return APIResponse(data=_start_watch_episode_diagnosis_if_ready(incident_id, force=True))
+    return APIResponse(data=_start_watch_episode_diagnosis_if_ready(
+        incident_id,
+        force=True,
+        analysis_strategy=analysis_strategy,
+        analysis_pipeline=analysis_pipeline,
+    ))
 
 
 @app.post("/api/v1/watch-incidents/{incident_id}/anomalies/{anomaly_point_id}/explain")

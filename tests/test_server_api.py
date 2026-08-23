@@ -600,19 +600,32 @@ class TestWatchSubscriptions:
         data = resp.json()["data"]
         diagnosis_id = data["diagnosis_id"]
         incident = data["incident"]
-        assert diagnosis_id.startswith("diag_session_")
-        assert data["mode"] == "ai_cluster_diagnosis"
+        assert data["diagnosis_mode"] == "frozen_evidence"
+        assert diagnosis_id == data["analysis_session_id"]
+        assert diagnosis_id.startswith("analysis_")
         assert incident["analysis_status"] in {"analyzing", "analyzed", "needs_evidence"}
         assert incident["analysis_session_id"] == diagnosis_id
-        assert incident["analysis_result"]["mode"] == "ai_cluster_diagnosis"
         assert incident["analysis_result"]["diagnosis_id"] == diagnosis_id
+        assert incident["analysis_result"]["diagnosis_mode"] == "frozen_evidence"
         assert incident["analysis_result"]["incident_id"] == incident_id
         assert incident["analysis_result"]["evidence_cohort_id"] == triggered["trigger"]["evidence_cohort_id"]
+        assert incident["analysis_result"]["probe_count"] == 0
+        assert incident["analysis_result"]["collection_mode"] == "rolling_snapshot"
         assert incident["analysis_result"]["timing_relation"] == "same_window"
 
         session = client.get(f"/api/v1/diagnoses/{diagnosis_id}")
-        assert session.status_code == 200
-        assert session.json()["data"]["diagnosis_id"] == diagnosis_id
+        assert session.status_code == 404
+
+        audit = client.get(f"/api/v1/diagnoses/{diagnosis_id}/audit-bundle")
+        assert audit.status_code == 200
+        bundle = audit.json()["data"]
+        assert bundle["diagnosis_mode"] == "frozen_evidence"
+        assert bundle["evidence_package_id"] == triggered["trigger"]["evidence_cohort_id"]
+        assert bundle["evidence_cohort_id"] == triggered["trigger"]["evidence_cohort_id"]
+        assert bundle["source_incident_id"] == incident_id
+        assert bundle["probe_count"] == 0
+        assert bundle["probes"] == []
+        assert bundle["readiness_gate"]["status"] == "PASS"
 
         repeated = client.post(f"/api/v1/watch-incidents/{incident_id}/analyze")
         assert repeated.status_code == 200
@@ -654,8 +667,8 @@ class TestWatchSubscriptions:
         incident_id = triggered["incident"]["incident_id"]
 
         monkeypatch.setattr(
-            "server.app.main.diagnosis_orchestrator.create",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("provider unavailable")),
+            "server.app.main._run_watch_incident_analysis",
+            lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("provider unavailable")),
         )
         response = client.post(f"/api/v1/watch-incidents/{incident_id}/analyze")
 
@@ -668,6 +681,30 @@ class TestWatchSubscriptions:
         assert incident["analysis_result"]["auto_analysis_error"] == "RuntimeError"
         assert incident["analysis_result"]["retryable"] is True
         assert incident["analysis_result"]["preserved_evidence_refs"]
+
+
+def test_diagnosis_mode_defaults_to_live_collection_and_rejects_hybrid(client: TestClient):
+    default_response = client.post("/api/v1/diagnoses", json={
+        "query": "检查 order-service 的 CPU 异常",
+        "context": {
+            "service_id": "order-service",
+            "instances": [{
+                "service_id": "order-service",
+                "instance_id": "order-1",
+                "host_id": "agent-one",
+                "agent_id": "a1",
+                "pid": 4242,
+            }],
+        },
+    })
+    assert default_response.status_code == 200
+    assert default_response.json()["data"]["target_scope"]["diagnosis_mode"] == "live_collection"
+
+    hybrid_response = client.post("/api/v1/diagnoses", json={
+        "query": "检查 order-service 的 CPU 异常",
+        "diagnosis_mode": "hybrid",
+    })
+    assert hybrid_response.status_code == 422
 
 
 class TestCreateTask:
