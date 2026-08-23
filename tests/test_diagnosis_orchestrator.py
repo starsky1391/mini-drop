@@ -417,6 +417,11 @@ def test_successful_candidate_generation_keeps_analyzer_observation_distinct_fro
     )
     assert ai_node.generated_by == "ai_candidate"
 
+    guarded = orchestrator_module._promote_ai_nodes_to_guarded(updated)
+    assert guarded.layers[0].generated_by == "analyzer_observation"
+    assert guarded.layers[-1].generated_by == "ai_guarded"
+    assert guarded.layers[-1].unknown_causes[0].generated_by == "ai_guarded"
+
 
 def test_initial_ai_candidate_stays_investigation_only_even_if_model_says_conclude():
     tree = orchestrator_module._build_session_controlled_ai_tree(
@@ -3428,6 +3433,239 @@ def test_followup_uses_active_ai_candidate_level_for_source_snapshot():
 
     assert "source_snapshot" in requests
     assert not {"cpu_profile", "off_cpu_wait_profile", "trace_endpoint_profile"} & set(requests)
+
+
+def test_effective_level_ignores_historical_ai_candidates_when_active_ids_are_known():
+    assessment = {
+        "classification": "self_code_or_process_pressure",
+        "supported_level": "process",
+        "max_supported_level": "process",
+    }
+    session = {
+        "active_ai_candidate_ids": ["ai_candidate_function"],
+        "session_main": {
+            "layers": [{
+                "primary_causes": [],
+                "secondary_causes": [],
+                "rejected_causes": [],
+                "unknown_causes": [
+                    {
+                        "candidate_id": "ai_candidate_function",
+                        "generated_by": "ai_candidate",
+                        "role": "unknown",
+                        "status": "missing_evidence",
+                        "causal_status": "unproven",
+                        "supported_level": "function",
+                        "depth_kind": "base",
+                        "node_type": "base_cause",
+                    },
+                    {
+                        "candidate_id": "historical_line_candidate",
+                        "generated_by": "ai_candidate",
+                        "role": "unknown",
+                        "status": "missing_evidence",
+                        "causal_status": "unproven",
+                        "supported_level": "line",
+                        "depth_kind": "base",
+                        "node_type": "line_anchor",
+                    },
+                ],
+            }],
+        },
+    }
+
+    assert orchestrator_module._effective_investigation_level(assessment, session) == "function"
+
+
+def test_effective_level_does_not_scan_historical_ai_candidates_when_active_set_is_empty():
+    assessment = {
+        "classification": "self_code_or_process_pressure",
+        "supported_level": "process",
+        "max_supported_level": "process",
+    }
+    session = {
+        "active_ai_candidate_ids": [],
+        "session_main": {
+            "layers": [{
+                "primary_causes": [],
+                "secondary_causes": [],
+                "rejected_causes": [],
+                "unknown_causes": [{
+                    "candidate_id": "historical_line_candidate",
+                    "generated_by": "ai_candidate",
+                    "role": "unknown",
+                    "status": "missing_evidence",
+                    "causal_status": "unproven",
+                    "supported_level": "line",
+                    "depth_kind": "base",
+                    "node_type": "line_anchor",
+                }],
+            }],
+        },
+    }
+
+    assert orchestrator_module._effective_investigation_level(assessment, session) == "process"
+
+
+def test_tree_retained_pointer_follows_final_inherited_conclusion():
+    tree = orchestrator_module.ControlledAITree(
+        tree_id="diag-retained-sync",
+        retained_candidate_id="wrong-branch",
+        layers=[
+            orchestrator_module.AITreeLayer(
+                layer_id="root",
+                depth=0,
+                unknown_causes=[orchestrator_module.AITreeCandidateNode(
+                    candidate_id="coarse-root",
+                    relation="root",
+                    node_type="cluster_root",
+                    role="unknown",
+                    claim="目标进程存在异常。",
+                    supported_level="resource",
+                    status="missing_evidence",
+                )],
+            ),
+            orchestrator_module.AITreeLayer(
+                layer_id="line",
+                depth=1,
+                unknown_causes=[
+                    orchestrator_module.AITreeCandidateNode(
+                        candidate_id="retained-parent",
+                        relation="refinement",
+                        node_type="line_anchor",
+                        role="unknown",
+                        claim="真实来源父结论。",
+                        supported_level="line",
+                        status="partial",
+                        parent_candidate_ids=["coarse-root"],
+                        origin_parent_candidate_id="coarse-root",
+                    ),
+                    orchestrator_module.AITreeCandidateNode(
+                        candidate_id="wrong-branch",
+                        relation="refinement",
+                        role="unknown",
+                        claim="旧的错误 retained 指针。",
+                        supported_level="process",
+                        status="missing_evidence",
+                        parent_candidate_ids=["coarse-root"],
+                        origin_parent_candidate_id="coarse-root",
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    synced = orchestrator_module._sync_tree_retained_conclusion(
+        tree,
+        {"candidate_id": "retained-parent", "claim": "真实来源父结论。"},
+    )
+
+    assert synced.retained_candidate_id == "retained-parent"
+    assert [step.step_id for step in synced.localization_chain] == [
+        "localization_coarse-root",
+        "localization_retained-parent",
+    ]
+
+
+def test_tree_retained_pointer_is_cleared_when_final_conclusion_is_not_emitted():
+    tree = orchestrator_module.ControlledAITree(
+        tree_id="diag-retained-missing",
+        retained_candidate_id="stale-branch",
+        localization_chain=[
+            orchestrator_module.CausalExplanationStep(
+                step_id="localization-stale-branch",
+                statement="旧分支",
+            ),
+        ],
+        layers=[
+            orchestrator_module.AITreeLayer(
+                layer_id="root",
+                depth=0,
+                unknown_causes=[orchestrator_module.AITreeCandidateNode(
+                    candidate_id="coarse-root",
+                    relation="root",
+                    node_type="cluster_root",
+                    role="unknown",
+                    claim="目标进程存在异常。",
+                    supported_level="resource",
+                    status="missing_evidence",
+                )],
+            ),
+        ],
+    )
+
+    synced = orchestrator_module._sync_tree_retained_conclusion(
+        tree,
+        {"candidate_id": "missing-retained"},
+    )
+
+    assert synced.retained_candidate_id is None
+    assert synced.localization_chain == []
+    assert synced.data_quality["records"][-1]["status"] == "retained_candidate_not_emitted"
+
+
+def test_tree_builder_does_not_choose_first_base_node_as_retained_claim():
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-no-implicit-retained",
+        cluster_assessment={
+            "classification": "self_code_or_process_pressure",
+            "summary": "目标进程存在压力，仍需候选调查。",
+            "supported_level": "process",
+            "confidence": 0.3,
+            "conclusion_eligible": False,
+        },
+        candidates=[
+            {
+                "candidate_id": "candidate-first",
+                "description": "第一个候选",
+                "independent": True,
+            },
+            {
+                "candidate_id": "candidate-second",
+                "description": "第二个候选",
+                "independent": True,
+            },
+        ],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+    )
+
+    assert tree is not None
+    assert tree.retained_candidate_id is None
+
+
+def test_investigation_review_does_not_relabel_analyzer_layer_as_ai_guarded():
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-preserve-analyzer-source",
+        cluster_assessment={
+            "classification": "self_code_or_process_pressure",
+            "summary": "目标进程存在压力，仍需补证。",
+            "supported_level": "process",
+            "confidence": 0.3,
+            "conclusion_eligible": False,
+        },
+        candidates=[],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+    )
+    assert tree is not None
+
+    updated = orchestrator_module._apply_investigation_review(
+        tree,
+        {
+            "selected_evidence_families": [],
+            "candidate_proposals": [],
+            "candidate_updates": {},
+            "rollback_edges": [],
+        },
+    )
+
+    assert all(
+        layer.generated_by == "analyzer_observation"
+        for layer in updated.layers
+    )
 
 
 def test_memory_followup_is_sequential_heap_runtime_then_source():

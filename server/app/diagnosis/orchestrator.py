@@ -1561,6 +1561,18 @@ class DiagnosisOrchestrator:
                 session_controlled_tree = _mark_analyzer_fallback_tree(session_controlled_tree)
         if session_controlled_tree is not None:
             followup_session["session_main"] = session_controlled_tree.model_dump(mode="json")
+            active_ai_candidate_ids = None
+            if isinstance(candidate_review, dict) and "active_candidate_ids" in candidate_review:
+                active_ai_candidate_ids = _unique_strings(
+                    candidate_review.get("active_candidate_ids", [])
+                )
+            if active_ai_candidate_ids is None and previous_conclusions:
+                previous_review = previous_conclusions[-1].get("candidate_review")
+                if isinstance(previous_review, dict):
+                    active_ai_candidate_ids = _unique_strings(
+                        previous_review.get("active_candidate_ids", [])
+                    )
+            followup_session["active_ai_candidate_ids"] = active_ai_candidate_ids or []
             cluster_assessment["effective_investigation_level"] = _effective_investigation_level(
                 cluster_assessment,
                 followup_session,
@@ -1720,12 +1732,7 @@ class DiagnosisOrchestrator:
                 qualification_boundary=qualification_boundary,
             )
             if session_controlled_tree:
-                session_controlled_tree = session_controlled_tree.model_copy(update={
-                    "layers": [
-                        layer.model_copy(update={"generated_by": "ai_guarded"})
-                        for layer in session_controlled_tree.layers
-                    ]
-                })
+                session_controlled_tree = _promote_ai_nodes_to_guarded(session_controlled_tree)
         else:
             # Analyzer-derived clusters are not formal conclusions when the
             # session-level AI review did not succeed.
@@ -1741,6 +1748,24 @@ class DiagnosisOrchestrator:
                 previous_retained=previous_retained,
                 qualification_boundary=qualification_boundary,
             )
+        if session_controlled_tree is not None:
+            session_controlled_tree = _sync_tree_retained_conclusion(
+                session_controlled_tree,
+                explanation.get("retained_conclusion"),
+            )
+            final_retained_id = str(
+                (explanation.get("retained_conclusion") or {}).get("candidate_id") or ""
+            ).strip()
+            if final_retained_id:
+                qualification_boundary = {
+                    **qualification_boundary,
+                    "origin_parent_candidate_id": final_retained_id,
+                }
+                explanation["qualification_boundary"] = qualification_boundary
+                explanation["localization_chain"] = _tree_localization_chain(
+                    session_controlled_tree.layers,
+                    final_retained_id,
+                )
         if explanation["classification"] == "compound_incident":
             cluster_assessment["classification"] = "compound_incident"
             cluster_assessment.update(_compound_location_fields(explanation["root_cause_clusters"], current_session))
@@ -4811,6 +4836,13 @@ def _effective_investigation_level(
         tree = tree.model_dump(mode="json")
     if not isinstance(tree, dict):
         return best_level
+    active_ids_value = session.get("active_ai_candidate_ids")
+    active_ids_declared = isinstance(active_ids_value, list)
+    active_ids = {
+        str(value).strip()
+        for value in (active_ids_value or [])
+        if str(value).strip()
+    }
     for layer in tree.get("layers", []):
         if not isinstance(layer, dict):
             continue
@@ -4820,6 +4852,9 @@ def _effective_investigation_level(
             *(layer.get("unknown_causes") or []),
         ):
             if not isinstance(node, dict):
+                continue
+            candidate_id = str(node.get("candidate_id") or "").strip()
+            if active_ids_declared and candidate_id not in active_ids:
                 continue
             if str(node.get("generated_by") or "") not in {"ai_candidate", "ai_guarded"}:
                 continue
@@ -6006,17 +6041,6 @@ def _build_session_controlled_ai_tree(
         ))
     layers = _validate_tree_lineage(layers)
     retained_candidate_id = str(cluster_assessment.get("active_retained_candidate_id") or "")
-    if not retained_candidate_id:
-        retained_candidate_id = next(
-            (
-                node.candidate_id
-                for node in [*primary_nodes, *secondary_nodes, *unknown_nodes]
-                if node.role in {"primary", "secondary", "unknown"}
-                and node.node_type not in {"observation", "mechanism_explanation", "stop_boundary", "evidence_gap", "orphan"}
-                and node.depth_kind == "base"
-            ),
-            "",
-        )
     localization_chain = _tree_localization_chain(layers, retained_candidate_id)
     completed_probe_requests = _completed_session_probe_requests(probes)
     edges: list[AITreeProbeEdge] = [
@@ -7125,6 +7149,85 @@ def _probe_failure_for_candidate(candidate_id: str, probes: list[dict[str, Any]]
     return failed[-1] if failed else None
 
 
+def _sync_tree_retained_conclusion(
+    tree: ControlledAITree,
+    retained_conclusion: dict[str, Any] | None,
+) -> ControlledAITree:
+    """Keep the canonical tree pointer aligned with the final retained claim."""
+    if not isinstance(retained_conclusion, dict):
+        return tree
+    retained_id = str(retained_conclusion.get("candidate_id") or "").strip()
+    if not retained_id:
+        return tree
+
+    nodes = [
+        node
+        for layer in tree.layers
+        for node in _layer_nodes_for_validation(layer)
+    ]
+    emitted_ids = {node.candidate_id for node in nodes}
+    if retained_id not in emitted_ids:
+        data_quality = dict(tree.data_quality or {})
+        records = list(data_quality.get("records") or [])
+        if not any(
+            isinstance(record, dict)
+            and record.get("status") == "retained_candidate_not_emitted"
+            and record.get("candidate_id") == retained_id
+            for record in records
+        ):
+            records.append({
+                "candidate_id": retained_id,
+                "status": "retained_candidate_not_emitted",
+                "claim": "最终保留结论没有对应的 emitted session_main 节点，树未伪造该节点。",
+                "retained_conclusion": True,
+            })
+        data_quality["records"] = records
+        return tree.model_copy(update={
+            "data_quality": data_quality,
+            "retained_candidate_id": None,
+            "localization_chain": [],
+        })
+
+    return tree.model_copy(update={
+        "retained_candidate_id": retained_id,
+        "localization_chain": _tree_localization_chain(tree.layers, retained_id),
+    })
+
+
+def _promote_ai_layer_to_guarded(layer: AITreeLayer) -> AITreeLayer:
+    grouped = {"primary": [], "secondary": [], "rejected": [], "unknown": []}
+    for node in [
+        *layer.primary_causes,
+        *layer.secondary_causes,
+        *layer.rejected_causes,
+        *layer.unknown_causes,
+    ]:
+        if node.generated_by == "ai_candidate":
+            node = node.model_copy(update={"generated_by": "ai_guarded"})
+        grouped[node.role].append(node)
+    return layer.model_copy(update={
+        "generated_by": (
+            "ai_guarded"
+            if layer.generated_by == "ai_candidate"
+            else layer.generated_by
+        ),
+        "primary_causes": grouped["primary"],
+        "secondary_causes": grouped["secondary"],
+        "rejected_causes": grouped["rejected"],
+        "unknown_causes": grouped["unknown"],
+    })
+
+
+def _promote_ai_nodes_to_guarded(tree: ControlledAITree) -> ControlledAITree:
+    """Promote only real AI nodes; keep Analyzer layers and observations intact."""
+    return tree.model_copy(update={
+        "layers": [
+            _promote_ai_layer_to_guarded(layer)
+            for layer in tree.layers
+        ],
+    })
+
+
 def _mark_analyzer_fallback_tree(tree: ControlledAITree | None) -> ControlledAITree | None:
     """Mark Analyzer directions as fallback-only after total AI failure."""
     if tree is None:
@@ -7494,7 +7597,7 @@ def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) 
     proposals = review.get("candidate_proposals") if isinstance(review.get("candidate_proposals"), list) else []
     candidate_updates = review.get("candidate_updates") if isinstance(review.get("candidate_updates"), dict) else {}
     rollback_specs = review.get("rollback_edges") if isinstance(review.get("rollback_edges"), list) else []
-    layers = [layer.model_copy(update={"generated_by": "ai_guarded"}) for layer in tree.layers]
+    layers = [_promote_ai_layer_to_guarded(layer) for layer in tree.layers]
     edges = list(tree.probe_edges)
     all_nodes = {
         node.candidate_id: (layer.layer_id, node)
