@@ -16,6 +16,13 @@ from server.app import storage
 from server.app.ai_provider import get_ai_settings, is_feature_enabled
 from server.app.common_utils import status_value
 from server.app.diagnosis.intent import parse_diagnosis_intent
+from server.app.diagnosis.canonical_candidate_state import reduce_candidate_state
+from server.app.diagnosis.canonical_claim_lineage import apply_ai_claim_update, canonical_claim_fields
+from server.app.diagnosis.canonical_probe_plan import (
+    merge_probe_input_maps as merge_canonical_probe_inputs,
+    normalize_probe_plan,
+    union_probe_families,
+)
 from server.app.diagnosis.collector_invocation import (
     build_collector_invocation,
     collector_capability_fingerprint,
@@ -62,8 +69,10 @@ from server.app.diagnosis.session_conclusion import (
     build_fallback_explanation,
     build_retained_conclusion,
     build_root_cause_clusters,
+    build_scenario_retained_conclusion,
     collect_candidate_generation_gate_failures,
     collect_ai_gate_failures,
+    derive_localization_frontier_from_ai_tree,
     derive_root_cause_clusters_from_ai_tree,
 )
 from server.app.schemas import CreateTaskRequest, MAX_SAMPLE_RATE, MAX_TASK_DURATION_SEC, MIN_SAMPLE_RATE
@@ -95,9 +104,17 @@ STRUCTURED_ARTIFACT_TYPES = {
     "pyspy_status_json",
     "python_stack_samples_json",
     "python_heap_profile_json",
+    "go_heap_profile_json",
     "source_snapshot_json",
     "source_mechanism_json",
     "python_heap_reference_json",
+    "python_lock_wait_profile_json",
+    "python_exception_profile_json",
+    "python_queue_profile_json",
+    "python_pool_profile_json",
+    "python_retry_timeout_profile_json",
+    "python_cache_profile_json",
+    "python_input_profile_json",
 }
 DEPENDENCY_EVIDENCE_GAPS = {"dependency_check", "log_scan", "redis_check"}
 FUNCTION_DEPTH_EVIDENCE_GAPS = {
@@ -107,12 +124,21 @@ FUNCTION_DEPTH_EVIDENCE_GAPS = {
     "trace_endpoint_profile",
     "python_runtime_profile",
     "python_heap_profile",
+    "go_heap_profile",
     "source_snapshot",
     "source_mechanism_query",
     "python_heap_reference",
+    "python_lock_wait_profile",
+    "python_exception_profile",
+    "python_queue_profile",
+    "python_pool_profile",
+    "python_retry_timeout_profile",
+    "python_cache_profile",
+    "python_input_profile",
 }
 MEMORY_DEPTH_EVIDENCE_GAPS = {
     "python_heap_profile",
+    "go_heap_profile",
     "python_runtime_profile",
     "source_snapshot",
     "source_mechanism_query",
@@ -645,11 +671,11 @@ class DiagnosisOrchestrator:
                     if index > 0 or r2_count >= budget.max_medium_risk_probes:
                         continue
                     r2_count += 1
-                elif probe_id != "host_process_metrics":
+                elif probe_id != "host_process_metrics" and not _is_runtime_log_scenario_probe(probe_id):
                     if auto_count >= budget.max_parallel_probes:
                         continue
                     auto_count += 1
-                duration = min(definition.default_duration_seconds, definition.max_duration_seconds)
+                duration = _initial_probe_duration(probe_id, definition)
                 if planned_duration + duration > duration_limit:
                     continue
                 planned_duration += duration
@@ -967,6 +993,29 @@ class DiagnosisOrchestrator:
                 **({"memray_stats_path": stats_path} if stats_path else {}),
                 **({"memray_leaks_path": leaks_path} if leaks_path else {}),
             }
+        if probe_id == "process_go_heap_profile":
+            source_context = _source_context_for_target(target, target_scope)
+            endpoint = str(
+                target.get("pprof_endpoint")
+                or target_scope.get("pprof_endpoint")
+                or source_context.get("pprof_endpoint")
+                or "/debug/pprof/heap"
+            )
+            port = target.get("pprof_port") or target_scope.get("pprof_port") or source_context.get("pprof_port")
+            if port is None:
+                port = target.get("port") or target_scope.get("port") or source_context.get("port") or 6060
+            return {
+                "target_config": {
+                    "pid": target.get("pid"),
+                    "service_id": target.get("service_id"),
+                    "instance_id": target.get("instance_id"),
+                    "source_context": source_context,
+                },
+                "profile_kind": "heap",
+                "pprof_endpoint": endpoint,
+                "port": int(port),
+                "heap_mode": "gc=1",
+            }
         if probe_id == "process_source_snapshot":
             source_context = _source_context_for_target(target, target_scope)
             source_paths = source_context.get("source_paths") if isinstance(source_context.get("source_paths"), list) else []
@@ -1033,6 +1082,43 @@ class DiagnosisOrchestrator:
                 "container_id": str(target.get("container_id") or ""),
                 "object_type_hints": source_context.get("object_type_hints") or ["function", "code", "method", "Map", "Rule"],
                 **({"pyheap_dump_path": dump_path} if dump_path else {}),
+            }
+        if probe_id in {
+            "process_python_lock_wait_profile",
+            "process_python_exception_profile",
+            "process_python_queue_profile",
+            "process_python_pool_profile",
+            "process_python_retry_timeout_profile",
+            "process_python_cache_profile",
+            "process_python_input_profile",
+        }:
+            source_context = _source_context_for_target(target, target_scope)
+            runtime_log_paths = _application_runtime_log_paths(target, target_scope, source_context)
+            trace_paths = target.get("trace_paths") or target_scope.get("trace_paths") or source_context.get("trace_paths") or []
+            offcpu_paths = target.get("offcpu_profile_paths") or target_scope.get("offcpu_profile_paths") or source_context.get("offcpu_profile_paths") or []
+            queue_paths = target.get("queue_metrics_paths") or target_scope.get("queue_metrics_paths") or source_context.get("queue_metrics_paths") or []
+            broker_paths = target.get("broker_metrics_paths") or target_scope.get("broker_metrics_paths") or source_context.get("broker_metrics_paths") or []
+            return {
+                "target_config": {
+                    "pid": target.get("pid"),
+                    "service_id": target.get("service_id"),
+                    "instance_id": target.get("instance_id"),
+                    "host_id": target.get("host_id"),
+                    "container_id": target.get("container_id"),
+                    "source_context": source_context,
+                    "application_runtime_log_paths": runtime_log_paths,
+                    "trace_paths": trace_paths,
+                    "offcpu_profile_paths": offcpu_paths,
+                    "queue_metrics_paths": queue_paths,
+                    "broker_metrics_paths": broker_paths,
+                },
+                "source_context": source_context,
+                **({"application_runtime_log_paths": runtime_log_paths} if runtime_log_paths else {}),
+                **({"runtime_log_paths": runtime_log_paths} if runtime_log_paths else {}),
+                **({"trace_endpoint_profile_json_paths": trace_paths} if trace_paths else {}),
+                **({"off_cpu_wait_json_paths": offcpu_paths} if offcpu_paths else {}),
+                **({"queue_metrics_json_paths": queue_paths} if queue_paths else {}),
+                **({"broker_metrics_json_paths": broker_paths} if broker_paths else {}),
             }
         if probe_id == "process_trace_endpoint_profile":
             source_context = _source_context_for_target(target, target_scope)
@@ -1131,7 +1217,7 @@ class DiagnosisOrchestrator:
                                 add(file_name, source_line.get("line"), symbol)
         for task_id in session.get("child_task_ids", []):
             for artifact in self.repo.artifacts.get(task_id, []):
-                if artifact.get("artifact_type") not in {"python_stack_samples_json", "python_heap_profile_json", "depth_evidence_json"}:
+                if artifact.get("artifact_type") not in {"python_stack_samples_json", "python_heap_profile_json", "go_heap_profile_json", "depth_evidence_json"}:
                     continue
                 value = self._read_artifact_json(artifact)
                 if not isinstance(value, dict):
@@ -1619,22 +1705,33 @@ class DiagnosisOrchestrator:
                     self.store.update_session(diagnosis_id, budget_used=usage)
                     current_session = self.store.get_session(diagnosis_id) or current_session
                 if investigation_review.get("ai_review_status") == "succeeded":
-                    followup_requests = list(investigation_review.get("selected_evidence_families") or followup_requests)
+                    followup_requests = union_probe_families(
+                        followup_requests,
+                        investigation_review.get("selected_evidence_families"),
+                    )
                     session_controlled_tree = _apply_investigation_review(session_controlled_tree, investigation_review)
         # Plan the selected follow-up before composing the persisted conclusion.
         # This makes blocked input/provenance and collector failures part of the
         # same conclusion instead of appearing only in a later event stream.
         if followup_requests and tasks:
-            probe_inputs = _merge_probe_input_maps(
+            probe_input_merge = merge_canonical_probe_inputs(
                 (candidate_review or {}).get("probe_inputs") if isinstance(candidate_review, dict) else {},
                 (investigation_review or {}).get("probe_inputs") if isinstance(investigation_review, dict) else {},
             )
+            probe_inputs = probe_input_merge.inputs
+            if session_controlled_tree is not None:
+                session_controlled_tree = session_controlled_tree.model_copy(update={
+                    "canonical_probe_plan": normalize_probe_plan(followup_requests, probe_inputs),
+                    "probe_conflicts": probe_input_merge.conflicts,
+                })
             self._plan_followup_requests(
                 diagnosis_id,
                 followup_requests,
                 tasks[-1],
                 probe_inputs=probe_inputs,
             )
+        if session_controlled_tree is not None:
+            session_controlled_tree = reduce_candidate_state(session_controlled_tree)
         tree_payload = session_controlled_tree.model_dump(mode="json") if session_controlled_tree else None
         valid_session_evidence_refs = {
             str(item.get(key) or "")
@@ -1644,6 +1741,20 @@ class DiagnosisOrchestrator:
             if item.get(key)
         }
         root_cause_clusters = derive_root_cause_clusters_from_ai_tree(
+            tree_payload,
+            valid_evidence_refs=valid_session_evidence_refs,
+        )
+        root_cause_clusters = _merge_python_scenario_gate_clusters(
+            root_cause_clusters,
+            build_root_cause_clusters(
+                task_observations,
+                cluster_assessment,
+                current_session,
+                tree_payload,
+            ),
+            valid_session_evidence_refs=valid_session_evidence_refs,
+        )
+        localization_frontier = derive_localization_frontier_from_ai_tree(
             tree_payload,
             valid_evidence_refs=valid_session_evidence_refs,
         )
@@ -1661,6 +1772,13 @@ class DiagnosisOrchestrator:
             ),
         ]
         session_tree_payload = session_controlled_tree.model_dump(mode="json") if session_controlled_tree else None
+        scenario_retained = build_scenario_retained_conclusion(
+            task_observations,
+            session_tree_payload,
+            target_service=_target_service(current_session) or str(cluster_assessment.get("target") or "目标服务"),
+        )
+        if scenario_retained and not any(cluster.conclusion_eligible for cluster in root_cause_clusters):
+            cluster_assessment["scenario_retained_conclusion"] = scenario_retained
         retained_conclusion = build_retained_conclusion(
             root_cause_clusters,
             cluster_assessment,
@@ -1715,6 +1833,7 @@ class DiagnosisOrchestrator:
                     session_tree=session_controlled_tree,
                     evidence_catalog=self.store.list_evidence(diagnosis_id),
                     probe_manifest=build_probe_manifest(),
+                    localization_frontier=localization_frontier,
                     max_attempts=remaining_model_calls,
                 )
                 attempts = int(ai_review.get("ai_review_attempts", 0) or 0)
@@ -1730,15 +1849,13 @@ class DiagnosisOrchestrator:
                 model=ai_review["ai_review_model"],
                 retained_conclusion=retained_conclusion,
                 qualification_boundary=qualification_boundary,
+                localization_frontier=localization_frontier,
             )
             if session_controlled_tree:
-                session_controlled_tree = _promote_ai_nodes_to_guarded(session_controlled_tree)
+                session_controlled_tree = reduce_candidate_state(session_controlled_tree)
         else:
-            # Analyzer-derived clusters are not formal conclusions when the
-            # session-level AI review did not succeed.
-            fallback_clusters = []
             explanation = build_fallback_explanation(
-                fallback_clusters,
+                root_cause_clusters,
                 cluster_assessment,
                 status=ai_review["ai_review_status"],
                 attempts=ai_review["ai_review_attempts"],
@@ -1747,6 +1864,7 @@ class DiagnosisOrchestrator:
                 session_tree=session_tree_payload,
                 previous_retained=previous_retained,
                 qualification_boundary=qualification_boundary,
+                localization_frontier=localization_frontier,
             )
         if session_controlled_tree is not None:
             session_controlled_tree = _sync_tree_retained_conclusion(
@@ -1894,6 +2012,7 @@ class DiagnosisOrchestrator:
             "process_baseline_window": "baseline_window_profile",
             "process_python_runtime_profile": "python_runtime_profile",
             "process_python_heap_profile": "python_heap_profile",
+            "process_go_heap_profile": "go_heap_profile",
             "process_source_snapshot": "source_snapshot",
             "process_log_scan": "log_scan",
             "process_dependency_check": "dependency_check",
@@ -1901,6 +2020,13 @@ class DiagnosisOrchestrator:
             "process_io_latency": "io_latency",
             "process_memory_map": "memory_map",
             "process_runtime_control_history": "runtime_control_history",
+            "process_python_lock_wait_profile": "python_lock_wait_profile",
+            "process_python_exception_profile": "python_exception_profile",
+            "process_python_queue_profile": "python_queue_profile",
+            "process_python_pool_profile": "python_pool_profile",
+            "process_python_retry_timeout_profile": "python_retry_timeout_profile",
+            "process_python_cache_profile": "python_cache_profile",
+            "process_python_input_profile": "python_input_profile",
         }.get(probe_id, "")
 
     def _plan_followup_requests(
@@ -2390,6 +2516,7 @@ class DiagnosisOrchestrator:
             "logs": _log_signal(values.get("log_window_json")),
             "runtime_control": values.get("runtime_control_event_json") if isinstance(values.get("runtime_control_event_json"), dict) else {},
             "python_heap_profile": values.get("python_heap_profile_json") if isinstance(values.get("python_heap_profile_json"), dict) else {},
+            "go_heap_profile": values.get("go_heap_profile_json") if isinstance(values.get("go_heap_profile_json"), dict) else {},
             "source_snapshot": values.get("source_snapshot_json") if isinstance(values.get("source_snapshot_json"), dict) else {},
             "source_mechanism": values.get("source_mechanism_json") if isinstance(values.get("source_mechanism_json"), dict) else {},
             "python_heap_reference": values.get("python_heap_reference_json") if isinstance(values.get("python_heap_reference_json"), dict) else {},
@@ -2479,11 +2606,10 @@ class DiagnosisOrchestrator:
         neighbor_pressure = any(_has_pressure(obs) for obs in same_host_obs)
         downstream_pressure = any(_has_pressure(obs) for obs in downstream_obs)
         downstream_dependency_failure = any(_has_dependency_failure(obs) or _has_redis_failure(obs) for obs in observations)
-        memory_anchor = (
-            _memory_retention_anchor(target_obs)
-            if str((session.get("normalized_intent") or {}).get("symptom") or "") == "memory_pressure"
-            else {}
-        )
+        memory_anchor: dict[str, Any] = {}
+        if str((session.get("normalized_intent") or {}).get("symptom") or "") == "memory_pressure":
+            scope = session.get("target_scope", {}) if isinstance(session.get("target_scope"), dict) else {}
+            memory_anchor = _go_heap_growth_anchor(target_obs) if _is_go_target_scope(scope) else _memory_retention_anchor(target_obs)
         target_anchor = memory_anchor or _best_specific_anchor(target_obs)
         target_anchor = _verified_source_anchor(target_anchor, target_obs)
         target_anchor = _mechanism_enriched_anchor(target_anchor, target_obs)
@@ -2494,9 +2620,14 @@ class DiagnosisOrchestrator:
         )
 
         if memory_anchor:
-            classification = "python_memory_retention"
-            confidence = 0.92 if target_anchor.get("source_context_hash") else 0.84
-            summary = _memory_retention_summary(target_anchor)
+            if memory_anchor.get("anchor_type") in {"go_heap_hotspot", "go_heap_verified_source_line"}:
+                classification = "go_heap_growth_candidate"
+                confidence = 0.82 if target_anchor.get("source_context_hash") else 0.74
+                summary = _go_heap_growth_summary(target_anchor)
+            else:
+                classification = "python_memory_retention"
+                confidence = 0.92 if target_anchor.get("source_context_hash") else 0.84
+                summary = _memory_retention_summary(target_anchor)
         elif target_runtime_stall:
             classification = "runtime_stall"
             confidence = 0.96 if runtime_control else 0.7
@@ -3218,7 +3349,7 @@ def _epoch(value: Any) -> float | None:
 def _scope_probe_ids(symptom: str, target_scope: dict[str, Any]) -> list[str]:
     if (
         symptom == "memory_pressure"
-        and _has_memray_source_context(target_scope)
+        and (_has_memray_source_context(target_scope) or _is_go_target_scope(target_scope))
         and not target_scope.get("dependency_targets")
     ):
         return ["host_process_metrics"]
@@ -3234,7 +3365,76 @@ def _scope_probe_ids(symptom: str, target_scope: dict[str, Any]) -> list[str]:
         _append_once(probe_ids, "process_log_scan", after="process_dependency_check")
         if any(_is_redis_dependency(item) for item in dependency_targets):
             _append_once(probe_ids, "process_redis_check", after="process_dependency_check")
+    if _has_python_runtime_log_context(target_scope):
+        probe_ids = [
+            "host_process_metrics",
+            *_RUNTIME_LOG_SCENARIO_PROBES,
+            *[
+                probe_id for probe_id in probe_ids
+                if probe_id != "host_process_metrics" and probe_id not in _RUNTIME_LOG_SCENARIO_PROBES
+            ],
+        ]
     return probe_ids
+
+
+_RUNTIME_LOG_SCENARIO_PROBES = (
+    "process_python_queue_profile",
+    "process_python_pool_profile",
+    "process_python_retry_timeout_profile",
+    "process_python_cache_profile",
+    "process_python_input_profile",
+)
+
+
+def _initial_probe_duration(probe_id: str, definition) -> int:
+    if _is_runtime_log_scenario_probe(probe_id):
+        return 1
+    return min(definition.default_duration_seconds, definition.max_duration_seconds)
+
+
+def _is_runtime_log_scenario_probe(probe_id: str) -> bool:
+    return probe_id in _RUNTIME_LOG_SCENARIO_PROBES
+
+
+def _has_python_runtime_log_context(target_scope: dict[str, Any]) -> bool:
+    contexts = [target_scope.get("source_context")]
+    instances = [
+        item
+        for item in target_scope.get("instances", [])
+        if isinstance(item, dict)
+    ]
+    contexts.extend(item.get("source_context") for item in instances)
+    language_hints = [
+        target_scope.get("language"),
+        *[
+            context.get("language")
+            for context in contexts
+            if isinstance(context, dict)
+        ],
+    ]
+    service_hints = [
+        target_scope.get("service_id"),
+        target_scope.get("target_service"),
+        *[item.get("service_id") for item in instances],
+        *[item.get("instance_id") for item in instances],
+    ]
+    is_python = any(str(value or "").lower() == "python" for value in language_hints)
+    if not is_python:
+        is_python = any("python" in str(value or "").lower() or "py-" in str(value or "").lower() for value in service_hints)
+    if not is_python:
+        return False
+    source_context = target_scope.get("source_context") if isinstance(target_scope.get("source_context"), dict) else {}
+    return any(
+        _application_runtime_log_paths(
+            instance,
+            target_scope,
+            {
+                **source_context,
+                **(instance.get("source_context") if isinstance(instance.get("source_context"), dict) else {}),
+            },
+        )
+        for instance in (instances or [{}])
+    )
 
 
 def _has_memray_source_context(target_scope: dict[str, Any]) -> bool:
@@ -3253,6 +3453,40 @@ def _has_memray_source_context(target_scope: dict[str, Any]) -> bool:
         )
         for context in contexts
     )
+
+
+def _is_go_target_scope(target_scope: dict[str, Any]) -> bool:
+    contexts = [target_scope.get("source_context")]
+    contexts.extend(
+        item.get("source_context")
+        for item in target_scope.get("instances", [])
+        if isinstance(item, dict)
+    )
+    if any(
+        isinstance(context, dict)
+        and str(context.get("language") or "").lower() in {"go", "golang"}
+        for context in contexts
+    ):
+        return True
+    text = " ".join(
+        str(value or "")
+        for value in (
+            target_scope.get("language"),
+            target_scope.get("target_service"),
+            target_scope.get("service_id"),
+            *[
+                item.get("service_id")
+                for item in target_scope.get("instances", [])
+                if isinstance(item, dict)
+            ],
+            *[
+                item.get("runtime")
+                for item in target_scope.get("instances", [])
+                if isinstance(item, dict)
+            ],
+        )
+    ).lower()
+    return "golang" in text or "go-" in text or text.endswith(" go")
 
 
 def _append_once(items: list[str], value: str, *, after: str | None = None) -> None:
@@ -3643,6 +3877,65 @@ def _memory_retention_anchor(observations: list[dict[str, Any]]) -> dict[str, An
     }
 
 
+def _go_heap_growth_anchor(observations: list[dict[str, Any]]) -> dict[str, Any]:
+    hotspots: list[dict[str, Any]] = []
+    evidence_refs: list[str] = []
+    target: dict[str, Any] = {}
+    for observation in observations:
+        if observation.get("collector_type") in {"go_pprof", "source_snapshot"}:
+            evidence_refs.extend(observation.get("evidence_refs") or [])
+        heap = observation.get("go_heap_profile")
+        if not isinstance(heap, dict):
+            continue
+        validity = heap.get("evidence_validity") if isinstance(heap.get("evidence_validity"), dict) else {}
+        if validity.get("evidence_status") not in {"valid", "partial"}:
+            continue
+        target = observation.get("target") if isinstance(observation.get("target"), dict) else target
+        hotspots.extend(
+            item for item in (heap.get("hotspots") or [])
+            if isinstance(item, dict) and (_num(item.get("flat_bytes")) > 0 or _num(item.get("cum_bytes")) > 0)
+        )
+    if not hotspots:
+        return {}
+    hotspots.sort(
+        key=lambda item: (_num(item.get("flat_bytes")), _num(item.get("cum_bytes"))),
+        reverse=True,
+    )
+    top = hotspots[0]
+    file_name = str(top.get("file") or "")
+    line = int(_num(top.get("line")))
+    function = str(top.get("function") or "")
+    return {
+        "service_id": target.get("service_id"),
+        "instance_id": target.get("instance_id"),
+        "pid": target.get("pid"),
+        "supported_level": "function" if not (file_name and line > 0) else "line_candidate",
+        "anchor_type": "go_heap_hotspot",
+        "anchor": f"{file_name}:{line} {function}" if file_name and line > 0 else function,
+        "function": function,
+        "file": file_name,
+        "line": line,
+        "flat_bytes": int(_num(top.get("flat_bytes"))),
+        "cum_bytes": int(_num(top.get("cum_bytes"))),
+        "flat_percent": _num(top.get("flat_percent")),
+        "cum_percent": _num(top.get("cum_percent")),
+        "runtime_line_candidates": [
+            {
+                "file": item.get("file"),
+                "line": item.get("line"),
+                "symbol": item.get("function"),
+            }
+            for item in hotspots[:8]
+            if isinstance(item, dict) and item.get("file") and int(_num(item.get("line"))) > 0
+        ],
+        "hotspots": hotspots[:5],
+        "evidence_refs": _unique_strings(evidence_refs),
+        "evidence_ref": "go_heap_profile.hotspots[0]",
+        "root_claim_allowed": False,
+        "blocked_upgrade_reason": "Go heap pprof 只能证明分配/in-use 热点，不能单独证明完整泄漏根因或保留链。",
+    }
+
+
 def _memory_retention_summary(anchor: dict[str, Any]) -> str:
     location = f"{anchor.get('file')}:{int(_num(anchor.get('line')))}"
     size_mib = _num(anchor.get("size_bytes")) / (1024 * 1024)
@@ -4025,6 +4318,23 @@ def _self_pressure_summary(anchor: dict[str, Any]) -> str:
     )
 
 
+def _go_heap_growth_summary(anchor: dict[str, Any]) -> str:
+    instance = anchor.get("instance_id") or anchor.get("service_id") or "目标实例"
+    pid = f"(pid={anchor.get('pid')})" if anchor.get("pid") else ""
+    function = anchor.get("function") or anchor.get("anchor") or "unknown"
+    location = ""
+    if anchor.get("file") and int(_num(anchor.get("line"))) > 0:
+        location = f" at {anchor.get('file')}:{int(_num(anchor.get('line')))}"
+    flat_mib = _num(anchor.get("flat_bytes")) / (1024 * 1024)
+    cum_mib = _num(anchor.get("cum_bytes")) / (1024 * 1024)
+    source_text = "，源码行已由 source_snapshot 验证" if anchor.get("source_context_hash") else "，源码 revision 尚未验证"
+    return (
+        f"Go heap pprof 将 {instance}{pid} 的内存压力收敛到 {function}{location}"
+        f"（flat={flat_mib:.2f}MiB, cum={cum_mib:.2f}MiB）{source_text}。"
+        "该证据只支持分配/in-use 热点或增长候选，不能单独宣称完整内存泄漏根因。"
+    )
+
+
 def _runtime_stall_summary(anchor: dict[str, Any], control: dict[str, Any] | None = None) -> str:
     instance = anchor.get("instance_id") or anchor.get("service_id") or "目标实例"
     pid = f"(pid={anchor.get('pid')})" if anchor.get("pid") else ""
@@ -4344,6 +4654,8 @@ def _source_symbol_priority(symbol: Any, file_name: Any = "") -> int:
         )
     ):
         return 2
+    if ".go" in text:
+        return 1
     return 0
 
 
@@ -4419,6 +4731,32 @@ def _summarize_artifact_value(artifact_type: str, value: Any) -> dict[str, Any]:
                     for key in ("function", "file", "line", "size_bytes", "allocation_count", "call_path")
                 }
                 for item in hotspots[:8]
+                if isinstance(item, dict)
+            ],
+            "evidence_validity": value.get("evidence_validity") or {},
+        }
+    if artifact_type == "go_heap_profile_json":
+        hotspots = value.get("hotspots") or []
+        return {
+            "producer": value.get("producer"),
+            "profile_kind": value.get("profile_kind"),
+            "heap_mode": value.get("heap_mode"),
+            "sample_type": value.get("sample_type"),
+            "summary": value.get("summary") if isinstance(value.get("summary"), dict) else {},
+            "hotspots": [
+                {
+                    key: item.get(key)
+                    for key in ("function", "file", "line", "flat_bytes", "cum_bytes", "flat_percent", "cum_percent")
+                }
+                for item in hotspots[:8]
+                if isinstance(item, dict)
+            ],
+            "line_candidates": [
+                {
+                    key: item.get(key)
+                    for key in ("file", "line", "symbol", "function", "evidence_ref")
+                }
+                for item in (value.get("line_candidates") or [])[:8]
                 if isinstance(item, dict)
             ],
             "evidence_validity": value.get("evidence_validity") or {},
@@ -4619,6 +4957,41 @@ def _normalize_structured_artifact_values(values: dict[str, Any]) -> dict[str, A
             for item in heap_hotspots
             if isinstance(item, dict)
         ]
+    go_heap_profile = normalized.get("go_heap_profile_json")
+    if isinstance(go_heap_profile, dict):
+        hotspots = go_heap_profile.get("hotspots") if isinstance(go_heap_profile.get("hotspots"), list) else []
+        if "top_json" not in normalized:
+            normalized["top_json"] = [
+                {
+                    "name": item.get("function"),
+                    "file": item.get("file"),
+                    "line": item.get("line"),
+                    "samples": item.get("flat_bytes") or item.get("cum_bytes"),
+                    "percent": item.get("flat_percent") or item.get("cum_percent") or 0,
+                    "call_path": [item.get("function")] if item.get("function") else [],
+                }
+                for item in hotspots
+                if isinstance(item, dict)
+            ]
+        normalized.setdefault("depth_evidence_json", {
+            "stack_samples": [
+                {
+                    "hot_frame": item.get("function"),
+                    "sample_count": item.get("flat_bytes") or item.get("cum_bytes"),
+                    "percent": item.get("flat_percent") or item.get("cum_percent") or 0,
+                    "file": item.get("file"),
+                    "line": item.get("line"),
+                    "line_hint": f"{item.get('file')}:{item.get('line')}"
+                    if item.get("file") and int(item.get("line") or 0) > 0
+                    else "",
+                    "call_path": str(item.get("function") or ""),
+                }
+                for item in hotspots
+                if isinstance(item, dict)
+            ],
+            "line_candidates": go_heap_profile.get("line_candidates") or [],
+            "context": {"collection_mode": "go_heap_profile"},
+        })
     trace_profile = normalized.get("trace_endpoint_profile_json")
     if isinstance(trace_profile, dict):
         normalized.setdefault("top_json", trace_profile.get("top_functions") or [])
@@ -4694,6 +5067,20 @@ def _tool_results_from_structured_values(values: dict[str, Any]) -> list[dict[st
             "collector_status": off_cpu.get("collector_status"),
             "parser_status": off_cpu.get("parser_status"),
         })
+    go_heap = values.get("go_heap_profile_json")
+    if isinstance(go_heap, dict):
+        summary = go_heap.get("summary") if isinstance(go_heap.get("summary"), dict) else {}
+        validity = go_heap.get("evidence_validity") if isinstance(go_heap.get("evidence_validity"), dict) else {}
+        results.append({
+            "tool_name": "go_heap_profile",
+            "profile_kind": go_heap.get("profile_kind"),
+            "sample_type": go_heap.get("sample_type"),
+            "hotspot_count": summary.get("hotspot_count"),
+            "top_function": summary.get("top_function"),
+            "top_file": summary.get("top_file"),
+            "top_line": summary.get("top_line"),
+            "evidence_status": validity.get("evidence_status"),
+        })
     return results
 
 
@@ -4726,6 +5113,33 @@ def _source_context_for_target(target: dict[str, Any], target_scope: dict[str, A
     local = target.get("source_context") if isinstance(target.get("source_context"), dict) else {}
     merged = {**scoped, **local}
     return {key: value for key, value in merged.items() if value not in (None, "", [])}
+
+
+def _application_runtime_log_paths(
+    target: dict[str, Any],
+    target_scope: dict[str, Any],
+    source_context: dict[str, Any],
+) -> list[str]:
+    paths: list[str] = []
+    for holder in (target, target_scope, source_context):
+        if not isinstance(holder, dict):
+            continue
+        for key in (
+            "application_runtime_log_paths",
+            "runtime_log_paths",
+            "workload_log_paths",
+            "log_paths",
+        ):
+            paths.extend(_string_list(holder.get(key)))
+    return list(dict.fromkeys(path for path in paths if path))
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
 
 
 def _is_stable_blocked_result(reason: str) -> bool:
@@ -4856,7 +5270,7 @@ def _effective_investigation_level(
             candidate_id = str(node.get("candidate_id") or "").strip()
             if active_ids_declared and candidate_id not in active_ids:
                 continue
-            if str(node.get("generated_by") or "") not in {"ai_candidate", "ai_guarded"}:
+            if str(node.get("generated_by") or "") not in {"ai", "ai_candidate", "ai_guarded"}:
                 continue
             if str(node.get("role") or "") == "rejected":
                 continue
@@ -4894,20 +5308,31 @@ def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str,
     is_memory = str(intent.get("symptom") or "") == "memory_pressure" or str(assessment.get("mechanism") or "") in {
         "memory_leak",
         "python_memory_retention",
+        "go_allocation_hotspot",
+    } or classification in {
+        "python_memory_retention",
+        "go_heap_growth_candidate",
     }
     if is_memory:
         completed = set(session.get("completed_depth_evidence_gaps") or [])
         probe_status = session.get("probe_evidence_status") if isinstance(session.get("probe_evidence_status"), dict) else {}
         attempt_counts = session.get("probe_attempt_counts") if isinstance(session.get("probe_attempt_counts"), dict) else {}
+        terminal_depth_statuses = {
+            "valid", "partial", "blocked", "failed", "unavailable",
+            "invalid", "empty_window", "unparseable", "target_exit",
+        }
+        if _is_go_target_scope(target_scope):
+            for family in ("go_heap_profile", "source_snapshot"):
+                status = str(probe_status.get(family) or "").lower()
+                if family in completed or status in terminal_depth_statuses:
+                    continue
+                return [family]
+            return []
         # A failed or blocked deep probe is terminal for that evidence family,
         # but it must not terminate the whole memory expansion chain.
         depth_status = {
             family: str(probe_status.get(family) or "").lower()
             for family in ("python_heap_profile", "python_runtime_profile", "source_snapshot")
-        }
-        terminal_depth_statuses = {
-            "valid", "partial", "blocked", "failed", "unavailable",
-            "invalid", "empty_window", "unparseable", "target_exit",
         }
         for family in ("python_heap_profile", "python_runtime_profile", "source_snapshot"):
             if family in completed or depth_status[family] in terminal_depth_statuses:
@@ -4940,6 +5365,9 @@ def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str,
         ):
             return ["python_heap_reference"]
         return []
+    scenario_requests = _python_scenario_followup_requests(assessment, session)
+    if scenario_requests is not None:
+        return scenario_requests
     requests: list[str] = []
     probe_status = (
         session.get("probe_evidence_status")
@@ -4952,11 +5380,21 @@ def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str,
         if isinstance(target_scope.get("source_context"), dict)
         else {}
     )
+    instance_source_contexts = [
+        item.get("source_context")
+        for item in target_scope.get("instances", [])
+        if isinstance(item, dict) and isinstance(item.get("source_context"), dict)
+    ]
     source_available = bool(
         source_context.get("source_paths")
         or source_context.get("repo_revision")
         or target_scope.get("source_paths")
         or target_scope.get("repo_revision")
+        or any(
+            context.get("source_paths") or context.get("repo_revision")
+            for context in instance_source_contexts
+            if isinstance(context, dict)
+        )
     )
     supported_level = str(
         assessment.get("max_supported_level")
@@ -4996,6 +5434,87 @@ def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str,
     return requests
 
 
+def _python_scenario_followup_requests(assessment: dict[str, Any], session: dict[str, Any]) -> list[str] | None:
+    """Route Python-only scenario expansion without changing conclusion gates."""
+    target_scope = session.get("target_scope", {}) if isinstance(session.get("target_scope"), dict) else {}
+    intent = session.get("normalized_intent", {}) if isinstance(session.get("normalized_intent"), dict) else {}
+    classification = str(assessment.get("classification") or "")
+    if classification == "downstream_dependency":
+        return None
+    token_text = " ".join(
+        str(value or "")
+        for value in (
+            intent.get("symptom"),
+            classification,
+            assessment.get("mechanism"),
+            assessment.get("symptom"),
+            assessment.get("domain_type"),
+        )
+    ).lower()
+    scenario_plan = _python_scenario_plan(token_text)
+    if scenario_plan is None:
+        return None
+
+    completed = set(session.get("completed_depth_evidence_gaps") or [])
+    probe_status = session.get("probe_evidence_status") if isinstance(session.get("probe_evidence_status"), dict) else {}
+    terminal_statuses = {
+        "valid", "partial", "blocked", "failed", "unavailable",
+        "invalid", "empty_window", "unparseable", "target_exit",
+    }
+    for family in scenario_plan:
+        if family == "source_snapshot" and not _source_context_available(target_scope):
+            continue
+        status = str(probe_status.get(family) or "").lower()
+        if family not in completed and status not in terminal_statuses:
+            return [family]
+    return []
+
+
+def _python_scenario_plan(token_text: str) -> list[str] | None:
+    if any(token in token_text for token in ("python_cpu_hotspot", "self_code_regression", "cpu_saturation", "cpu hotspot")):
+        return ["python_runtime_profile", "source_snapshot", "baseline_window_profile"]
+    if any(token in token_text for token in ("python_endpoint_latency", "endpoint latency", "latency_increase", "request latency")):
+        return ["trace_endpoint_profile", "dependency_check", "log_scan", "source_snapshot"]
+    if any(token in token_text for token in ("python_io_blocking", "io_blocking", "io blocking", "blocking call", "io_degradation")):
+        return ["off_cpu_wait_profile", "dependency_check", "source_snapshot"]
+    if any(token in token_text for token in ("exception_storm", "exception storm", "traceback", "error storm")):
+        return ["python_exception_profile", "source_snapshot"]
+    if any(token in token_text for token in ("queue_backlog", "queue backlog", "celery", "rq", "worker backlog")):
+        return ["python_queue_profile", "source_snapshot"]
+    if any(token in token_text for token in ("pool_exhaustion", "pool exhaustion", "connection pool", "queuepool")):
+        return ["python_pool_profile", "source_snapshot"]
+    if any(token in token_text for token in ("retry_timeout", "retry timeout", "retry storm", "timeout config")):
+        return ["python_retry_timeout_profile", "source_snapshot"]
+    if any(token in token_text for token in ("cache_growth", "cache growth", "cache key", "cache grows", "cachedsession", "file cache")):
+        return ["python_cache_profile", "source_snapshot"]
+    if any(token in token_text for token in ("input_slow_path", "input slow", "groupby", "categorical", "cardinality", "input-triggered")):
+        return ["python_input_profile", "python_runtime_profile", "source_snapshot"]
+    if any(token in token_text for token in ("lock_wait", "lock wait", "lock contention", "runtime_contention")):
+        return ["off_cpu_wait_profile", "python_lock_wait_profile", "source_snapshot"]
+    return None
+
+
+def _source_context_available(target_scope: dict[str, Any]) -> bool:
+    source_context = (
+        target_scope.get("source_context")
+        if isinstance(target_scope.get("source_context"), dict)
+        else {}
+    )
+    instances = target_scope.get("instances") if isinstance(target_scope.get("instances"), list) else []
+    return bool(
+        source_context.get("source_paths")
+        or source_context.get("repo_revision")
+        or target_scope.get("source_paths")
+        or target_scope.get("repo_revision")
+        or any(
+            isinstance(item, dict)
+            and isinstance(item.get("source_context"), dict)
+            and (item["source_context"].get("source_paths") or item["source_context"].get("repo_revision"))
+            for item in instances
+        )
+    )
+
+
 def _line_probe_diagnostic(
     assessment: dict[str, Any],
     session: dict[str, Any],
@@ -5007,11 +5526,21 @@ def _line_probe_diagnostic(
     target_scope = session.get("target_scope", {}) if isinstance(session.get("target_scope"), dict) else {}
     source_context = target_scope.get("source_context")
     source_context = source_context if isinstance(source_context, dict) else {}
+    instance_source_contexts = [
+        item.get("source_context")
+        for item in target_scope.get("instances", [])
+        if isinstance(item, dict) and isinstance(item.get("source_context"), dict)
+    ]
     source_available = bool(
         source_context.get("source_paths")
         or source_context.get("repo_revision")
         or target_scope.get("source_paths")
         or target_scope.get("repo_revision")
+        or any(
+            context.get("source_paths") or context.get("repo_revision")
+            for context in instance_source_contexts
+            if isinstance(context, dict)
+        )
     )
     supported_level = str(
         assessment.get("effective_investigation_level")
@@ -5152,6 +5681,21 @@ def _assessment_claim_metadata(
             "mechanism": "python_code_constant_retention" if retention_chain_verified else "python_memory_retention",
             "claim_target": anchor_target or target_service,
             "diagnostic_claim": _memory_retention_summary(anchor),
+        }
+    if classification == "go_heap_growth_candidate":
+        source_verified = bool(anchor.get("source_context_hash"))
+        return {
+            "claim_type": "direct_failure_mechanism",
+            "causal_status": "unproven",
+            "conclusion_eligible": False,
+            "eligibility_reason": (
+                "Go heap pprof 热点和源码行已验证，但缺少对象保留链、增长趋势闭环或业务机制证据，不能声明完整内存泄漏根因。"
+                if source_verified
+                else "Go heap pprof 只证明分配/in-use 热点；源码 revision 尚未验证，且没有保留链或增长趋势闭环。"
+            ),
+            "mechanism": "go_allocation_hotspot",
+            "claim_target": anchor_target or target_service,
+            "diagnostic_claim": _go_heap_growth_summary(anchor),
         }
     if classification == "runtime_stall":
         instance = str(anchor.get("instance_id") or anchor.get("service_id") or target_service)
@@ -5447,7 +5991,8 @@ def _build_session_controlled_ai_tree(
         ])
         node = AITreeCandidateNode(
             candidate_id=candidate_id,
-            generated_by="analyzer_observation",
+            generated_by="analyzer",
+            claim_origin="analyzer_diagnostic" if candidate_eligible else "analyzer_summary",
             lineage_id=candidate_id,
             relation=candidate_relation,
             parent_candidate_ids=candidate_parent_ids,
@@ -5756,6 +6301,8 @@ def _build_session_controlled_ai_tree(
             source_parent_id = resolved_coarse_parent_id
             line_node = AITreeCandidateNode(
                 candidate_id=line_candidate_id,
+                generated_by="analyzer",
+                claim_origin="analyzer_diagnostic",
                 lineage_id=line_candidate_id,
                 relation="refinement",
                 role="primary" if assessment_eligible else "unknown",
@@ -6039,6 +6586,7 @@ def _build_session_controlled_ai_tree(
             rejected_causes=[_classify_tree_node(node) for node in rejected_mechanism_nodes],
             unknown_causes=[_classify_tree_node(node) for node in mechanism_nodes],
         ))
+    lineage_quality_records = _tree_lineage_quality_records(layers)
     layers = _validate_tree_lineage(layers)
     retained_candidate_id = str(cluster_assessment.get("active_retained_candidate_id") or "")
     localization_chain = _tree_localization_chain(layers, retained_candidate_id)
@@ -6333,7 +6881,7 @@ def _build_session_controlled_ai_tree(
                 for layer in layers
                 for node in _layer_nodes_for_validation(layer)
                 if node.node_type == "orphan"
-            ],
+            ] + lineage_quality_records,
             "child_snapshot_count": len(child_trees),
         },
         stop_reason=stop_reason,
@@ -6536,16 +7084,6 @@ def _validate_tree_lineage(layers: list[AITreeLayer]) -> list[AITreeLayer]:
     duplicates = [candidate_id for candidate_id, count in occurrences.items() if count > 1]
     if duplicates:
         raise ValueError(f"DAG candidate_id 重复发出: {', '.join(sorted(duplicates))}")
-    declared_child_ids = {
-        child_id
-        for layer in layers
-        for node in _layer_nodes_for_validation(layer)
-        for child_id in node.child_candidate_ids
-    }
-    missing_children = sorted(declared_child_ids - emitted_ids)
-    if missing_children:
-        raise ValueError(f"DAG child_candidate_id 不存在: {', '.join(missing_children)}")
-
     parents_by_child: dict[str, list[str]] = {}
     validated: list[AITreeLayer] = []
     for layer in layers:
@@ -6653,6 +7191,32 @@ def _validate_tree_lineage(layers: list[AITreeLayer]) -> list[AITreeLayer]:
         })
         for layer in validated
     ]
+
+
+def _tree_lineage_quality_records(layers: list[AITreeLayer]) -> list[dict[str, Any]]:
+    emitted_ids = {
+        node.candidate_id
+        for layer in layers
+        for node in _layer_nodes_for_validation(layer)
+    }
+    records: list[dict[str, Any]] = []
+    for layer in layers:
+        for node in _layer_nodes_for_validation(layer):
+            missing_children = [
+                child_id
+                for child_id in _unique_strings(node.child_candidate_ids)
+                if child_id not in emitted_ids
+            ]
+            if not missing_children:
+                continue
+            records.append({
+                "candidate_id": node.candidate_id,
+                "status": "missing_child",
+                "relation": node.relation,
+                "child_candidate_ids": missing_children,
+                "claim": "节点声明的 child_candidate_ids 未在当前 session_main 中发出，已从主树布局边中移除。",
+            })
+    return records
 
 
 def _layer_nodes_for_validation(layer: AITreeLayer) -> list[AITreeCandidateNode]:
@@ -7079,20 +7643,13 @@ def _followup_provenance(evidence_gap: str, probe_input: dict[str, Any]) -> tupl
 
 
 def _merge_probe_input_maps(*maps: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
-    """Merge explicit probe provenance without selecting a parent by position."""
-    merged: dict[str, dict[str, Any]] = {}
-    for source in maps:
-        if not isinstance(source, dict):
-            continue
-        for family, value in source.items():
-            if not isinstance(value, dict):
-                continue
-            candidate_id, origin = _followup_provenance(str(family), value)
-            if not candidate_id or not origin:
-                continue
-            if str(family) not in merged:
-                merged[str(family)] = dict(value)
-    return merged
+    """Compatibility wrapper around canonical field-level input merging."""
+    result = merge_canonical_probe_inputs(*maps)
+    return {
+        family: value
+        for family, value in result.inputs.items()
+        if all(_followup_provenance(family, value))
+    }
 
 
 def _deep_probe_provenance(probes: list[dict[str, Any]]) -> dict[str, str]:
@@ -7195,37 +7752,12 @@ def _sync_tree_retained_conclusion(
 
 
 def _promote_ai_layer_to_guarded(layer: AITreeLayer) -> AITreeLayer:
-    grouped = {"primary": [], "secondary": [], "rejected": [], "unknown": []}
-    for node in [
-        *layer.primary_causes,
-        *layer.secondary_causes,
-        *layer.rejected_causes,
-        *layer.unknown_causes,
-    ]:
-        if node.generated_by == "ai_candidate":
-            node = node.model_copy(update={"generated_by": "ai_guarded"})
-        grouped[node.role].append(node)
-    return layer.model_copy(update={
-        "generated_by": (
-            "ai_guarded"
-            if layer.generated_by == "ai_candidate"
-            else layer.generated_by
-        ),
-        "primary_causes": grouped["primary"],
-        "secondary_causes": grouped["secondary"],
-        "rejected_causes": grouped["rejected"],
-        "unknown_causes": grouped["unknown"],
-    })
+    return layer
 
 
 def _promote_ai_nodes_to_guarded(tree: ControlledAITree) -> ControlledAITree:
-    """Promote only real AI nodes; keep Analyzer layers and observations intact."""
-    return tree.model_copy(update={
-        "layers": [
-            _promote_ai_layer_to_guarded(layer)
-            for layer in tree.layers
-        ],
-    })
+    """Compatibility shim; session review metadata now records AI participation."""
+    return tree
 
 
 def _mark_analyzer_fallback_tree(tree: ControlledAITree | None) -> ControlledAITree | None:
@@ -7243,7 +7775,7 @@ def _mark_analyzer_fallback_tree(tree: ControlledAITree | None) -> ControlledAIT
         ]:
             if (
                 node.relation != "root"
-                and node.generated_by not in {"ai_candidate", "ai_guarded"}
+                and node.generated_by not in {"ai", "ai_candidate", "ai_guarded"}
                 and node.node_type not in {
                     "observation",
                     "mechanism_explanation",
@@ -7289,7 +7821,7 @@ def _retained_parent_candidate_id(
         if node is None:
             return ""
         if (
-            node.generated_by in {"ai_candidate", "ai_guarded"}
+            node.generated_by in {"ai", "ai_candidate", "ai_guarded"}
             and node.node_type not in {
                 "observation",
                 "mechanism_explanation",
@@ -7410,7 +7942,13 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
         is_rejected = role == "rejected" or raw_decision in {"reject", "reject_candidate"} or raw_causal_status in {"rejected", "contradicted"}
         nodes.append(AITreeCandidateNode(
                 candidate_id=str(item["candidate_id"]),
-                generated_by="ai_candidate",
+                **canonical_claim_fields(
+                    item["claim"],
+                    generated_by="ai",
+                    claim_origin="ai_proposal",
+                    claim_transform="refined" if parent_ids else "original",
+                    source_candidate_id=str(item.get("origin_parent_candidate_id") or _single_parent_id(parent_ids) or ""),
+                ),
                 lineage_id=str(item["candidate_id"]),
                 parent_candidate_ids=parent_ids,
                 origin_parent_candidate_id=str(
@@ -7660,6 +8198,14 @@ def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) 
             update["self_challenge"] = challenge
         if not update:
             return node
+        lineage = apply_ai_claim_update(node.model_dump(mode="python"), raw)
+        update["claim"] = lineage["claim"]
+        for field in (
+            "generated_by", "claim_origin", "claim_transform", "claim_status",
+            "claim_hash", "source_claim_hash", "source_candidate_id", "source_round",
+            "source_event_id",
+        ):
+            update[field] = lineage[field]
         return node.model_copy(update=update)
 
     updated_layers = []
@@ -7692,7 +8238,13 @@ def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) 
         proposal_nodes = [
             AITreeCandidateNode(
                 candidate_id=item["candidate_id"],
-                generated_by="ai_guarded",
+                **canonical_claim_fields(
+                    item["claim"],
+                    generated_by="ai",
+                    claim_origin="ai_proposal",
+                    claim_transform="refined",
+                    source_candidate_id=str(item["origin_parent_candidate_id"]),
+                ),
                 lineage_id=item["candidate_id"],
                 parent_candidate_ids=list(dict.fromkeys(
                     str(parent_id) for parent_id in item.get("parent_candidate_ids", [])
@@ -7767,7 +8319,7 @@ def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) 
             proposal_layer = AITreeLayer(
                 layer_id=f"session_ai_investigation_{target_depth}_{len(layers)}",
                 depth=target_depth,
-                generated_by="ai_guarded",
+                generated_by="ai_candidate",
                 summary="AI 基于当前证据提出可证伪机制，并从注册探针中选择下一轮补证。",
                 unknown_causes=grouped_nodes,
             )
@@ -8559,12 +9111,20 @@ def _task_evidence_validity(
         "trace_endpoint_profile": "trace_endpoint_profile_json",
         "baseline_window_profile": "continuous_summary",
         "pyspy": "pyspy_status_json",
+        "go_pprof": "go_heap_profile_json",
         "python_heap_profile": "python_heap_profile_json",
         "source_snapshot": "source_snapshot_json",
         "source_mechanism_query": "source_mechanism_json",
         "python_heap_reference": "python_heap_reference_json",
         "log_scan": "log_window_json",
         "runtime_control_history": "runtime_control_event_json",
+        "python_lock_wait_profile": "python_lock_wait_profile_json",
+        "python_exception_profile": "python_exception_profile_json",
+        "python_queue_profile": "python_queue_profile_json",
+        "python_pool_profile": "python_pool_profile_json",
+        "python_retry_timeout_profile": "python_retry_timeout_profile_json",
+        "python_cache_profile": "python_cache_profile_json",
+        "python_input_profile": "python_input_profile_json",
     }.get(collector_type)
     payload = values.get(artifact_key) if artifact_key else None
     if isinstance(payload, dict):
@@ -8618,6 +9178,14 @@ def _completed_depth_evidence_gaps(observations: list[dict[str, Any]]) -> set[st
             completed.add("python_runtime_profile")
         if collector_type == "python_heap_profile" and has_top:
             completed.add("python_heap_profile")
+        go_heap = observation.get("go_heap_profile") if isinstance(observation.get("go_heap_profile"), dict) else {}
+        go_heap_validity = go_heap.get("evidence_validity") if isinstance(go_heap.get("evidence_validity"), dict) else {}
+        if (
+            collector_type == "go_pprof"
+            and has_top
+            and go_heap_validity.get("evidence_status") in {"valid", "partial"}
+        ):
+            completed.add("go_heap_profile")
         if collector_type == "source_snapshot" and validity.get("source_snapshot", "valid") in {"valid", "partial"}:
             completed.add("source_snapshot")
         mechanism = observation.get("source_mechanism") if isinstance(observation.get("source_mechanism"), dict) else {}
@@ -8628,6 +9196,18 @@ def _completed_depth_evidence_gaps(observations: list[dict[str, Any]]) -> set[st
         heap_validity = heap_reference.get("evidence_validity") if isinstance(heap_reference.get("evidence_validity"), dict) else {}
         if collector_type == "python_heap_reference" and heap_validity.get("evidence_status") in {"valid", "partial"} and heap_reference.get("reference_paths"):
             completed.add("python_heap_reference")
+        scenario_statuses = confidence.get("python_scenario_statuses") if isinstance(confidence.get("python_scenario_statuses"), dict) else {}
+        for family in (
+            "python_lock_wait_profile",
+            "python_exception_profile",
+            "python_queue_profile",
+            "python_pool_profile",
+            "python_retry_timeout_profile",
+            "python_cache_profile",
+            "python_input_profile",
+        ):
+            if collector_type == family and scenario_statuses.get(family) in {"valid", "partial"}:
+                completed.add(family)
     return completed
 
 
@@ -8759,7 +9339,11 @@ def _root_cause_cluster_candidates(clusters, session: dict[str, Any]) -> list[di
             "domain_type": domains[0],
             "classification": cluster.mechanism,
             "root_entity": cluster.target,
-            "max_supported_level": "service" if cluster.mechanism == "downstream_dependency_failure" else "process",
+            "max_supported_level": (
+                cluster.supported_level
+                if cluster.supported_level and cluster.supported_level != "resource"
+                else "service" if cluster.mechanism == "downstream_dependency_failure" else "process"
+            ),
             "root_cause_cluster_id": cluster.cluster_id,
             "cause_level": cluster.cause_level,
             "role": cluster.role,
@@ -8767,6 +9351,34 @@ def _root_cause_cluster_candidates(clusters, session: dict[str, Any]) -> list[di
             "origin_parent_candidate_id": _single_parent_id(parent_ids),
         })
     return candidates
+
+
+def _merge_python_scenario_gate_clusters(
+    primary_clusters,
+    engineering_clusters,
+    *,
+    valid_session_evidence_refs: set[str],
+) -> list[Any]:
+    merged = list(primary_clusters or [])
+    existing = {
+        (str(cluster.mechanism or ""), str(cluster.target or ""))
+        for cluster in merged
+    }
+    for cluster in engineering_clusters or []:
+        if not (
+            str(cluster.mechanism or "").startswith("python_")
+            and cluster.conclusion_eligible
+            and cluster.cause_level == "direct_root_cause"
+            and cluster.evidence_refs
+            and not (set(cluster.evidence_refs) - valid_session_evidence_refs)
+        ):
+            continue
+        key = (str(cluster.mechanism or ""), str(cluster.target or ""))
+        if key in existing:
+            continue
+        existing.add(key)
+        merged.append(cluster)
+    return merged
 
 
 def _cluster_dimensions(cluster, session: dict[str, Any]) -> tuple[str, list[str]]:

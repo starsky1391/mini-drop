@@ -8,7 +8,7 @@ from unittest import mock
 import pytest
 
 from agent.mini_drop_agent.collectors.base import CollectorTask
-from agent.mini_drop_agent.collectors.source_mechanism import SourceMechanismCollector
+from agent.mini_drop_agent.collectors.source_mechanism import SourceMechanismCollector, _total_timeout_seconds
 from server.app.diagnosis.codeql_query_guard import (
     render_version_locked_codeql_query,
     validate_ai_generated_codeql_query,
@@ -30,6 +30,19 @@ def _task(repo, sarif, **options):
             **options,
         },
     )
+
+
+def test_source_mechanism_total_timeout_fits_server_stale_window(tmp_path):
+    task = CollectorTask(
+        id="codeql-timeout",
+        collector_type="source_mechanism_query",
+        target_pid=1234,
+        sample_rate=1,
+        duration_sec=30,
+        options={},
+    )
+
+    assert _total_timeout_seconds(task) == 120
 
 
 def _sarif(path, location_count=3):

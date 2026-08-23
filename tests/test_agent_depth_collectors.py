@@ -82,6 +82,16 @@ def test_off_cpu_bpftrace_json_events_parse_to_wait_stacks():
     assert parsed["thread_wait_summary"][0]["tid"] == 1234
 
 
+def test_off_cpu_parser_normalizes_python_io_blocking_kind():
+    parsed = _parse_bpftrace_output(
+        '{"tid":1234,"wait_ns":12000000,"state":2,'
+        '"stack":["socket.recv","redis/client.py:542:read_response","service.handle"]}\n'
+    )
+
+    assert parsed["top_wait_stacks"][0]["blocking_kind"] == "redis_client"
+    assert parsed["blocking_summary"]["redis_client"] == 1
+
+
 def test_off_cpu_event_without_stack_is_partial_not_empty():
     parsed = _parse_bpftrace_output(
         '{"event":"offcpu","pid":1234,"tid":1234,"cpu":2,"start_ns":10,"end_ns":20,"wait_ns":12000000,"state":2,"stack":[]}\n'

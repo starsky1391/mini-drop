@@ -527,13 +527,18 @@ function DiagnosisDetail({ detail }) {
   const conclusion = detail.latest_conclusion;
   const candidates = conclusion?.root_cause_candidates || [];
   const possibleCauses = conclusion?.possible_root_causes || [];
+  const rootCauseClusters = conclusion?.root_cause_clusters || [];
   const sessionMainTree = useMemo(
     () => selectSessionMainTree(conclusion || {}),
     [conclusion],
   );
   const hasEligiblePrimary = Boolean(
     !conclusion?.abstained
-    && (sessionMainTree?.final_primary_causes?.length || candidates.length),
+    && (
+      sessionMainTree?.final_primary_causes?.length
+      || candidates.length
+      || rootCauseClusters.some((cluster) => cluster.conclusion_eligible)
+    ),
   );
   const displayedConfidence = hasEligiblePrimary
     ? conclusion?.confidence_level
@@ -557,6 +562,36 @@ function DiagnosisDetail({ detail }) {
     () => evidence
       .map((item) => item.observed_value || {})
       .filter((value) => value.collector_type === "off_cpu_wait_profile" || value.collector_family === "off_cpu_wait_profile"),
+    [evidence],
+  );
+  const pythonScenarioProfiles = useMemo(
+    () => {
+      const families = new Set([
+        "python_lock_wait_profile",
+        "python_exception_profile",
+        "python_queue_profile",
+        "python_pool_profile",
+        "python_retry_timeout_profile",
+      ]);
+      return evidence
+        .map((item) => item.observed_value || {})
+        .filter((value) => families.has(value.collector_type) || families.has(value.collector_family));
+    },
+    [evidence],
+  );
+  const pythonScenarioGates = useMemo(
+    () => {
+      const gatesByFamily = new Map();
+      evidence.forEach((item) => {
+        const summary = item.observed_value?.summary || {};
+        const inputs = summary.confidence_inputs || {};
+        const gates = inputs.python_scenario_gates || summary.python_scenario_gates || {};
+        Object.entries(gates).forEach(([family, gate]) => {
+          if (gate && typeof gate === "object") gatesByFamily.set(family, { family, ...gate });
+        });
+      });
+      return Array.from(gatesByFamily.values());
+    },
     [evidence],
   );
   const resourceBudget = detail.resource_budget || {};
@@ -594,11 +629,21 @@ function DiagnosisDetail({ detail }) {
   const controlledTree = sessionMainTree || {};
   const lineAnchorEligibility = controlledTree.line_anchor_eligibility || {};
   const heapProbeOutcome = controlledTree.heap_probe_outcome || {};
-  const displayedConclusion = retainedConclusion.claim || formalRootCause?.claim || conclusion?.headline || conclusion?.summary;
-  const displayedLevel = retainedConclusion.supported_level || conclusion?.cluster_assessment?.supported_level;
-  const displayedQualification = retainedConclusion.qualification || (
-    formalRootCause ? "formal_root_cause" : "partial_localization"
-  );
+  const probeConflicts = controlledTree.probe_conflicts || [];
+  const displayedConclusion = aiReviewStatus === "succeeded" && conclusion?.headline
+    ? conclusion.headline
+    : conclusion?.headline || retainedConclusion.claim || formalRootCause?.claim || conclusion?.summary;
+  const displayedLevel = rootCauseClusters.length > 1
+    ? null
+    : rootCauseClusters[0]?.supported_level
+      || retainedConclusion.supported_level
+      || conclusion?.cluster_assessment?.supported_level;
+  const displayedQualification = aiReviewStatus === "succeeded" && formalRootCause
+    ? "formal_root_cause"
+    : retainedConclusion.qualification || (formalRootCause ? "formal_root_cause" : "partial_localization");
+  const integratedBranchDetails = (conclusion?.causal_chain || [])
+    .map((item) => item.statement)
+    .filter((statement) => statement && !String(conclusion?.why_it_happened || "").includes(statement));
 
   function inspectClusterInTree(candidateIds) {
     setHighlightedTreeCandidates(candidateIds);
@@ -634,10 +679,21 @@ function DiagnosisDetail({ detail }) {
             description={(
               <Space direction="vertical" size={6}>
                 <Typography.Text>{conclusion.why_it_happened || conclusion.summary}</Typography.Text>
+                {rootCauseClusters.length > 1 && integratedBranchDetails.length > 0 && (
+                  <Typography.Text>
+                    {integratedBranchDetails.join("；")}
+                  </Typography.Text>
+                )}
+                {conclusion.localization_chain?.length > 0 && (
+                  <Typography.Text type="secondary">
+                    同时定位到：{conclusion.localization_chain.map((item) => item.statement).join("；")}
+                  </Typography.Text>
+                )}
                 <Space wrap>
                   <Tag color={hasEligiblePrimary ? "green" : "gold"}>根因置信等级 {displayedConfidence}</Tag>
                   <Tag>{displayedQualification}</Tag>
                   {displayedLevel && <Tag>当前定位：{displayedLevel}</Tag>}
+                  {rootCauseClusters.length > 1 && <Tag>{rootCauseClusters.length} 个相关故障方向</Tag>}
                   <Tag color={aiReviewStatus === "succeeded" ? "green" : aiReviewStatus === "failed" ? "red" : "orange"}>
                     {aiReviewStatus === "succeeded" ? "AI 会话裁决已通过" : aiReviewStatus === "failed" ? "AI 会话裁决失败，保留当前结论" : "AI 会话裁决未完成，保留当前结论"}
                   </Tag>
@@ -653,6 +709,19 @@ function DiagnosisDetail({ detail }) {
               showIcon
               message="当前结论不是 AI 最终裁决"
               description={conclusion.ai_review_error}
+              style={{ marginBottom: 12 }}
+            />
+          )}
+          {probeConflicts.length > 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              message={`探针输入存在 ${probeConflicts.length} 个冲突`}
+              description={probeConflicts.map((item) => (
+                <Typography.Text key={`${item.evidence_family}-${item.field || item.status}`} style={{ display: "block" }}>
+                  {item.evidence_family}：{item.field || item.status}；保留已有完整输入，未静默覆盖。
+                </Typography.Text>
+              ))}
               style={{ marginBottom: 12 }}
             />
           )}
@@ -1056,7 +1125,7 @@ function DiagnosisDetail({ detail }) {
             />
           )}
           <RootCauseClusters
-            clusters={conclusion.root_cause_clusters || []}
+            clusters={rootCauseClusters}
             evidenceMap={evidenceMap}
             onInspectTree={inspectClusterInTree}
           />
@@ -1255,6 +1324,158 @@ function DiagnosisDetail({ detail }) {
                       { title: "等待原因", dataIndex: "wait_reason" },
                       { title: "样本", dataIndex: "samples" },
                       { title: "等待时长", dataIndex: "wait_ms", render: (value) => `${value || 0} ms` },
+                      { title: "证据引用", dataIndex: "evidence_ref", render: (value) => <Typography.Text copyable>{value || "-"}</Typography.Text> },
+                    ]}
+                  />
+                )}
+              </Card>
+            );
+          })}
+        </Card>
+      )}
+
+      {pythonScenarioGates.length > 0 && (
+        <Card title="Python 场景门禁">
+          <Table
+            rowKey={(item) => item.family || item.scenario_type}
+            size="small"
+            pagination={false}
+            dataSource={pythonScenarioGates}
+            columns={[
+              { title: "场景", dataIndex: "scenario_type", render: (value, item) => value || item.family },
+              {
+                title: "证据状态",
+                dataIndex: "evidence_status",
+                width: 110,
+                render: (value) => (
+                  <Tag color={value === "valid" ? "green" : value === "partial" ? "blue" : value === "empty_window" ? "orange" : "red"}>
+                    {value || "unknown"}
+                  </Tag>
+                ),
+              },
+              {
+                title: "最高层级",
+                dataIndex: "max_supported_claim_type",
+                width: 150,
+                render: (value) => <Tag>{value || "observation"}</Tag>,
+              },
+              {
+                title: "源码验证",
+                dataIndex: "line_verified",
+                width: 110,
+                render: (value, item) => (
+                  <Space>
+                    <Tag color={value ? "green" : "gold"}>{value ? "已验证" : "未验证"}</Tag>
+                    {item.line_candidate_count > 0 && <Tag>{item.line_candidate_count} 行候选</Tag>}
+                  </Space>
+                ),
+              },
+              {
+                title: "来源",
+                dataIndex: "upstream_sources",
+                render: (sources = []) => (
+                  <Space wrap>
+                    {sources.length > 0
+                      ? sources.map((source, index) => (
+                        <Tag key={`${source.source_kind || source.kind}-${index}`} color="blue">
+                          {source.source_kind || source.kind || "unknown"} / {source.record_count || 0}
+                        </Tag>
+                      ))
+                      : <Tag color="default">无来源摘要</Tag>}
+                  </Space>
+                ),
+              },
+              {
+                title: "缺失门禁",
+                dataIndex: "missing_evidence",
+                render: (items = []) => (
+                  <Space wrap>
+                    {items.length > 0
+                      ? items.slice(0, 5).map((item) => <Tag key={item} color="gold">{item}</Tag>)
+                      : <Tag color="green">无</Tag>}
+                  </Space>
+                ),
+              },
+              { title: "说明", dataIndex: "eligibility_reason", render: (value) => value || "-" },
+            ]}
+          />
+        </Card>
+      )}
+
+      {pythonScenarioProfiles.length > 0 && (
+        <Card title="Python 场景证据">
+          {pythonScenarioProfiles.map((profile, index) => {
+            const validity = profile.evidence_validity || {};
+            const adapter = profile.adapter || {};
+            const sources = adapter.sources || [];
+            const lineCandidates = profile.line_candidates || [];
+            const scenarioRows = [
+              ...(profile.wait_sites || []).map((item) => ({ ...item, kind: "等待点" })),
+              ...(profile.exception_clusters || []).map((item) => ({
+                ...item,
+                kind: "异常簇",
+                function: item.throw_site?.function,
+                file: item.throw_site?.file,
+                line: item.throw_site?.line,
+                samples: item.occurrence_count,
+              })),
+              ...(profile.slow_task_candidates || []).map((item) => ({ ...item, kind: "慢任务", function: item.task_name, samples: item.duration_ms })),
+              ...(profile.active_tasks || []).map((item) => ({ ...item, kind: "活跃任务", function: item.task_name, samples: item.duration_ms })),
+              ...(profile.acquire_sites || []).map((item) => ({ ...item, kind: "获取点" })),
+              ...(profile.retry_clusters || []).map((item) => ({ ...item, kind: "重试点" })),
+              ...(profile.timeout_sites || []).map((item) => ({ ...item, kind: "超时点" })),
+            ].slice(0, 12);
+            return (
+              <Card key={`${profile.task_id || profile.scenario_type || "python-scenario"}-${index}`} size="small" type="inner" style={{ marginBottom: 12 }}>
+                <Descriptions size="small" bordered column={{ xs: 1, md: 3 }}>
+                  <Descriptions.Item label="场景">{profile.scenario_type || profile.collector_family}</Descriptions.Item>
+                  <Descriptions.Item label="证据状态">
+                    <Tag color={validity.evidence_status === "valid" ? "green" : validity.evidence_status === "partial" ? "blue" : validity.evidence_status === "empty_window" ? "orange" : "red"}>
+                      {validity.evidence_status || profile.evidence_status || "unknown"}
+                    </Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="来源策略">{adapter.source_policy || "unknown"}</Descriptions.Item>
+                  <Descriptions.Item label="工业来源" span={3}>
+                    <Space wrap>
+                      {sources.length > 0
+                        ? sources.map((source, sourceIndex) => (
+                          <Tag key={`${source.source_kind || source.kind}-${sourceIndex}`} color={source.source_status === "loaded" ? "blue" : "orange"}>
+                            {source.source_kind || source.kind || "unknown"} / {source.record_count || 0}
+                          </Tag>
+                        ))
+                        : <Tag color="red">无上游来源</Tag>}
+                    </Space>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="源码候选">{lineCandidates.length}</Descriptions.Item>
+                  <Descriptions.Item label="结论资格">
+                    <Tag color={profile.conclusion_eligible ? "green" : "gold"}>
+                      {profile.conclusion_eligible ? "可进入结论" : "仅证据/门禁"}
+                    </Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="缺失门禁" span={3}>
+                    <Space wrap>
+                      {(profile.missing_evidence || []).length > 0
+                        ? profile.missing_evidence.map((item) => <Tag key={item} color="gold">{item}</Tag>)
+                        : <Tag color="green">无</Tag>}
+                    </Space>
+                  </Descriptions.Item>
+                  {profile.eligibility_reason && (
+                    <Descriptions.Item label="门禁说明" span={3}>{profile.eligibility_reason}</Descriptions.Item>
+                  )}
+                </Descriptions>
+                {scenarioRows.length > 0 && (
+                  <Table
+                    rowKey={(item, rowIndex) => item.evidence_ref || `${profile.scenario_type}-${rowIndex}`}
+                    size="small"
+                    pagination={false}
+                    style={{ marginTop: 12 }}
+                    dataSource={scenarioRows}
+                    columns={[
+                      { title: "类型", dataIndex: "kind", width: 90 },
+                      { title: "函数/任务", dataIndex: "function", render: (value) => <Typography.Text code>{value || "unknown"}</Typography.Text> },
+                      { title: "文件", dataIndex: "file", render: (value) => value || "-" },
+                      { title: "行", dataIndex: "line", width: 80, render: (value) => value || "-" },
+                      { title: "样本/次数", dataIndex: "samples", width: 100, render: (value) => value || "-" },
                       { title: "证据引用", dataIndex: "evidence_ref", render: (value) => <Typography.Text copyable>{value || "-"}</Typography.Text> },
                     ]}
                   />

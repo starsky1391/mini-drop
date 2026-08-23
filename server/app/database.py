@@ -76,8 +76,25 @@ def init_db() -> None:
     """创建所有表（幂等）。应用启动时调用一次。"""
     engine = _get_engine()
     Base.metadata.create_all(bind=engine)
+    _ensure_artifact_columns(engine)
     _ensure_probe_evidence_columns(engine)
     _ensure_watch_episode_columns(engine)
+
+
+def _ensure_artifact_columns(engine: Engine) -> None:
+    inspector = inspect(engine)
+    table = "artifacts"
+    if table not in inspector.get_table_names():
+        return
+    columns = {item["name"]: item for item in inspector.get_columns(table)}
+    artifact_type = columns.get("artifact_type")
+    if engine.dialect.name != "postgresql" or artifact_type is None:
+        return
+    length = getattr(artifact_type.get("type"), "length", None)
+    if length is None or length >= 128:
+        return
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE artifacts ALTER COLUMN artifact_type TYPE VARCHAR(128)"))
 
 
 def _ensure_probe_evidence_columns(engine: Engine) -> None:

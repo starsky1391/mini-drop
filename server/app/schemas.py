@@ -33,6 +33,13 @@ CollectorType = Literal[
     "source_snapshot",
     "source_mechanism_query",
     "python_heap_reference",
+    "python_lock_wait_profile",
+    "python_exception_profile",
+    "python_queue_profile",
+    "python_pool_profile",
+    "python_retry_timeout_profile",
+    "python_cache_profile",
+    "python_input_profile",
 ]
 MIN_TASK_DURATION_SEC = 1
 MAX_TASK_DURATION_SEC = 120

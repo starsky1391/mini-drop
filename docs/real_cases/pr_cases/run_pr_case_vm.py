@@ -260,6 +260,10 @@ def run_stage(remote: Remote, case: dict, *, revision: str, stage: str, mode: st
             "repo_revision": revision,
             "language": case["language"],
             "container_workdir": case["container_workdir"],
+            "application_runtime_log_paths": [
+                f"/host{evidence_root}/workload.ndjson",
+                f"/host{evidence_root}/worker_observations.ndjson",
+            ],
         }
         target = {
             "service_id": case["service_id"],
@@ -269,6 +273,10 @@ def run_stage(remote: Remote, case: dict, *, revision: str, stage: str, mode: st
             "pid": inspected["pid"],
             "container_id": inspected["container_id"],
             "environment": "staging",
+            "application_runtime_log_paths": [
+                f"/host{evidence_root}/workload.ndjson",
+                f"/host{evidence_root}/worker_observations.ndjson",
+            ],
         }
         manifest = {
             "case_id": case_id,

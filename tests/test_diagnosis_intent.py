@@ -75,3 +75,29 @@ def test_standalone_io_terms_still_classify_as_io(monkeypatch):
 
     assert plain_io.symptom == "io_degradation"
     assert slash_io.symptom == "io_degradation"
+
+
+def test_diagnosis_request_accepts_application_runtime_log_paths():
+    request = CreateDiagnosisRequest.model_validate({
+        "query": "Investigate Python queue backlog",
+        "context": {
+            "service_id": "python-worker",
+            "source_context": {
+                "application_runtime_log_paths": ["/host/evidence/workload.ndjson"],
+            },
+            "instances": [{
+                "service_id": "python-worker",
+                "instance_id": "python-worker-1",
+                "host_id": "worker1",
+                "agent_id": "agent-worker1",
+                "pid": 21347,
+                "application_runtime_log_paths": ["/host/evidence/worker_observations.ndjson"],
+            }],
+        },
+    })
+
+    assert request.context.source_context
+    assert request.context.source_context.application_runtime_log_paths == ["/host/evidence/workload.ndjson"]
+    assert request.context.instances[0].application_runtime_log_paths == [
+        "/host/evidence/worker_observations.ndjson",
+    ]

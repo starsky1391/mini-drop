@@ -63,6 +63,9 @@ def enforce_conclusion_eligibility(tree: ControlledAITree | None) -> ControlledA
             elif role in {"primary", "secondary"} and not guarded.conclusion_eligible:
                 role = "unknown"
                 guarded = guarded.model_copy(update={"role": role})
+            elif role == "unknown" and guarded.conclusion_eligible:
+                role = "secondary"
+                guarded = guarded.model_copy(update={"role": role})
             grouped[role].append(guarded)
         layers.append(layer.model_copy(update={
             "primary_causes": grouped["primary"],
@@ -87,9 +90,12 @@ def _guard_candidate(node: AITreeCandidateNode) -> AITreeCandidateNode:
         *node.self_challenge.supporting_evidence_refs,
     ]))
     reason = ""
-    eligible = node.generated_by in {"ai_candidate", "ai_guarded"}
+    eligible = (
+        node.generated_by in {"ai", "ai_candidate", "ai_guarded"}
+        or node.generated_by == "analyzer" and node.conclusion_eligible
+    ) and node.claim_status not in {"boundary", "duplicate", "rejected"}
     if not eligible:
-        reason = "只有 AI 生成并通过当前门禁的候选可以进入正式根因结论。"
+        reason = "候选尚未通过 AI 或 Analyzer 工程资格门禁。"
     observational_candidate = (
         node.candidate_id in _OBSERVATIONAL_CANDIDATE_IDS
         or node.mechanism in _OBSERVATIONAL_CANDIDATE_IDS
@@ -165,7 +171,7 @@ def qualify_ai_candidate(
     known_candidate_ids: set[str] | None = None,
 ) -> tuple[bool, str]:
     """Return the single eligibility decision used by formal conclusions."""
-    if node.generated_by not in {"ai_candidate", "ai_guarded"}:
+    if node.generated_by not in {"ai", "ai_candidate", "ai_guarded"}:
         return False, "candidate 来源不是 AI。"
     if known_candidate_ids is not None and node.candidate_id not in known_candidate_ids:
         return False, "candidate ID 不属于当前 AI DAG。"
@@ -198,11 +204,47 @@ def _layer_nodes(layer: AITreeLayer) -> list[AITreeCandidateNode]:
 
 
 def _final_ids(layers: list[AITreeLayer], role: str, *, eligible_only: bool = False) -> list[str]:
-    result: list[str] = []
-    for layer in layers:
-        for node in _layer_nodes(layer):
-            if node.role != role or (eligible_only and not node.conclusion_eligible):
+    nodes = [node for layer in layers for node in _layer_nodes(layer)]
+    selected_ids = {
+        node.candidate_id
+        for node in nodes
+        if node.role == role and (not eligible_only or node.conclusion_eligible)
+    }
+    frontier_ids = set(select_terminal_candidate_ids(nodes, selected_ids))
+    return [
+        node.candidate_id
+        for node in nodes
+        if node.candidate_id in frontier_ids
+    ]
+
+
+def select_terminal_candidate_ids(
+    nodes: list[AITreeCandidateNode],
+    selected_ids: set[str],
+) -> list[str]:
+    """Keep selected DAG nodes that have no selected descendant."""
+    if not selected_ids:
+        return []
+    parents = {
+        node.candidate_id: [
+            parent_id for parent_id in node.parent_candidate_ids if parent_id
+        ]
+        for node in nodes
+    }
+    selected_ancestors: set[str] = set()
+    for candidate_id in selected_ids:
+        stack = list(parents.get(candidate_id, []))
+        visited: set[str] = set()
+        while stack:
+            parent_id = stack.pop()
+            if parent_id in visited:
                 continue
-            if node.candidate_id not in result:
-                result.append(node.candidate_id)
-    return result
+            visited.add(parent_id)
+            if parent_id in selected_ids:
+                selected_ancestors.add(parent_id)
+            stack.extend(parents.get(parent_id, []))
+    return [
+        node.candidate_id
+        for node in nodes
+        if node.candidate_id in selected_ids and node.candidate_id not in selected_ancestors
+    ]

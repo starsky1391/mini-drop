@@ -14,7 +14,8 @@ from server.app.rca.models import (
     RootCauseRecommendation,
     SessionConclusionReview,
 )
-from server.app.rca.controlled_tree import qualify_ai_candidate
+from server.app.rca.controlled_tree import qualify_ai_candidate, select_terminal_candidate_ids
+from server.app.diagnosis.canonical_claim_lineage import ensure_claim_lineage, hash_claim
 
 
 ELIGIBLE_CAUSE_LEVELS = {"direct_root_cause", "complete_source_root_cause"}
@@ -32,6 +33,8 @@ def build_root_cause_clusters(
     same_host_ids = {str(item) for item in scope.get("same_host_instance_ids", [])}
     source_ids = _tree_candidate_ids_by_mechanism(session_tree)
     candidates: list[dict[str, Any]] = []
+
+    candidates.extend(_scenario_gate_cluster_candidates(observations, target_service, source_ids))
 
     failed_dependency_seen = False
     for observation in observations:
@@ -265,19 +268,14 @@ def derive_root_cause_clusters_from_ai_tree(
         for node in nodes
         if node.get("candidate_id")
     }
-    clusters: list[RootCauseCluster] = []
+    qualified_nodes: list[dict[str, Any]] = []
+    parsed_nodes: list[AITreeCandidateNode] = []
     for node in nodes:
-        if node.get("generated_by") not in {"ai_candidate", "ai_guarded"}:
-            continue
-        refs = _unique(node.get("evidence_refs", []))
-        if valid_evidence_refs is not None and any(ref not in valid_evidence_refs for ref in refs):
-            continue
-        if not node.get("conclusion_eligible") or node.get("causal_status") != "supported" or node.get("decision") != "conclude":
-            continue
         try:
             ai_node = AITreeCandidateNode.model_validate(node)
         except Exception:
             continue
+        parsed_nodes.append(ai_node)
         eligible, _ = qualify_ai_candidate(
             ai_node,
             valid_evidence_refs=valid_evidence_refs,
@@ -287,25 +285,40 @@ def derive_root_cause_clusters_from_ai_tree(
             continue
         if any(parent_id not in known_ids for parent_id in ai_node.parent_candidate_ids):
             continue
-        role = node.get("role")
-        if role not in {"primary", "secondary"}:
-            continue
+        qualified_nodes.append(node)
+
+    frontier_ids = set(select_terminal_candidate_ids(
+        parsed_nodes,
+        {str(node["candidate_id"]) for node in qualified_nodes},
+    ))
+    frontier = [node for node in qualified_nodes if str(node["candidate_id"]) in frontier_ids]
+    primary_index = next(
+        (index for index, node in enumerate(frontier) if node.get("role") == "primary"),
+        0,
+    )
+    clusters: list[RootCauseCluster] = []
+    for index, node in enumerate(frontier):
+        refs = _unique(node.get("evidence_refs", []))
+        is_primary = index == primary_index
         cluster_id = f"rc_cluster_ai_{node['candidate_id']}"
         clusters.append(RootCauseCluster(
             cluster_id=cluster_id,
             candidate_ids=[str(node["candidate_id"])],
             source_tree_candidate_ids=[str(node["candidate_id"])],
-            role="primary" if role == "primary" else "contributing",
-            causal_status="primary" if role == "primary" else "contributing",
+            role="primary" if is_primary else "contributing",
+            causal_status="primary" if is_primary else "contributing",
             cause_level="complete_source_root_cause" if node.get("claim_type") == "complete_source_root_cause" else "direct_root_cause",
+            supported_level=str(node.get("supported_level") or "resource"),
             mechanism=str(node.get("mechanism") or ""),
             target=str(node.get("target") or ""),
             claim=str(node.get("claim") or ""),
             why_it_happened=str((node.get("self_challenge") or {}).get("why_this_claim") or ""),
             causal_chain=[CausalExplanationStep(
                 step_id=f"{cluster_id}_step_1",
+                candidate_id=str(node["candidate_id"]),
                 statement=str(node.get("claim") or ""),
                 evidence_refs=refs,
+                supported_level=str(node.get("supported_level") or "resource"),
             )],
             evidence_refs=refs,
             confidence=float(node.get("confidence") or 0.0),
@@ -313,6 +326,70 @@ def derive_root_cause_clusters_from_ai_tree(
             qualification="confirmed_root_cause",
         ))
     return clusters
+
+
+def derive_localization_frontier_from_ai_tree(
+    session_tree: dict[str, Any] | None,
+    *,
+    valid_evidence_refs: set[str] | None = None,
+) -> list[CausalExplanationStep]:
+    """Return deepest evidence-backed, non-formal findings from each DAG branch."""
+    if not isinstance(session_tree, dict):
+        return []
+    nodes: list[dict[str, Any]] = []
+    for layer in session_tree.get("layers", []):
+        if not isinstance(layer, dict):
+            continue
+        for key in ("primary_causes", "secondary_causes", "rejected_causes", "unknown_causes"):
+            nodes.extend(item for item in layer.get(key, []) if isinstance(item, dict))
+    parsed_nodes: list[AITreeCandidateNode] = []
+    reportable_ids: set[str] = set()
+    formal_ids: set[str] = set()
+    known_ids = {str(node.get("candidate_id") or "") for node in nodes if node.get("candidate_id")}
+    for node in nodes:
+        try:
+            parsed = AITreeCandidateNode.model_validate(node)
+        except Exception:
+            continue
+        parsed_nodes.append(parsed)
+        refs = _unique(parsed.evidence_refs)
+        formal, _ = qualify_ai_candidate(
+            parsed,
+            valid_evidence_refs=valid_evidence_refs,
+            known_candidate_ids=known_ids,
+        )
+        if formal:
+            formal_ids.add(parsed.candidate_id)
+        if (
+            parsed.claim.strip()
+            and refs
+            and parsed.generated_by in {"ai", "ai_candidate", "ai_guarded", "analyzer", "analyzer_observation"}
+            and parsed.claim_transform not in {"inherited", "restored", "boundary"}
+            and parsed.supported_level != "resource"
+            and parsed.depth_kind == "base"
+            and parsed.role != "rejected"
+            and parsed.status in {"supported", "partial", "missing_evidence", "blocked"}
+            and parsed.causal_status in {"supported", "unproven", "inconclusive"}
+            and parsed.decision not in {"reject_candidate", "backtrack", "abstain"}
+            and parsed.claim_status not in {"boundary", "duplicate", "rejected"}
+            and (valid_evidence_refs is None or not (set(refs) - valid_evidence_refs))
+        ):
+            reportable_ids.add(parsed.candidate_id)
+    frontier_ids = set(select_terminal_candidate_ids(parsed_nodes, reportable_ids)) - formal_ids
+    by_id = {node.candidate_id: node for node in parsed_nodes}
+    return [
+        CausalExplanationStep(
+            step_id=f"localization_{candidate_id}",
+            candidate_id=candidate_id,
+            statement=by_id[candidate_id].claim,
+            evidence_refs=_unique(by_id[candidate_id].evidence_refs),
+            claim_status=by_id[candidate_id].claim_status,
+            step_kind="claim",
+            supported_level=by_id[candidate_id].supported_level,
+        )
+        for candidate_id in select_terminal_candidate_ids(parsed_nodes, frontier_ids)
+        if candidate_id in by_id
+    ]
 
 
 def collect_ai_gate_failures(
@@ -335,7 +412,7 @@ def collect_ai_gate_failures(
     nodes = [
         node
         for node in all_nodes
-        if node.get("generated_by") in {"ai_candidate", "ai_guarded"}
+        if node.get("generated_by") in {"ai", "ai_candidate", "ai_guarded"}
     ]
     known_ids = {str(node.get("candidate_id") or "") for node in all_nodes if node.get("candidate_id")}
     failures: list[dict[str, Any]] = []
@@ -375,7 +452,7 @@ def collect_ai_gate_failures(
         )
         parent_is_declared = ai_node.relation == "root" or bool(ai_node.parent_candidate_ids)
         gate_checks = {
-            "source_is_ai": ai_node.generated_by in {"ai_candidate", "ai_guarded"},
+            "source_is_ai": ai_node.generated_by in {"ai", "ai_candidate", "ai_guarded"},
             "candidate_id": bool(ai_node.candidate_id),
             "evidence_refs": bool(ai_node.evidence_refs),
             "evidence_refs_exist": not (
@@ -629,6 +706,15 @@ def build_retained_conclusion(
     inherited: bool = False,
 ) -> dict[str, Any] | None:
     """Select an existing evidence-backed claim; never invent a fallback claim."""
+    scenario_retained = (
+        assessment.get("scenario_retained_conclusion")
+        if isinstance(assessment.get("scenario_retained_conclusion"), dict)
+        else None
+    )
+    has_eligible_cluster = any(cluster.conclusion_eligible for cluster in clusters)
+    if scenario_retained and not has_eligible_cluster:
+        return RetainedConclusion.model_validate(scenario_retained).model_dump(mode="json")
+
     tree_nodes = _tree_base_nodes(session_tree)
     tree_retained_id = (
         str(session_tree.get("retained_candidate_id") or "").strip()
@@ -702,6 +788,10 @@ def build_retained_conclusion(
         retained.setdefault("qualification", "partial_localization")
         retained["inherited"] = True
         retained["fallback_mode"] = "inherit_parent"
+        retained["claim_transform"] = "inherited"
+        retained["claim_status"] = "inherited"
+        retained["source_claim_hash"] = retained.get("claim_hash") or hash_claim(retained.get("claim"))
+        retained["claim_hash"] = hash_claim(retained.get("claim"))
         return RetainedConclusion.model_validate(retained).model_dump(mode="json")
 
     claim = str(
@@ -756,6 +846,18 @@ def build_retained_conclusion(
         or (selected_node or {}).get("source_candidate_id")
         or candidate_id
     ).strip()
+    lineage = ensure_claim_lineage(selected_node or {
+        "claim": claim,
+        "diagnostic_claim": assessment.get("diagnostic_claim"),
+        "summary": assessment.get("summary"),
+    })
+    retained_causal_status = str(
+        (selected_node or {}).get("causal_status")
+        or assessment.get("causal_status")
+        or ""
+    )
+    if retained_causal_status not in {"supported", "unproven", "contradicted", "inconclusive"}:
+        retained_causal_status = "supported" if eligible else "inconclusive"
     return RetainedConclusion(
         candidate_id=candidate_id,
         claim=claim,
@@ -764,9 +866,103 @@ def build_retained_conclusion(
         qualification=qualification,
         evidence_refs=evidence_refs,
         confidence=max(0.0, min(1.0, confidence)),
+        causal_status=retained_causal_status,
         source_candidate_id=source_id,
         inherited=inherited,
         fallback_mode="inherit_parent" if inherited else "none",
+        generated_by=lineage["generated_by"],
+        claim_origin=lineage["claim_origin"],
+        claim_transform="inherited" if inherited else lineage["claim_transform"],
+        claim_status="inherited" if inherited else "retained",
+        claim_hash=hash_claim(claim),
+        source_claim_hash=lineage["claim_hash"],
+        source_round=lineage["source_round"],
+        source_event_id=lineage["source_event_id"],
+    ).model_dump(mode="json")
+
+
+def build_scenario_retained_conclusion(
+    observations: list[dict[str, Any]],
+    session_tree: dict[str, Any] | None,
+    *,
+    target_service: str,
+) -> dict[str, Any] | None:
+    """Keep valid Python scenario observations visible without promoting them to roots."""
+    priority = {
+        "python_queue_profile": 0,
+        "python_pool_profile": 1,
+        "python_retry_timeout_profile": 2,
+        "python_cache_profile": 3,
+        "python_input_profile": 4,
+        "python_exception_profile": 5,
+        "python_lock_wait_profile": 6,
+    }
+    candidates: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
+    for observation in observations:
+        for gate in _scenario_gates_from_observation(observation):
+            family = str(gate.get("family") or "").strip()
+            checks = gate.get("gate_checks") if isinstance(gate.get("gate_checks"), dict) else {}
+            if str(gate.get("evidence_status") or "").lower() not in {"valid", "partial"}:
+                continue
+            if gate.get("conclusion_eligible") is True:
+                continue
+            if checks and checks.get("scenario_signal") is False:
+                continue
+            if not _unique(gate.get("mechanism_evidence_refs") or observation.get("evidence_refs") or []):
+                continue
+            candidates.append((priority.get(family, 99), gate, observation))
+    if not candidates:
+        return None
+
+    _, gate, observation = sorted(candidates, key=lambda item: item[0])[0]
+    family = str(gate.get("family") or "").strip() or "python_scenario"
+    scenario_type = str(gate.get("scenario_type") or family).strip()
+    refs = _unique([
+        *(gate.get("mechanism_evidence_refs") or []),
+        *(observation.get("evidence_refs") or []),
+    ])
+    nodes = _tree_base_nodes(session_tree)
+    selected_node = next(
+        (
+            node for node in nodes
+            if str(node.get("mechanism") or "") in {scenario_type, family}
+            and str(node.get("status") or "") not in {"rejected", "contradicted", "forbidden"}
+        ),
+        None,
+    )
+    target = _scenario_observation_target(observation, target_service)
+    claim = str((selected_node or {}).get("claim") or "").strip()
+    if not claim:
+        claim = (
+            f"Python 场景证据显示 {target} 存在 {scenario_type}，"
+            "当前可作为场景级局部定位，但缺少源码行和机制闭合证据，不能升级为正式根因。"
+        )
+    candidate_id = str((selected_node or {}).get("candidate_id") or f"scenario_{family}").strip()
+    lineage = ensure_claim_lineage(selected_node or {"claim": claim})
+    return RetainedConclusion(
+        candidate_id=candidate_id,
+        claim=claim,
+        supported_level=str((selected_node or {}).get("supported_level") or "process"),
+        status="partial",
+        qualification="partial_localization",
+        evidence_refs=refs,
+        confidence=max(0.45, _number((selected_node or {}).get("confidence") or 0.0)),
+        causal_status="inconclusive",
+        source_candidate_id=str(
+            (selected_node or {}).get("origin_parent_candidate_id")
+            or (selected_node or {}).get("source_candidate_id")
+            or candidate_id
+        ),
+        inherited=False,
+        fallback_mode="none",
+        generated_by="ai" if selected_node and str(selected_node.get("generated_by") or "").startswith("ai") else "analyzer",
+        claim_origin=str(lineage["claim_origin"]),
+        claim_transform=str(lineage["claim_transform"]),
+        claim_status="retained",
+        claim_hash=hash_claim(claim),
+        source_claim_hash=lineage["claim_hash"],
+        source_round=lineage["source_round"],
+        source_event_id=lineage["source_event_id"],
     ).model_dump(mode="json")
 
 
@@ -870,6 +1066,7 @@ def build_fallback_explanation(
     session_tree: dict[str, Any] | None = None,
     previous_retained: dict[str, Any] | None = None,
     qualification_boundary: dict[str, Any] | None = None,
+    localization_frontier: list[CausalExplanationStep] | None = None,
 ) -> dict[str, Any]:
     eligible = [cluster for cluster in clusters if cluster.conclusion_eligible]
     primary = eligible[0] if eligible else None
@@ -891,7 +1088,13 @@ def build_fallback_explanation(
         else:
             cluster.role = "independent"
             cluster.relation_to_primary = "该异常与主因同窗独立成立，但现有证据未证明它影响目标服务。"
-    if primary:
+    if len(eligible) > 1:
+        headline = "当前确认存在多个相关故障方向：" + "；".join(cluster.claim for cluster in eligible) + "。"
+        why = "；".join(
+            cluster.why_it_happened or cluster.claim
+            for cluster in eligible
+        )
+    elif primary:
         headline = primary.claim
         why = primary.why_it_happened
     retained = build_retained_conclusion(
@@ -904,9 +1107,9 @@ def build_fallback_explanation(
     if primary:
         retained = retained or build_retained_conclusion(clusters, assessment, session_tree)
     assessment_claim = str(assessment.get("diagnostic_claim") or "").strip()
-    if primary:
+    if len(eligible) <= 1 and primary:
         headline = primary.claim
-    else:
+    elif not primary:
         retained_level = str((retained or {}).get("supported_level") or "").strip()
         level_label = {
             "resource": "资源",
@@ -921,16 +1124,30 @@ def build_fallback_explanation(
             "call_path": "调用路径",
             "line": "源码行",
         }.get(retained_level, "观察/定位")
-        headline = (
+        scenario_retained = (
+            assessment.get("scenario_retained_conclusion")
+            if isinstance(assessment.get("scenario_retained_conclusion"), dict)
+            else None
+        )
+        retained_claim = str((retained or {}).get("claim") or "").strip() if scenario_retained else ""
+        headline = retained_claim or (
             f"未形成正式根因；当前证据只支持停在{level_label}级观察/定位层，"
             "尚未闭合可验证的因果链。"
         )
-    if primary:
-        why = primary.why_it_happened
-    elif possible:
-        why = possible.why_it_happened
-    else:
-        why = str(assessment.get("eligibility_reason") or "当前只有观察事实，尚未建立可引用证据支持的因果机制。")
+    if len(eligible) <= 1:
+        if primary:
+            why = primary.why_it_happened
+        elif possible:
+            why = possible.why_it_happened
+        elif retained and isinstance(assessment.get("scenario_retained_conclusion"), dict):
+            boundary = qualification_boundary if isinstance(qualification_boundary, dict) else {}
+            why = str(
+                boundary.get("message")
+                or retained.get("qualification")
+                or "当前结论是证据支持的局部定位，尚未达到正式根因门禁。"
+            )
+        else:
+            why = str(assessment.get("eligibility_reason") or "当前只有观察事实，尚未建立可引用证据支持的因果机制。")
     residual = _unique(
         item
         for cluster in clusters
@@ -940,7 +1157,10 @@ def build_fallback_explanation(
     if classification == "insufficient_evidence" and assessment.get("classification"):
         classification = str(assessment["classification"])
     formal_chain = [step for cluster in eligible for step in cluster.causal_chain]
-    localization_chain = _build_localization_chain(session_tree, retained)
+    localization_chain = _merge_explanation_steps(
+        localization_frontier or [],
+        _build_localization_chain(session_tree, retained),
+    )
     return {
         "headline": headline,
         "why_it_happened": why,
@@ -1018,15 +1238,39 @@ def _build_localization_chain(
         for candidate_id in ready:
             emitted.add(candidate_id)
             ordered.append(nodes[candidate_id])
-    return [
-        CausalExplanationStep(
-            step_id=f"localization_{node['candidate_id']}",
-            statement=str(node.get("claim") or ""),
+    result: list[CausalExplanationStep] = []
+    emitted_hashes: set[str] = set()
+    for node in ordered:
+        candidate_id = str(node.get("candidate_id") or "")
+        claim_status = str(node.get("claim_status") or "active")
+        boundary_message = str(node.get("boundary_message") or "").strip()
+        if claim_status == "boundary" or node.get("relation") == "boundary" or node.get("depth_kind") == "boundary":
+            statement = boundary_message or str(node.get("claim") or "").strip()
+            if statement:
+                result.append(CausalExplanationStep(
+                    step_id=f"localization_{candidate_id}",
+                    candidate_id=candidate_id,
+                    claim_status="boundary",
+                    step_kind="boundary",
+                    statement=statement,
+                    evidence_refs=_unique(node.get("evidence_refs") or []),
+                ))
+            continue
+        claim = str(node.get("claim") or "").strip()
+        claim_hash = str(node.get("claim_hash") or hash_claim(claim))
+        if not claim or not claim_hash or claim_hash in emitted_hashes:
+            continue
+        emitted_hashes.add(claim_hash)
+        result.append(CausalExplanationStep(
+            step_id=f"localization_{candidate_id}",
+            candidate_id=candidate_id,
+            claim_status=claim_status,
+            step_kind="inherited" if claim_status == "inherited" else "claim",
+            statement="继承自父节点结论" if claim_status == "inherited" else claim,
             evidence_refs=_unique(node.get("evidence_refs") or []),
-        )
-        for node in ordered
-        if str(node.get("claim") or "").strip()
-    ]
+            supported_level=str(node.get("supported_level") or "resource"),
+        ))
+    return result
 
 
 def apply_session_review(
@@ -1037,6 +1281,7 @@ def apply_session_review(
     model: str = "",
     retained_conclusion: dict[str, Any] | None = None,
     qualification_boundary: dict[str, Any] | None = None,
+    localization_frontier: list[CausalExplanationStep] | None = None,
 ) -> dict[str, Any]:
     parsed = review if isinstance(review, SessionConclusionReview) else SessionConclusionReview.model_validate(review)
     by_id = {cluster.cluster_id: cluster for cluster in clusters}
@@ -1056,6 +1301,10 @@ def apply_session_review(
         "headline": parsed.headline,
         "why_it_happened": parsed.why_it_happened,
         "causal_chain": parsed.causal_chain,
+        "localization_chain": _merge_explanation_steps(
+            parsed.localization_chain,
+            localization_frontier or [],
+        ),
         "root_cause_clusters": ordered,
         "ruled_out_summary": parsed.ruled_out_summary,
         "residual_unknowns": parsed.residual_unknowns,
@@ -1077,6 +1326,7 @@ def validate_session_review(
     review: SessionConclusionReview,
     clusters: list[RootCauseCluster],
     valid_evidence_refs: set[str],
+    localization_frontier: list[CausalExplanationStep] | None = None,
 ) -> list[str]:
     issues: list[str] = []
     by_id = {cluster.cluster_id: cluster for cluster in clusters if cluster.conclusion_eligible}
@@ -1085,6 +1335,8 @@ def validate_session_review(
         issues.append("primary_cluster_id does not reference an eligible cluster")
     if role_ids - set(by_id):
         issues.append("cluster_roles contains unknown or ineligible cluster IDs")
+    if role_ids != set(by_id):
+        issues.append("cluster_roles must cover every eligible cluster")
     if review.cluster_roles.get(str(review.primary_cluster_id)) != "primary":
         issues.append("primary cluster must have role=primary")
     if sum(role == "primary" for role in review.cluster_roles.values()) != 1:
@@ -1093,19 +1345,79 @@ def validate_session_review(
         cluster = by_id.get(cluster_id)
         if cluster is None:
             continue
-        if role == "contributing" and cluster.causal_status != "contributing":
+        if role == "contributing" and cluster.causal_status not in {"primary", "contributing"}:
             issues.append(f"cluster {cluster_id} lacks target-impact evidence required for role=contributing")
     selected_primary = by_id.get(str(review.primary_cluster_id))
     if selected_primary and selected_primary.causal_status == "independent" and any(
         cluster.causal_status != "independent" for cluster in by_id.values() if cluster.cluster_id != selected_primary.cluster_id
     ):
         issues.append("an independent anomaly cannot replace an evidence-backed causal primary cluster")
-    allowed_refs = valid_evidence_refs | {ref for cluster in clusters for ref in cluster.evidence_refs}
+    allowed_refs = (
+        valid_evidence_refs
+        | {ref for cluster in clusters for ref in cluster.evidence_refs}
+        | {ref for step in (localization_frontier or []) for ref in step.evidence_refs}
+    )
     for step in review.causal_chain:
         if not step.evidence_refs:
             issues.append(f"causal step {step.step_id} has no evidence refs")
         elif set(step.evidence_refs) - allowed_refs:
             issues.append(f"causal step {step.step_id} contains unknown evidence refs")
+    formal_candidate_ids = {
+        candidate_id
+        for cluster in clusters
+        for candidate_id in [*cluster.source_tree_candidate_ids, *cluster.candidate_ids]
+    }
+    localization_by_id = {
+        step.candidate_id: step
+        for step in (localization_frontier or [])
+        if step.candidate_id
+    }
+    covered_cluster_ids = {
+        cluster.cluster_id
+        for cluster in by_id.values()
+        if any(
+            step.candidate_id in set([*cluster.source_tree_candidate_ids, *cluster.candidate_ids])
+            for step in review.causal_chain
+        )
+    }
+    required_cluster_ids = {
+        cluster_id
+        for cluster_id, role in review.cluster_roles.items()
+        if role in {"primary", "contributing"}
+    }
+    if required_cluster_ids - covered_cluster_ids:
+        issues.append("causal_chain does not cover every primary/contributing cluster")
+    for step in review.causal_chain:
+        if not step.candidate_id:
+            issues.append(f"explanation step {step.step_id} has no candidate_id")
+        elif step.candidate_id not in formal_candidate_ids:
+            issues.append(f"explanation step {step.step_id} contains unknown candidate_id")
+        if set(step.evidence_refs) - allowed_refs:
+            issues.append(f"explanation step {step.step_id} contains unknown evidence refs")
+        matching_cluster = next(
+            (
+                cluster
+                for cluster in by_id.values()
+                if step.candidate_id in set([*cluster.source_tree_candidate_ids, *cluster.candidate_ids])
+            ),
+            None,
+        )
+        if matching_cluster is not None:
+            if set(step.evidence_refs) - set(matching_cluster.evidence_refs):
+                issues.append(f"causal step {step.step_id} contains evidence outside its cluster")
+            if step.supported_level != matching_cluster.supported_level:
+                issues.append(f"causal step {step.step_id} changes supported_level")
+    localization_ids = {step.candidate_id for step in review.localization_chain if step.candidate_id}
+    if localization_ids != set(localization_by_id):
+        issues.append("localization_chain must cover exactly the provided localization frontier")
+    for step in review.localization_chain:
+        source = localization_by_id.get(step.candidate_id)
+        if source is None:
+            continue
+        if set(step.evidence_refs) - set(source.evidence_refs):
+            issues.append(f"localization step {step.step_id} contains evidence outside its candidate")
+        if step.supported_level != source.supported_level:
+            issues.append(f"localization step {step.step_id} changes supported_level")
     if not review.headline.strip() or not review.why_it_happened.strip():
         issues.append("headline and why_it_happened are required")
     if review.headline.strip() == review.why_it_happened.strip():
@@ -1127,6 +1439,21 @@ def validate_session_review(
     return issues
 
 
+def _merge_explanation_steps(
+    preferred: Iterable[CausalExplanationStep],
+    fallback: Iterable[CausalExplanationStep],
+) -> list[CausalExplanationStep]:
+    result: list[CausalExplanationStep] = []
+    seen: set[str] = set()
+    for step in [*preferred, *fallback]:
+        key = step.candidate_id or hash_claim(step.statement)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(step)
+    return result
+
+
 def _cluster_template(
     *,
     mechanism: str,
@@ -1143,6 +1470,7 @@ def _cluster_template(
     eligible: bool,
     unknowns: list[str],
     causal_status: str = "unknown",
+    supported_level: str = "resource",
 ) -> dict[str, Any]:
     key = f"{mechanism}|{target}|{cohort}|{propagation_path}"
     cluster_id = "rc_cluster_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
@@ -1160,6 +1488,9 @@ def _cluster_template(
         "cause_level": cause_level if cause_level in {
             "observation", "direct_failure_mechanism", "direct_root_cause", "complete_source_root_cause",
         } else "observation",
+        "supported_level": supported_level if supported_level in {
+            "resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line",
+        } else "resource",
         "mechanism": mechanism,
         "target": target,
         "claim": claim,
@@ -1174,6 +1505,112 @@ def _cluster_template(
         "conclusion_eligible": eligible,
         "_key": key,
     }
+
+
+def _scenario_gate_cluster_candidates(
+    observations: list[dict[str, Any]],
+    target_service: str,
+    source_ids: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for observation in observations:
+        target = _scenario_observation_target(observation, target_service)
+        cohort = _cohort(observation)
+        for gate in _scenario_gates_from_observation(observation):
+            if not _scenario_gate_supports_direct_root_cause(gate):
+                continue
+            scenario_type = str(
+                gate.get("scenario_type")
+                or gate.get("family")
+                or "python_scenario"
+            ).strip()
+            refs = _unique([
+                *(gate.get("mechanism_evidence_refs") or []),
+                *observation.get("evidence_refs", []),
+            ])
+            reason = str(
+                gate.get("eligibility_reason")
+                or "Python 场景门禁已通过同窗源码行、机制证据和反证校验。"
+            )
+            candidates.append(_cluster_template(
+                mechanism=scenario_type,
+                target=target,
+                cause_level="direct_root_cause",
+                claim=f"Python 场景门禁确认 {scenario_type} 在 {target} 形成直接源码根因。",
+                why=reason,
+                symptoms=[f"{target_service} Python 场景异常"],
+                refs=refs,
+                confidence=0.86,
+                cohort=cohort,
+                propagation_path=f"{scenario_type}->{target_service}",
+                source_ids=source_ids.get(scenario_type, []) + source_ids.get(str(gate.get("family") or ""), []),
+                eligible=True,
+                unknowns=_unique(gate.get("missing_evidence") or []),
+                causal_status="primary",
+                supported_level="line",
+            ))
+    return candidates
+
+
+def _scenario_gates_from_observation(observation: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[Any] = []
+    for key in ("evidence_index", "confidence_inputs"):
+        value = observation.get(key) if isinstance(observation.get(key), dict) else {}
+        gates = value.get("python_scenario_gates")
+        if isinstance(gates, dict):
+            candidates.append(gates)
+    observed = observation.get("observed_value") if isinstance(observation.get("observed_value"), dict) else {}
+    summary = observed.get("summary") if isinstance(observed.get("summary"), dict) else {}
+    for container in (observed, summary):
+        index = container.get("evidence_index") if isinstance(container.get("evidence_index"), dict) else {}
+        gates = index.get("python_scenario_gates")
+        if isinstance(gates, dict):
+            candidates.append(gates)
+        confidence = index.get("confidence_inputs") if isinstance(index.get("confidence_inputs"), dict) else {}
+        gates = confidence.get("python_scenario_gates")
+        if isinstance(gates, dict):
+            candidates.append(gates)
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for gates in candidates:
+        for family, gate in gates.items():
+            if not isinstance(gate, dict):
+                continue
+            enriched = dict(gate)
+            enriched.setdefault("family", family)
+            key = f"{family}|{enriched.get('source_context_hash')}|{enriched.get('eligibility_reason')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(enriched)
+    return result
+
+
+def _scenario_gate_supports_direct_root_cause(gate: dict[str, Any]) -> bool:
+    refs = _unique(gate.get("mechanism_evidence_refs") or [])
+    counter_refs = _unique(gate.get("counter_evidence_refs") or [])
+    return bool(
+        gate.get("conclusion_eligible") is True
+        and gate.get("max_supported_claim_type") == "direct_root_cause"
+        and gate.get("line_verified") is True
+        and refs
+        and not counter_refs
+    )
+
+
+def _scenario_observation_target(observation: dict[str, Any], fallback: str) -> str:
+    for candidate in (
+        observation.get("target") if isinstance(observation.get("target"), dict) else {},
+        observation.get("observed_value", {}).get("target")
+        if isinstance(observation.get("observed_value"), dict)
+        and isinstance(observation.get("observed_value", {}).get("target"), dict)
+        else {},
+    ):
+        for key in ("service_id", "instance_id", "endpoint", "pid"):
+            value = candidate.get(key)
+            if value:
+                return str(value)
+    return fallback
 
 
 def _deduplicate(candidates: list[dict[str, Any]]) -> list[RootCauseCluster]:

@@ -293,7 +293,9 @@ function TreeDetailDrawer({ selected, evidenceMap, onClose }) {
           <Space wrap>
             <Tag color={roleColor(value.role)}>{roleLabel}</Tag>
             <Tag>{value.level}</Tag>
-            <Tag>{value.generatedBy}</Tag>
+            <Tag>{candidate.claim_origin || "来源未登记"}</Tag>
+            <Tag>{candidate.claim_transform || "original"}</Tag>
+            <Tag>{candidate.claim_status || "active"}</Tag>
             <Tag>{candidate.status || value.status || "unknown"}</Tag>
             <Tag>{candidate.claim_type || "partial_localization"}</Tag>
             <Tag color={candidate.conclusion_eligible ? "green" : "default"}>
@@ -301,7 +303,7 @@ function TreeDetailDrawer({ selected, evidenceMap, onClose }) {
             </Tag>
           </Space>
           <Typography.Title level={5}>{candidate.candidate_id || value.title}</Typography.Title>
-          <Typography.Paragraph>{candidate.claim || value.claim}</Typography.Paragraph>
+          <Typography.Paragraph>{candidate.claim || candidate.boundary_message || value.claim}</Typography.Paragraph>
           <Typography.Paragraph type="secondary">
             机制：{candidate.mechanism || "未形成"}；目标：{candidate.target || "未定位"}
           </Typography.Paragraph>

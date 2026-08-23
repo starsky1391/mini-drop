@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ class SourceMechanismCollector:
     def collect(self, task: CollectorTask) -> CollectorResult:
         output_dir = Path(self.OUTPUT_BASE) / task.id
         output_dir.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + _total_timeout_seconds(task)
         source_root = self._map_host_path(
             Path(str(task.options.get("source_root") or "")).resolve()
         )
@@ -128,7 +130,7 @@ class SourceMechanismCollector:
             if query_artifact is not None:
                 compiled = self._run(
                     [codeql, "query", "compile", str(query_source)],
-                    timeout=max(120, task.duration_sec + 60),
+                    timeout=_remaining_timeout_seconds(deadline),
                 )
                 if compiled.returncode != 0:
                     return self._blocked(
@@ -142,7 +144,7 @@ class SourceMechanismCollector:
                 created = self._run([
                     codeql, "database", "create", str(database), "--language=python",
                     f"--source-root={source_root}", "--overwrite",
-                ], timeout=max(300, task.duration_sec + 120))
+                ], timeout=_remaining_timeout_seconds(deadline))
                 if created.returncode != 0:
                     return self._blocked(
                         output_dir,
@@ -155,7 +157,7 @@ class SourceMechanismCollector:
             analyzed = self._run([
                 codeql, "database", "analyze", str(database), str(query_source),
                 "--format=sarif-latest", f"--output={sarif_path}", "--rerun",
-            ], timeout=max(300, task.duration_sec + 180))
+            ], timeout=_remaining_timeout_seconds(deadline))
             if analyzed.returncode != 0 or not sarif_path.is_file():
                 return self._blocked(
                     output_dir,
@@ -505,3 +507,18 @@ class SourceMechanismCollector:
             "content_type": content_type,
             "size_bytes": path.stat().st_size,
         }
+
+
+def _total_timeout_seconds(task: CollectorTask) -> int:
+    raw = task.options.get("total_timeout_sec") or os.getenv("MINI_DROP_SOURCE_MECHANISM_TOTAL_TIMEOUT_SEC", "")
+    try:
+        configured = int(float(raw or 0))
+    except (TypeError, ValueError):
+        configured = 0
+    if configured > 0:
+        return max(30, min(configured, 600))
+    return max(30, min(int(task.duration_sec or 0) + 90, 600))
+
+
+def _remaining_timeout_seconds(deadline: float) -> int:
+    return max(1, int(deadline - time.monotonic()))

@@ -229,9 +229,9 @@ def build_readiness_gate(bundle: dict[str, Any]) -> dict[str, Any]:
             "AI Ops v2 scoring requires the controlled AI tree path, not only legacy task RCA",
         ),
         _check(
-            "controlled_ai_tree_ai_guarded",
-            _controlled_ai_tree_has_ai_guarded_layer(bundle),
-            "controlled AI tree should include at least one LLM-validated ai_guarded layer",
+            "controlled_ai_tree_claim_lineage",
+            _controlled_ai_tree_has_claim_lineage(bundle),
+            "every claim-bearing session_main node should include canonical claim lineage",
         ),
         _check(
             "session_ai_review_succeeded",
@@ -331,18 +331,27 @@ def _check(name: str, passed: bool, message: str) -> dict[str, Any]:
     return {"name": name, "status": "PASS" if passed else "FAIL", "message": message}
 
 
-def _controlled_ai_tree_has_ai_guarded_layer(bundle: dict[str, Any]) -> bool:
+def _controlled_ai_tree_has_claim_lineage(bundle: dict[str, Any]) -> bool:
     latest = bundle.get("latest_conclusion") or bundle.get("conclusion") or {}
     if not isinstance(latest, dict):
-        return False
-    if latest.get("ai_review_status") != "succeeded" or latest.get("ai_review_scope") != "session":
         return False
     tree = _bundle_controlled_ai_tree(bundle)
     if not isinstance(tree, dict):
         return False
-    return any(
-        isinstance(layer, dict) and layer.get("generated_by") == "ai_guarded"
+    nodes = [
+        node
         for layer in tree.get("layers") or []
+        if isinstance(layer, dict)
+        for group in ("primary_causes", "secondary_causes", "rejected_causes", "unknown_causes")
+        for node in layer.get(group) or []
+        if isinstance(node, dict) and (node.get("claim") or node.get("boundary_message"))
+    ]
+    return bool(nodes) and all(
+        node.get("claim_origin")
+        and node.get("claim_transform")
+        and node.get("claim_status")
+        and (node.get("claim_hash") or node.get("claim_status") == "boundary")
+        for node in nodes
     )
 
 
@@ -506,6 +515,9 @@ def _normalize_conclusion(latest: dict[str, Any]) -> dict[str, Any]:
         "observations": latest.get("observations", []),
         "boundaries": latest.get("boundaries", []),
         "retained_parent_conclusions": latest.get("retained_parent_conclusions", []),
+        "canonical_candidate_state": (latest.get("controlled_ai_tree") or {}).get("data_quality", {}),
+        "canonical_probe_plan": (latest.get("controlled_ai_tree") or {}).get("canonical_probe_plan", []),
+        "probe_conflicts": (latest.get("controlled_ai_tree") or {}).get("probe_conflicts", []),
         "candidate_sources": sorted({
             str(node.get("generated_by"))
             for layer in (latest.get("controlled_ai_tree") or {}).get("layers", [])
@@ -594,10 +606,20 @@ def _structured_evidence(evidence: list[dict[str, Any]]) -> dict[str, Any]:
         ("dependency_check_json", "dependency_check"),
         ("redis_check_json", "redis_check"),
         ("trace_endpoint_profile_json", "trace_endpoint_profile"),
+        ("python_lock_wait_profile_json", "python_lock_wait_profile"),
+        ("python_exception_profile_json", "python_exception_profile"),
+        ("python_queue_profile_json", "python_queue_profile"),
+        ("python_pool_profile_json", "python_pool_profile"),
+        ("python_retry_timeout_profile_json", "python_retry_timeout_profile"),
+        ("python_cache_profile_json", "python_cache_profile"),
+        ("python_input_profile_json", "python_input_profile"),
     ):
         selected = _strongest_signal_value(summaries, field)
         if selected:
             evidence_index[index_key] = selected
+    scenario_gates = _merge_python_scenario_gates(confidence_inputs)
+    if scenario_gates:
+        evidence_index["python_scenario_gates"] = scenario_gates
 
     return {
         "version": 1,
@@ -619,6 +641,14 @@ def _structured_evidence(evidence: list[dict[str, Any]]) -> dict[str, Any]:
         "trace_endpoint_profile_json": _strongest_signal_value(
             summaries, "trace_endpoint_profile_json"
         ),
+        "python_scenario_gates": scenario_gates,
+        "python_lock_wait_profile_json": _strongest_signal_value(summaries, "python_lock_wait_profile_json"),
+        "python_exception_profile_json": _strongest_signal_value(summaries, "python_exception_profile_json"),
+        "python_queue_profile_json": _strongest_signal_value(summaries, "python_queue_profile_json"),
+        "python_pool_profile_json": _strongest_signal_value(summaries, "python_pool_profile_json"),
+        "python_retry_timeout_profile_json": _strongest_signal_value(summaries, "python_retry_timeout_profile_json"),
+        "python_cache_profile_json": _strongest_signal_value(summaries, "python_cache_profile_json"),
+        "python_input_profile_json": _strongest_signal_value(summaries, "python_input_profile_json"),
     }
 
 
@@ -721,8 +751,45 @@ def _merge_confidence_inputs(summaries: list[dict[str, Any]]) -> dict[str, Any]:
             or _best_status(values, "runtime_control_evidence_status")
         ),
         "evidence_validity_by_family": evidence_validity,
+        "python_scenario_statuses": _merge_python_scenario_statuses(values),
+        "python_scenario_gates": _merge_python_scenario_gates_from_values(values),
     })
     return result
+
+
+def _merge_python_scenario_statuses(values: list[dict[str, Any]]) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    order = {"": 0, "blocked": 1, "unparseable": 1, "empty_window": 2, "partial": 3, "valid": 4}
+    for value in values:
+        statuses = value.get("python_scenario_statuses")
+        if not isinstance(statuses, dict):
+            continue
+        for family, status in statuses.items():
+            text = str(status or "")
+            if order.get(text, 0) >= order.get(merged.get(str(family), ""), 0):
+                merged[str(family)] = text
+    return merged
+
+
+def _merge_python_scenario_gates_from_values(values: list[dict[str, Any]]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    order = {"": 0, "blocked": 1, "unparseable": 1, "empty_window": 2, "partial": 3, "valid": 4}
+    for value in values:
+        gates = value.get("python_scenario_gates")
+        if not isinstance(gates, dict):
+            continue
+        for family, gate in gates.items():
+            if not isinstance(gate, dict):
+                continue
+            current = merged.get(str(family))
+            if not isinstance(current, dict) or order.get(str(gate.get("evidence_status") or ""), 0) >= order.get(str(current.get("evidence_status") or ""), 0):
+                merged[str(family)] = gate
+    return merged
+
+
+def _merge_python_scenario_gates(confidence_inputs: dict[str, Any]) -> dict[str, Any]:
+    gates = confidence_inputs.get("python_scenario_gates")
+    return gates if isinstance(gates, dict) else {}
 
 
 def _merge_evidence_validity(values: list[dict[str, Any]]) -> dict[str, str]:
@@ -962,6 +1029,7 @@ def _artifact_family(artifact: dict[str, Any]) -> str:
         "trace_endpoint_profile_json": "trace_endpoint_profile",
         "runtime_control_event_json": "runtime_control_history",
         "pyspy_status_json": "pyspy",
+        "go_heap_profile_json": "go_pprof",
     }
     return mapping.get(str(artifact.get("artifact_type")), str(artifact.get("artifact_type")))
 
@@ -977,6 +1045,7 @@ def _probe_to_collector(probe_id: str) -> str:
         "process_baseline_window": "baseline_window_profile",
         "process_python_runtime_profile": "pyspy",
         "process_python_heap_profile": "python_heap_profile",
+        "process_go_heap_profile": "go_pprof",
         "process_source_snapshot": "source_snapshot",
         "process_log_scan": "log_scan",
         "process_dependency_check": "dependency_check",

@@ -485,9 +485,17 @@ class TestHotmethodNotifyResult:
         ("artifact_type", "expected_reason"),
         [
             ("python_heap_profile_json", "Memray Python Heap 结构化证据已生成"),
+            ("go_heap_profile_json", "Go Heap pprof 结构化证据已生成"),
             ("source_snapshot_json", "源码快照结构化证据已生成"),
             ("source_mechanism_json", "CodeQL 源码机制证据已生成"),
             ("python_heap_reference_json", "PyHeap 运行时引用证据已生成"),
+            ("python_lock_wait_profile_json", "Python 锁等待结构化证据已生成"),
+            ("python_exception_profile_json", "Python 异常风暴结构化证据已生成"),
+            ("python_queue_profile_json", "Python 队列堆积结构化证据已生成"),
+            ("python_pool_profile_json", "Python 连接池耗尽结构化证据已生成"),
+            ("python_retry_timeout_profile_json", "Python 重试超时结构化证据已生成"),
+            ("python_cache_profile_json", "Python 缓存增长结构化证据已生成"),
+            ("python_input_profile_json", "Python 输入慢路径结构化证据已生成"),
         ],
     )
     def test_notify_python_depth_evidence_transitions_to_done(

@@ -137,3 +137,43 @@ def test_audit_structured_evidence_deduplicates_duplicate_package_records():
 
     assert len(merged["artifact_refs"]) == 1
     assert merged["artifact_refs"][0]["evidence_ref"] == "package:cohort-1:sys_metrics"
+
+
+def test_audit_structured_evidence_exports_python_scenario_gates():
+    item = {
+        "query_or_probe": "structured_evidence_json",
+        "observed_value": {
+            "summary": {
+                "artifact_refs": [{
+                    "evidence_ref": "task:t:artifact:python_exception_profile_json",
+                    "artifact_type": "python_exception_profile_json",
+                }],
+                "confidence_inputs": {
+                    "collector_families": ["python_exception_profile"],
+                    "evidence_validity_by_family": {"python_exception_profile": "valid"},
+                    "python_scenario_statuses": {"python_exception_profile": "valid"},
+                    "python_scenario_gates": {
+                        "python_exception_profile": {
+                            "family": "python_exception_profile",
+                            "scenario_type": "python_exception_storm",
+                            "evidence_status": "valid",
+                            "line_verified": True,
+                            "max_supported_claim_type": "direct_failure_mechanism",
+                            "conclusion_eligible": False,
+                            "missing_evidence": ["scenario_root_cause_gate"],
+                        },
+                    },
+                },
+                "python_exception_profile_json": {
+                    "scenario_type": "python_exception_storm",
+                    "evidence_validity": {"evidence_status": "valid"},
+                },
+            },
+        },
+    }
+
+    merged = _structured_evidence([item])
+
+    assert merged["confidence_inputs"]["python_scenario_statuses"]["python_exception_profile"] == "valid"
+    assert merged["python_scenario_gates"]["python_exception_profile"]["line_verified"] is True
+    assert merged["evidence_index"]["python_exception_profile"]["scenario_type"] == "python_exception_storm"

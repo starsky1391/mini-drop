@@ -1925,3 +1925,249 @@ live_collection behavior and delayed follow-up tests remain unchanged
 3. Test package-hit and package-miss behavior before adding code.
 4. Add only the missing audit adapter or boundary fix.
 5. Run CH020-CH021 before considering the first frozen-evidence evaluation ready.
+
+---
+
+## Task Group CI - Canonical Claim Lineage and Probe Plan Closure (Authoritative)
+
+本任务组对应
+`docs/superpowers/specs/2026-08-23-canonical-claim-lineage-probe-plan-design.md`。
+它是本次“结论语义问题、父子重复 claim、探针调度覆盖和完整 probe input 丢失”范围的唯一执行口径。
+
+本任务组不删除历史 CG/CH 记录。与本任务组目标重复的未完成 CG 任务以 CI 的 canonical contract、状态 reducer 和测试结果为准；已存在实现先复用，只有失败测试证明存在缺口时才修改。
+
+### CI001 - Lock canonical claim and candidate contracts
+
+- [X] CI001 [P] Add `generated_by`, `claim_origin`, `claim_transform`, `claim_status`, `claim_hash`, `source_claim_hash`, `source_candidate_id`, `source_round` and `source_event_id` to the candidate models in `server/app/rca/models.py`.
+- [X] CI002 [P] Extend the existing tree/session schemas only with missing claim-lineage and probe-plan fields; reuse existing `tree_kind`, `renderable`, boundary and data-quality contracts in `server/app/diagnosis/schemas.py`.
+- [X] CI003 [P] Add canonical lineage and candidate state fixture builders in `tests/conftest.py` or `tests/fixtures/canonical_lineage.py` without relying on report-specific IDs.
+- [X] CI004 [P] Add contract tests for canonical node serialization and invalid parent/origin combinations in `tests/test_canonical_contract.py`.
+
+### CI002 - Implement canonical claim lineage
+
+- [X] CI005 Implement claim normalization, deterministic hashing and source mapping in `server/app/diagnosis/canonical_claim_lineage.py`.
+- [X] CI006 Implement Analyzer claim registration for `rules.json` descriptions, `diagnostic_claim` and `summary` in `server/app/diagnosis/canonical_claim_lineage.py` and `server/app/rca/candidates.py`.
+- [X] CI007 Implement AI proposal and AI update claim registration in `server/app/diagnosis/canonical_claim_lineage.py` and `server/app/rca/llm_client.py`; an update without `claim` must preserve the existing lineage.
+- [X] CI008 Extend the existing retained-parent and qualification-boundary builders with canonical claim lineage and boundary-message metadata in `server/app/diagnosis/canonical_claim_lineage.py` and `server/app/diagnosis/session_conclusion.py`.
+- [X] CI009 Add lineage unit tests in `tests/test_canonical_claim_lineage.py` covering Analyzer, AI proposal, AI update, retained, fallback, boundary and history-restore origins.
+
+### CI003 - Implement canonical candidate state reducer
+
+- [X] CI010 Extract the existing candidate normalization, DAG validation and conclusion-eligibility paths into the ordered reducer in `server/app/diagnosis/canonical_candidate_state.py` without duplicating orchestrator-only parent logic.
+- [X] CI011 Consolidate existing coarse aliases, emitted-parent checks, orphan handling and data-quality records in `server/app/diagnosis/canonical_candidate_state.py`; add only missing canonical reducer outputs.
+- [X] CI012 Reuse existing `tree_kind`, `renderable`, child-snapshot and frontend main-tree filters while making the canonical reducer the single producer of `session_main`, `probe_history` and `data_quality` outputs.
+- [X] CI013 Add reducer tests in `tests/test_canonical_candidate_state.py` for current-round filtering, history isolation, real parent resolution, orphan handling and deterministic output ordering.
+
+### CI004 - Enforce parent-child claim specificity
+
+- [X] CI014 Implement `validate_claim_refinement(parent, child)` with normalized claim equality, mechanism, target, supported-level, localization-object and causal-chain specificity checks in `server/app/diagnosis/canonical_candidate_state.py`.
+- [X] CI015 Convert same-claim child updates into parent evidence updates or probe annotations, and emit `duplicate_claim` or `refinement_not_more_specific` data-quality records instead of adding them to `session_main` in `server/app/diagnosis/canonical_candidate_state.py`.
+- [X] CI016 Add focused specificity tests in `tests/test_canonical_candidate_state.py` for exact duplicates, punctuation-only changes, evidence-only changes, mechanism refinement, target refinement and localization refinement.
+- [X] CI017 Add regression fixtures and assertions in `tests/test_diagnosis_orchestrator.py` proving emitted pairs `001 -> 004`, `002 -> 005` and `003 -> 006` cannot contain identical normalized claims.
+
+### CI005 - Integrate canonical state into AI and orchestration
+
+- [X] CI018 Preserve the already implemented session-level AI review fields and remove only the misleading layer/node `generated_by=ai_guarded` relabeling in `server/app/rca/llm_client.py` and `server/app/diagnosis/orchestrator.py`.
+- [X] CI019 Route the existing Analyzer candidate, AI proposal and candidate-update paths through the canonical claim lineage and candidate reducer in `server/app/diagnosis/orchestrator.py`.
+- [X] CI020 Replace the existing distributed `session_main` assembly with canonical candidate-state output while preserving current child-snapshot, renderable and data-quality behavior in `server/app/diagnosis/orchestrator.py`.
+- [X] CI021 Extend the existing retained-conclusion and qualification-boundary paths in `server/app/diagnosis/session_conclusion.py` so retained claims carry canonical lineage and boundaries never become formal claims.
+- [X] CI022 Add orchestration integration tests in `tests/test_diagnosis_orchestrator.py` for AI guard success without new claim text, AI proposal with new claim text, valid sibling retention, history exclusion and child-probe failure retaining the parent.
+
+### CI006 - Rebuild canonical probe planning and input merge
+
+- [X] CI023 Extend the existing `query_spec_hash` validation and duplicate-query suppression into canonical probe request normalization in `server/app/diagnosis/canonical_probe_plan.py`, adding target/window dimensions only where absent.
+- [X] CI024 Fix the existing investigation-review replacement at `server/app/diagnosis/orchestrator.py` so initial and investigation evidence families use union semantics; preserve the already existing initial-review union path.
+- [X] CI025 Implement field-level probe input merge where non-empty complete query data wins over abbreviated provenance and conflicting candidate/origin values produce explicit conflict records in `server/app/diagnosis/canonical_probe_plan.py`.
+- [X] CI026 Reuse the existing `source_mechanism_query` readiness and `query_spec_hash` validation, then make canonical probe-plan normalization preserve the complete investigation query before scheduling in `server/app/diagnosis/canonical_probe_plan.py`.
+- [X] CI027 Replace first-write-wins `_merge_probe_input_maps()` behavior in `server/app/diagnosis/orchestrator.py` with canonical probe-plan normalization and conflict diagnostics.
+- [X] CI028 Add probe-plan tests in `tests/test_canonical_probe_plan.py` for family union, complete-query replacement, query-hash retention, identical request deduplication, conflicting query variants and unknown-family rejection.
+- [X] CI029 Add orchestrator regression tests in `tests/test_diagnosis_orchestrator.py` proving `source_mechanism_query` no longer fails with `followup_probe_input_missing` when the investigation review supplies the complete query.
+
+### CI007 - Separate retained conclusions, boundaries and localization output
+
+- [X] CI030 Extend the existing retained/fallback construction in `server/app/diagnosis/session_conclusion.py` so inherited claims retain source candidate identity, canonical claim origin, evidence refs and causal status while boundary nodes use only `boundary_message`.
+- [X] CI031 Extend the existing explicit-parent localization-chain construction in `server/app/diagnosis/orchestrator.py` with claim-hash deduplication, inherited-claim suppression and boundary stop steps.
+- [X] CI032 Add session-conclusion tests in `tests/test_session_conclusion.py` for retained-parent identity, local boundary rendering, no-eligible-candidate abstention and non-contradiction after child probe failure.
+- [X] CI033 Add localization-chain regression tests in `tests/test_diagnosis_orchestrator.py` proving parent-child duplicate claims are displayed once and boundary messages do not become root-cause claims.
+
+### CI008 - Update frontend and audit contracts
+
+- [X] CI034 Verify and extend the existing `session_main/renderable=true` and explicit-parent graph filtering in `web/src/components/diagnosis/aiTreeGraphModel.js` to consume canonical lineage fields and keep history/probe/data-quality records outside the main layout.
+- [X] CI035 Extend the existing boundary, rejected, orphan and history rendering in `web/src/components/diagnosis/ControlledAITreeGraph.jsx` with active/inherited/duplicate claim semantics; remove remaining source inference from `generated_by` and node color.
+- [X] CI036 Extend the existing AI review, retained-conclusion and gate-diagnostic views in `web/src/pages/AIDiagnosis.jsx` with claim origin, claim transform, duplicate-claim diagnostics and probe conflicts.
+- [X] CI037 Extend `web/src/components/diagnosis/aiTreeGraphModel.test.js` and diagnosis fixtures for duplicate-claim exclusion, history isolation, orphan visibility, boundary rendering and explicit parent edges.
+- [X] CI038 Extend the existing audit/API serialization of AI review, gate failures, retained conclusions and boundaries in `server/app/diagnosis/audit_bundle.py` with canonical claim lineage, candidate state, probe plan and probe conflicts.
+- [X] CI039 Add audit/API round-trip tests in `tests/test_server_api.py`, `tests/test_sql_repository.py` and `tests/test_diagnosis_orchestrator.py` for canonical fields and data-quality records.
+
+### CI009 - End-to-end validation and real-report acceptance
+
+- [X] CI040 Add an end-to-end canonical-tree fixture test in `tests/test_canonical_lineage_e2e.py` covering Analyzer input, AI proposal, investigation review, probe merge, failed child probe, retained parent, boundary and final serialization.
+- [X] CI041 Extend the existing offline replay in `docs/real_cases/celery_8882/replay_original_evidence.py` to assert no duplicate parent-child claims, no historical nodes in `session_main` and no lost `query_spec_hash`.
+- [X] CI042 Run focused backend tests for canonical contract, lineage, candidate state, probe plan, orchestrator and session conclusion in `tests/`.
+- [X] CI043 Run frontend tests, production build, `python -m compileall server tests` and `git diff --check` after the canonical integration is complete.
+- [X] CI044 Inspect the latest real diagnosis report and record the status of `001 -> 004`, `002 -> 005`, `003 -> 006`, localization-chain deduplication and probe-family union in the task completion evidence.
+- [X] CI045 Update the canonical design and feature task cross-references only if implementation names or validation commands changed, without reintroducing legacy claim semantics.
+
+### CI Completion Evidence - 2026-08-23
+
+```text
+focused backend: 346 passed
+full backend: 800 passed
+frontend graph model: 22 passed
+frontend production build: passed
+python compileall: passed
+git diff --check: passed
+
+latest inspected report:
+reports/eval/real-open-source/celery-8882-vulnerable-600s-20260823/run.json
+source revision: a83070e5ec748c32325332db422756cfdd709aae
+historical report input: 001->004, 002->005, 003->006 still contain duplicate claim text
+current canonical reducer replay: 004/005/006 are excluded from emitted session_main and recorded as duplicate_claim
+history_in_session_main: none
+localization-chain canonical fixture: consecutive duplicate claim suppressed and boundary rendered as a stop step
+probe-family union/query hash: covered by canonical unit, orchestrator and end-to-end tests
+real report probe plan: absent because the inspected report predates canonical_probe_plan; no live diagnosis was rerun
+```
+
+### CI Completion Criteria
+
+```text
+every current node has claim_origin, claim_transform and claim_status
+generated_by no longer implies AI-generated claim text
+refinement children cannot equal the normalized parent claim
+same-claim updates merge into the parent or remain probe annotations
+fallback retains the actual source parent and creates only a local boundary
+history, probe_history and data_quality never enter session_main
+localization_chain has no consecutive duplicate claim text
+initial and investigation probe families use union semantics
+complete ai_generated_query and query_spec_hash survive merge
+formal report, frontend tree and probe scheduling consume canonical state
+real report confirms 001->004, 002->005 and 003->006 are resolved
+```
+
+## CI Multi-Branch Conclusion Synthesis
+
+- [X] CI046 Add regression fixtures for distinct sibling causes with mixed `line` and `function` support levels.
+- [X] CI047 Add one canonical DAG frontier selector that collapses selected ancestors while preserving distinct sibling endpoints.
+- [X] CI048 Reuse the existing formal eligibility guard when deriving all qualified sibling root-cause clusters, including qualified nodes previously left with `role=unknown`.
+- [X] CI049 Preserve each cluster and explanation step's own `supported_level` instead of replacing it with one session-wide level.
+- [X] CI050 Reuse `SessionConclusionReview.localization_chain` for deepest evidence-backed non-formal branch findings.
+- [X] CI051 Require session review roles and causal steps to cover every formal primary/contributing branch with matching candidate IDs, evidence and support levels.
+- [X] CI052 Keep all qualified branches in deterministic fallback output when session-level AI review is unavailable.
+- [X] CI053 Prefer the existing session review `headline` as the frontend summary and render related branch details without replacing them with one retained claim.
+- [X] CI054 Extend the existing root-cause cluster detail view with per-branch localization depth and tree linkage.
+- [X] CI055 Run focused backend, orchestrator and frontend model regressions for multi-branch convergence.
+- [X] CI056 Run full backend tests, frontend production build, compileall and diff validation.
+
+### Multi-Branch Completion Evidence - 2026-08-23
+
+```text
+multi-branch/session/orchestrator focused backend: 191 passed
+full backend: 807 passed
+frontend graph model: 22 passed
+frontend production build: passed
+python compileall: passed
+git diff --check: passed
+
+covered behavior:
+- distinct sibling causes survive with independent line/function support levels
+- a deeper formal child replaces only its same-branch formal ancestor
+- qualified role=unknown siblings normalize to secondary instead of disappearing
+- session review roles cover every eligible cluster
+- causal steps retain matching candidate IDs, evidence and support levels
+- non-formal deep siblings remain visible through localization_chain
+- fallback keeps every qualified formal branch when session AI is unavailable
+- frontend summary prefers the integrated session headline
+```
+
+## CI Dependencies and Execution Order
+
+```text
+CI001-CI004 contract and fixtures
+  -> CI005-CI009 claim lineage
+  -> CI010-CI013 candidate reducer
+  -> CI014-CI017 specificity gate
+  -> CI018-CI022 AI/orchestrator integration
+  -> CI023-CI029 canonical probe plan
+  -> CI030-CI033 retained/boundary/localization
+  -> CI034-CI039 frontend and audit
+  -> CI040-CI045 end-to-end validation and acceptance
+```
+
+The first independently usable increment is:
+
+```text
+CI001-CI017
+```
+
+It proves canonical claim origins, real parent lineage and duplicate-claim rejection before changing live probe scheduling.
+
+## CI Parallel Opportunities
+
+- CI001-CI004 can run in parallel because they touch separate contract and fixture files.
+- CI005-CI009 can be split between lineage implementation and lineage tests after CI001.
+- CI010-CI013 can proceed alongside CI005-CI009 after the model contract is fixed.
+- CI023-CI026 and CI028 can proceed in parallel after the canonical probe request shape is agreed.
+- CI034-CI037 can proceed in parallel with CI038-CI039 after backend payload fields are stable.
+- CI042 and CI043 can run in parallel once CI040-CI041 are complete.
+
+## CI Implementation Strategy
+
+### MVP
+
+1. Complete CI001-CI004 to lock the contract.
+2. Complete CI005-CI017 to normalize claim lineage, parents and duplicate refinement behavior.
+3. Stop and validate the three known duplicate pairs before changing probe scheduling.
+
+### Incremental Delivery
+
+1. Complete CI018-CI022 and remove layer-level AI guard relabeling.
+2. Complete CI023-CI029 and validate initial/investigation probe union and complete query preservation.
+3. Complete CI030-CI033 and unify retained, boundary and localization semantics.
+4. Complete CI034-CI039 and expose the canonical state in frontend and audit payloads.
+5. Complete CI040-CI045 with focused tests, build checks and latest real-report acceptance.
+
+## CI Implementation Status Review - 2026-08-23
+
+本次审查基于当前工作区代码、现有测试和最近提交完成。结论不是把现有逻辑直接标记为 CI 已完成，而是区分“可复用基础”和“本次仍需补齐的 canonical 缺口”。
+
+### Already Implemented and Must Be Reused
+
+- Session-level AI review metadata 已存在于 `server/app/rca/llm_client.py`、`server/app/diagnosis/orchestrator.py` 和 `server/app/diagnosis/session_conclusion.py`，包括 status、scope、attempts、model 和 error；对应测试已存在于 `tests/test_rca.py`、`tests/test_diagnosis_orchestrator.py` 和 `tests/test_session_conclusion.py`。CI018 只需移除错误的 layer/node relabeling，不要再创建第二套 AI review 状态。
+- `ControlledAITree` 已有 `tree_kind`、`renderable`、`data_quality`、`retained_candidate_id`、`localization_chain` 和 child-snapshot 语义，位置在 `server/app/rca/models.py` 和 `server/app/diagnosis/orchestrator.py`。CI002、CI012、CI020 应扩展并集中生产这些字段，不应重复定义。
+- emitted parent、概念 coarse alias、orphan、missing provenance、duplicate candidate ID 和显式 `origin_parent_candidate_id` 已在 `server/app/diagnosis/orchestrator.py`、`server/app/diagnosis/session_conclusion.py` 和 `web/src/components/diagnosis/aiTreeGraphModel.js` 中存在。CI010-CI013、CI034-CI035 应提取或复用这些路径。
+- retained conclusion、qualification boundary、child probe failure 后回退父节点和 retained pointer 同步已经实现，相关测试包括 `tests/test_session_conclusion.py` 和 `tests/test_diagnosis_orchestrator.py`。CI008、CI021、CI030、CI032 只补 canonical claim lineage 和重复展示语义。
+- AI 候选生成失败后的 fallback、合法兄弟候选保留、候选门禁诊断和 session-level AI readiness 已有实现。CI022、CI038、CI039 应围绕现有输出补字段和测试，不应重写 fallback 流程。
+- `query_spec_hash` 的读取、source mechanism 输入 readiness 和相同 guarded query 去重已经存在于 `server/app/diagnosis/orchestrator.py`。CI023、CI026、CI028 应扩展既有逻辑，而不是重新实现 query hash 机制。
+- 前端已经过滤非 `session_main` 或 `renderable=false` 的树，并使用显式父节点建立主树边；已有测试覆盖 child snapshot、orphan、duplicate candidate ID 和跨分支 parent。CI034-CI037 是 canonical claim 字段和展示语义的补充。
+- audit bundle 已保留 AI review、candidate diagnostics、gate failures、retained conclusions、boundaries 和 controlled tree 摘要。CI038-CI039 只需补 canonical 字段和 probe-plan 冲突记录。
+- `docs/real_cases/celery_8882/replay_original_evidence.py` 已存在并能读取候选、父节点、探针、line 和 heap 摘要。CI041 应扩展现有 replay，不新建第二个回放脚本。
+
+### Partially Implemented and Still Requires Changes
+
+- `generated_by=ai_guarded` 仍会在 `server/app/rca/llm_client.py` 和 `server/app/diagnosis/orchestrator.py` 对 layer 或 AI candidate 做提升。这解决了旧 readiness 语义，但仍无法表示 claim 是否由本轮 AI 新生成；CI018 是本次真实修复点。
+- 候选已有 claim、mechanism、target、supported level 和 parent 校验，但没有 `claim_origin`、`claim_transform`、`claim_status`、claim hash，也没有父子 claim 文本相等门禁；CI001、CI005-CI017 仍是主要新增范围。
+- 初始候选 review 已使用 union 合并 selected evidence families，但调查轮在 `server/app/diagnosis/orchestrator.py` 中仍用调查轮列表替换 `followup_requests`；CI024 是一个明确的现有 bug 修复。
+- `_merge_probe_input_maps()` 已验证 candidate/origin provenance，但仍使用 first-write-wins；CI025、CI027、CI029 是另一个明确的现有 bug 修复。
+- localization chain 已按真实 parent 追溯，但直接输出每个节点的 `claim`，尚未按 claim hash 去重，也没有 inherited/boundary 的独立展示语义；CI031-CI033 仍需要实现。
+
+### Not Found in Current Implementation
+
+- `canonical_claim_lineage.py`、`canonical_candidate_state.py` 和 `canonical_probe_plan.py` 当前不存在。
+- claim 来源字段和 claim 变换字段当前不存在。
+- `duplicate_claim`、`refinement_not_more_specific` 和 probe input conflict 的后端 canonical 记录当前不存在。
+- 父子 claim 是否增加机制、目标或定位信息的统一 specificity gate 当前不存在。
+- 首轮与调查轮合并后的 canonical probe plan 当前不存在。
+- 针对三组已确认重复节点和完整 query 丢失的独立 canonical E2E fixture 当前不存在。
+
+### Review Decision
+
+CI 任务组保留，但执行时遵循以下调整：
+
+```text
+先复用现有 AI review、parent、fallback、boundary、session_main、audit 和 replay 逻辑
+再新增 claim lineage、specificity gate 和 canonical probe plan
+最后删除 layer-level ai_guarded relabeling，并将现有调用接入 canonical reducer
+```
+
+本审查没有将已有代码直接标记为 `[x]`，因为现有实现尚未满足新的 canonical contract；只将对应任务从“新增实现”修订为“复用并补齐”。

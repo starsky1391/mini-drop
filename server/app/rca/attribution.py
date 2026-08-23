@@ -1952,6 +1952,7 @@ def _controlled_candidate(
     is_primary = attribution.status == "supported" and attribution.candidate_id == primary_id
     return AITreeCandidateNode(
         candidate_id=attribution.candidate_id,
+        generated_by="analyzer",
         lineage_id=attribution.candidate_id,
         cluster_id=attribution.candidate_id,
         branch_id=attribution.candidate_id,
@@ -1967,6 +1968,7 @@ def _controlled_candidate(
         claim_type="likely_root_cause" if is_primary else "partial_localization",
         causal_status="supported" if is_primary else "unproven",
         decision="conclude" if is_primary else "continue_probe",
+        conclusion_eligible=is_primary,
         mechanism=attribution.candidate_id,
         target=target,
         evidence_refs=refs,

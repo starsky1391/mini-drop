@@ -4,9 +4,19 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
+import unicodedata
 from pathlib import Path
 from typing import Any
+
+
+def _claim_hash(value: Any) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    normalized = re.sub(r"[\s,，.。:：;；!！?？]+$", "", normalized)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest() if normalized else ""
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -83,6 +93,8 @@ def _tree_summary(tree: dict[str, Any] | None) -> dict[str, Any]:
     node_summaries: list[dict[str, Any]] = []
     orphan_nodes: list[str] = []
     line_nodes: list[str] = []
+    claim_hashes: dict[str, str] = {}
+    history_in_session_main: list[str] = []
     for layer in tree.get("layers", []):
         if not isinstance(layer, dict):
             continue
@@ -94,6 +106,12 @@ def _tree_summary(tree: dict[str, Any] | None) -> dict[str, Any]:
                 if not candidate_id:
                     continue
                 known_ids.add(candidate_id)
+                claim_hashes[candidate_id] = str(node.get("claim_hash") or _claim_hash(node.get("claim")))
+                if (
+                    tree.get("tree_kind") in {None, "session_main"}
+                    and (node.get("generated_by") == "history" or node.get("claim_transform") == "restored")
+                ):
+                    history_in_session_main.append(candidate_id)
                 if (
                     node.get("generated_by") in {"ai_candidate", "ai_guarded"}
                     and candidate_id.startswith("ai_candidate_")
@@ -144,6 +162,13 @@ def _tree_summary(tree: dict[str, Any] | None) -> dict[str, Any]:
         for _, parent_id in parent_refs
         if parent_id and parent_id not in known_ids
     })
+    duplicate_parent_child_claims = sorted({
+        f"{parent_id}->{candidate_id}"
+        for candidate_id, parent_id in parent_refs
+        if parent_id in claim_hashes
+        and claim_hashes.get(candidate_id)
+        and claim_hashes[candidate_id] == claim_hashes[parent_id]
+    })
     return {
         "present": True,
         "tree_kind": tree.get("tree_kind"),
@@ -153,6 +178,8 @@ def _tree_summary(tree: dict[str, Any] | None) -> dict[str, Any]:
         "missing_parent_ids": missing_parent_ids,
         "orphan_node_ids": sorted(set(orphan_nodes)),
         "line_node_ids": sorted(set(line_nodes)),
+        "duplicate_parent_child_claims": duplicate_parent_child_claims,
+        "history_in_session_main": sorted(set(history_in_session_main)),
         "nodes": node_summaries[:256],
     }
 
@@ -199,6 +226,16 @@ def replay_report(report: dict[str, Any]) -> dict[str, Any]:
     line_anchor_present = bool(anchor.get("file")) and int(anchor.get("line") or 0) > 0
     tree_summary = _tree_summary(tree)
     ai_candidate_ids = tree_summary["ai_candidate_ids"]
+    canonical_probe_plan = tree.get("canonical_probe_plan", []) if isinstance(tree, dict) else []
+    source_query_entries = [
+        item
+        for item in canonical_probe_plan
+        if isinstance(item, dict) and item.get("evidence_family") == "source_mechanism_query"
+    ]
+    source_query_hashes = [
+        str(((item.get("probe_input") or {}).get("ai_generated_query") or {}).get("query_spec_hash") or "")
+        for item in source_query_entries
+    ]
 
     gate_failures = [
         item for item in (latest.get("gate_failures") or [])
@@ -289,6 +326,15 @@ def replay_report(report: dict[str, Any]) -> dict[str, Any]:
         },
         "probe_summary": _probe_summary(probes),
         "ai_tree": tree_summary,
+        "canonical_acceptance": {
+            "no_duplicate_parent_child_claims": not tree_summary["duplicate_parent_child_claims"],
+            "no_history_in_session_main": not tree_summary["history_in_session_main"],
+            "source_mechanism_query_hash_preserved": (
+                not source_query_entries or all(source_query_hashes)
+            ),
+            "source_mechanism_query_hashes": source_query_hashes,
+            "probe_conflicts": tree.get("probe_conflicts", []) if isinstance(tree, dict) else [],
+        },
         "candidate_generation": {
             "status": candidate_review.get("ai_review_status"),
             "attempts": candidate_review.get("candidate_generation_attempts", []),

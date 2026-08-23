@@ -22,6 +22,20 @@ const LEVEL_LABELS = {
   complete_source_root_cause: "完整来源根因",
 };
 
+const SUPPORTED_LEVEL_LABELS = {
+  resource: "资源",
+  host: "主机",
+  process: "进程",
+  thread: "线程",
+  syscall: "系统调用",
+  dependency: "依赖",
+  service: "服务",
+  endpoint: "端点",
+  function: "函数",
+  call_path: "调用路径",
+  line: "源码行",
+};
+
 const RECOMMENDATION_LABELS = {
   investigation: "继续查证",
   temporary_mitigation: "临时缓解",
@@ -38,7 +52,7 @@ export default function RootCauseClusters({ clusters = [], evidenceMap, onInspec
       <div className="root-cause-clusters-heading">
         <div>
           <Typography.Title level={5}>根因与影响范围</Typography.Title>
-          <Typography.Text type="secondary">每个根因独立通过证据门禁，展开后可查看因果链与处理建议。</Typography.Text>
+          <Typography.Text type="secondary">展开可核查每个相关方向的定位、证据和处理建议。</Typography.Text>
         </div>
         <Space wrap>
           <Tag icon={<SafetyCertificateOutlined />} color="green">{confirmedCount} 个已确认根因</Tag>
@@ -73,6 +87,7 @@ function ClusterLabel({ cluster }) {
         <Tag color={role.color}>{role.label}</Tag>
         <Tag color={qualification.color}>{qualification.label}</Tag>
         <Tag>{LEVEL_LABELS[cluster.cause_level] || cluster.cause_level}</Tag>
+        <Tag color="geekblue">定位到 {SUPPORTED_LEVEL_LABELS[cluster.supported_level] || cluster.supported_level || "资源"}</Tag>
         {!cluster.conclusion_eligible && <Tag>未过结论门禁</Tag>}
       </Space>
       <Typography.Text strong>{cluster.claim}</Typography.Text>

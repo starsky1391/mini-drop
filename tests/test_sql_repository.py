@@ -240,6 +240,23 @@ class TestArtifactPersistence:
         assert len(arts) == 1
         assert arts[0]["artifact_type"] == "raw"
 
+    def test_add_artifact_accepts_long_evidence_family_name(self, repo: SqlRepository):
+        repo.register_agent(self.AGENT_ID, "h", self.IP)
+        task = repo.create_task(CreateTaskRequest(
+            name="art-long-type", agent_id=self.AGENT_ID,
+            target_pid=1, collector_type="python_retry_timeout_profile",
+        ))
+
+        repo.add_artifacts(task.id, [{
+            "artifact_type": "python_retry_timeout_profile_json",
+            "bucket": "mini-drop",
+            "object_key": "tasks/x/python_retry_timeout_profile.json",
+        }])
+
+        arts = repo.artifacts.get(task.id, [])
+        assert len(arts) == 1
+        assert arts[0]["artifact_type"] == "python_retry_timeout_profile_json"
+
     def test_artifacts_survive_repo_reload(self, repo: SqlRepository):
         repo.register_agent(self.AGENT_ID, "h", self.IP)
         task = repo.create_task(CreateTaskRequest(

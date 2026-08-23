@@ -28,6 +28,41 @@ def build_collector_profile(capabilities: list[str]) -> dict[str, Any]:
         _log_scan_profile(),
         _blackbox_profile(),
         _redis_exporter_profile(),
+        _python_scenario_profile(
+            "python_lock_wait_profile",
+            "py-spy/off-CPU profile outputs",
+            ["MINI_DROP_OFFCPU_PROFILE_PATHS"],
+        ),
+        _python_scenario_profile(
+            "python_exception_profile",
+            "Fluent Bit or OpenTelemetry log output",
+            ["MINI_DROP_LOG_PIPELINE_OUTPUT"],
+        ),
+        _python_scenario_profile(
+            "python_queue_profile",
+            "Celery inspect, broker metrics, Redis exporter, and worker logs",
+            ["MINI_DROP_QUEUE_METRICS_PATHS", "MINI_DROP_LOG_PIPELINE_OUTPUT"],
+        ),
+        _python_scenario_profile(
+            "python_pool_profile",
+            "library logs and runtime stack signatures",
+            ["MINI_DROP_LOG_PIPELINE_OUTPUT"],
+        ),
+        _python_scenario_profile(
+            "python_retry_timeout_profile",
+            "logs, traces, and dependency telemetry",
+            ["MINI_DROP_LOG_PIPELINE_OUTPUT", "MINI_DROP_TRACE_PATHS"],
+        ),
+        _python_scenario_profile(
+            "python_cache_profile",
+            "application runtime logs, cache metrics, and trace attributes",
+            ["MINI_DROP_LOG_PIPELINE_OUTPUT"],
+        ),
+        _python_scenario_profile(
+            "python_input_profile",
+            "application runtime logs, traces, and Python stack samples",
+            ["MINI_DROP_LOG_PIPELINE_OUTPUT", "MINI_DROP_TRACE_PATHS"],
+        ),
     ]
     by_family = {item["collector_type"]: item for item in checks}
     for capability in capabilities:
@@ -278,6 +313,37 @@ def _redis_exporter_profile() -> dict[str, Any]:
         "source": "Redis Exporter",
         "reason": reason,
         "default_options": {"exporter_url": url},
+    }
+
+
+def _python_scenario_profile(collector_type: str, source: str, env_names: list[str]) -> dict[str, Any]:
+    configured_paths: list[str] = []
+    existing_paths: list[str] = []
+    for name in env_names:
+        raw = os.getenv(name, "")
+        configured_paths.extend(item.strip() for item in raw.split(",") if item.strip())
+    for path in configured_paths:
+        if Path(path).exists():
+            existing_paths.append(path)
+    if existing_paths:
+        status = "available"
+        reason = "upstream telemetry paths found"
+    elif configured_paths:
+        status = "degraded"
+        reason = "upstream telemetry configured but not readable yet"
+    else:
+        status = "degraded"
+        reason = "adapter registered; waits for upstream collector artifact paths in task options"
+    return {
+        "collector_type": collector_type,
+        "status": status,
+        "source": source,
+        "reason": reason,
+        "default_options": {
+            "source_policy": "industrial_collectors_only",
+            "configured_paths": configured_paths,
+            "available_paths": existing_paths,
+        },
     }
 
 

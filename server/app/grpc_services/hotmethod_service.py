@@ -129,9 +129,17 @@ def _has_analysis_result(artifacts: list[dict]) -> bool:
         "runtime_control_event_json",
         "pyspy_status_json",
         "python_heap_profile_json",
+        "go_heap_profile_json",
         "source_snapshot_json",
         "source_mechanism_json",
         "python_heap_reference_json",
+        "python_lock_wait_profile_json",
+        "python_exception_profile_json",
+        "python_queue_profile_json",
+        "python_pool_profile_json",
+        "python_retry_timeout_profile_json",
+        "python_cache_profile_json",
+        "python_input_profile_json",
     } & artifact_types)
 
 
@@ -155,12 +163,28 @@ def _analysis_done_reason(artifacts: list[dict]) -> str:
         return "Trace endpoint 结构化证据已生成"
     if "python_heap_profile_json" in artifact_types:
         return "Memray Python Heap 结构化证据已生成"
+    if "go_heap_profile_json" in artifact_types:
+        return "Go Heap pprof 结构化证据已生成"
     if "source_snapshot_json" in artifact_types:
         return "源码快照结构化证据已生成"
     if "source_mechanism_json" in artifact_types:
         return "CodeQL 源码机制证据已生成"
     if "python_heap_reference_json" in artifact_types:
         return "PyHeap 运行时引用证据已生成"
+    if "python_lock_wait_profile_json" in artifact_types:
+        return "Python 锁等待结构化证据已生成"
+    if "python_exception_profile_json" in artifact_types:
+        return "Python 异常风暴结构化证据已生成"
+    if "python_queue_profile_json" in artifact_types:
+        return "Python 队列堆积结构化证据已生成"
+    if "python_pool_profile_json" in artifact_types:
+        return "Python 连接池耗尽结构化证据已生成"
+    if "python_retry_timeout_profile_json" in artifact_types:
+        return "Python 重试超时结构化证据已生成"
+    if "python_cache_profile_json" in artifact_types:
+        return "Python 缓存增长结构化证据已生成"
+    if "python_input_profile_json" in artifact_types:
+        return "Python 输入慢路径结构化证据已生成"
     if "continuous_summary" in artifact_types:
         return "连续采样窗口分析已生成"
     if "java_flamegraph_html" in artifact_types:

@@ -148,7 +148,7 @@ class ArtifactModel(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     task_id = Column(String(128), ForeignKey("tasks.id"), nullable=False, index=True)
-    artifact_type = Column(String(32), nullable=False)
+    artifact_type = Column(String(128), nullable=False)
     bucket = Column(String(64), default="mini-drop")
     object_key = Column(String(512), nullable=False)
     filename = Column(String(256), nullable=True)

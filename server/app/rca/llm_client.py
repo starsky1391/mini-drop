@@ -26,6 +26,7 @@ from server.app.rca.models import (
     SessionConclusionReview,
     ValidatedReport,
 )
+from server.app.diagnosis.canonical_claim_lineage import apply_ai_claim_update
 from server.app.rca.controlled_tree import enforce_conclusion_eligibility
 from server.app.rca.prompt import build_system_prompt, build_user_message
 
@@ -1381,6 +1382,7 @@ def generate_session_conclusion_review(
     session_tree: ControlledAITree | dict | None,
     evidence_catalog: list[dict],
     probe_manifest: dict,
+    localization_frontier: list | None = None,
     model_name: str | None = None,
     max_attempts: int | None = None,
 ) -> dict:
@@ -1411,9 +1413,11 @@ def generate_session_conclusion_review(
 
     tree_payload = session_tree.model_dump(mode="json") if isinstance(session_tree, ControlledAITree) else session_tree
     valid_refs = {
-        str(item.get("evidence_id") or item.get("evidence_ref") or "")
+        str(item.get(key) or "")
         for item in evidence_catalog
         if isinstance(item, dict)
+        for key in ("evidence_id", "evidence_ref", "raw_artifact_ref", "derived_artifact_ref")
+        if item.get(key)
     }
     payload = _build_session_review_payload(
         diagnosis_id=diagnosis_id,
@@ -1421,6 +1425,7 @@ def generate_session_conclusion_review(
         tree_payload=tree_payload,
         evidence_catalog=evidence_catalog,
         probe_manifest=probe_manifest,
+        localization_frontier=localization_frontier or [],
     )
     base_messages = [
         {"role": "system", "content": _session_review_system_prompt()},
@@ -1440,7 +1445,12 @@ def generate_session_conclusion_review(
             data = json.loads(_extract_json(raw) or "{}")
             data = _normalize_session_review_shape(data)
             review = SessionConclusionReview.model_validate(data)
-            issues = validate_session_review(review, eligible, valid_refs)
+            issues = validate_session_review(
+                review,
+                eligible,
+                valid_refs,
+                localization_frontier=localization_frontier or [],
+            )
             if not issues:
                 log_event(
                     "info",
@@ -1743,23 +1753,26 @@ def _session_review_system_prompt() -> str:
     return """你是 Mini-Drop 的会话级受控归因裁决器。你只能在输入给出的 eligible clusters 内裁决。
 必须输出一个 JSON 对象，字段严格为：
 headline, why_it_happened, primary_cluster_id, cluster_roles, causal_chain,
-ruled_out_summary, residual_unknowns, recommendations。
+localization_chain, ruled_out_summary, residual_unknowns, recommendations。
 约束：
 1. 只能使用输入中已有的 cluster_id，不得新增、合并或改写 ID。
-2. 只能引用输入中已有的 evidence_refs，每个 causal_chain step 必须至少引用一条真实证据。
+2. 只能引用输入中已有的 candidate_id 和 evidence_refs；每个 causal_chain 和 localization_chain step 必须包含真实 candidate_id，并至少引用一条真实证据。
 3. 必须且只能选一个 primary；其余可标 contributing 或 independent。
 4. 不得提高 cause_level，不得新增探针、候选、定位层级或源代码行。
 5. why_it_happened 必须解释机制为何导致用户症状，不能只复述指标、栈或采集结果。
 6. recommendations 以 cluster_id 为键，每项包含 recommendation_type、action、rationale；只能给建议，不得声称已执行修复。
 7. 信息不足时写入 residual_unknowns，不得补造事实。
 8. 对内存保留问题，retained allocation 只能证明分配来源，不能单独证明长期持有者。必须按 reference_paths 中真实存在的 source_expression/upstream_candidates -> container -> runtime_slot -> retained_by 解释引用链；禁止把没有进入该路径的分配对象编造成被 co_consts 持有。
+9. causal_chain 必须覆盖每个 primary 或 contributing cluster，不能只解释 primary；不同方向可以分别停在 line、function、call_path 或更粗层级。
+10. localization_chain 只能改写输入中的 localization_frontier；这些步骤必须使用“定位到、观察到、尚未证明”等有限语义，不得写成已确认根因。
 字段类型必须符合下列 JSON 形状，不得把数组字段输出成字符串：
 {
   "headline": "string",
   "why_it_happened": "string",
   "primary_cluster_id": "existing cluster_id",
   "cluster_roles": {"existing cluster_id": "primary|contributing|independent"},
-  "causal_chain": [{"step_id": "string", "statement": "string", "evidence_refs": ["existing evidence_ref"]}],
+  "causal_chain": [{"step_id": "string", "candidate_id": "existing candidate_id", "statement": "string", "evidence_refs": ["existing evidence_ref"], "supported_level": "line|function|call_path|endpoint|service|dependency|syscall|thread|process|host|resource"}],
+  "localization_chain": [{"step_id": "string", "candidate_id": "existing candidate_id", "statement": "string", "evidence_refs": ["existing evidence_ref"], "supported_level": "line|function|call_path|endpoint|service|dependency|syscall|thread|process|host|resource"}],
   "ruled_out_summary": ["string"],
   "residual_unknowns": ["string"],
   "recommendations": {
@@ -1797,7 +1810,8 @@ def _compact_session_tree(tree: dict | None) -> dict:
                         field: node.get(field)
                         for field in (
                             "candidate_id", "role", "claim", "claim_type", "causal_status",
-                            "mechanism", "target", "conclusion_eligible", "evidence_refs",
+                            "mechanism", "target", "supported_level", "status", "decision",
+                            "parent_candidate_ids", "conclusion_eligible", "evidence_refs",
                         )
                     })
         layers.append({"layer_id": layer.get("layer_id"), "depth": layer.get("depth"), "candidates": candidates})
@@ -1815,18 +1829,32 @@ def _build_session_review_payload(
     tree_payload: dict | None,
     evidence_catalog: list[dict],
     probe_manifest: dict,
+    localization_frontier: list | None = None,
 ) -> dict:
     referenced_ids = {
         ref
         for cluster in eligible
         for ref in cluster.evidence_refs
     }
+    referenced_ids.update(
+        ref
+        for step in (localization_frontier or [])
+        for ref in (
+            step.evidence_refs
+            if hasattr(step, "evidence_refs")
+            else step.get("evidence_refs", [])
+        )
+    )
     referenced_evidence = []
     for item in evidence_catalog:
         if not isinstance(item, dict):
             continue
-        evidence_id = str(item.get("evidence_id") or item.get("evidence_ref") or "")
-        if evidence_id not in referenced_ids:
+        item_refs = {
+            str(item.get(key) or "")
+            for key in ("evidence_id", "evidence_ref", "raw_artifact_ref", "derived_artifact_ref")
+            if item.get(key)
+        }
+        if not (item_refs & referenced_ids):
             continue
         referenced_evidence.append(_compact_evidence_item(item))
         if len(referenced_evidence) >= 24:
@@ -1834,6 +1862,10 @@ def _build_session_review_payload(
     return {
         "diagnosis_id": diagnosis_id,
         "clusters": [cluster.model_dump(mode="json") for cluster in eligible],
+        "localization_frontier": [
+            step.model_dump(mode="json") if hasattr(step, "model_dump") else step
+            for step in (localization_frontier or [])
+        ],
         "session_tree": _compact_session_tree(tree_payload),
         "evidence_catalog": referenced_evidence,
         "probe_manifest": {"probe_ids": sorted(_probe_ids(probe_manifest))},
@@ -2094,7 +2126,7 @@ def _merge_llm_controlled_tree(
         return analyzer_tree
 
     merged = analyzer_tree.model_copy(update={
-        "layers": [layer.model_copy(update={"generated_by": "ai_guarded"}) for layer in llm_tree.layers],
+        "layers": llm_tree.layers,
         "probe_edges": llm_tree.probe_edges,
         "final_supported_level": analyzer_tree.final_supported_level,
         "final_primary_causes": _group_candidate_ids(llm_tree.layers, "primary"),
@@ -2265,7 +2297,6 @@ def _apply_compact_guard_review(
             )
             grouped[role].append(guarded)
         layers.append(layer.model_copy(update={
-            "generated_by": "ai_guarded",
             "summary": str(
                 (data.get("layer_summaries") or {}).get(layer.layer_id)
                 if isinstance(data.get("layer_summaries"), dict)
@@ -2305,13 +2336,7 @@ def _apply_compact_guard_review(
 
 
 def _mark_tree_ai_guarded(analyzer_tree: ControlledAITree, stop_reason: str) -> ControlledAITree:
-    return analyzer_tree.model_copy(update={
-        "layers": [
-            layer.model_copy(update={"generated_by": "ai_guarded"})
-            for layer in analyzer_tree.layers
-        ],
-        "stop_reason": stop_reason or analyzer_tree.stop_reason,
-    })
+    return analyzer_tree.model_copy(update={"stop_reason": stop_reason or analyzer_tree.stop_reason})
 
 
 def _candidate_layer_id(tree: ControlledAITree, candidate_id: str) -> str:
@@ -2371,6 +2396,14 @@ def _guarded_node(node, suggested_role: str, challenge: dict | None, candidate_u
             value = candidate_update.get(field)
             if value in allowed:
                 update[field] = value
+        lineage = apply_ai_claim_update(node.model_dump(mode="python"), candidate_update)
+        update["claim"] = lineage["claim"]
+        for field in (
+            "generated_by", "claim_origin", "claim_transform", "claim_status",
+            "claim_hash", "source_claim_hash", "source_candidate_id", "source_round",
+            "source_event_id",
+        ):
+            update[field] = lineage[field]
     return node.model_copy(update=update)
 
 

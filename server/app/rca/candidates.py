@@ -12,6 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from server.app.diagnosis.canonical_claim_lineage import canonical_claim_fields
 from server.app.rca.models import CandidateCause, EvidenceInput, FeedbackPrior
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,12 @@ def generate_candidates(
         candidates.append(CandidateCause(
             candidate_id=candidate_id,
             description=rule["description"],
+            **canonical_claim_fields(
+                rule["description"],
+                generated_by="analyzer",
+                claim_origin="analyzer_rule",
+                source_candidate_id=candidate_id,
+            ),
             evidence_refs=_filter_available_refs(rule.get("evidence_refs", []), evidence),
             rule_score=min(max(score, 0.0), 1.0),
             missing_evidence=_detect_missing_evidence(candidate_id, evidence),
@@ -52,9 +59,16 @@ def generate_candidates(
 
     candidates.sort(key=lambda item: item.rule_score, reverse=True)
     if not candidates:
+        fallback_description = "当前证据量不足以触发任何预置规则，建议补充采集"
         candidates.append(CandidateCause(
             candidate_id="insufficient_data",
-            description="当前证据量不足以触发任何预置规则，建议补充采集",
+            description=fallback_description,
+            **canonical_claim_fields(
+                fallback_description,
+                generated_by="fallback",
+                claim_origin="fallback_generated",
+                source_candidate_id="insufficient_data",
+            ),
             evidence_refs=[],
             rule_score=0.10,
             missing_evidence=["更长的采样时长", "多采集器交叉验证", "历史基线对比"],

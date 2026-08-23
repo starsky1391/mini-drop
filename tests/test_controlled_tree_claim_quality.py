@@ -40,6 +40,8 @@ def test_wait_primitives_are_not_eligible_root_functions():
 def test_mechanism_claim_with_target_and_evidence_passes_gate():
     node = AITreeCandidateNode(
         candidate_id="redis_timeout",
+        generated_by="ai",
+        claim_origin="ai_proposal",
         role="primary",
         claim="Redis 请求超时导致购物车接口阻塞。",
         supported_level="service",
@@ -89,3 +91,68 @@ def test_runtime_stack_observation_cannot_be_promoted_to_primary_cause():
     assert guarded_node.claim_type == "observation_only"
     assert guarded_node.causal_status == "unproven"
     assert guarded_node.decision == "continue_probe"
+
+
+def test_qualified_unknown_sibling_is_normalized_to_secondary_cause():
+    node = AITreeCandidateNode(
+        candidate_id="callback_lock_wait",
+        generated_by="ai_candidate",
+        claim_origin="ai_proposal",
+        role="unknown",
+        relation="root",
+        claim="结果回调函数的锁等待降低了任务释放速度。",
+        supported_level="function",
+        status="supported",
+        claim_type="direct_root_cause",
+        causal_status="supported",
+        mechanism="callback_lock_wait",
+        target="backend.on_chord_part_return",
+        evidence_refs=["ev-function"],
+    )
+
+    guarded = enforce_conclusion_eligibility(ControlledAITree(
+        tree_id="qualified-unknown",
+        layers=[AITreeLayer(layer_id="causes", depth=1, unknown_causes=[node])],
+    ))
+
+    assert guarded.layers[0].unknown_causes == []
+    assert guarded.layers[0].secondary_causes[0].candidate_id == "callback_lock_wait"
+    assert guarded.final_secondary_causes == ["callback_lock_wait"]
+
+
+def test_final_cause_ids_keep_only_deepest_qualified_node_on_same_branch():
+    parent = AITreeCandidateNode(
+        candidate_id="function-parent",
+        generated_by="ai_candidate",
+        claim_origin="ai_proposal",
+        role="primary",
+        relation="root",
+        claim="任务状态更新函数持续保留对象。",
+        supported_level="function",
+        status="supported",
+        claim_type="direct_root_cause",
+        causal_status="supported",
+        mechanism="task_state_retention",
+        target="update_state",
+        evidence_refs=["ev-function"],
+    )
+    child = parent.model_copy(update={
+        "candidate_id": "line-child",
+        "parent_candidate_ids": ["function-parent"],
+        "origin_parent_candidate_id": "function-parent",
+        "relation": "refinement",
+        "claim": "worker.py:42 的状态更新异常持续保留对象。",
+        "supported_level": "line",
+        "target": "worker.py:42",
+        "evidence_refs": ["ev-line"],
+    })
+
+    guarded = enforce_conclusion_eligibility(ControlledAITree(
+        tree_id="deepest-formal",
+        layers=[
+            AITreeLayer(layer_id="function", depth=1, primary_causes=[parent]),
+            AITreeLayer(layer_id="line", depth=2, primary_causes=[child]),
+        ],
+    ))
+
+    assert guarded.final_primary_causes == ["line-child"]

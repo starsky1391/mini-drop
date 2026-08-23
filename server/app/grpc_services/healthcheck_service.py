@@ -90,6 +90,13 @@ class HealthCheckService(healthcheck_pb2_grpc.HealthCheckServicer):
             "source_snapshot": 17,
             "source_mechanism_query": 18,
             "python_heap_reference": 19,
+            "python_lock_wait_profile": 20,
+            "python_exception_profile": 21,
+            "python_queue_profile": 22,
+            "python_pool_profile": 23,
+            "python_retry_timeout_profile": 24,
+            "python_cache_profile": 25,
+            "python_input_profile": 26,
         }
         return mapping.get(collector_type, 0)
 

@@ -362,6 +362,583 @@ def test_off_cpu_wait_json_becomes_structured_wait_evidence():
     assert structured.evidence_index["off_cpu_wait"]["top_wait_stacks"][0]["top_frame"] == "pthread_mutex_lock"
 
 
+def test_go_heap_profile_json_becomes_structured_hotspot_evidence():
+    structured = structure_artifact_evidence(
+        task_id="go_heap_task",
+        artifacts=[{"artifact_type": "go_heap_profile_json", "filename": "go_heap_profile.json"}],
+        artifact_values={
+            "go_heap_profile_json": {
+                "producer": "go pprof",
+                "profile_kind": "heap",
+                "heap_mode": "gc=1",
+                "sample_type": "inuse_space",
+                "hotspots": [{
+                    "function": "cache.go",
+                    "file": "/app/cache/cache.go",
+                    "line": 42,
+                    "flat_bytes": 8 * 1024 * 1024,
+                    "cum_bytes": 10 * 1024 * 1024,
+                    "flat_percent": 66.67,
+                    "cum_percent": 83.33,
+                }],
+                "line_candidates": [{
+                    "file": "/app/cache/cache.go",
+                    "line": 42,
+                    "symbol": "cache.go",
+                }],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+        },
+    )
+
+    assert structured.go_heap_profile_json is not None
+    assert structured.top_functions[0]["name"] == "cache.go"
+    assert structured.top_functions[0]["file"] == "/app/cache/cache.go"
+    assert "go_heap_profile" in structured.confidence_inputs["collector_families"]
+    assert structured.confidence_inputs["evidence_validity_by_family"]["go_heap_profile"] == "valid"
+    assert structured.evidence_index["go_heap_profile"]["line_candidates"][0]["line"] == 42
+
+
+def test_python_scenario_profiles_are_preserved_as_structured_evidence():
+    structured = structure_artifact_evidence(
+        task_id="python_scenario_task",
+        artifacts=[
+            {"artifact_type": "python_lock_wait_profile_json", "filename": "lock.json"},
+            {"artifact_type": "python_exception_profile_json", "filename": "exception.json"},
+            {"artifact_type": "python_queue_profile_json", "filename": "queue.json"},
+            {"artifact_type": "python_cache_profile_json", "filename": "cache.json"},
+            {"artifact_type": "python_input_profile_json", "filename": "input.json"},
+        ],
+        artifact_values={
+            "python_lock_wait_profile_json": {
+                "collector_family": "python_lock_wait_profile",
+                "scenario_type": "python_lock_wait",
+                "adapter": {"source_policy": "industrial_collectors_only", "source_count": 1},
+                "wait_sites": [{"function": "reserve", "file": "/srv/app/orders.py", "line": 41}],
+                "evidence_status": "valid",
+                "missing_evidence": ["source_snapshot_verification", "scenario_root_cause_gate"],
+                "conclusion_eligible": False,
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "python_exception_profile_json": {
+                "collector_family": "python_exception_profile",
+                "scenario_type": "python_exception_storm",
+                "exception_clusters": [{"exception_type": "ValueError", "occurrence_count": 3}],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "python_queue_profile_json": {
+                "collector_family": "python_queue_profile",
+                "scenario_type": "python_queue_backlog",
+                "backlog": 27,
+                "active_tasks": [{"task_name": "orders.tasks.checkout"}],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "python_cache_profile_json": {
+                "collector_family": "python_cache_profile",
+                "scenario_type": "python_cache_growth",
+                "adapter": {"source_policy": "industrial_collectors_only", "sources": [{"source_kind": "application_runtime_log"}]},
+                "cache_growth": True,
+                "cache_files": 71801,
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "python_input_profile_json": {
+                "collector_family": "python_input_profile",
+                "scenario_type": "python_input_slow_path",
+                "adapter": {"source_policy": "industrial_collectors_only", "sources": [{"source_kind": "application_runtime_log"}]},
+                "slow_path_detected": True,
+                "rows": 50000,
+                "categories": 5000,
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+        },
+    )
+
+    assert structured.python_lock_wait_profile_json is not None
+    assert structured.python_exception_profile_json is not None
+    assert structured.python_queue_profile_json is not None
+    assert structured.python_cache_profile_json is not None
+    assert structured.python_input_profile_json is not None
+    assert "python_lock_wait_profile" in structured.confidence_inputs["collector_families"]
+    assert structured.confidence_inputs["evidence_validity_by_family"]["python_exception_profile"] == "valid"
+    assert structured.confidence_inputs["python_scenario_statuses"]["python_queue_profile"] == "valid"
+    assert structured.evidence_index["python_lock_wait_profile"]["wait_sites"][0]["line"] == 41
+    assert structured.evidence_index["python_lock_wait_profile"]["conclusion_eligible"] is False
+    assert "scenario_root_cause_gate" in structured.evidence_index["python_lock_wait_profile"]["missing_evidence"]
+    assert structured.evidence_index["python_queue_profile"]["backlog"] == 27
+    assert structured.evidence_index["python_cache_profile"]["cache_files"] == 71801
+    assert structured.evidence_index["python_input_profile"]["categories"] == 5000
+    gate = structured.confidence_inputs["python_scenario_gates"]["python_lock_wait_profile"]
+    assert gate["source_policy"] == "industrial_collectors_only"
+    assert gate["line_verified"] is False
+    assert gate["max_supported_claim_type"] == "observation"
+    assert "source_snapshot_verification" in gate["missing_evidence"]
+    assert structured.confidence_inputs["python_scenario_gates"]["python_cache_profile"]["conclusion_eligible"] is False
+    assert structured.confidence_inputs["python_scenario_gates"]["python_input_profile"]["conclusion_eligible"] is False
+
+
+def test_python_scenario_line_gate_requires_matching_source_snapshot():
+    structured = structure_artifact_evidence(
+        task_id="python_exception_with_source",
+        artifacts=[
+            {"artifact_type": "python_exception_profile_json", "filename": "exception.json"},
+            {"artifact_type": "source_snapshot_json", "filename": "source.json"},
+        ],
+        artifact_values={
+            "python_exception_profile_json": {
+                "collector_family": "python_exception_profile",
+                "scenario_type": "python_exception_storm",
+                "adapter": {
+                    "source_policy": "industrial_collectors_only",
+                    "sources": [{"kind": "log_window_json", "source_kind": "fluent_bit", "source_status": "loaded", "record_count": 3}],
+                },
+                "exception_clusters": [{
+                    "exception_type": "ValueError",
+                    "occurrence_count": 3,
+                    "throw_site": {"file": "/srv/app/api.py", "line": 88, "function": "checkout"},
+                    "evidence_ref": "python_exception_profile.exception_clusters[0]",
+                }],
+                "line_candidates": [{"file": "/srv/app/api.py", "line": 88, "function": "checkout"}],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "source_snapshot_json": {
+                "revision": "rev-1",
+                "source_context_hash": "sha256:source",
+                "snippets": [{"file": "/srv/app/api.py", "focus_line": 88}],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+        },
+    )
+
+    gate = structured.confidence_inputs["python_scenario_gates"]["python_exception_profile"]
+    assert gate["line_verified"] is True
+    assert gate["source_context_hash"] == "sha256:source"
+    assert gate["max_supported_claim_type"] == "direct_failure_mechanism"
+    assert gate["conclusion_eligible"] is False
+    assert "scenario_root_cause_gate" in gate["missing_evidence"]
+
+
+def test_python_exception_scenario_can_become_direct_root_with_impact_and_source():
+    structured = structure_artifact_evidence(
+        task_id="python_exception_root",
+        artifacts=[
+            {"artifact_type": "python_exception_profile_json", "filename": "exception.json"},
+            {"artifact_type": "source_snapshot_json", "filename": "source.json"},
+        ],
+        artifact_values={
+            "python_exception_profile_json": {
+                "collector_family": "python_exception_profile",
+                "scenario_type": "python_exception_storm",
+                "adapter": {
+                    "source_policy": "industrial_collectors_only",
+                    "sources": [{"kind": "log_window_json", "source_kind": "fluent_bit", "source_status": "loaded", "record_count": 9}],
+                },
+                "exception_clusters": [{
+                    "exception_type": "ValueError",
+                    "occurrence_count": 9,
+                    "throw_site": {"file": "/srv/app/api.py", "line": 88, "function": "checkout"},
+                    "evidence_ref": "python_exception_profile.exception_clusters[0]",
+                }],
+                "line_candidates": [{"file": "/srv/app/api.py", "line": 88, "function": "checkout"}],
+                "impact": {"error_rate": 0.42, "request_count": 120},
+                "impact_evidence_refs": ["log_scan.error_clusters[0]"],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "source_snapshot_json": {
+                "revision": "rev-1",
+                "source_context_hash": "sha256:source",
+                "snippets": [{"file": "/srv/app/api.py", "focus_line": 88}],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+        },
+    )
+
+    gate = structured.confidence_inputs["python_scenario_gates"]["python_exception_profile"]
+    assert gate["max_supported_claim_type"] == "direct_root_cause"
+    assert gate["conclusion_eligible"] is True
+    assert "scenario_root_cause_gate" not in gate["missing_evidence"]
+
+
+def test_builtin_python_cpu_gate_rejects_runtime_primitives_and_requires_source_snapshot():
+    primitive = structure_artifact_evidence(
+        task_id="cpu_primitive",
+        artifacts=[{"artifact_type": "python_stack_samples_json", "filename": "stack.json"}],
+        artifact_values={
+            "python_stack_samples_json": {
+                "sample_quality": {
+                    "diagnostic_value": "low",
+                    "primitive_frame_ratio": 0.9,
+                    "framework_loop_ratio": 0.1,
+                    "target_code_ratio": 0.0,
+                },
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "top_json": [{"name": "poll", "samples": 50, "percent": 100.0}],
+        },
+    )
+
+    primitive_gate = primitive.confidence_inputs["python_scenario_gates"]["python_cpu_hotspot"]
+    assert primitive_gate["max_supported_claim_type"] == "observation"
+    assert primitive_gate["gate_checks"]["runtime_primitive_rejected"] is True
+    assert "stable_python_hotspot" in primitive_gate["missing_evidence"]
+
+    with_source = structure_artifact_evidence(
+        task_id="cpu_with_source",
+        artifacts=[
+            {"artifact_type": "python_stack_samples_json", "filename": "stack.json"},
+            {"artifact_type": "source_snapshot_json", "filename": "source.json"},
+        ],
+        artifact_values={
+            "python_stack_samples_json": {"evidence_validity": {"evidence_status": "valid"}},
+            "top_json": [{"name": "orders.calculate", "file": "/srv/app/orders.py", "line": 41, "samples": 30, "percent": 72.0}],
+            "source_snapshot_json": {
+                "revision": "rev-1",
+                "source_context_hash": "sha256:source",
+                "snippets": [{"file": "/srv/app/orders.py", "focus_line": 41}],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+        },
+    )
+
+    source_gate = with_source.evidence_index["python_scenario_gates"]["python_cpu_hotspot"]
+    assert source_gate["line_verified"] is True
+    assert source_gate["max_supported_claim_type"] == "partial_localization"
+    assert source_gate["gate_checks"]["baseline_or_impact"] is False
+    assert source_gate["conclusion_eligible"] is False
+
+
+def test_builtin_python_cpu_gate_can_become_direct_root_when_all_gates_pass():
+    structured = structure_artifact_evidence(
+        task_id="cpu_direct_root",
+        artifacts=[
+            {"artifact_type": "python_stack_samples_json", "filename": "stack.json"},
+            {"artifact_type": "source_snapshot_json", "filename": "source.json"},
+            {"artifact_type": "continuous_summary", "filename": "baseline.json"},
+        ],
+        artifact_values={
+            "python_stack_samples_json": {"evidence_validity": {"evidence_status": "valid"}},
+            "top_json": [{"name": "orders.calculate", "file": "/srv/app/orders.py", "line": 41, "samples": 30, "percent": 72.0}],
+            "source_snapshot_json": {
+                "revision": "rev-1",
+                "source_context_hash": "sha256:source",
+                "snippets": [{"file": "/srv/app/orders.py", "focus_line": 41}],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "continuous_summary": {
+                "summary": {"baseline_shift": "cpu_regression"},
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+        },
+    )
+
+    gate = structured.confidence_inputs["python_scenario_gates"]["python_cpu_hotspot"]
+    assert gate["max_supported_claim_type"] == "direct_root_cause"
+    assert gate["conclusion_eligible"] is True
+    assert "scenario_root_cause_gate" not in gate["missing_evidence"]
+
+
+def test_builtin_python_endpoint_gate_keeps_dependency_counter_evidence_as_blocker():
+    structured = structure_artifact_evidence(
+        task_id="endpoint_latency",
+        artifacts=[
+            {"artifact_type": "trace_endpoint_profile_json", "filename": "trace.json"},
+            {"artifact_type": "dependency_check_json", "filename": "dependency.json"},
+        ],
+        artifact_values={
+            "trace_endpoint_profile_json": {
+                "call_path_hotspots": [{
+                    "function": "checkout",
+                    "file": "/srv/app/api.py",
+                    "line": 88,
+                    "samples": 12,
+                    "endpoint": "/checkout",
+                    "call_path": ["api.checkout"],
+                    "evidence_ref": "trace_endpoint_profile.call_path_hotspots[0]",
+                }],
+                "correlation_status": {"status": "completed", "max_supported_level": "call_path"},
+                "trace_source": {"status": "completed"},
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "dependency_check_json": {
+                "summary": {"failed_dependencies": ["redis-cart"]},
+                "checks": [{"dependency_id": "redis-cart", "success": False}],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+        },
+    )
+
+    gate = structured.confidence_inputs["python_scenario_gates"]["python_endpoint_latency"]
+    assert gate["gate_checks"]["endpoint_call_path_correlation"] is True
+    assert gate["gate_checks"]["counter_evidence_clear"] is False
+    assert "dependency_or_broker_counter_evidence" in gate["missing_evidence"]
+    assert gate["conclusion_eligible"] is False
+
+
+def test_builtin_python_io_blocking_gate_uses_off_cpu_blocking_kind_without_root_promotion():
+    structured = structure_artifact_evidence(
+        task_id="io_blocking",
+        artifacts=[
+            {"artifact_type": "off_cpu_wait_json", "filename": "offcpu.json"},
+            {"artifact_type": "source_snapshot_json", "filename": "source.json"},
+        ],
+        artifact_values={
+            "off_cpu_wait_json": {
+                "summary": {"sample_count": 4, "top_wait_reason": "socket_wait"},
+                "top_wait_stacks": [{
+                    "stack": ["socket.py:705:readinto", "/srv/app/client.py:22:fetch"],
+                    "top_frame": "socket.recv",
+                    "samples": 4,
+                    "blocking_kind": "http_client",
+                    "evidence_ref": "off_cpu_wait.top_wait_stacks[0]",
+                }],
+                "blocking_summary": {"by_kind": {"http_client": 4}},
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "source_snapshot_json": {
+                "revision": "rev-1",
+                "source_context_hash": "sha256:source",
+                "snippets": [{"file": "/srv/app/client.py", "focus_line": 22}],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+        },
+    )
+
+    gate = structured.evidence_index["python_scenario_gates"]["python_io_blocking"]
+    assert gate["gate_checks"]["blocking_kind_normalized"] is True
+    assert gate["gate_checks"]["local_blocking_callsite"] is True
+    assert gate["line_verified"] is True
+    assert gate["max_supported_claim_type"] == "partial_localization"
+    assert "local_io_behavior_evidence" in gate["missing_evidence"]
+
+
+def test_retry_timeout_scenario_counter_evidence_blocks_direct_root_even_with_amplification():
+    structured = structure_artifact_evidence(
+        task_id="retry_counter_evidence",
+        artifacts=[
+            {"artifact_type": "python_retry_timeout_profile_json", "filename": "retry.json"},
+            {"artifact_type": "source_snapshot_json", "filename": "source.json"},
+            {"artifact_type": "dependency_check_json", "filename": "dependency.json"},
+        ],
+        artifact_values={
+            "python_retry_timeout_profile_json": {
+                "collector_family": "python_retry_timeout_profile",
+                "scenario_type": "python_retry_timeout",
+                "adapter": {
+                    "source_policy": "industrial_collectors_only",
+                    "sources": [{"kind": "trace_endpoint_profile_json", "source_kind": "otel_trace", "source_status": "loaded", "record_count": 6}],
+                },
+                "retry_clusters": [{"file": "/srv/app/client.py", "line": 22, "evidence_ref": "python_retry_timeout_profile.retry_clusters[0]"}],
+                "timeout_sites": [{"file": "/srv/app/client.py", "line": 22, "evidence_ref": "python_retry_timeout_profile.retry_clusters[0]"}],
+                "line_candidates": [{"file": "/srv/app/client.py", "line": 22, "function": "fetch"}],
+                "attempt_count": 6,
+                "nested_retry": True,
+                "local_amplification": True,
+                "impact": {"retry_rate": 0.8, "latency_ms": 1200},
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "source_snapshot_json": {
+                "revision": "rev-1",
+                "source_context_hash": "sha256:source",
+                "snippets": [{"file": "/srv/app/client.py", "focus_line": 22}],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "dependency_check_json": {
+                "summary": {"failed_dependencies": ["paymentservice"]},
+                "checks": [{"dependency_id": "paymentservice", "success": False}],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+        },
+    )
+
+    gate = structured.confidence_inputs["python_scenario_gates"]["python_retry_timeout_profile"]
+    assert gate["gate_checks"]["retry_amplification"] is True
+    assert gate["gate_checks"]["counter_evidence_clear"] is False
+    assert gate["max_supported_claim_type"] == "partial_localization"
+    assert gate["conclusion_eligible"] is False
+    assert "dependency_or_broker_counter_evidence" in gate["missing_evidence"]
+
+
+def test_lock_queue_pool_and_retry_scenario_gates_can_become_direct_roots():
+    structured = structure_artifact_evidence(
+        task_id="scenario_direct_roots",
+        artifacts=[
+            {"artifact_type": "python_lock_wait_profile_json", "filename": "lock.json"},
+            {"artifact_type": "python_queue_profile_json", "filename": "queue.json"},
+            {"artifact_type": "python_pool_profile_json", "filename": "pool.json"},
+            {"artifact_type": "python_retry_timeout_profile_json", "filename": "retry.json"},
+            {"artifact_type": "source_snapshot_json", "filename": "source.json"},
+        ],
+        artifact_values={
+            "python_lock_wait_profile_json": {
+                "collector_family": "python_lock_wait_profile",
+                "scenario_type": "python_lock_wait",
+                "adapter": {"source_policy": "industrial_collectors_only", "sources": [{"source_kind": "py-spy", "source_status": "loaded", "record_count": 8}]},
+                "wait_sites": [{"file": "/srv/app/orders.py", "line": 41, "function": "reserve", "evidence_ref": "python_lock_wait.wait_sites[0]"}],
+                "holder_candidates": [{"function": "hold_inventory", "evidence_ref": "python_lock_wait.holder_candidates[0]"}],
+                "line_candidates": [{"file": "/srv/app/orders.py", "line": 41, "function": "reserve"}],
+                "impact": {"blocked_ms": 3200, "request_count": 30},
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "python_queue_profile_json": {
+                "collector_family": "python_queue_profile",
+                "scenario_type": "python_queue_backlog",
+                "adapter": {"source_policy": "industrial_collectors_only", "sources": [{"source_kind": "celery_inspect", "source_status": "loaded", "record_count": 4}]},
+                "backlog": 42,
+                "active_tasks": [{"task_name": "orders.tasks.checkout"}],
+                "slow_task_candidates": [{"task_name": "orders.tasks.checkout"}],
+                "line_candidates": [{"file": "/srv/app/tasks.py", "line": 17, "function": "checkout"}],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "python_pool_profile_json": {
+                "collector_family": "python_pool_profile",
+                "scenario_type": "python_pool_exhaustion",
+                "adapter": {"source_policy": "industrial_collectors_only", "sources": [{"source_kind": "fluent_bit", "source_status": "loaded", "record_count": 6}]},
+                "pool_exhausted": True,
+                "wait_sites": [{"file": "/srv/app/db.py", "line": 12, "function": "get_session"}],
+                "acquire_sites": [{"file": "/srv/app/db.py", "line": 12, "function": "get_session"}],
+                "line_candidates": [{"file": "/srv/app/db.py", "line": 12, "function": "get_session"}],
+                "release_evidence": "missing",
+                "impact": {"latency_ms": 1500, "request_count": 20},
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "python_retry_timeout_profile_json": {
+                "collector_family": "python_retry_timeout_profile",
+                "scenario_type": "python_retry_timeout",
+                "adapter": {"source_policy": "industrial_collectors_only", "sources": [{"source_kind": "otel_trace", "source_status": "loaded", "record_count": 6}]},
+                "retry_clusters": [{"file": "/srv/app/client.py", "line": 22, "evidence_ref": "python_retry_timeout_profile.retry_clusters[0]"}],
+                "timeout_sites": [{"file": "/srv/app/client.py", "line": 22, "evidence_ref": "python_retry_timeout_profile.retry_clusters[0]"}],
+                "line_candidates": [{"file": "/srv/app/client.py", "line": 22, "function": "fetch"}],
+                "attempt_count": 6,
+                "nested_retry": True,
+                "local_amplification": True,
+                "impact": {"retry_rate": 0.8, "latency_ms": 1200},
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "source_snapshot_json": {
+                "revision": "rev-1",
+                "source_context_hash": "sha256:source",
+                "snippets": [
+                    {"file": "/srv/app/orders.py", "focus_line": 41},
+                    {"file": "/srv/app/tasks.py", "focus_line": 17},
+                    {"file": "/srv/app/db.py", "focus_line": 12},
+                    {"file": "/srv/app/client.py", "focus_line": 22},
+                ],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+        },
+    )
+
+    gates = structured.confidence_inputs["python_scenario_gates"]
+    for family in (
+        "python_lock_wait_profile",
+        "python_queue_profile",
+        "python_pool_profile",
+        "python_retry_timeout_profile",
+    ):
+        assert gates[family]["max_supported_claim_type"] == "direct_root_cause"
+        assert gates[family]["conclusion_eligible"] is True
+        assert "scenario_root_cause_gate" not in gates[family]["missing_evidence"]
+
+
+def test_python_scenario_gate_rejects_valid_payload_without_industrial_source_provenance():
+    structured = structure_artifact_evidence(
+        task_id="manual_scenario_payload",
+        artifacts=[
+            {"artifact_type": "python_queue_profile_json", "filename": "queue.json"},
+            {"artifact_type": "source_snapshot_json", "filename": "source.json"},
+        ],
+        artifact_values={
+            "python_queue_profile_json": {
+                "collector_family": "python_queue_profile",
+                "scenario_type": "python_queue_backlog",
+                "backlog": 42,
+                "active_tasks": [{"task_name": "orders.tasks.checkout"}],
+                "slow_task_candidates": [{"task_name": "orders.tasks.checkout"}],
+                "line_candidates": [{"file": "/srv/app/tasks.py", "line": 17, "function": "checkout"}],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "source_snapshot_json": {
+                "revision": "rev-1",
+                "source_context_hash": "sha256:source",
+                "snippets": [{"file": "/srv/app/tasks.py", "focus_line": 17}],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+        },
+    )
+
+    gate = structured.confidence_inputs["python_scenario_gates"]["python_queue_profile"]
+    assert gate["gate_checks"]["industrial_source_provenance"] is False
+    assert gate["gate_checks"]["industrial_observation"] is False
+    assert gate["max_supported_claim_type"] == "observation"
+    assert gate["conclusion_eligible"] is False
+    assert "industrial_source_provenance" in gate["missing_evidence"]
+
+
+def test_endpoint_and_io_builtin_gates_can_become_direct_roots_with_local_mechanism():
+    endpoint = structure_artifact_evidence(
+        task_id="endpoint_direct",
+        artifacts=[
+            {"artifact_type": "trace_endpoint_profile_json", "filename": "trace.json"},
+            {"artifact_type": "source_snapshot_json", "filename": "source.json"},
+        ],
+        artifact_values={
+            "trace_endpoint_profile_json": {
+                "call_path_hotspots": [{
+                    "function": "checkout",
+                    "file": "/srv/app/api.py",
+                    "line": 88,
+                    "samples": 12,
+                    "percent": 64.0,
+                    "endpoint": "/checkout",
+                    "call_path": ["api.checkout"],
+                    "evidence_ref": "trace_endpoint_profile.call_path_hotspots[0]",
+                }],
+                "correlation_status": {"status": "completed", "max_supported_level": "call_path"},
+                "trace_source": {"status": "completed"},
+                "latency_summary": {"p95_ms": 1800, "request_count": 100},
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "source_snapshot_json": {
+                "revision": "rev-1",
+                "source_context_hash": "sha256:source",
+                "snippets": [{"file": "/srv/app/api.py", "focus_line": 88}],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+        },
+    )
+    endpoint_gate = endpoint.confidence_inputs["python_scenario_gates"]["python_endpoint_latency"]
+    assert endpoint_gate["max_supported_claim_type"] == "direct_root_cause"
+    assert endpoint_gate["conclusion_eligible"] is True
+
+    io = structure_artifact_evidence(
+        task_id="io_direct",
+        artifacts=[
+            {"artifact_type": "off_cpu_wait_json", "filename": "offcpu.json"},
+            {"artifact_type": "source_snapshot_json", "filename": "source.json"},
+        ],
+        artifact_values={
+            "off_cpu_wait_json": {
+                "top_wait_stacks": [{
+                    "stack": ["socket.py:705:readinto", "/srv/app/client.py:22:fetch"],
+                    "blocking_kind": "http_client",
+                    "missing_timeout": True,
+                    "evidence_ref": "off_cpu_wait.top_wait_stacks[0]",
+                }],
+                "blocking_summary": {"by_kind": {"http_client": 4}, "missing_timeout": True},
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+            "source_snapshot_json": {
+                "revision": "rev-1",
+                "source_context_hash": "sha256:source",
+                "snippets": [{"file": "/srv/app/client.py", "focus_line": 22}],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+        },
+    )
+    io_gate = io.confidence_inputs["python_scenario_gates"]["python_io_blocking"]
+    assert io_gate["max_supported_claim_type"] == "direct_root_cause"
+    assert io_gate["conclusion_eligible"] is True
+
+
 def test_off_cpu_compact_evidence_keeps_cause_and_trace_correlation():
     structured = structure_artifact_evidence(
         task_id="off_cpu_correlated",

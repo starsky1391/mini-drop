@@ -1257,7 +1257,17 @@ class TestControlledAITreeMerge:
                     probe_manifest=manifest,
                 )
 
-        assert any(layer.generated_by == "ai_guarded" for layer in tree.layers)
+        assert all(layer.generated_by != "ai_guarded" for layer in tree.layers)
+        assert all(
+            node.claim_origin != "ai_update"
+            for layer in tree.layers
+            for node in [
+                *layer.primary_causes,
+                *layer.secondary_causes,
+                *layer.rejected_causes,
+                *layer.unknown_causes,
+            ]
+        )
         assert tree.stop_reason == compact_review["stop_reason"]
 
     def test_compact_guard_review_accepts_unstructured_ai_feedback_without_changing_candidates(self):
@@ -1300,7 +1310,17 @@ class TestControlledAITreeMerge:
                     probe_manifest=build_probe_manifest(),
                 )
 
-        assert any(layer.generated_by == "ai_guarded" for layer in tree.layers)
+        assert all(layer.generated_by != "ai_guarded" for layer in tree.layers)
+        assert all(
+            node.generated_by != "ai"
+            for layer in tree.layers
+            for node in [
+                *layer.primary_causes,
+                *layer.secondary_causes,
+                *layer.rejected_causes,
+                *layer.unknown_causes,
+            ]
+        )
         assert tree.final_primary_causes == analysis.controlled_ai_tree.final_primary_causes
 
     def test_llm_controlled_tree_rejects_unregistered_probe_request(self):

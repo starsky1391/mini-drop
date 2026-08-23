@@ -748,6 +748,7 @@ def _parse_bpftrace_output(text: str) -> dict[str, Any]:
             "wait_reason": reason,
             "stack": list(stack),
             "top_frame": stack[0] if stack else "",
+            "blocking_kind": _blocking_kind(list(stack)),
             "samples": samples,
             "wait_ms": round(wait_ms, 2),
             "percent": round((wait_ns / total_wait_ns * 100.0), 2) if total_wait_ns else 0.0,
@@ -774,14 +775,19 @@ def _parse_bpftrace_output(text: str) -> dict[str, Any]:
         )
     ]
     syscall_wait_summary: dict[str, int] = defaultdict(int)
+    blocking_summary: dict[str, int] = defaultdict(int)
     for item in top_wait_stacks:
         family = _syscall_family(item["stack"])
         if family:
             syscall_wait_summary[family] += int(item["samples"] or 0)
+        blocking_kind = str(item.get("blocking_kind") or "")
+        if blocking_kind:
+            blocking_summary[blocking_kind] += int(item["samples"] or 0)
     return {
         "top_wait_stacks": top_wait_stacks,
         "thread_wait_summary": thread_wait_summary,
         "syscall_wait_summary": dict(syscall_wait_summary),
+        "blocking_summary": dict(blocking_summary),
         "parser_status": (
             "ok" if top_wait_stacks
             else "events_without_stack" if observed_wait_events
@@ -1095,6 +1101,25 @@ def _syscall_family(stack: list[str]) -> str:
         return "sleep"
     if "read" in text or "write" in text or "recv" in text or "send" in text:
         return "io_or_socket"
+    return ""
+
+
+def _blocking_kind(stack: list[str]) -> str:
+    text = " ".join(stack).lower()
+    if "redis" in text:
+        return "redis_client"
+    if "sqlalchemy" in text or "psycopg" in text or "mysql" in text or "sqlite" in text or "dbapi" in text:
+        return "db_client"
+    if "requests" in text or "urllib3" in text or "aiohttp" in text or "httpx" in text:
+        return "http_client"
+    if "getaddrinfo" in text or "dns" in text:
+        return "dns"
+    if "recv" in text or "send" in text or "socket" in text or "connect" in text:
+        return "socket_io"
+    if "open" in text or "read" in text or "write" in text or "fsync" in text:
+        return "file_io"
+    if "epoll" in text or "poll" in text or "select" in text:
+        return "unknown_external"
     return ""
 
 

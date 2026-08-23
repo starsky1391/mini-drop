@@ -65,6 +65,7 @@ class SourceContext(StrictModel):
     repo_revision: Optional[str] = Field(default=None, max_length=128)
     language: Optional[str] = Field(default=None, max_length=64)
     symbol_map_paths: list[str] = Field(default_factory=list, max_length=20)
+    application_runtime_log_paths: list[str] = Field(default_factory=list, max_length=20)
     build_id: Optional[str] = Field(default=None, max_length=256)
     container_workdir: Optional[str] = Field(default=None, max_length=512)
     memray_result_path: Optional[str] = Field(default=None, max_length=1024)
@@ -81,6 +82,7 @@ class ServiceInstance(StrictModel):
     container_id: Optional[str] = Field(default=None, max_length=128)
     systemd_unit: Optional[str] = Field(default=None, max_length=128)
     environment: str = Field(default="unknown", min_length=1, max_length=64)
+    application_runtime_log_paths: list[str] = Field(default_factory=list, max_length=20)
     source_context: Optional[SourceContext] = None
 
 

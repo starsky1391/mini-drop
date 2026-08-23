@@ -18,6 +18,10 @@ const candidate = (overrides) => ({
   causal_status: "inconclusive",
   decision: "backtrack",
   conclusion_eligible: false,
+  generated_by: "analyzer",
+  claim_origin: "analyzer_summary",
+  claim_transform: "original",
+  claim_status: "active",
   evidence_refs: ["ev-source"],
   self_challenge: { missing_evidence: ["python_heap_reference"] },
   ...overrides,
@@ -52,6 +56,7 @@ test("session main selection prefers the canonical single tree", () => {
 test("display semantics distinguish AI pending candidates from unresolved conclusions", () => {
   assert.deepEqual(
     candidateDisplaySemantics({
+      claim_origin: "ai_proposal",
       supported_level: "function",
       status: "missing_evidence",
       causal_status: "unproven",
@@ -592,9 +597,9 @@ test("source labels and observation lineage remain visible in the canonical tree
   const root = graph.nodes.find((node) => node.data?.candidate?.candidate_id === "coarse-root");
   const line = graph.nodes.find((node) => node.data?.candidate?.candidate_id === "verified-line");
   const observation = graph.nodes.find((node) => node.data?.candidate?.candidate_id === "runtime-observation");
-  assert.ok(root.data.badges.includes("fallback"));
-  assert.ok(line.data.badges.includes("fallback"));
-  assert.ok(observation.data.badges.includes("AI"));
+  assert.ok(root.data.badges.includes("analyzer_summary"));
+  assert.ok(line.data.badges.includes("analyzer_summary"));
+  assert.ok(observation.data.badges.includes("analyzer_summary"));
   assert.ok(graph.edges.some((edge) => edge.source.endsWith("__coarse-root") && edge.target.endsWith("__verified-line")));
   assert.ok(graph.edges.some((edge) => edge.source.endsWith("__verified-line") && edge.target.endsWith("__runtime-observation")));
   assert.equal(graph.edges.some((edge) => edge.data?.edgeId === "coarse-overview"), false);
@@ -698,4 +703,50 @@ test("backend data-quality records stay in the audit domain", () => {
   assert.equal(graph.dataQuality[0].candidate_id, "runtime-observation");
   assert.equal(graph.dataQuality[0].status, "missing_provenance");
   assert.equal(graph.nodes.some((node) => node.data?.candidate?.candidate_id === "runtime-observation"), false);
+});
+
+test("canonical duplicate and restored claims never enter the session main layout", () => {
+  const graph = buildControlledAITreeGraph({
+    tree_kind: "session_main",
+    data_quality: {
+      records: [{ candidate_id: "duplicate-child", status: "duplicate_claim" }],
+    },
+    layers: [{
+      layer_id: "layer-0",
+      depth: 0,
+      unknown_causes: [candidate({
+        candidate_id: "parent",
+        relation: "root",
+        claim_origin: "analyzer_diagnostic",
+        claim_transform: "original",
+        claim_status: "active",
+      })],
+    }, {
+      layer_id: "layer-1",
+      depth: 1,
+      unknown_causes: [
+        candidate({
+          candidate_id: "duplicate-child",
+          parent_candidate_ids: ["parent"],
+          origin_parent_candidate_id: "parent",
+          relation: "refinement",
+          claim_status: "duplicate",
+        }),
+        candidate({
+          candidate_id: "history-child",
+          generated_by: "history",
+          claim_transform: "restored",
+          parent_candidate_ids: ["parent"],
+          origin_parent_candidate_id: "parent",
+          relation: "refinement",
+        }),
+      ],
+    }],
+  });
+
+  assert.deepEqual(
+    graph.nodes.filter((node) => node.data?.nodeKind === "candidate").map((node) => node.data.candidate.candidate_id),
+    ["parent"],
+  );
+  assert.equal(graph.dataQuality[0].status, "duplicate_claim");
 });

@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import json
 
+import server.app.diagnosis.session_conclusion as session_conclusion
 from server.app.diagnosis.session_conclusion import (
     apply_session_review,
     build_qualification_boundary,
     build_fallback_explanation,
     build_retained_conclusion,
     build_root_cause_clusters,
+    build_scenario_retained_conclusion,
     collect_candidate_generation_gate_failures,
     collect_ai_gate_failures,
+    derive_localization_frontier_from_ai_tree,
     derive_root_cause_clusters_from_ai_tree,
     classify_cluster_set,
     validate_session_review,
@@ -122,6 +125,258 @@ def test_ai_gate_failure_marks_missing_window_and_parent_as_failed_gates():
     assert failures[0]["gate_checks"]["window"] is False
     assert failures[0]["gate_checks"]["parent_exists"] is False
     assert {"window", "parent_exists"} <= set(failures[0]["failed_gates"])
+
+
+def _ai_tree_node(
+    candidate_id: str,
+    *,
+    parent: str,
+    claim: str,
+    level: str,
+    mechanism: str,
+    target: str,
+    role: str = "unknown",
+    eligible: bool = True,
+    evidence_ref: str,
+):
+    return {
+        "candidate_id": candidate_id,
+        "generated_by": "ai_candidate",
+        "parent_candidate_ids": [parent],
+        "origin_parent_candidate_id": parent,
+        "relation": "refinement",
+        "node_type": "line_anchor" if level == "line" else "base_cause",
+        "role": role,
+        "claim": claim,
+        "supported_level": level,
+        "confidence": 0.82,
+        "status": "supported" if eligible else "partial",
+        "claim_type": "direct_root_cause" if eligible else "partial_localization",
+        "causal_status": "supported" if eligible else "unproven",
+        "decision": "conclude" if eligible else "continue_probe",
+        "mechanism": mechanism,
+        "target": target,
+        "depth_kind": "base",
+        "conclusion_eligible": eligible,
+        "evidence_refs": [evidence_ref],
+        "self_challenge": {"why_this_claim": claim},
+    }
+
+
+def _multi_branch_ai_tree(*nodes):
+    return {
+        "layers": [{
+            "layer_id": "coarse",
+            "depth": 0,
+            "unknown_causes": [{
+                "candidate_id": "coarse-root",
+                "generated_by": "analyzer_observation",
+                "relation": "root",
+                "node_type": "cluster_root",
+                "role": "unknown",
+                "claim": "请求积压。",
+                "supported_level": "resource",
+                "status": "unknown",
+            }],
+        }, {
+            "layer_id": "causes",
+            "depth": 1,
+            "unknown_causes": list(nodes),
+        }],
+    }
+
+
+def test_ai_tree_keeps_distinct_sibling_causes_with_different_depths():
+    tree = _multi_branch_ai_tree(
+        _ai_tree_node(
+            "line-cause",
+            parent="coarse-root",
+            claim="worker.py:42 的状态更新异常持续保留任务对象。",
+            level="line",
+            mechanism="task_state_retention",
+            target="worker.py:42",
+            role="primary",
+            evidence_ref="ev-line",
+        ),
+        _ai_tree_node(
+            "function-cause",
+            parent="coarse-root",
+            claim="结果回调函数的锁等待降低了任务释放速度。",
+            level="function",
+            mechanism="callback_lock_wait",
+            target="backend.on_chord_part_return",
+            evidence_ref="ev-function",
+        ),
+    )
+
+    clusters = derive_root_cause_clusters_from_ai_tree(
+        tree,
+        valid_evidence_refs={"ev-line", "ev-function"},
+    )
+
+    assert len(clusters) == 2
+    assert {cluster.supported_level for cluster in clusters} == {"line", "function"}
+    assert [cluster.role for cluster in clusters] == ["primary", "contributing"]
+    assert {cluster.source_tree_candidate_ids[0] for cluster in clusters} == {
+        "line-cause",
+        "function-cause",
+    }
+
+
+def test_ai_tree_collapses_formal_parent_when_same_branch_has_deeper_formal_child():
+    parent = _ai_tree_node(
+        "function-parent",
+        parent="coarse-root",
+        claim="任务状态更新函数持续保留对象。",
+        level="function",
+        mechanism="task_state_retention",
+        target="update_state",
+        role="primary",
+        evidence_ref="ev-function",
+    )
+    child = _ai_tree_node(
+        "line-child",
+        parent="function-parent",
+        claim="worker.py:42 的状态更新异常持续保留对象。",
+        level="line",
+        mechanism="task_state_retention",
+        target="worker.py:42",
+        role="primary",
+        evidence_ref="ev-line",
+    )
+    tree = _multi_branch_ai_tree(parent)
+    tree["layers"].append({"layer_id": "line", "depth": 2, "primary_causes": [child]})
+
+    clusters = derive_root_cause_clusters_from_ai_tree(
+        tree,
+        valid_evidence_refs={"ev-function", "ev-line"},
+    )
+
+    assert [cluster.source_tree_candidate_ids for cluster in clusters] == [["line-child"]]
+    assert clusters[0].supported_level == "line"
+
+
+def test_ai_tree_exposes_deep_nonformal_sibling_as_localization_frontier():
+    tree = _multi_branch_ai_tree(
+        _ai_tree_node(
+            "formal-line",
+            parent="coarse-root",
+            claim="worker.py:42 的状态更新异常持续保留任务对象。",
+            level="line",
+            mechanism="task_state_retention",
+            target="worker.py:42",
+            role="primary",
+            evidence_ref="ev-line",
+        ),
+        _ai_tree_node(
+            "partial-function",
+            parent="coarse-root",
+            claim="结果回调函数存在锁等待，但直接因果尚未闭合。",
+            level="function",
+            mechanism="callback_lock_wait",
+            target="backend.on_chord_part_return",
+            eligible=False,
+            evidence_ref="ev-function",
+        ),
+    )
+
+    frontier = derive_localization_frontier_from_ai_tree(
+        tree,
+        valid_evidence_refs={"ev-line", "ev-function"},
+    )
+
+    assert [(step.candidate_id, step.supported_level) for step in frontier] == [
+        ("partial-function", "function"),
+    ]
+
+
+def test_session_review_requires_every_related_formal_branch_in_roles_and_chain():
+    tree = _multi_branch_ai_tree(
+        _ai_tree_node(
+            "line-cause",
+            parent="coarse-root",
+            claim="worker.py:42 的状态更新异常持续保留任务对象。",
+            level="line",
+            mechanism="task_state_retention",
+            target="worker.py:42",
+            role="primary",
+            evidence_ref="ev-line",
+        ),
+        _ai_tree_node(
+            "function-cause",
+            parent="coarse-root",
+            claim="结果回调函数的锁等待降低了任务释放速度。",
+            level="function",
+            mechanism="callback_lock_wait",
+            target="backend.on_chord_part_return",
+            evidence_ref="ev-function",
+        ),
+    )
+    clusters = derive_root_cause_clusters_from_ai_tree(
+        tree,
+        valid_evidence_refs={"ev-line", "ev-function"},
+    )
+    primary, contributing = clusters
+    review = SessionConclusionReview.model_validate({
+        "headline": "状态保留与回调锁等待共同造成任务积压。",
+        "why_it_happened": "对象释放和结果回调同时受阻，使积压持续扩大。",
+        "primary_cluster_id": primary.cluster_id,
+        "cluster_roles": {primary.cluster_id: "primary"},
+        "causal_chain": [{
+            "step_id": "line-step",
+            "candidate_id": "line-cause",
+            "statement": primary.claim,
+            "evidence_refs": ["ev-line"],
+            "supported_level": "line",
+        }],
+    })
+
+    issues = validate_session_review(review, clusters, {"ev-line", "ev-function"})
+
+    assert "cluster_roles must cover every eligible cluster" in issues
+    assert "causal_chain does not cover every primary/contributing cluster" not in issues
+
+    review.cluster_roles[contributing.cluster_id] = "contributing"
+    issues = validate_session_review(review, clusters, {"ev-line", "ev-function"})
+    assert "causal_chain does not cover every primary/contributing cluster" in issues
+
+
+def test_fallback_keeps_all_related_formal_branches():
+    tree = _multi_branch_ai_tree(
+        _ai_tree_node(
+            "line-cause",
+            parent="coarse-root",
+            claim="worker.py:42 的状态更新异常持续保留任务对象。",
+            level="line",
+            mechanism="task_state_retention",
+            target="worker.py:42",
+            role="primary",
+            evidence_ref="ev-line",
+        ),
+        _ai_tree_node(
+            "function-cause",
+            parent="coarse-root",
+            claim="结果回调函数的锁等待降低了任务释放速度。",
+            level="function",
+            mechanism="callback_lock_wait",
+            target="backend.on_chord_part_return",
+            evidence_ref="ev-function",
+        ),
+    )
+    clusters = derive_root_cause_clusters_from_ai_tree(
+        tree,
+        valid_evidence_refs={"ev-line", "ev-function"},
+    )
+
+    explanation = build_fallback_explanation(clusters, {}, session_tree=tree)
+
+    assert len(explanation["root_cause_clusters"]) == 2
+    assert "worker.py:42" in explanation["headline"]
+    assert "结果回调函数" in explanation["headline"]
+    assert [cluster.role for cluster in explanation["root_cause_clusters"]] == [
+        "primary",
+        "contributing",
+    ]
 
 
 def test_candidate_generation_failure_is_exposed_with_initial_evidence():
@@ -329,6 +584,185 @@ def test_duplicate_dependency_observations_merge_into_one_cluster():
     assert len(clusters) == 1
     assert clusters[0].target == "paymentservice"
     assert set(clusters[0].evidence_refs) == {"ev-1", "ev-2"}
+
+
+def test_python_scenario_gate_becomes_confirmed_root_cause_cluster():
+    observation = _observation(
+        service_id="checkoutservice",
+        instance_id="checkout-1",
+        pid=11,
+        refs=["ev-structured"],
+    )
+    observation["evidence_index"] = {
+        "python_scenario_gates": {
+            "python_exception_profile": {
+                "family": "python_exception_profile",
+                "scenario_type": "python_exception_storm",
+                "max_supported_claim_type": "direct_root_cause",
+                "conclusion_eligible": True,
+                "line_verified": True,
+                "mechanism_evidence_refs": ["ev-exception-profile"],
+                "counter_evidence_refs": [],
+                "eligibility_reason": "重复异常簇、源码 throw/log 行和同窗影响证据均已闭合。",
+                "missing_evidence": [],
+            }
+        }
+    }
+
+    clusters = build_root_cause_clusters(
+        [observation],
+        _assessment(classification="insufficient_evidence", conclusion_eligible=False),
+        {"target_scope": {"target_service": "checkoutservice"}},
+    )
+
+    assert len(clusters) == 1
+    assert clusters[0].mechanism == "python_exception_storm"
+    assert clusters[0].target == "checkoutservice"
+    assert clusters[0].cause_level == "direct_root_cause"
+    assert clusters[0].supported_level == "line"
+    assert clusters[0].conclusion_eligible is True
+    assert clusters[0].qualification == "confirmed_root_cause"
+    assert set(clusters[0].evidence_refs) == {"ev-exception-profile", "ev-structured"}
+
+    explanation = build_fallback_explanation(
+        clusters,
+        _assessment(classification="insufficient_evidence", conclusion_eligible=False),
+    )
+
+    assert explanation["abstained"] is False
+    assert explanation["formal_root_cause"]["mechanism"] == "python_exception_storm"
+    assert explanation["root_cause_clusters"][0].conclusion_eligible is True
+
+
+def test_python_scenario_gate_with_counter_evidence_stays_out_of_clusters():
+    observation = _observation(
+        service_id="checkoutservice",
+        instance_id="checkout-1",
+        pid=11,
+        refs=["ev-structured"],
+    )
+    observation["confidence_inputs"] = {
+        "python_scenario_gates": {
+            "python_retry_timeout_profile": {
+                "family": "python_retry_timeout_profile",
+                "scenario_type": "python_retry_timeout",
+                "max_supported_claim_type": "direct_root_cause",
+                "conclusion_eligible": True,
+                "line_verified": True,
+                "mechanism_evidence_refs": ["ev-retry"],
+                "counter_evidence_refs": ["ev-dependency"],
+                "eligibility_reason": "下游依赖反证仍存在。",
+            }
+        }
+    }
+
+    clusters = build_root_cause_clusters(
+        [observation],
+        _assessment(classification="insufficient_evidence", conclusion_eligible=False, evidence_refs=[]),
+        {"target_scope": {"target_service": "checkoutservice"}},
+    )
+
+    assert clusters == []
+
+
+def test_valid_python_scenario_gate_can_be_retained_without_formal_cluster():
+    observation = _observation(
+        service_id="celery-eta-queue-case",
+        instance_id="celery-worker-1",
+        pid=11,
+        refs=["ev-structured"],
+    )
+    observation["evidence_index"] = {
+        "python_scenario_gates": {
+            "python_queue_profile": {
+                "family": "python_queue_profile",
+                "scenario_type": "python_queue_backlog",
+                "evidence_status": "valid",
+                "max_supported_claim_type": "observation",
+                "conclusion_eligible": False,
+                "line_verified": False,
+                "mechanism_evidence_refs": ["python_queue_profile.tasks[0]"],
+                "counter_evidence_refs": [],
+                "eligibility_reason": "场景证据尚未达到源码定位门禁。",
+                "gate_checks": {
+                    "industrial_observation": True,
+                    "scenario_signal": True,
+                },
+                "missing_evidence": ["source_snapshot_verification"],
+            }
+        }
+    }
+    tree = {
+        "layers": [{
+            "primary_causes": [],
+            "secondary_causes": [],
+            "rejected_causes": [],
+            "unknown_causes": [{
+                "candidate_id": "ai-queue",
+                "generated_by": "ai_candidate",
+                "claim_origin": "ai_proposal",
+                "claim_transform": "original",
+                "claim_status": "active",
+                "parent_candidate_ids": [],
+                "child_candidate_ids": [],
+                "relation": "alternative",
+                "node_type": "base_cause",
+                "role": "unknown",
+                "claim": "Celery worker 进程在异常窗口内存在队列堆积，任务处理延迟由队列 backlog 导致。",
+                "mechanism": "python_queue_backlog",
+                "supported_level": "process",
+                "status": "partial",
+                "claim_type": "partial_localization",
+                "causal_status": "unproven",
+                "decision": "continue_probe",
+                "evidence_refs": ["python_queue_profile.tasks[0]"],
+            }],
+        }],
+    }
+
+    clusters = build_root_cause_clusters(
+        [observation],
+        _assessment(classification="insufficient_evidence", conclusion_eligible=False),
+        {"target_scope": {"target_service": "celery-eta-queue-case"}},
+    )
+    scenario_retained = build_scenario_retained_conclusion(
+        [observation],
+        tree,
+        target_service="celery-eta-queue-case",
+    )
+    retained = build_retained_conclusion(
+        clusters,
+        {
+            "classification": "insufficient_evidence",
+            "scenario_retained_conclusion": scenario_retained,
+        },
+        tree,
+    )
+
+    assert clusters == []
+    assert retained["candidate_id"] == "ai-queue"
+    assert retained["qualification"] == "partial_localization"
+    assert retained["causal_status"] == "inconclusive"
+    assert "队列堆积" in retained["claim"]
+
+    explanation = build_fallback_explanation(
+        clusters,
+        {
+            "classification": "insufficient_evidence",
+            "scenario_retained_conclusion": scenario_retained,
+        },
+        session_tree=tree,
+        qualification_boundary={
+            "status": "inconclusive",
+            "message": "缺少源码行和机制闭合证据。",
+            "missing_evidence": ["source_snapshot_verification"],
+        },
+    )
+
+    assert explanation["formal_root_cause"] is None
+    assert explanation["abstained"] is True
+    assert "队列堆积" in explanation["headline"]
+    assert explanation["why_it_happened"] == "缺少源码行和机制闭合证据。"
 
 
 def test_dependency_and_same_host_cpu_form_two_eligible_clusters():
@@ -677,6 +1111,52 @@ def test_source_line_boundary_explains_why_line_upgrade_did_not_start():
     assert "源码行探测未进入正式升级" in boundary["message"]
 
 
+def test_localization_chain_deduplicates_claim_hash_and_renders_boundary_as_stop_step():
+    session_tree = {
+        "layers": [{
+            "primary_causes": [],
+            "secondary_causes": [],
+            "rejected_causes": [],
+            "unknown_causes": [
+                {
+                    "candidate_id": "parent",
+                    "parent_candidate_ids": [],
+                    "claim": "Worker CPU pressure",
+                    "claim_status": "active",
+                    "evidence_refs": ["ev-1"],
+                },
+                {
+                    "candidate_id": "child",
+                    "parent_candidate_ids": ["parent"],
+                    "claim": "worker cpu pressure。",
+                    "claim_status": "inherited",
+                    "evidence_refs": ["ev-2"],
+                },
+                {
+                    "candidate_id": "boundary",
+                    "parent_candidate_ids": ["child"],
+                    "claim": "",
+                    "claim_status": "boundary",
+                    "relation": "boundary",
+                    "boundary_message": "深探失败，停止在父结论。",
+                    "evidence_refs": [],
+                },
+            ],
+        }],
+    }
+
+    chain = session_conclusion._build_localization_chain(
+        session_tree,
+        {"candidate_id": "boundary"},
+    )
+
+    assert [step.statement for step in chain] == [
+        "Worker CPU pressure",
+        "深探失败，停止在父结论。",
+    ]
+    assert chain[-1].step_kind == "boundary"
+
+
 def test_empty_frozen_evidence_cannot_be_promoted_to_root_cause():
     assert classify_cluster_set([]) == "insufficient_evidence"
     assert build_retained_conclusion(
@@ -815,7 +1295,7 @@ def test_session_ai_review_retry_includes_previous_rejected_output(monkeypatch):
         "why_it_happened": "checkoutservice waits for paymentservice, which was unreachable in the evidence window.",
         "primary_cluster_id": cluster.cluster_id,
         "cluster_roles": {cluster.cluster_id: "primary"},
-        "causal_chain": [{"step_id": "step-1", "statement": "paymentservice failure propagated to checkoutservice", "evidence_refs": ["ev-dependency"]}],
+        "causal_chain": [{"step_id": "step-1", "candidate_id": cluster.candidate_ids[0], "statement": "paymentservice failure propagated to checkoutservice", "evidence_refs": ["ev-dependency"]}],
         "ruled_out_summary": [],
         "residual_unknowns": [],
         "recommendations": {cluster.cluster_id: [
@@ -861,6 +1341,7 @@ def test_session_ai_review_normalizes_single_string_list_fields(monkeypatch):
         "cluster_roles": {cluster.cluster_id: "primary"},
         "causal_chain": [{
             "step_id": "step-1",
+            "candidate_id": cluster.candidate_ids[0],
             "statement": "paymentservice failure propagated to checkoutservice",
             "evidence_refs": ["ev-dependency"],
         }],

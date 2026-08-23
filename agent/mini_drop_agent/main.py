@@ -48,6 +48,15 @@ from agent.mini_drop_agent.collectors.pprof import PprofCollector
 from agent.mini_drop_agent.collectors.pyspy import PySpyCollector
 from agent.mini_drop_agent.collectors.python_heap import PythonHeapCollector
 from agent.mini_drop_agent.collectors.python_heap_reference import PythonHeapReferenceCollector
+from agent.mini_drop_agent.collectors.python_scenarios import (
+    PythonCacheProfileCollector,
+    PythonExceptionProfileCollector,
+    PythonInputProfileCollector,
+    PythonLockWaitCollector,
+    PythonPoolProfileCollector,
+    PythonQueueProfileCollector,
+    PythonRetryTimeoutProfileCollector,
+)
 from agent.mini_drop_agent.collectors.redis_check import RedisCheckCollector
 from agent.mini_drop_agent.collectors.runtime_control import RuntimeControlCollector
 from agent.mini_drop_agent.collectors.source_snapshot import SourceSnapshotCollector
@@ -94,6 +103,13 @@ COLLECTORS = {
     "redis_check": RedisCheckCollector(),
     "process_inventory": ProcessInventoryCollector(),
     "runtime_control_history": RuntimeControlCollector(),
+    "python_lock_wait_profile": PythonLockWaitCollector(),
+    "python_exception_profile": PythonExceptionProfileCollector(),
+    "python_queue_profile": PythonQueueProfileCollector(),
+    "python_pool_profile": PythonPoolProfileCollector(),
+    "python_retry_timeout_profile": PythonRetryTimeoutProfileCollector(),
+    "python_cache_profile": PythonCacheProfileCollector(),
+    "python_input_profile": PythonInputProfileCollector(),
 }
 
 CAPABILITIES = sorted(COLLECTORS.keys())
@@ -533,6 +549,13 @@ _TASK_TYPE_COLLECTOR: dict[int, str] = {
     17: "source_snapshot",
     18: "source_mechanism_query",
     19: "python_heap_reference",
+    20: "python_lock_wait_profile",
+    21: "python_exception_profile",
+    22: "python_queue_profile",
+    23: "python_pool_profile",
+    24: "python_retry_timeout_profile",
+    25: "python_cache_profile",
+    26: "python_input_profile",
 }
 
 

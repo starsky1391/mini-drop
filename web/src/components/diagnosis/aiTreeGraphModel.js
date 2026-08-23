@@ -38,6 +38,7 @@ export function candidateDisplaySemantics(candidate = {}, generatedBy = "") {
   const depthKind = candidate.depth_kind || "";
   const status = candidate.status || "";
   const causalStatus = candidate.causal_status || "";
+  const claimStatus = candidate.claim_status || "active";
   const rejected = candidate.role === "rejected"
     || ["contradicted", "rejected"].includes(status)
     || causalStatus === "contradicted";
@@ -49,6 +50,12 @@ export function candidateDisplaySemantics(candidate = {}, generatedBy = "") {
 
   if (rejected) {
     return { roleLabel: "已反证", levelLabel };
+  }
+  if (claimStatus === "duplicate") {
+    return { roleLabel: "重复结论", levelLabel };
+  }
+  if (["inherited", "retained"].includes(claimStatus)) {
+    return { roleLabel: "继承结论", levelLabel };
   }
   if (boundary) {
     return { roleLabel: "证据边界", levelLabel };
@@ -63,7 +70,7 @@ export function candidateDisplaySemantics(candidate = {}, generatedBy = "") {
     return { roleLabel: "已验证源码行", levelLabel };
   }
   if (
-    ["ai_candidate", "ai_guarded"].includes(generatedBy)
+    candidate.claim_origin?.startsWith("ai_")
     && !candidate.conclusion_eligible
   ) {
     return { roleLabel: "AI 候补 / 待深探", levelLabel };
@@ -135,6 +142,12 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
   const backendQualityRecords = Array.isArray(tree.data_quality?.records)
     ? tree.data_quality.records
     : [];
+  const excludedClaimIds = new Set(
+    backendQualityRecords
+      .filter((record) => ["duplicate_claim", "refinement_not_more_specific", "history_excluded"].includes(record?.status))
+      .map((record) => String(record?.candidate_id || ""))
+      .filter(Boolean),
+  );
 
   for (const layer of layers) {
     for (const candidate of flattenLayerCandidates(layer)) {
@@ -170,6 +183,12 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
     layerIndex.set(layer.layer_id, candidates);
     for (const candidate of candidates) {
       const candidateId = String(candidate.candidate_id || "");
+      if (
+        candidate.claim_status === "duplicate"
+        || candidate.claim_transform === "restored"
+        || candidate.generated_by === "history"
+        || excludedClaimIds.has(candidateId)
+      ) continue;
       const declaredParentIds = Array.isArray(candidate.parent_candidate_ids)
         ? candidate.parent_candidate_ids.filter(Boolean).map(String)
         : [];
@@ -216,7 +235,7 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
           : candidate.conclusion_eligible
             ? candidate.role
             : "unknown";
-      const displaySemantics = candidateDisplaySemantics(candidate, layer.generated_by);
+      const displaySemantics = candidateDisplaySemantics(candidate, candidate.generated_by);
       const outsideFinalBoundary = isDeeperLevel(candidate.supported_level, finalLevel);
       const nodeId = nodeIdFor(layer.layer_id, candidate.candidate_id);
       const nodeLayoutRole = candidate.node_type === "stop_boundary"
@@ -240,7 +259,7 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
           layoutRole: nodeLayoutRole,
           layerId: layer.layer_id,
           layerDepth: layer.depth,
-          generatedBy: layer.generated_by,
+          generatedBy: candidate.generated_by,
           layerSummary: layer.summary,
           candidate,
           role: visualRole,
@@ -248,7 +267,7 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
           levelLabel: displaySemantics.levelLabel,
           nodeType: candidate.node_type || nodeTypeForDepth(candidate.depth_kind, candidate.supported_level, visualRole),
           title: candidate.candidate_id,
-          claim: candidate.claim,
+          claim: candidate.claim || candidate.boundary_message,
           level: candidate.supported_level,
           confidence: candidate.confidence || 0,
           status: candidate.status,
@@ -265,7 +284,9 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
             boundaryStatus ? "证据边界" : null,
             candidate.node_type === "stop_boundary" ? "局部STOP" : candidate.node_type === "observation" ? "观察上下文" : candidate.node_type === "mechanism_explanation" || candidate.depth_kind === "mechanism" ? "机制链" : candidate.depth_kind === "boundary" ? "边界" : "基础定位",
             outsideFinalBoundary ? "已观察/未入终态" : "终态边界内",
-            layer.generated_by === "ai_guarded" ? "AI" : "fallback",
+            candidate.claim_origin || null,
+            candidate.claim_transform || null,
+            candidate.claim_status || null,
           ].filter(Boolean),
         },
       });

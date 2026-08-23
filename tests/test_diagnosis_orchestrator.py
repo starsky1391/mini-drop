@@ -52,6 +52,57 @@ def test_audit_bundle_json_safe_replaces_non_finite_floats():
     }
 
 
+def test_orchestrator_merges_only_valid_python_scenario_gate_clusters():
+    ai_cluster = RootCauseCluster(
+        cluster_id="rc-ai",
+        mechanism="python_exception_storm",
+        target="checkoutservice",
+        claim="AI confirmed exception storm.",
+        evidence_refs=["ev-ai"],
+        conclusion_eligible=True,
+        cause_level="direct_root_cause",
+        supported_level="line",
+    )
+    valid_scenario = RootCauseCluster(
+        cluster_id="rc-scenario",
+        mechanism="python_retry_timeout",
+        target="checkoutservice",
+        claim="Scenario gate confirmed retry timeout.",
+        evidence_refs=["ev-retry"],
+        conclusion_eligible=True,
+        cause_level="direct_root_cause",
+        supported_level="line",
+    )
+    invalid_ref_scenario = RootCauseCluster(
+        cluster_id="rc-missing-ref",
+        mechanism="python_pool_exhaustion",
+        target="checkoutservice",
+        claim="Missing evidence ref.",
+        evidence_refs=["ev-missing"],
+        conclusion_eligible=True,
+        cause_level="direct_root_cause",
+        supported_level="line",
+    )
+    duplicate_scenario = RootCauseCluster(
+        cluster_id="rc-duplicate",
+        mechanism="python_exception_storm",
+        target="checkoutservice",
+        claim="Duplicate scenario gate.",
+        evidence_refs=["ev-exception"],
+        conclusion_eligible=True,
+        cause_level="direct_root_cause",
+        supported_level="line",
+    )
+
+    merged = orchestrator_module._merge_python_scenario_gate_clusters(
+        [ai_cluster],
+        [valid_scenario, invalid_ref_scenario, duplicate_scenario],
+        valid_session_evidence_refs={"ev-ai", "ev-retry", "ev-exception"},
+    )
+
+    assert [cluster.cluster_id for cluster in merged] == ["rc-ai", "rc-scenario"]
+
+
 def test_readiness_gate_tolerates_truncated_runtime_counts():
     bundle = {
         "probes": [{
@@ -415,12 +466,19 @@ def test_successful_candidate_generation_keeps_analyzer_observation_distinct_fro
         for node in updated.layers[-1].unknown_causes
         if node.candidate_id == "ai_candidate_runtime_path"
     )
-    assert ai_node.generated_by == "ai_candidate"
+    assert ai_node.generated_by == "ai"
+    assert ai_node.claim_origin == "ai_proposal"
 
     guarded = orchestrator_module._promote_ai_nodes_to_guarded(updated)
     assert guarded.layers[0].generated_by == "analyzer_observation"
-    assert guarded.layers[-1].generated_by == "ai_guarded"
-    assert guarded.layers[-1].unknown_causes[0].generated_by == "ai_guarded"
+    assert guarded.layers[-1].generated_by == "ai_candidate"
+    guarded_ai_node = next(
+        node
+        for layer in guarded.layers
+        for node in layer.unknown_causes
+        if node.candidate_id == "ai_candidate_runtime_path"
+    )
+    assert guarded_ai_node.generated_by == "ai"
 
 
 def test_initial_ai_candidate_stays_investigation_only_even_if_model_says_conclude():
@@ -1006,7 +1064,18 @@ def test_readiness_gate_accepts_controlled_tree_from_normalized_conclusion():
             "ai_review_status": "succeeded",
             "ai_review_scope": "session",
             "controlled_ai_tree": {
-                "layers": [{"generated_by": "ai_guarded"}],
+                "layers": [{
+                    "generated_by": "analyzer_observation",
+                    "unknown_causes": [{
+                        "candidate_id": "candidate",
+                        "claim": "evidence-backed claim",
+                        "generated_by": "analyzer",
+                        "claim_origin": "analyzer_diagnostic",
+                        "claim_transform": "original",
+                        "claim_status": "active",
+                        "claim_hash": "claim-hash",
+                    }],
+                }],
                 "probe_edges": [{"edge_id": "edge_1"}],
             },
         },
@@ -1016,10 +1085,10 @@ def test_readiness_gate_accepts_controlled_tree_from_normalized_conclusion():
     checks = {item["name"]: item["status"] for item in gate["checks"]}
 
     assert checks["controlled_ai_tree_present"] == "PASS"
-    assert checks["controlled_ai_tree_ai_guarded"] == "PASS"
+    assert checks["controlled_ai_tree_claim_lineage"] == "PASS"
 
 
-def test_readiness_gate_rejects_ai_guarded_label_when_session_review_failed():
+def test_readiness_gate_rejects_tree_without_canonical_claim_lineage():
     bundle = {
         "latest_conclusion": {
             "ai_review_status": "failed",
@@ -1031,7 +1100,7 @@ def test_readiness_gate_rejects_ai_guarded_label_when_session_review_failed():
     gate = build_readiness_gate(bundle)
     checks = {item["name"]: item["status"] for item in gate["checks"]}
 
-    assert checks["controlled_ai_tree_ai_guarded"] == "FAIL"
+    assert checks["controlled_ai_tree_claim_lineage"] == "FAIL"
 
 
 def test_compound_readiness_rejects_clusters_without_independent_evidence():
@@ -3395,6 +3464,120 @@ def test_dependency_conclusion_keeps_function_depth_requests():
     assert {"cpu_profile", "off_cpu_wait_profile", "trace_endpoint_profile"} <= set(requests)
 
 
+def test_python_scenario_router_sequences_adapter_then_source_snapshot():
+    assessment = {
+        "classification": "python_exception_storm",
+        "supported_level": "process",
+        "max_supported_level": "process",
+    }
+    session = {
+        "normalized_intent": {"symptom": "exception_storm"},
+        "target_scope": {
+            "source_context": {
+                "source_paths": ["/srv/app"],
+                "repo_revision": "rev-1",
+            },
+        },
+    }
+
+    assert orchestrator_module._assessment_followup_requests(assessment, session) == ["python_exception_profile"]
+
+    with_exception = {
+        **session,
+        "completed_depth_evidence_gaps": ["python_exception_profile"],
+        "probe_evidence_status": {"python_exception_profile": "valid"},
+    }
+    assert orchestrator_module._assessment_followup_requests(assessment, with_exception) == ["source_snapshot"]
+
+    terminal = {
+        **with_exception,
+        "completed_depth_evidence_gaps": ["python_exception_profile", "source_snapshot"],
+        "probe_evidence_status": {"python_exception_profile": "valid", "source_snapshot": "blocked"},
+    }
+    assert orchestrator_module._assessment_followup_requests(assessment, terminal) == []
+
+
+def test_python_runtime_logs_enable_initial_scenario_profiles_for_any_symptom():
+    target_scope = {
+        "service_id": "celery-eta-queue-case",
+        "source_context": {
+            "language": "python",
+            "application_runtime_log_paths": ["/host/evidence/workload.ndjson"],
+        },
+        "instances": [{
+            "service_id": "celery-eta-queue-case",
+            "instance_id": "celery-worker-1",
+            "application_runtime_log_paths": ["/host/evidence/worker_observations.ndjson"],
+        }],
+    }
+
+    probe_ids = orchestrator_module._scope_probe_ids("memory_pressure", target_scope)
+
+    assert probe_ids[:6] == [
+        "host_process_metrics",
+        "process_python_queue_profile",
+        "process_python_pool_profile",
+        "process_python_retry_timeout_profile",
+        "process_python_cache_profile",
+        "process_python_input_profile",
+    ]
+
+
+def test_runtime_log_scenario_initial_probes_are_low_latency():
+    definition = orchestrator_module.get_probe("process_python_retry_timeout_profile")
+
+    assert orchestrator_module._initial_probe_duration(
+        "process_python_retry_timeout_profile",
+        definition,
+    ) == 1
+
+
+def test_python_scenario_router_covers_cpu_endpoint_and_io_orders():
+    source_session = {
+        "target_scope": {
+            "source_context": {
+                "source_paths": ["/srv/app"],
+                "repo_revision": "rev-1",
+            },
+        },
+    }
+
+    assert orchestrator_module._assessment_followup_requests(
+        {"classification": "python_cpu_hotspot", "supported_level": "process"},
+        source_session,
+    ) == ["python_runtime_profile"]
+    assert orchestrator_module._assessment_followup_requests(
+        {"classification": "python_endpoint_latency", "supported_level": "service"},
+        {"**": "ignored", **source_session},
+    ) == ["trace_endpoint_profile"]
+    assert orchestrator_module._assessment_followup_requests(
+        {"classification": "python_io_blocking", "supported_level": "process"},
+        source_session,
+    ) == ["off_cpu_wait_profile"]
+    assert orchestrator_module._assessment_followup_requests(
+        {"classification": "python_lock_wait", "supported_level": "process"},
+        {"normalized_intent": {"symptom": "runtime_contention"}, **source_session},
+    ) == ["off_cpu_wait_profile"]
+
+    endpoint_after_trace = {
+        **source_session,
+        "completed_depth_evidence_gaps": ["trace_endpoint_profile", "dependency_check", "log_scan"],
+        "probe_evidence_status": {
+            "trace_endpoint_profile": "valid",
+            "dependency_check": "valid",
+            "log_scan": "valid",
+        },
+    }
+    assert orchestrator_module._assessment_followup_requests(
+        {"classification": "python_endpoint_latency", "supported_level": "call_path"},
+        endpoint_after_trace,
+    ) == ["source_snapshot"]
+
+    dependency_assessment = {"classification": "downstream_dependency", "supported_level": "service"}
+    dependency_session = {"normalized_intent": {"symptom": "latency_increase"}, **source_session}
+    assert "dependency_check" in orchestrator_module._assessment_followup_requests(dependency_assessment, dependency_session)
+
+
 def test_followup_uses_active_ai_candidate_level_for_source_snapshot():
     assessment = {
         "classification": "self_code_or_process_pressure",
@@ -4179,6 +4362,172 @@ def test_memray_backed_python_memory_scope_starts_with_metrics_only():
     }
 
     assert orchestrator_module._scope_probe_ids("memory_pressure", scope) == ["host_process_metrics"]
+
+
+def test_go_memory_scope_starts_with_metrics_only():
+    scope = {
+        "source_context": {
+            "language": "go",
+            "source_paths": ["/case/src"],
+            "repo_revision": "abc123",
+        },
+        "instances": [],
+        "dependency_targets": [],
+    }
+
+    assert orchestrator_module._scope_probe_ids("memory_pressure", scope) == ["host_process_metrics"]
+
+
+def test_go_heap_probe_parameters_use_existing_go_pprof_runner():
+    source_context = {
+        "language": "go",
+        "source_paths": ["/case/src"],
+        "repo_revision": "abc123",
+        "pprof_port": 7070,
+    }
+
+    options = diagnosis_orchestrator._collector_probe_parameters(
+        "process_go_heap_profile",
+        {"source_context": source_context},
+        {"pid": 1234, "service_id": "go-api", "instance_id": "vulnerable"},
+    )
+
+    assert options["profile_kind"] == "heap"
+    assert options["pprof_endpoint"] == "/debug/pprof/heap"
+    assert options["port"] == 7070
+
+
+def test_python_scenario_probe_parameters_forward_application_runtime_logs():
+    source_context = {
+        "language": "python",
+        "source_paths": ["/host/case/src"],
+        "repo_revision": "abc123",
+        "application_runtime_log_paths": ["/host/case/evidence/workload.ndjson"],
+    }
+
+    options = diagnosis_orchestrator._collector_probe_parameters(
+        "process_python_pool_profile",
+        {"source_context": source_context},
+        {
+            "pid": 1234,
+            "service_id": "python-api",
+            "instance_id": "vulnerable",
+            "application_runtime_log_paths": ["/host/case/evidence/worker_observations.ndjson"],
+        },
+    )
+
+    assert options["application_runtime_log_paths"] == [
+        "/host/case/evidence/worker_observations.ndjson",
+        "/host/case/evidence/workload.ndjson",
+    ]
+    assert options["target_config"]["application_runtime_log_paths"] == options["application_runtime_log_paths"]
+
+
+def test_go_memory_followup_sequence_is_go_heap_then_source_snapshot():
+    session = {
+        "normalized_intent": {"symptom": "memory_pressure"},
+        "target_scope": {
+            "source_context": {
+                "language": "go",
+                "source_paths": ["/case/src"],
+                "repo_revision": "abc123",
+            },
+        },
+        "completed_depth_evidence_gaps": [],
+        "probe_evidence_status": {},
+    }
+    assessment = {"classification": "self_code_or_process_pressure", "supported_level": "process"}
+
+    assert orchestrator_module._assessment_followup_requests(assessment, session) == ["go_heap_profile"]
+
+    session["probe_evidence_status"] = {"go_heap_profile": "valid"}
+    assert orchestrator_module._assessment_followup_requests(assessment, session) == ["source_snapshot"]
+
+    session["probe_evidence_status"] = {"go_heap_profile": "valid", "source_snapshot": "valid"}
+    assert orchestrator_module._assessment_followup_requests(assessment, session) == []
+
+
+def test_go_heap_line_candidates_feed_source_snapshot(client: TestClient):
+    data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    task_id = data["child_task_ids"][0]
+    repo.add_artifacts(task_id, [{
+        "artifact_type": "go_heap_profile_json",
+        "object_key": f"tasks/{task_id}/go_heap_profile.json",
+        "metadata": {
+            "data": {
+                "line_candidates": [{
+                    "file": "/case/src/cache/cache.go",
+                    "line": 42,
+                    "symbol": "cache.go",
+                }],
+                "hotspots": [],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+        },
+    }])
+
+    candidates = diagnosis_orchestrator._session_line_candidates(diagnosis_id)
+
+    assert candidates[0]["file"] == "/case/src/cache/cache.go"
+    assert candidates[0]["line"] == 42
+
+
+def test_go_heap_anchor_is_not_full_leak_root_cause_eligible():
+    observations = [
+        {
+            "collector_type": "go_pprof",
+            "target": {"service_id": "go-api", "instance_id": "vulnerable", "pid": 1234},
+            "evidence_refs": ["ev-go-heap"],
+            "go_heap_profile": {
+                "evidence_validity": {"evidence_status": "valid"},
+                "hotspots": [{
+                    "function": "cache.go",
+                    "file": "/case/src/cache/cache.go",
+                    "line": 42,
+                    "flat_bytes": 8_388_608,
+                    "cum_bytes": 10_485_760,
+                    "flat_percent": 66.67,
+                    "cum_percent": 83.33,
+                }],
+            },
+        },
+        {
+            "collector_type": "source_snapshot",
+            "target": {"service_id": "go-api", "instance_id": "vulnerable", "pid": 1234},
+            "evidence_refs": ["ev-source"],
+            "source_snapshot": {
+                "revision": "abc123",
+                "source_context_hash": "sha256:verified",
+                "snippets": [{
+                    "file": "cache/cache.go",
+                    "focus_line": 42,
+                    "symbol": "cache.go",
+                    "lines": [{"line": 42, "text": "items = append(items, payload)"}],
+                }],
+            },
+        },
+    ]
+
+    anchor = orchestrator_module._verified_source_anchor(
+        orchestrator_module._go_heap_growth_anchor(observations),
+        observations,
+    )
+    metadata = orchestrator_module._assessment_claim_metadata(
+        classification="go_heap_growth_candidate",
+        session={"target_scope": {"target_service": "go-api"}},
+        anchor=anchor,
+        evidence_refs=["ev-go-heap", "ev-source"],
+        downstream_dependency_failure=False,
+        shared_iowait=False,
+        neighbor_pressure=False,
+        runtime_control=None,
+    )
+
+    assert anchor["supported_level"] == "line"
+    assert metadata["conclusion_eligible"] is False
+    assert metadata["mechanism"] == "go_allocation_hotspot"
+    assert metadata["claim_type"] == "direct_failure_mechanism"
 
 
 def test_memory_retention_anchor_prefers_memray_bytes_and_verified_source():
@@ -5562,7 +5911,8 @@ def test_investigation_review_updates_existing_parent_and_appends_rollback_prove
     }
     assert nodes["line_rule_compile"].claim == "源码行父结论继续保留，深探尚未闭合。"
     assert nodes["line_rule_compile"].status == "partial"
-    assert nodes["ai_proposal_followup_mechanism"].generated_by == "ai_guarded"
+    assert nodes["ai_proposal_followup_mechanism"].generated_by == "ai"
+    assert nodes["ai_proposal_followup_mechanism"].claim_origin == "ai_proposal"
     assert nodes["ai_proposal_followup_mechanism"].parent_candidate_ids == ["line_rule_compile"]
     rollback = next(edge for edge in updated.probe_edges if edge.edge_id == "rollback-followup-parent")
     assert rollback.from_candidate_ids == ["ai_proposal_followup_mechanism"]
@@ -5633,17 +5983,25 @@ def test_dag_lineage_rebuilds_bidirectional_edges_for_multiple_parents_and_child
     assert nodes["right"].child_candidate_ids == ["merge"]
 
 
-def test_dag_lineage_rejects_self_loop_and_missing_child_reference():
+def test_dag_lineage_rejects_self_loop_and_records_missing_child_reference():
     with pytest.raises(ValueError, match="自身"):
         orchestrator_module._validate_tree_lineage([
             AITreeLayer(layer_id="l0", depth=0, unknown_causes=[_dag_node("root", parents=["root"])])
         ])
     orphan = _dag_node("root")
     orphan = orphan.model_copy(update={"child_candidate_ids": ["missing"]})
-    with pytest.raises(ValueError, match="child_candidate_id 不存在"):
-        orchestrator_module._validate_tree_lineage([
-            AITreeLayer(layer_id="l0", depth=0, unknown_causes=[orphan])
-        ])
+    layers = [AITreeLayer(layer_id="l0", depth=0, unknown_causes=[orphan])]
+    records = orchestrator_module._tree_lineage_quality_records(layers)
+    validated = orchestrator_module._validate_tree_lineage(layers)
+
+    assert validated[0].unknown_causes[0].child_candidate_ids == []
+    assert records == [{
+        "candidate_id": "root",
+        "status": "missing_child",
+        "relation": "alternative",
+        "child_candidate_ids": ["missing"],
+        "claim": "节点声明的 child_candidate_ids 未在当前 session_main 中发出，已从主树布局边中移除。",
+    }]
 
 
 def test_dag_lineage_preserves_missing_parent_as_orphan_data_quality_node():
@@ -5675,3 +6033,75 @@ def test_dag_lineage_requires_unique_origin_for_multiple_real_parents():
     assert node.node_type == "orphan"
     assert node.parent_candidate_ids == ["left", "right"]
     assert node.origin_parent_candidate_id is None
+
+
+def test_canonical_reducer_blocks_all_known_duplicate_parent_child_pairs():
+    pairs = [("001", "004"), ("002", "005"), ("003", "006")]
+    roots = [
+        AITreeCandidateNode(
+            candidate_id=parent_id,
+            generated_by="analyzer",
+            claim_origin="analyzer_diagnostic",
+            relation="root",
+            role="unknown",
+            claim=f"claim-{parent_id}",
+        )
+        for parent_id, _ in pairs
+    ]
+    children = [
+        AITreeCandidateNode(
+            candidate_id=child_id,
+            generated_by="ai",
+            claim_origin="ai_proposal",
+            claim_transform="refined",
+            parent_candidate_ids=[parent_id],
+            origin_parent_candidate_id=parent_id,
+            relation="refinement",
+            role="unknown",
+            claim=f"claim-{parent_id}。",
+        )
+        for parent_id, child_id in pairs
+    ]
+    tree = orchestrator_module.ControlledAITree(
+        tree_id="known-duplicates",
+        layers=[
+            AITreeLayer(layer_id="parents", depth=0, unknown_causes=roots),
+            AITreeLayer(layer_id="children", depth=1, unknown_causes=children),
+        ],
+        final_unknown_causes=[candidate_id for pair in pairs for candidate_id in pair],
+    )
+
+    reduced = orchestrator_module.reduce_candidate_state(tree)
+    emitted = {
+        node.candidate_id
+        for layer in reduced.layers
+        for node in layer.unknown_causes
+    }
+    assert emitted == {"001", "002", "003"}
+    assert {
+        record["candidate_id"]
+        for record in reduced.data_quality["records"]
+        if record["status"] == "duplicate_claim"
+    } == {"004", "005", "006"}
+
+
+def test_probe_input_merge_keeps_complete_investigation_query_ready():
+    merged = orchestrator_module._merge_probe_input_maps(
+        {"source_mechanism_query": {
+            "candidate_id": "child",
+            "origin_parent_candidate_id": "parent",
+        }},
+        {"source_mechanism_query": {
+            "candidate_id": "child",
+            "origin_parent_candidate_id": "parent",
+            "ai_generated_query": {
+                "candidate_id": "child",
+                "origin_parent_candidate_id": "parent",
+                "query_spec_hash": "complete-query-hash",
+            },
+        }},
+    )
+
+    probe_input = merged["source_mechanism_query"]
+    assert orchestrator_module._guarded_query_spec_hash(probe_input) == "complete-query-hash"
+    assert orchestrator_module._source_mechanism_input_ready(probe_input, {}) is True

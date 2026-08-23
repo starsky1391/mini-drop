@@ -15,6 +15,21 @@ from pydantic import BaseModel, Field
 
 TOP_LIMIT = 10
 HOTSPOT_LIMIT = 10
+PYTHON_SCENARIO_INDUSTRIAL_SOURCES = {
+    "bcc_offcputime",
+    "skywalking_rover",
+    "otel_profile",
+    "py-spy",
+    "memray",
+    "fluent_bit",
+    "otel_filelog",
+    "otel_trace",
+    "prometheus",
+    "celery_inspect",
+    "redis_exporter",
+    "statsd",
+    "application_runtime_log",
+}
 CollectionMode = Literal[
     "manual_single",
     "manual_group",
@@ -71,7 +86,15 @@ class StructuredEvidence(BaseModel):
     pyspy_status_json: dict[str, Any] | None = None
     python_stack_samples_json: dict[str, Any] | None = None
     python_heap_profile_json: dict[str, Any] | None = None
+    go_heap_profile_json: dict[str, Any] | None = None
     source_snapshot_json: dict[str, Any] | None = None
+    python_lock_wait_profile_json: dict[str, Any] | None = None
+    python_exception_profile_json: dict[str, Any] | None = None
+    python_queue_profile_json: dict[str, Any] | None = None
+    python_pool_profile_json: dict[str, Any] | None = None
+    python_retry_timeout_profile_json: dict[str, Any] | None = None
+    python_cache_profile_json: dict[str, Any] | None = None
+    python_input_profile_json: dict[str, Any] | None = None
 
 
 def structure_artifact_evidence(
@@ -88,6 +111,8 @@ def structure_artifact_evidence(
     runtime_profile = values.get("python_stack_samples_json") if isinstance(values.get("python_stack_samples_json"), dict) else values.get("pyspy_status_json")
     artifact_refs = _with_window_metadata(_build_artifact_refs(task_id, artifacts), window_json)
     top_functions = _normalize_top_functions(values.get("top_json"))
+    if not top_functions:
+        top_functions = _top_from_go_heap_profile(values.get("go_heap_profile_json"))
     if not top_functions:
         top_functions = _top_from_off_cpu_wait(values.get("off_cpu_wait_json"))
     if not top_functions:
@@ -116,6 +141,7 @@ def structure_artifact_evidence(
         profile_hotspots = _trace_profile_hotspots(trace_profile)
         if profile_hotspots:
             call_path_hotspots = _with_window_metadata(profile_hotspots, window_json)
+    python_scenarios = _python_scenario_values(values)
     confidence_inputs = _build_confidence_inputs(
         top_functions=top_functions,
         stack_summary=stack_summary,
@@ -130,6 +156,20 @@ def structure_artifact_evidence(
         trace_profile=trace_profile,
         runtime_control=values.get("runtime_control_event_json"),
         pyspy_status=values.get("pyspy_status_json"),
+        go_heap_profile=values.get("go_heap_profile_json"),
+        python_scenarios=python_scenarios,
+        baseline=values.get("continuous_summary"),
+    )
+    confidence_inputs["python_scenario_gates"] = _python_scenario_gates(
+        top_functions=top_functions,
+        stack_summary=stack_summary,
+        call_path_hotspots=call_path_hotspots,
+        off_cpu_wait=values.get("off_cpu_wait_json"),
+        python_scenarios=python_scenarios,
+        source_snapshot=values.get("source_snapshot_json"),
+        dependency_check=values.get("dependency_check_json"),
+        redis_check=values.get("redis_check_json"),
+        trace_profile=trace_profile,
         baseline=values.get("continuous_summary"),
     )
     confidence_inputs["runtime_profile_quality"] = sample_quality.get("diagnostic_value") if sample_quality else "unknown"
@@ -150,7 +190,11 @@ def structure_artifact_evidence(
         redis_check=values.get("redis_check_json"),
         trace_profile=trace_profile,
         runtime_control=values.get("runtime_control_event_json"),
+        go_heap_profile=values.get("go_heap_profile_json"),
+        python_scenarios=python_scenarios,
     )
+    if confidence_inputs.get("python_scenario_gates"):
+        evidence_index["python_scenario_gates"] = confidence_inputs["python_scenario_gates"]
     evidence_index["evidence_window"] = window_json
     if sample_quality:
         evidence_index["runtime_profile_quality"] = sample_quality
@@ -181,7 +225,15 @@ def structure_artifact_evidence(
         pyspy_status_json=values.get("pyspy_status_json") if isinstance(values.get("pyspy_status_json"), dict) else None,
         python_stack_samples_json=values.get("python_stack_samples_json") if isinstance(values.get("python_stack_samples_json"), dict) else None,
         python_heap_profile_json=values.get("python_heap_profile_json") if isinstance(values.get("python_heap_profile_json"), dict) else None,
+        go_heap_profile_json=values.get("go_heap_profile_json") if isinstance(values.get("go_heap_profile_json"), dict) else None,
         source_snapshot_json=values.get("source_snapshot_json") if isinstance(values.get("source_snapshot_json"), dict) else None,
+        python_lock_wait_profile_json=values.get("python_lock_wait_profile_json") if isinstance(values.get("python_lock_wait_profile_json"), dict) else None,
+        python_exception_profile_json=values.get("python_exception_profile_json") if isinstance(values.get("python_exception_profile_json"), dict) else None,
+        python_queue_profile_json=values.get("python_queue_profile_json") if isinstance(values.get("python_queue_profile_json"), dict) else None,
+        python_pool_profile_json=values.get("python_pool_profile_json") if isinstance(values.get("python_pool_profile_json"), dict) else None,
+        python_retry_timeout_profile_json=values.get("python_retry_timeout_profile_json") if isinstance(values.get("python_retry_timeout_profile_json"), dict) else None,
+        python_cache_profile_json=values.get("python_cache_profile_json") if isinstance(values.get("python_cache_profile_json"), dict) else None,
+        python_input_profile_json=values.get("python_input_profile_json") if isinstance(values.get("python_input_profile_json"), dict) else None,
     )
 
 
@@ -214,6 +266,14 @@ def _artifact_value_window(values: dict[str, Any]) -> dict[str, Any]:
         "depth_evidence_json",
         "continuous_summary",
         "runtime_control_event_json",
+        "go_heap_profile_json",
+        "python_lock_wait_profile_json",
+        "python_exception_profile_json",
+        "python_queue_profile_json",
+        "python_pool_profile_json",
+        "python_retry_timeout_profile_json",
+        "python_cache_profile_json",
+        "python_input_profile_json",
     ):
         value = values.get(key)
         if isinstance(value, dict) and isinstance(value.get("evidence_window"), dict):
@@ -393,6 +453,45 @@ def _top_from_flamegraph_svg(value: Any) -> list[dict[str, Any]]:
     ]
 
 
+def _top_from_go_heap_profile(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, dict):
+        return []
+    hotspots = value.get("hotspots")
+    if not isinstance(hotspots, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in hotspots:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("function") or "").strip()
+        if _invalid_function_anchor(name):
+            continue
+        flat_bytes = _safe_int(item.get("flat_bytes"))
+        cum_bytes = _safe_int(item.get("cum_bytes"))
+        percent = _safe_float(item.get("flat_percent") or item.get("cum_percent"))
+        if flat_bytes <= 0 and cum_bytes <= 0:
+            continue
+        items.append({
+            "name": name,
+            "samples": max(flat_bytes, cum_bytes),
+            "percent": round(percent, 2),
+            "file": str(item.get("file") or ""),
+            "line": max(0, _safe_int(item.get("line"))),
+            "call_path": [name],
+            "source": "go_heap_profile",
+            "flat_bytes": flat_bytes,
+            "cum_bytes": cum_bytes,
+        })
+    items.sort(key=lambda item: (-int(item.get("samples") or 0), -float(item.get("percent") or 0.0), item["name"]))
+    return [
+        {
+            **item,
+            "evidence_ref": f"structured_evidence.top_functions[{index}]",
+        }
+        for index, item in enumerate(items[:TOP_LIMIT])
+    ]
+
+
 def _function_name_from_svg_title(title: str) -> str:
     first_line = title.splitlines()[0].strip()
     if "(" in first_line:
@@ -524,6 +623,8 @@ def _build_confidence_inputs(
     trace_profile: Any,
     runtime_control: Any,
     pyspy_status: Any,
+    go_heap_profile: Any,
+    python_scenarios: dict[str, Any],
     baseline: Any,
 ) -> dict[str, Any]:
     first_top = top_functions[0] if top_functions else {}
@@ -539,6 +640,8 @@ def _build_confidence_inputs(
             ("redis_check", redis_check),
             ("runtime_control_history", runtime_control),
             ("python_runtime_profile", pyspy_status),
+            ("go_heap_profile", go_heap_profile),
+            *python_scenarios.items(),
             ("baseline_window_profile", baseline),
         )
         if isinstance(value, dict) and _evidence_status(value)
@@ -569,6 +672,11 @@ def _build_confidence_inputs(
         "runtime_control_evidence_status": validity_by_family.get("runtime_control_history", ""),
         "has_complete_control_chain": bool(runtime_summary.get("has_complete_control_chain")),
         "control_event_count": _safe_int(runtime_summary.get("event_count")),
+        "python_scenario_statuses": {
+            family: _evidence_status(value)
+            for family, value in python_scenarios.items()
+            if isinstance(value, dict) and _evidence_status(value)
+        },
     }
 
 
@@ -585,6 +693,8 @@ def _build_evidence_index(
     redis_check: Any,
     trace_profile: Any,
     runtime_control: Any,
+    go_heap_profile: Any,
+    python_scenarios: dict[str, Any],
 ) -> dict[str, Any]:
     index = dict(depth) if isinstance(depth, dict) else {}
     index["artifact_refs"] = artifact_refs
@@ -603,6 +713,11 @@ def _build_evidence_index(
         index["trace_endpoint_profile"] = _compact_trace_profile(trace_profile)
     if isinstance(runtime_control, dict):
         index["runtime_control"] = _compact_runtime_control(runtime_control)
+    if isinstance(go_heap_profile, dict):
+        index["go_heap_profile"] = _compact_go_heap_profile(go_heap_profile)
+    for family, payload in python_scenarios.items():
+        if isinstance(payload, dict):
+            index[family] = _compact_python_scenario(payload)
     return index
 
 
@@ -627,6 +742,8 @@ def _trace_profile_hotspots(value: dict[str, Any]) -> list[dict[str, Any]]:
             "service_id": str(item.get("service_id") or ""),
             "instance_id": str(item.get("instance_id") or ""),
             "context_id": str(item.get("context_id") or ""),
+            "file": str(item.get("file") or ""),
+            "line": _safe_int(item.get("line")),
             "trace_ids": [str(item.get("trace_id"))] if item.get("trace_id") else list(item.get("trace_ids") or []),
             "correlation_method": str(item.get("correlation_method") or ""),
             "confidence": round(_safe_float(item.get("confidence")), 3),
@@ -696,7 +813,15 @@ def _collector_families(artifact_types: list[str]) -> list[str]:
         "pyspy_status_json": "python_runtime_profile",
         "python_stack_samples_json": "python_runtime_profile",
         "python_heap_profile_json": "python_heap_profile",
+        "go_heap_profile_json": "go_heap_profile",
         "source_snapshot_json": "source_snapshot",
+        "python_lock_wait_profile_json": "python_lock_wait_profile",
+        "python_exception_profile_json": "python_exception_profile",
+        "python_queue_profile_json": "python_queue_profile",
+        "python_pool_profile_json": "python_pool_profile",
+        "python_retry_timeout_profile_json": "python_retry_timeout_profile",
+        "python_cache_profile_json": "python_cache_profile",
+        "python_input_profile_json": "python_input_profile",
     }
     return list(dict.fromkeys(mapping.get(item, item) for item in artifact_types))
 
@@ -737,6 +862,7 @@ def _compact_off_cpu_wait(value: dict[str, Any]) -> dict[str, Any]:
         "kernel_stacks": (value.get("kernel_stacks") or [])[:5],
         "thread_wait_summary": (value.get("thread_wait_summary") or [])[:10],
         "syscall_wait_summary": value.get("syscall_wait_summary", {}),
+        "blocking_summary": value.get("blocking_summary", {}),
         "collector_status": value.get("collector_status"),
         "parser_status": value.get("parser_status"),
         "trace_source": value.get("trace_source", {}),
@@ -757,6 +883,793 @@ def _compact_runtime_control(value: dict[str, Any]) -> dict[str, Any]:
         "causal_edges": (value.get("causal_edges") or [])[:60],
         "evidence_validity": value.get("evidence_validity", {}),
     }
+
+
+def _compact_go_heap_profile(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "producer": value.get("producer"),
+        "profile_kind": value.get("profile_kind"),
+        "heap_mode": value.get("heap_mode"),
+        "sample_type": value.get("sample_type"),
+        "summary": value.get("summary", {}),
+        "hotspots": (value.get("hotspots") or [])[:10],
+        "line_candidates": (value.get("line_candidates") or [])[:10],
+        "raw_artifact_refs": value.get("raw_artifact_refs", []),
+        "evidence_validity": value.get("evidence_validity", {}),
+    }
+
+
+def _python_scenario_values(values: dict[str, Any]) -> dict[str, Any]:
+    mapping = {
+        "python_lock_wait_profile": values.get("python_lock_wait_profile_json"),
+        "python_exception_profile": values.get("python_exception_profile_json"),
+        "python_queue_profile": values.get("python_queue_profile_json"),
+        "python_pool_profile": values.get("python_pool_profile_json"),
+        "python_retry_timeout_profile": values.get("python_retry_timeout_profile_json"),
+        "python_cache_profile": values.get("python_cache_profile_json"),
+        "python_input_profile": values.get("python_input_profile_json"),
+    }
+    return {family: payload for family, payload in mapping.items() if isinstance(payload, dict)}
+
+
+def _compact_python_scenario(value: dict[str, Any]) -> dict[str, Any]:
+    adapter = value.get("adapter") if isinstance(value.get("adapter"), dict) else {}
+    return {
+        "schema_version": value.get("schema_version"),
+        "collector_family": value.get("collector_family"),
+        "scenario_type": value.get("scenario_type"),
+        "adapter": {
+            "source_policy": adapter.get("source_policy"),
+            "source_count": adapter.get("source_count"),
+            "sources": (adapter.get("sources") or [])[:10],
+        },
+        "evidence_status": value.get("evidence_status"),
+        "evidence_validity": value.get("evidence_validity", {}),
+        "mechanism_evidence_refs": (value.get("mechanism_evidence_refs") or [])[:20],
+        "counter_evidence_refs": (value.get("counter_evidence_refs") or [])[:20],
+        "missing_evidence": (value.get("missing_evidence") or [])[:20],
+        "conclusion_eligible": bool(value.get("conclusion_eligible")),
+        "eligibility_reason": value.get("eligibility_reason"),
+        "wait_sites": (value.get("wait_sites") or [])[:10],
+        "holder_candidates": (value.get("holder_candidates") or [])[:10],
+        "exception_clusters": (value.get("exception_clusters") or [])[:10],
+        "line_candidates": (value.get("line_candidates") or [])[:10],
+        "backlog": value.get("backlog"),
+        "active_tasks": (value.get("active_tasks") or [])[:10],
+        "reserved_tasks": (value.get("reserved_tasks") or [])[:10],
+        "slow_task_candidates": (value.get("slow_task_candidates") or [])[:10],
+        "broker_evidence": value.get("broker_evidence", {}),
+        "pool_type": value.get("pool_type"),
+        "pool_exhausted": value.get("pool_exhausted"),
+        "checked_out": value.get("checked_out"),
+        "pool_size": value.get("pool_size"),
+        "acquire_sites": (value.get("acquire_sites") or [])[:10],
+        "retry_clusters": (value.get("retry_clusters") or [])[:10],
+        "timeout_sites": (value.get("timeout_sites") or [])[:10],
+        "attempt_count": value.get("attempt_count"),
+        "backoff_detected": value.get("backoff_detected"),
+        "dependency_context": value.get("dependency_context", {}),
+        "cache_backend": value.get("cache_backend"),
+        "cache_growth": value.get("cache_growth"),
+        "cache_bytes": value.get("cache_bytes"),
+        "cache_files": value.get("cache_files"),
+        "unique_key_count": value.get("unique_key_count"),
+        "cache_hits": value.get("cache_hits"),
+        "cache_misses": value.get("cache_misses"),
+        "key_sites": (value.get("key_sites") or [])[:10],
+        "backend_sites": (value.get("backend_sites") or [])[:10],
+        "input_operation": value.get("input_operation"),
+        "slow_path_detected": value.get("slow_path_detected"),
+        "rows": value.get("rows"),
+        "categories": value.get("categories"),
+        "cardinality": value.get("cardinality"),
+        "elapsed_ms": value.get("elapsed_ms"),
+        "slow_path_sites": (value.get("slow_path_sites") or [])[:10],
+    }
+
+
+def _python_scenario_gates(
+    *,
+    top_functions: list[dict[str, Any]],
+    stack_summary: dict[str, Any],
+    call_path_hotspots: list[dict[str, Any]],
+    off_cpu_wait: Any,
+    python_scenarios: dict[str, Any],
+    source_snapshot: Any,
+    dependency_check: Any,
+    redis_check: Any,
+    trace_profile: Any,
+    baseline: Any,
+) -> dict[str, Any]:
+    gates: dict[str, Any] = {}
+    source_state = _source_snapshot_state(source_snapshot)
+    counter_evidence = _python_scenario_counter_evidence(
+        dependency_check=dependency_check,
+        redis_check=redis_check,
+    )
+    builtin_gates = _builtin_python_scenario_gates(
+        top_functions=top_functions,
+        stack_summary=stack_summary,
+        call_path_hotspots=call_path_hotspots,
+        off_cpu_wait=off_cpu_wait,
+        source_state=source_state,
+        counter_evidence=counter_evidence,
+        trace_profile=trace_profile,
+        baseline=baseline,
+    )
+    gates.update(builtin_gates)
+    for family, payload in python_scenarios.items():
+        if not isinstance(payload, dict):
+            continue
+        gates[family] = _python_scenario_gate(
+            family=family,
+            payload=payload,
+            source_state=source_state,
+            counter_evidence=counter_evidence,
+            trace_profile=trace_profile,
+            baseline=baseline,
+        )
+    return gates
+
+
+def _builtin_python_scenario_gates(
+    *,
+    top_functions: list[dict[str, Any]],
+    stack_summary: dict[str, Any],
+    call_path_hotspots: list[dict[str, Any]],
+    off_cpu_wait: Any,
+    source_state: dict[str, Any],
+    counter_evidence: dict[str, Any],
+    trace_profile: Any,
+    baseline: Any,
+) -> dict[str, Any]:
+    gates: dict[str, Any] = {}
+    cpu_gate = _python_cpu_hotspot_gate(
+        top_functions=top_functions,
+        stack_summary=stack_summary,
+        source_state=source_state,
+        counter_evidence=counter_evidence,
+        baseline=baseline,
+    )
+    if cpu_gate:
+        gates["python_cpu_hotspot"] = cpu_gate
+    endpoint_gate = _python_endpoint_latency_gate(
+        call_path_hotspots=call_path_hotspots,
+        trace_profile=trace_profile,
+        source_state=source_state,
+        counter_evidence=counter_evidence,
+    )
+    if endpoint_gate:
+        gates["python_endpoint_latency"] = endpoint_gate
+    io_gate = _python_io_blocking_gate(
+        off_cpu_wait=off_cpu_wait,
+        source_state=source_state,
+        counter_evidence=counter_evidence,
+    )
+    if io_gate:
+        gates["python_io_blocking"] = io_gate
+    return gates
+
+
+def _python_cpu_hotspot_gate(
+    *,
+    top_functions: list[dict[str, Any]],
+    stack_summary: dict[str, Any],
+    source_state: dict[str, Any],
+    counter_evidence: dict[str, Any],
+    baseline: Any,
+) -> dict[str, Any]:
+    first = top_functions[0] if top_functions else {}
+    if not first:
+        return {}
+    line_candidates = _line_candidates_from_items(top_functions)
+    line_verified = _line_candidates_match_source(line_candidates, source_state)
+    sample_count = _safe_int(stack_summary.get("sample_count") or first.get("samples"))
+    percent = _safe_float(stack_summary.get("dominant_percent") or first.get("percent"))
+    quality = stack_summary.get("sample_quality") if isinstance(stack_summary.get("sample_quality"), dict) else {}
+    primitive = _runtime_profile_is_primitive(first, quality)
+    stable_hotspot = sample_count > 1 and percent > 0.0 and not primitive
+    baseline_or_impact = _has_baseline_or_impact_signal(baseline)
+    claim_type = "observation"
+    reason = "CPU 热点证据尚未形成可验证源码定位。"
+    if stable_hotspot and line_verified:
+        claim_type = "partial_localization"
+        reason = "Python CPU 热点已定位到 source_snapshot 验证的源码行，仍需 baseline/影响与反证门禁。"
+    direct = stable_hotspot and line_verified and baseline_or_impact and not counter_evidence["has_failure"]
+    if direct:
+        claim_type = "direct_root_cause"
+        reason = "Python CPU 热点、源码行、baseline/影响证据和反证门禁均已闭合。"
+    if primitive:
+        reason = "runtime primitive 或低诊断价值样本只能作为观察，不能升级为源码根因。"
+    missing: list[str] = []
+    if not stable_hotspot:
+        missing.append("stable_python_hotspot")
+    if not line_candidates:
+        missing.append("verified_runtime_file_line_candidate")
+    elif not line_verified:
+        missing.append("source_snapshot_verification")
+    if not baseline_or_impact:
+        missing.append("baseline_or_same_window_impact")
+    if counter_evidence["has_failure"]:
+        missing.append("dependency_or_host_counter_evidence")
+    if not direct:
+        missing.append("scenario_root_cause_gate")
+    return _scenario_gate_payload(
+        family="python_cpu_hotspot",
+        scenario_type="python_cpu_hotspot",
+        evidence_status="valid" if stable_hotspot else "partial",
+        source_policy="standard_runtime_profile",
+        upstream_sources=[{"kind": "python_runtime_profile", "source_kind": "py-spy", "source_status": "loaded", "record_count": sample_count}],
+        line_candidates=line_candidates,
+        line_verified=line_verified,
+        source_state=source_state,
+        claim_type=claim_type,
+        reason=reason,
+        conclusion_eligible=direct,
+        checks={
+            "industrial_observation": True,
+            "stable_hotspot": stable_hotspot,
+            "runtime_line_candidate": bool(line_candidates),
+            "source_snapshot_verified": line_verified,
+            "baseline_or_impact": baseline_or_impact,
+            "counter_evidence_clear": not counter_evidence["has_failure"],
+            "runtime_primitive_rejected": primitive,
+        },
+        missing=missing,
+        mechanism_refs=[str(first.get("evidence_ref") or "structured_evidence.top_functions[0]")],
+        counter_refs=counter_evidence["evidence_refs"],
+        trace_profile=None,
+        baseline=baseline,
+    )
+
+
+def _python_endpoint_latency_gate(
+    *,
+    call_path_hotspots: list[dict[str, Any]],
+    trace_profile: Any,
+    source_state: dict[str, Any],
+    counter_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    trace_status = _trace_profile_status(trace_profile, "correlation_status")
+    trace_level = _trace_profile_status(trace_profile, "correlation_status", "max_supported_level")
+    if not call_path_hotspots and not trace_status:
+        return {}
+    line_candidates = _line_candidates_from_items(call_path_hotspots)
+    line_verified = _line_candidates_match_source(line_candidates, source_state)
+    correlated = bool(call_path_hotspots) and trace_status in {"completed", "partial"} and trace_level in {"endpoint", "call_path", "function", "line"}
+    claim_type = "observation"
+    reason = "Endpoint 慢证据尚未与 Python call path/source 同窗闭合。"
+    if correlated:
+        claim_type = "partial_localization"
+        reason = "Trace 与 Python call path 已关联，仍需 source_snapshot 验证行和依赖反证。"
+    if correlated and line_verified:
+        claim_type = "partial_localization"
+        reason = "Endpoint/call path 和源码行已闭合，仍需证明本地热点优于下游依赖解释。"
+    has_endpoint_impact = _has_endpoint_impact_signal(call_path_hotspots, trace_profile)
+    direct = correlated and line_verified and has_endpoint_impact and not counter_evidence["has_failure"]
+    if direct:
+        claim_type = "direct_root_cause"
+        reason = "Endpoint 慢、Python call path、源码行和本地影响证据均已闭合，且无更强依赖反证。"
+    missing: list[str] = []
+    if not correlated:
+        missing.append("endpoint_call_path_correlation")
+    if line_candidates and not line_verified:
+        missing.append("source_snapshot_verification")
+    if not line_candidates:
+        missing.append("verified_runtime_file_line_candidate")
+    if counter_evidence["has_failure"]:
+        missing.append("dependency_or_broker_counter_evidence")
+    if not has_endpoint_impact:
+        missing.append("endpoint_or_local_hotspot_impact")
+    if not direct:
+        missing.append("scenario_root_cause_gate")
+    return _scenario_gate_payload(
+        family="python_endpoint_latency",
+        scenario_type="python_endpoint_latency",
+        evidence_status="valid" if correlated else "partial",
+        source_policy="trace_and_profile_correlation",
+        upstream_sources=[{"kind": "trace_endpoint_profile", "source_kind": "otel_trace", "source_status": trace_status or "loaded", "record_count": len(call_path_hotspots)}],
+        line_candidates=line_candidates,
+        line_verified=line_verified,
+        source_state=source_state,
+        claim_type=claim_type,
+        reason=reason,
+        conclusion_eligible=direct,
+        checks={
+            "industrial_observation": bool(trace_status or call_path_hotspots),
+            "endpoint_call_path_correlation": correlated,
+            "runtime_line_candidate": bool(line_candidates),
+            "source_snapshot_verified": line_verified,
+            "endpoint_or_local_hotspot_impact": has_endpoint_impact,
+            "counter_evidence_clear": not counter_evidence["has_failure"],
+        },
+        missing=missing,
+        mechanism_refs=[str(item.get("evidence_ref")) for item in call_path_hotspots if item.get("evidence_ref")],
+        counter_refs=counter_evidence["evidence_refs"],
+        trace_profile=trace_profile,
+        baseline=None,
+    )
+
+
+def _python_io_blocking_gate(
+    *,
+    off_cpu_wait: Any,
+    source_state: dict[str, Any],
+    counter_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(off_cpu_wait, dict):
+        return {}
+    validity = off_cpu_wait.get("evidence_validity") if isinstance(off_cpu_wait.get("evidence_validity"), dict) else {}
+    status = str(validity.get("evidence_status") or "")
+    stacks = [item for item in (off_cpu_wait.get("top_wait_stacks") or []) if isinstance(item, dict)]
+    blocking_summary = off_cpu_wait.get("blocking_summary") if isinstance(off_cpu_wait.get("blocking_summary"), dict) else {}
+    blocking_kinds = [
+        str(item.get("blocking_kind") or "")
+        for item in stacks
+        if str(item.get("blocking_kind") or "")
+    ]
+    if isinstance(blocking_summary.get("by_kind"), dict):
+        blocking_kinds.extend(str(kind) for kind in blocking_summary["by_kind"].keys())
+    has_blocking = status in {"valid", "partial"} and bool(stacks or blocking_kinds)
+    line_candidates = _line_candidates_from_items(stacks)
+    line_verified = _line_candidates_match_source(line_candidates, source_state)
+    local_kind = any(kind in {"file_io", "socket_io", "db_client", "redis_client", "http_client", "dns"} for kind in blocking_kinds)
+    local_behavior = _has_local_io_behavior_evidence(off_cpu_wait)
+    claim_type = "observation"
+    reason = "I/O 阻塞证据尚未形成可验证 Python 调用点。"
+    if has_blocking and line_verified:
+        claim_type = "partial_localization"
+        reason = "Python 阻塞调用点已通过 source_snapshot 验证，仍需证明本地代码行为而非外部依赖。"
+    direct = has_blocking and line_verified and local_kind and local_behavior and not counter_evidence["has_failure"]
+    if direct:
+        claim_type = "direct_root_cause"
+        reason = "Python I/O 阻塞调用点、源码行、本地阻塞行为证据和反证门禁均已闭合。"
+    missing: list[str] = []
+    if not has_blocking:
+        missing.append("valid_off_cpu_blocking_observation")
+    if not line_candidates:
+        missing.append("verified_runtime_file_line_candidate")
+    elif not line_verified:
+        missing.append("source_snapshot_verification")
+    if counter_evidence["has_failure"]:
+        missing.append("dependency_or_broker_counter_evidence")
+    if not local_behavior:
+        missing.append("local_io_behavior_evidence")
+    if not direct:
+        missing.append("scenario_root_cause_gate")
+    return _scenario_gate_payload(
+        family="python_io_blocking",
+        scenario_type="python_io_blocking",
+        evidence_status=status or ("valid" if has_blocking else "empty_window"),
+        source_policy="off_cpu_runtime_profile",
+        upstream_sources=[{"kind": "off_cpu_wait_profile", "source_kind": "bcc_offcputime", "source_status": status or "unknown", "record_count": len(stacks)}],
+        line_candidates=line_candidates,
+        line_verified=line_verified,
+        source_state=source_state,
+        claim_type=claim_type,
+        reason=reason,
+        conclusion_eligible=direct,
+        checks={
+            "industrial_observation": has_blocking,
+            "blocking_kind_normalized": bool(blocking_kinds),
+            "local_blocking_callsite": local_kind,
+            "local_io_behavior_evidence": local_behavior,
+            "runtime_line_candidate": bool(line_candidates),
+            "source_snapshot_verified": line_verified,
+            "counter_evidence_clear": not counter_evidence["has_failure"],
+        },
+        missing=missing,
+        mechanism_refs=[str(item.get("evidence_ref")) for item in stacks if item.get("evidence_ref")],
+        counter_refs=counter_evidence["evidence_refs"],
+        trace_profile=None,
+        baseline=None,
+    )
+
+
+def _scenario_gate_payload(
+    *,
+    family: str,
+    scenario_type: str,
+    evidence_status: str,
+    source_policy: str,
+    upstream_sources: list[dict[str, Any]],
+    line_candidates: list[dict[str, Any]],
+    line_verified: bool,
+    source_state: dict[str, Any],
+    claim_type: str,
+    reason: str,
+    checks: dict[str, Any],
+    missing: list[str],
+    mechanism_refs: list[str],
+    counter_refs: list[str],
+    trace_profile: Any,
+    baseline: Any,
+    conclusion_eligible: bool = False,
+) -> dict[str, Any]:
+    return {
+        "family": family,
+        "scenario_type": scenario_type,
+        "evidence_status": evidence_status,
+        "source_policy": source_policy,
+        "upstream_sources": upstream_sources[:10],
+        "line_candidate_count": len(line_candidates),
+        "source_snapshot_status": source_state["status"],
+        "source_context_hash": source_state["source_context_hash"],
+        "line_verified": line_verified,
+        "max_supported_claim_type": claim_type,
+        "conclusion_eligible": conclusion_eligible,
+        "eligibility_reason": reason,
+        "gate_checks": checks,
+        "missing_evidence": list(dict.fromkeys(str(item) for item in missing if str(item or "").strip()))[:20],
+        "mechanism_evidence_refs": [str(ref) for ref in mechanism_refs if str(ref or "").strip()][:20],
+        "counter_evidence_refs": [str(ref) for ref in counter_refs if str(ref or "").strip()][:20],
+        "trace_correlation_status": _trace_profile_status(trace_profile, "correlation_status"),
+        "baseline_status": _evidence_status(baseline) if isinstance(baseline, dict) else "",
+    }
+
+
+def _python_scenario_gate(
+    *,
+    family: str,
+    payload: dict[str, Any],
+    source_state: dict[str, Any],
+    counter_evidence: dict[str, Any],
+    trace_profile: Any,
+    baseline: Any,
+) -> dict[str, Any]:
+    status = _evidence_status(payload) or str(payload.get("evidence_status") or "")
+    industrial_source = _python_scenario_has_industrial_source(payload)
+    valid_observation = status in {"valid", "partial"} and industrial_source
+    line_candidates = [item for item in (payload.get("line_candidates") or []) if isinstance(item, dict)]
+    line_verified = valid_observation and _line_candidates_match_source(line_candidates, source_state)
+    missing = list(payload.get("missing_evidence") or [])
+    checks = {
+        "industrial_observation": valid_observation,
+        "industrial_source_provenance": industrial_source,
+        "runtime_line_candidate": bool(line_candidates),
+        "source_snapshot_verified": line_verified,
+        "same_window_mechanism_evidence": False,
+        "counter_evidence_clear": not counter_evidence["has_failure"],
+    }
+    claim_type = "observation"
+    gate_reason = "场景证据尚未达到源码定位门禁。"
+
+    if not industrial_source:
+        gate_reason = "场景 producer 缺少工业采集器 source_kind/provenance，不能作为 valid 运行时证据。"
+    elif not valid_observation:
+        gate_reason = "场景 producer 未返回 valid/partial 工业证据。"
+    elif family == "python_lock_wait_profile":
+        checks["scenario_signal"] = bool(payload.get("wait_sites"))
+        checks["same_window_mechanism_evidence"] = bool(payload.get("holder_candidates"))
+        impact = _has_scenario_impact_signal(payload)
+        checks["symptom_impact"] = impact
+        if checks["scenario_signal"] and line_verified:
+            claim_type = "partial_localization"
+            gate_reason = "已定位 Python 等待点，但还缺持有者/影响闭合证据。"
+        if claim_type == "partial_localization" and checks["same_window_mechanism_evidence"]:
+            claim_type = "direct_failure_mechanism"
+            gate_reason = "等待点和持有者候选已同窗出现，仍需症状影响和反证门禁才能成为源码根因。"
+        if checks["scenario_signal"] and checks["same_window_mechanism_evidence"] and line_verified and impact and not counter_evidence["has_failure"]:
+            claim_type = "direct_root_cause"
+            gate_reason = "等待点、持有者候选、源码行和症状影响证据均已闭合。"
+    elif family == "python_exception_profile":
+        repeated = any(_safe_int(item.get("occurrence_count")) >= 2 for item in payload.get("exception_clusters") or [] if isinstance(item, dict))
+        checks["scenario_signal"] = repeated
+        checks["same_window_mechanism_evidence"] = repeated
+        impact = _has_scenario_impact_signal(payload)
+        checks["symptom_impact"] = impact
+        if repeated and line_verified:
+            claim_type = "direct_failure_mechanism"
+            gate_reason = "异常簇和 throw/log 行已闭合，但仍需证明它解释错误率、延迟或 worker 失败。"
+        if repeated and line_verified and impact and not counter_evidence["has_failure"]:
+            claim_type = "direct_root_cause"
+            gate_reason = "重复异常簇、源码 throw/log 行和同窗影响证据均已闭合。"
+    elif family == "python_queue_profile":
+        has_task = bool(payload.get("active_tasks") or payload.get("reserved_tasks") or payload.get("slow_task_candidates"))
+        checks["scenario_signal"] = _safe_int(payload.get("backlog")) > 0 or has_task
+        checks["task_identity"] = has_task
+        checks["same_window_mechanism_evidence"] = _safe_int(payload.get("backlog")) > 0 and has_task
+        task_source_hotspot = bool(payload.get("slow_task_candidates") or payload.get("worker_saturation") or payload.get("task_source_hotspot"))
+        checks["task_source_hotspot"] = task_source_hotspot
+        if checks["scenario_signal"] and has_task and line_verified:
+            claim_type = "partial_localization"
+            gate_reason = "队列/任务证据已定位到 Python 任务点，但 broker/worker 饱和原因仍需闭合。"
+        if checks["same_window_mechanism_evidence"] and line_verified and task_source_hotspot and not counter_evidence["has_failure"]:
+            claim_type = "direct_root_cause"
+            gate_reason = "队列积压、任务身份、任务源码热点和反证门禁均已闭合。"
+    elif family == "python_pool_profile":
+        site_count = len(payload.get("wait_sites") or []) + len(payload.get("acquire_sites") or [])
+        checks["scenario_signal"] = bool(payload.get("pool_exhausted")) or site_count > 0
+        checks["same_window_mechanism_evidence"] = bool(payload.get("long_holder_candidates") or payload.get("release_evidence") == "missing")
+        impact = _has_scenario_impact_signal(payload)
+        checks["symptom_impact"] = impact
+        if checks["scenario_signal"] and line_verified:
+            claim_type = "partial_localization"
+            gate_reason = "资源池等待/获取点已定位，仍需 acquire/release、长持有者或配置证据。"
+        if checks["scenario_signal"] and checks["same_window_mechanism_evidence"] and line_verified and impact and not counter_evidence["has_failure"]:
+            claim_type = "direct_root_cause"
+            gate_reason = "资源池耗尽、源码获取点、持有/释放机制和症状影响证据均已闭合。"
+    elif family == "python_retry_timeout_profile":
+        attempts = _safe_int(payload.get("attempt_count"))
+        checks["scenario_signal"] = attempts >= 2 or bool(payload.get("retry_clusters") or payload.get("timeout_sites"))
+        checks["same_window_mechanism_evidence"] = attempts >= 2 and bool(payload.get("retry_clusters") or payload.get("timeout_sites"))
+        amplification = _has_retry_amplification_signal(payload)
+        checks["retry_amplification"] = amplification
+        if checks["scenario_signal"] and line_verified:
+            claim_type = "partial_localization"
+            gate_reason = "重试/超时点已定位，若下游故障更强则只能作为贡献因素。"
+        if checks["same_window_mechanism_evidence"] and line_verified and amplification and not counter_evidence["has_failure"]:
+            claim_type = "direct_root_cause"
+            gate_reason = "重试/超时源码点、本地放大证据和反证门禁均已闭合。"
+    elif family == "python_cache_profile":
+        checks["scenario_signal"] = bool(payload.get("cache_growth")) or _safe_float(payload.get("cache_bytes")) > 0 or _safe_int(payload.get("cache_files")) > 0
+        checks["same_window_mechanism_evidence"] = bool(payload.get("key_sites") or payload.get("backend_sites"))
+        impact = _has_scenario_impact_signal(payload) or _safe_float(payload.get("cache_bytes")) > 0 or _safe_int(payload.get("cache_files")) > 0
+        checks["symptom_impact"] = impact
+        if checks["scenario_signal"] and line_verified:
+            claim_type = "partial_localization"
+            gate_reason = "缓存增长已定位到 key/backend 候选点，仍需淘汰、容量或影响证据闭合。"
+        if checks["scenario_signal"] and checks["same_window_mechanism_evidence"] and line_verified and impact and not counter_evidence["has_failure"]:
+            claim_type = "direct_root_cause"
+            gate_reason = "缓存增长、key/backend 源码点、同窗影响和反证门禁均已闭合。"
+    elif family == "python_input_profile":
+        checks["scenario_signal"] = bool(payload.get("slow_path_detected")) or _safe_int(payload.get("rows")) > 0 or _safe_int(payload.get("categories")) > 0
+        checks["same_window_mechanism_evidence"] = bool(payload.get("slow_path_sites"))
+        impact = _has_scenario_impact_signal(payload) or _safe_float(payload.get("elapsed_ms")) > 0
+        checks["symptom_impact"] = impact
+        if checks["scenario_signal"] and line_verified:
+            claim_type = "partial_localization"
+            gate_reason = "输入慢路径已定位到操作候选点，仍需输入分布和症状影响闭合。"
+        if checks["scenario_signal"] and checks["same_window_mechanism_evidence"] and line_verified and impact and not counter_evidence["has_failure"]:
+            claim_type = "direct_root_cause"
+            gate_reason = "输入形态、慢路径源码点、同窗影响和反证门禁均已闭合。"
+    else:
+        checks["scenario_signal"] = valid_observation
+        if valid_observation and line_verified:
+            claim_type = "partial_localization"
+            gate_reason = "场景证据已定位到源码行，但缺少场景专属根因门禁。"
+
+    if valid_observation and not line_candidates:
+        missing.append("verified_runtime_file_line_candidate")
+    if valid_observation and line_candidates and not line_verified:
+        missing.append("source_snapshot_verification")
+    if status in {"valid", "partial"} and not industrial_source:
+        missing.append("industrial_source_provenance")
+    if counter_evidence["has_failure"]:
+        missing.append("dependency_or_broker_counter_evidence")
+    if claim_type != "direct_root_cause":
+        missing.append("scenario_root_cause_gate")
+    else:
+        missing = [
+            item for item in missing
+            if item not in {
+                "scenario_root_cause_gate",
+                "source_snapshot_verification",
+                "verified_runtime_file_line_candidate",
+            }
+        ]
+    missing = list(dict.fromkeys(str(item) for item in missing if str(item or "").strip()))
+    return {
+        "family": family,
+        "scenario_type": payload.get("scenario_type"),
+        "evidence_status": status,
+        "source_policy": (payload.get("adapter") or {}).get("source_policy") if isinstance(payload.get("adapter"), dict) else "",
+        "upstream_sources": [
+            {
+                "kind": item.get("kind"),
+                "source_kind": item.get("source_kind"),
+                "source_status": item.get("source_status"),
+                "record_count": item.get("record_count"),
+            }
+            for item in (
+                (payload.get("adapter") if isinstance(payload.get("adapter"), dict) else {}).get("sources")
+                or []
+            )[:10]
+            if isinstance(item, dict)
+        ],
+        "line_candidate_count": len(line_candidates),
+        "source_snapshot_status": source_state["status"],
+        "source_context_hash": source_state["source_context_hash"],
+        "line_verified": line_verified,
+        "max_supported_claim_type": claim_type,
+        "conclusion_eligible": claim_type == "direct_root_cause",
+        "eligibility_reason": gate_reason,
+        "gate_checks": checks,
+        "missing_evidence": missing[:20],
+        "mechanism_evidence_refs": (payload.get("mechanism_evidence_refs") or [])[:20],
+        "counter_evidence_refs": counter_evidence["evidence_refs"][:20],
+        "trace_correlation_status": _trace_profile_status(trace_profile, "correlation_status"),
+        "baseline_status": _evidence_status(baseline) if isinstance(baseline, dict) else "",
+    }
+
+
+def _python_scenario_has_industrial_source(payload: dict[str, Any]) -> bool:
+    adapter = payload.get("adapter") if isinstance(payload.get("adapter"), dict) else {}
+    sources = adapter.get("sources") if isinstance(adapter.get("sources"), list) else []
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        if str(source.get("source_kind") or "") in PYTHON_SCENARIO_INDUSTRIAL_SOURCES:
+            return True
+    return False
+
+
+def _source_snapshot_state(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"status": "missing", "source_context_hash": "", "revision": "", "snippets": []}
+    validity = value.get("evidence_validity") if isinstance(value.get("evidence_validity"), dict) else {}
+    return {
+        "status": str(validity.get("evidence_status") or ""),
+        "source_context_hash": str(value.get("source_context_hash") or ""),
+        "revision": str(value.get("revision") or ""),
+        "snippets": [item for item in (value.get("snippets") or []) if isinstance(item, dict)],
+    }
+
+
+def _has_endpoint_impact_signal(call_path_hotspots: list[dict[str, Any]], trace_profile: Any) -> bool:
+    if any(
+        _safe_float(item.get("percent")) > 0
+        or _safe_int(item.get("samples") or item.get("sample_count")) > 0
+        or _safe_float(item.get("latency_ms") or item.get("duration_ms")) > 0
+        for item in call_path_hotspots
+        if isinstance(item, dict)
+    ):
+        return True
+    if not isinstance(trace_profile, dict):
+        return False
+    for key in ("latency_summary", "endpoint_summary", "impact", "summary"):
+        value = trace_profile.get(key)
+        if isinstance(value, dict) and any(
+            _safe_float(value.get(field)) > 0
+            for field in ("p95_ms", "p99_ms", "latency_ms", "error_rate", "request_count", "slow_span_count")
+        ):
+            return True
+    return False
+
+
+def _has_local_io_behavior_evidence(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    summary = value.get("blocking_summary") if isinstance(value.get("blocking_summary"), dict) else {}
+    if any(bool(summary.get(key)) for key in ("local_code_blocking", "missing_timeout", "unbounded_sync_io", "loop_internal_blocking")):
+        return True
+    for item in value.get("top_wait_stacks") or []:
+        if not isinstance(item, dict):
+            continue
+        if any(bool(item.get(key)) for key in ("local_code_blocking", "missing_timeout", "unbounded_sync_io", "loop_internal_blocking")):
+            return True
+        text = " ".join(str(item.get(key) or "") for key in ("message", "reason", "diagnosis", "wait_reason")).lower()
+        if any(token in text for token in ("missing timeout", "unbounded", "sync io", "blocking in loop", "large file")):
+            return True
+    return False
+
+
+def _has_scenario_impact_signal(payload: dict[str, Any]) -> bool:
+    impact = payload.get("impact") if isinstance(payload.get("impact"), dict) else {}
+    if any(
+        _safe_float(impact.get(field)) > 0
+        for field in ("error_rate", "latency_ms", "p95_ms", "cpu_percent", "worker_failure_count", "blocked_ms", "request_count")
+    ):
+        return True
+    if payload.get("symptom_impact") or payload.get("same_window_impact"):
+        return True
+    for key in ("impact_evidence_refs", "symptom_evidence_refs"):
+        if isinstance(payload.get(key), list) and payload[key]:
+            return True
+    return False
+
+
+def _has_retry_amplification_signal(payload: dict[str, Any]) -> bool:
+    if payload.get("local_amplification") or payload.get("amplification_evidence"):
+        return True
+    if bool(payload.get("nested_retry")) and _safe_int(payload.get("attempt_count")) >= 3:
+        return True
+    impact = payload.get("impact") if isinstance(payload.get("impact"), dict) else {}
+    return any(
+        _safe_float(impact.get(field)) > 0
+        for field in ("amplified_request_count", "retry_rate", "error_rate", "cpu_percent", "latency_ms")
+    )
+
+
+def _line_candidates_match_source(candidates: list[dict[str, Any]], source_state: dict[str, Any]) -> bool:
+    if (
+        not candidates
+        or source_state.get("status") not in {"valid", "partial"}
+        or not source_state.get("source_context_hash")
+        or not source_state.get("revision")
+    ):
+        return False
+    snippets = source_state.get("snippets") or []
+    for candidate in candidates:
+        candidate_file = str(candidate.get("file") or "").replace("\\", "/")
+        candidate_line = _safe_int(candidate.get("line"))
+        if not candidate_file or candidate_line <= 0:
+            continue
+        for snippet in snippets:
+            snippet_file = str(snippet.get("file") or "").replace("\\", "/")
+            snippet_line = _safe_int(snippet.get("focus_line"))
+            if snippet_line == candidate_line and (
+                snippet_file == candidate_file
+                or snippet_file.endswith(f"/{candidate_file.lstrip('/')}")
+                or candidate_file.endswith(f"/{snippet_file.lstrip('/')}")
+            ):
+                return True
+    return False
+
+
+def _line_candidates_from_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        file = str(item.get("file") or "")
+        line = _safe_int(item.get("line") or item.get("focus_line"))
+        if not file and isinstance(item.get("stack"), list):
+            for frame in reversed(item["stack"]):
+                if _looks_like_runtime_frame(str(frame)):
+                    continue
+                match = re.search(r"(.+):(\d+)(?::([^:]+))?$", str(frame))
+                if match:
+                    file = match.group(1)
+                    line = _safe_int(match.group(2))
+                    break
+        if file and line > 0:
+            candidates.append({
+                "file": file,
+                "line": line,
+                "function": str(item.get("function") or item.get("name") or item.get("top_frame") or ""),
+                "evidence_ref": item.get("evidence_ref"),
+            })
+    return candidates[:20]
+
+
+def _runtime_profile_is_primitive(top_function: dict[str, Any], quality: dict[str, Any]) -> bool:
+    name = str(top_function.get("name") or top_function.get("function") or "").lower()
+    if any(token in name for token in ("poll", "select", "epoll", "sleep", "futex", "pthread_cond_wait", "clock_nanosleep")):
+        return True
+    if str(quality.get("diagnostic_value") or "").lower() == "low":
+        return True
+    return (
+        _safe_float(quality.get("primitive_frame_ratio")) >= 0.75
+        or _safe_float(quality.get("framework_loop_ratio")) >= 0.75
+    ) and _safe_float(quality.get("target_code_ratio")) < 0.2
+
+
+def _looks_like_runtime_frame(frame: str) -> bool:
+    text = frame.replace("\\", "/").lower()
+    return any(
+        token in text
+        for token in (
+            "/lib/python",
+            "site-packages",
+            "threading.py",
+            "queue.py",
+            "socket.py",
+            "selectors.py",
+            "asyncio/",
+            "concurrent/futures",
+        )
+    )
+
+
+def _has_baseline_or_impact_signal(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if _evidence_status(value) in {"valid", "partial"}:
+        return True
+    return bool(value.get("summary") or value.get("top_functions") or value.get("windows"))
+
+
+def _python_scenario_counter_evidence(*, dependency_check: Any, redis_check: Any) -> dict[str, Any]:
+    refs: list[str] = []
+    has_failure = False
+    if _failed_dependency_count(dependency_check) > 0:
+        has_failure = True
+        refs.append("evidence_index.dependency_check")
+    if _redis_slowlog_entry_count(redis_check) > 0 or _redis_max_latency_ms(redis_check) > 0:
+        has_failure = True
+        refs.append("evidence_index.redis_check")
+    return {"has_failure": has_failure, "evidence_refs": refs}
 
 
 def _evidence_status(value: dict[str, Any]) -> str:

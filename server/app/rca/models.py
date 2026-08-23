@@ -39,6 +39,23 @@ class CandidateCause(BaseModel):
 
     candidate_id: str
     description: str
+    generated_by: Literal["analyzer", "ai", "fallback", "history", "system"] = "analyzer"
+    claim_origin: Literal[
+        "analyzer_rule",
+        "analyzer_diagnostic",
+        "analyzer_summary",
+        "ai_proposal",
+        "ai_update",
+        "history_restore",
+        "fallback_generated",
+    ] = "analyzer_rule"
+    claim_transform: Literal["original", "refined", "inherited", "restored", "boundary"] = "original"
+    claim_status: Literal["active", "retained", "inherited", "boundary", "rejected", "duplicate"] = "active"
+    claim_hash: str = ""
+    source_claim_hash: str = ""
+    source_candidate_id: str = ""
+    source_round: Optional[int] = None
+    source_event_id: str = ""
     evidence_refs: list[str] = Field(default_factory=list)
     rule_score: float = Field(default=0.0, ge=0.0, le=1.0)
     missing_evidence: list[str] = Field(default_factory=list)
@@ -261,12 +278,33 @@ class AITreeCandidateNode(BaseModel):
 
     candidate_id: str
     generated_by: Literal[
+        "analyzer",
+        "ai",
+        "fallback",
+        "history",
+        "system",
         "analyzer_observation",
         "ai_candidate",
         "ai_guarded",
         "fallback_observation",
         "analyzer_fallback",
-    ] = "ai_guarded"
+    ] = "analyzer"
+    claim_origin: Literal[
+        "analyzer_rule",
+        "analyzer_diagnostic",
+        "analyzer_summary",
+        "ai_proposal",
+        "ai_update",
+        "history_restore",
+        "fallback_generated",
+    ] = "analyzer_summary"
+    claim_transform: Literal["original", "refined", "inherited", "restored", "boundary"] = "original"
+    claim_status: Literal["active", "retained", "inherited", "boundary", "rejected", "duplicate"] = "active"
+    claim_hash: str = ""
+    source_claim_hash: str = ""
+    source_candidate_id: str = ""
+    source_round: Optional[int] = None
+    source_event_id: str = ""
     lineage_id: Optional[str] = None
     cluster_id: str = ""
     branch_id: str = ""
@@ -338,6 +376,7 @@ class AITreeCandidateNode(BaseModel):
     conclusion_eligible: bool = False
     eligibility_reason: str = ""
     stop_reason: str = ""
+    boundary_message: str = ""
     blocked_probe: str = ""
     evidence_refs: list[str] = Field(default_factory=list)
     self_challenge: AITreeSelfChallenge = Field(default_factory=AITreeSelfChallenge)
@@ -430,7 +469,7 @@ class AITreeLayer(BaseModel):
         "ai_guarded",
         "fallback_observation",
         "analyzer_fallback",
-    ] = "ai_guarded"
+    ] = "analyzer_observation"
     summary: str = ""
     primary_causes: list[AITreeCandidateNode] = Field(default_factory=list)
     secondary_causes: list[AITreeCandidateNode] = Field(default_factory=list)
@@ -464,6 +503,8 @@ class ControlledAITree(BaseModel):
     line_anchor_eligibility: dict[str, Any] = Field(default_factory=dict)
     heap_probe_outcome: dict[str, Any] = Field(default_factory=dict)
     data_quality: dict[str, Any] = Field(default_factory=dict)
+    canonical_probe_plan: list[dict[str, Any]] = Field(default_factory=list)
+    probe_conflicts: list[dict[str, Any]] = Field(default_factory=list)
     final_supported_level: Literal["resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"] = "resource"
     stop_reason: str = ""
     stop_source_candidate_ids: list[str] = Field(default_factory=list)
@@ -484,6 +525,22 @@ class CausalExplanationStep(BaseModel):
     step_id: str
     statement: str
     evidence_refs: list[str] = Field(default_factory=list)
+    candidate_id: str = ""
+    claim_status: str = "active"
+    step_kind: Literal["claim", "inherited", "boundary"] = "claim"
+    supported_level: Literal[
+        "resource",
+        "host",
+        "process",
+        "thread",
+        "syscall",
+        "dependency",
+        "service",
+        "endpoint",
+        "function",
+        "call_path",
+        "line",
+    ] = "resource"
 
 
 class RootCauseRecommendation(BaseModel):
@@ -508,6 +565,19 @@ class RootCauseCluster(BaseModel):
         "direct_root_cause",
         "complete_source_root_cause",
     ] = "observation"
+    supported_level: Literal[
+        "resource",
+        "host",
+        "process",
+        "thread",
+        "syscall",
+        "dependency",
+        "service",
+        "endpoint",
+        "function",
+        "call_path",
+        "line",
+    ] = "resource"
     mechanism: str
     target: str
     claim: str
@@ -538,9 +608,26 @@ class RetainedConclusion(BaseModel):
     qualification: Literal["formal_root_cause", "possible_root_cause", "partial_localization", "observation"] = "observation"
     evidence_refs: list[str] = Field(default_factory=list)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    causal_status: Literal["supported", "unproven", "contradicted", "inconclusive"] = "inconclusive"
     source_candidate_id: str = ""
     inherited: bool = False
     fallback_mode: Literal["none", "inherit_parent"] = "none"
+    generated_by: Literal["analyzer", "ai", "fallback", "history", "system"] = "system"
+    claim_origin: Literal[
+        "analyzer_rule",
+        "analyzer_diagnostic",
+        "analyzer_summary",
+        "ai_proposal",
+        "ai_update",
+        "history_restore",
+        "fallback_generated",
+    ] = "analyzer_summary"
+    claim_transform: Literal["original", "refined", "inherited", "restored", "boundary"] = "inherited"
+    claim_status: Literal["active", "retained", "inherited", "boundary", "rejected", "duplicate"] = "retained"
+    claim_hash: str = ""
+    source_claim_hash: str = ""
+    source_round: Optional[int] = None
+    source_event_id: str = ""
 
 
 class QualificationBoundary(BaseModel):
@@ -548,8 +635,22 @@ class QualificationBoundary(BaseModel):
 
     status: Literal["blocked", "partial", "inconclusive", "none"] = "none"
     message: str = ""
+    boundary_message: str = ""
     missing_evidence: list[str] = Field(default_factory=list)
     origin_parent_candidate_id: Optional[str] = None
+    claim_transform: Literal["boundary"] = "boundary"
+    claim_status: Literal["boundary"] = "boundary"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sync_boundary_message(cls, value):
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        message = str(data.get("boundary_message") or data.get("message") or "")
+        data["message"] = message
+        data["boundary_message"] = message
+        return data
 
 
 class SessionConclusionReview(BaseModel):
