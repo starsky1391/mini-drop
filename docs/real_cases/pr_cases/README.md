@@ -1,4 +1,4 @@
-# Four Real PR Cases
+# Python Real PR Cases
 
 These cases use the same external-runner contract as the Celery case.
 
@@ -17,6 +17,13 @@ The Agent receives only generic target information: PID, container ID, source ro
 | `aiohttp_10570` | large-stream read stall / excessive buffering | local aiohttp server returns a response larger than the stream limit | CPU-only runnable |
 | `kafka_2286` | broker wakeup / request timeout | real Kafka broker plus repeated AdminClient requests | CPU-only runnable |
 | `pyav_751` | FFmpeg logging contention during threaded media work | threaded PyAV logging and decode/encode workload | CPU-only runnable |
+| `requests_5891` | CPU hotspot / self-code regression | repeated `requests.Session.get()` calls against a local HTTP server | CPU-only runnable |
+| `starlette_1868` | endpoint latency / request-path slowdown | Starlette `BaseHTTPMiddleware` around a streaming endpoint | CPU-only runnable |
+| `celery_9849` | Celery ETA queue backlog | real Redis broker, Celery worker, and native `apply_async(countdown=...)` producer | CPU-only runnable |
+| `urllib3_2197` | connection pool wait / exhaustion | concurrent requests through a small blocking `urllib3.PoolManager` | CPU-only runnable |
+| `urllib3_2494` | retry/backoff amplification | `urllib3.Retry` against a local 503 HTTP server | CPU-only runnable |
+| `requests_cache_1050` | cache growth / key cardinality | `requests_cache.CachedSession` filesystem cache with unique URLs | CPU-only runnable |
+| `pandas_58084` | input-triggered slow path | pandas categorical `groupby(...).transform(...)` with many unobserved categories | CPU-only runnable, build may be slower |
 
 `vllm_38602` remains a preflight-only blocked scenario on this VM and is not part of the accepted case set.
 
@@ -37,6 +44,9 @@ For normal repeated vulnerable-only runs, use the case-local one-shot entrypoint
 .\playwright_3004\run_vulnerable_only.ps1
 .\kafka_2286\run_vulnerable_only.ps1
 .\pyav_751\run_vulnerable_only.ps1
+.\requests_5891\run_vulnerable_only.ps1
+.\celery_9849\run_vulnerable_only.ps1
+.\urllib3_2197\run_vulnerable_only.ps1
 ```
 
 The shared wrapper remains available when automation needs to choose a case dynamically:
@@ -48,3 +58,5 @@ The shared wrapper remains available when automation needs to choose a case dyna
 ## Current VM Validation
 
 Vulnerable-only 600 second VM runs have completed for `playwright_3004`, `aiohttp_10570`, `kafka_2286`, and `pyav_751`. The `vllm_38602` preflight records `nvidia_gpu_unavailable` on the current VM.
+
+The newer scenario-expansion cases (`requests_5891`, `starlette_1868`, `celery_9849`, `urllib3_2197`, `urllib3_2494`, `requests_cache_1050`, and `pandas_58084`) currently have adapter files and runner entrypoints but still need VM validation before they are counted as accepted completed runs.

@@ -1,0 +1,19 @@
+{
+  "case_id": "celery_9849",
+  "repo": "https://github.com/celery/celery.git",
+  "vulnerable_revision": "166f705adcae57a43423b0ae7286ab828b55b244",
+  "vulnerable_fetch_ref": "refs/pull/9853/head",
+  "fixed_revision": "25f4a38a3ac3ce3c70e5e1020fe0db2a025e37a9",
+  "fixed_fetch_ref": "refs/pull/9853/head",
+  "compose_project": "pr_celery_9849",
+  "service_id": "celery-eta-queue-case",
+  "language": "python",
+  "container_workdir": "/opt/project",
+  "target_pattern": "celery.*worker",
+  "diagnosis_query": "A Celery worker accumulates many delayed ETA tasks and memory grows while immediate work is delayed. Identify whether the queue and worker evidence supports a local task scheduling or worker backlog source boundary.",
+  "workload": {
+    "api": "Celery.apply_async(countdown=...) and worker scheduled tasks",
+    "signal": "ETA task prefetch backlog",
+    "duration_sec": 180
+  }
+}

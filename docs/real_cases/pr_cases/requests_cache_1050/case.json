@@ -1,0 +1,19 @@
+{
+  "case_id": "requests_cache_1050",
+  "repo": "https://github.com/requests-cache/requests-cache.git",
+  "vulnerable_revision": "82c172c4b98fd90c64c1405ced36c025ca53b806",
+  "vulnerable_fetch_ref": "refs/pull/1052/head",
+  "fixed_revision": "9b1d269d64251ec32271e4f0d147bc2d2d74d5d5",
+  "fixed_fetch_ref": "refs/pull/1052/head",
+  "compose_project": "pr_requests_cache_1050",
+  "service_id": "requests-cache-case",
+  "language": "python",
+  "container_workdir": "/opt/project",
+  "target_pattern": "requests_cache_workload.py",
+  "diagnosis_query": "A Python HTTP client cache grows while many unique request URLs are fetched. Identify the strongest evidence-backed cache growth or cache key source boundary.",
+  "workload": {
+    "api": "requests_cache.CachedSession",
+    "signal": "file cache growth",
+    "duration_sec": 180
+  }
+}

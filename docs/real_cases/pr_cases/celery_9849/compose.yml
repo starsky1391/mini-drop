@@ -1,0 +1,34 @@
+services:
+  dependency:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  target:
+    build: {context: ., dockerfile: Dockerfile}
+    environment:
+      CASE_EVIDENCE_ROOT: /evidence
+      CASE_DURATION_SEC: ${CASE_DURATION_SEC:-180}
+      CELERY_BROKER_URL: redis://dependency:6379/0
+      CELERY_ETA_TASK_COUNT: ${CELERY_ETA_TASK_COUNT:-5000}
+      CELERY_ETA_COUNTDOWN_SEC: ${CELERY_ETA_COUNTDOWN_SEC:-1800}
+    volumes:
+      - ${PROJECT_SOURCE_ROOT:?set PROJECT_SOURCE_ROOT}:/opt/project:ro
+      - ${CASE_EVIDENCE_ROOT:-./evidence}:/evidence
+    depends_on:
+      dependency:
+        condition: service_healthy
+    command: ["python", "/case/celery_queue_workload.py"]
+  monitor:
+    image: pr_celery_9849-target
+    pid: "service:target"
+    environment:
+      CASE_EVIDENCE_ROOT: /evidence
+      CASE_DURATION_SEC: ${CASE_DURATION_SEC:-180}
+      TARGET_PROCESS_PATTERN: celery.*worker
+    volumes: ["${CASE_EVIDENCE_ROOT:-./evidence}:/evidence"]
+    command: ["python", "/case/monitor.py"]
+    depends_on: [target]

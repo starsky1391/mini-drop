@@ -217,6 +217,12 @@ def run_stage(remote: Remote, case: dict, *, revision: str, stage: str, mode: st
     evidence_root = f"{remote_root}/evidence/{stage}"
     project = case["compose_project"]
     source_root = f"{remote_root}/source"
+    fetch_ref = case.get(stage + "_fetch_ref") or case.get("revision_fetch_ref")
+    fetch_command = (
+        f"  git -C {shlex.quote(source_root)} fetch --depth=50 origin {shlex.quote(str(fetch_ref))} && "
+        if fetch_ref
+        else ""
+    )
     remote.run(f"rm -rf {shlex.quote(evidence_root)}; mkdir -p {shlex.quote(remote_root)} {shlex.quote(evidence_root)}")
     remote.put_tree(ROOT / case_id, remote_root)
     remote.run(
@@ -224,6 +230,7 @@ def run_stage(remote: Remote, case: dict, *, revision: str, stage: str, mode: st
         f"rm -rf {shlex.quote(source_root)}; "
         f"for attempt in 1 2 3; do "
         f"  git clone --filter=blob:none {shlex.quote(case['repo'])} {shlex.quote(source_root)} && "
+        + fetch_command +
         f"  git -C {shlex.quote(source_root)} checkout --detach {shlex.quote(revision)} && "
         f"  git -C {shlex.quote(source_root)} submodule update --init --recursive && break; "
         f"  rm -rf {shlex.quote(source_root)}; sleep 3; "

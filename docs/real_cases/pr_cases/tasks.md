@@ -1,4 +1,4 @@
-# Tasks: Four External-Runner PR Cases
+# Tasks: External-Runner PR Cases
 
 ## Shared runner contract
 
@@ -17,12 +17,26 @@
 - [x] T012 Add kafka_2286 broker and AdminClient workload.
 - [x] T013 Add PyAV #751 threaded logging/media workload.
 - [x] T014 Exclude `vllm_38602` from the accepted case set and keep it out of normal validation.
+- [x] T015 Add requests #5891/#5924 CPU hotspot adapter and local HTTP workload.
+- [x] T016 Add Starlette #1868/#1940 endpoint latency adapter and streaming middleware workload.
+- [x] T017 Add Celery #9849/#9853 ETA queue backlog adapter with real Redis, worker, and native producer.
+- [x] T018 Add urllib3 #2197 pool exhaustion adapter and concurrent blocking-pool workload.
+- [x] T019 Add urllib3 #2494 retry/backoff adapter and local 503 workload.
+- [x] T020 Add requests-cache #1050/#1052 cache growth adapter and filesystem cache workload.
+- [x] T021 Add pandas #58084 input-triggered slow-path adapter and categorical groupby workload.
 
 ## Validation
 
-- [x] T020 Run Playwright vulnerable case on the VM.
-- [x] T021 Run aiohttp vulnerable case on the VM.
-- [x] T022 Run kafka-python vulnerable case on the VM.
-- [x] T023 Run PyAV vulnerable case on the VM.
-- [x] T024 Run an aiohttp pair control replay on the VM after vulnerable-only runs were stable.
-- [x] T025 Record the `vllm_38602` GPU prerequisite block without treating it as an accepted case.
+- [x] T030 Run Playwright vulnerable case on the VM.
+- [x] T031 Run aiohttp vulnerable case on the VM.
+- [x] T032 Run kafka-python vulnerable case on the VM.
+- [x] T033 Run PyAV vulnerable case on the VM.
+- [x] T034 Run an aiohttp pair control replay on the VM after vulnerable-only runs were stable.
+- [x] T035 Record the `vllm_38602` GPU prerequisite block without treating it as an accepted case.
+- [ ] T036 Run `requests_5891` vulnerable case on the VM.
+- [ ] T037 Run `starlette_1868` vulnerable case on the VM.
+- [ ] T038 Run `celery_9849` vulnerable case on the VM.
+- [ ] T039 Run `urllib3_2197` vulnerable case on the VM.
+- [ ] T040 Run `urllib3_2494` vulnerable case on the VM.
+- [ ] T041 Run `requests_cache_1050` vulnerable case on the VM.
+- [ ] T042 Run `pandas_58084` vulnerable case on the VM.

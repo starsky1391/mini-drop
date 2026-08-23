@@ -1,0 +1,19 @@
+{
+  "case_id": "pandas_58084",
+  "repo": "https://github.com/pandas-dev/pandas.git",
+  "vulnerable_revision": "898fd12fd76aa26cac8ddb9c51511b61a514a13d",
+  "vulnerable_fetch_ref": "refs/pull/58084/head",
+  "fixed_revision": "5d6340520945eb15182656b03cb6d0c6ab9eb413",
+  "fixed_fetch_ref": "refs/pull/58084/head",
+  "compose_project": "pr_pandas_58084",
+  "service_id": "pandas-input-skew-case",
+  "language": "python",
+  "container_workdir": "/opt/project",
+  "target_pattern": "pandas_groupby_workload.py",
+  "diagnosis_query": "A Python data processing process spends excessive CPU time when groupby transform is run on categorical inputs with many unobserved categories. Identify the strongest evidence-backed input-triggered slow path or source boundary.",
+  "workload": {
+    "api": "pandas.DataFrame.groupby(...).transform",
+    "signal": "input distribution slow path",
+    "duration_sec": 180
+  }
+}

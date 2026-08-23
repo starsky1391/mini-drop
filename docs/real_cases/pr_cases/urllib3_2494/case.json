@@ -1,0 +1,19 @@
+{
+  "case_id": "urllib3_2494",
+  "repo": "https://github.com/urllib3/urllib3.git",
+  "vulnerable_revision": "384feec1597cbcf4ce6b4f3ced3d927b6b33bef3",
+  "vulnerable_fetch_ref": "refs/pull/2494/head",
+  "fixed_revision": "076b2bac3ce1470ce76e89f237ac7b2054919439",
+  "fixed_fetch_ref": "refs/pull/2494/head",
+  "compose_project": "pr_urllib3_2494",
+  "service_id": "urllib3-retry-case",
+  "language": "python",
+  "container_workdir": "/opt/project",
+  "target_pattern": "urllib3_retry_workload.py",
+  "diagnosis_query": "A Python HTTP client repeatedly retries failing local HTTP calls and spends time in timeout/backoff behavior. Identify the strongest evidence-backed retry or timeout source boundary.",
+  "workload": {
+    "api": "urllib3.Retry and PoolManager.request",
+    "signal": "retry and backoff amplification",
+    "duration_sec": 180
+  }
+}

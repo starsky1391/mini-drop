@@ -1,0 +1,19 @@
+{
+  "case_id": "starlette_1868",
+  "repo": "https://github.com/encode/starlette.git",
+  "vulnerable_revision": "bf5d7357b544b48b96844d3274ea558df079571d",
+  "vulnerable_fetch_ref": "refs/pull/1940/head",
+  "fixed_revision": "db631f9d7cedd4e25b84d09e5c751276826ee54d",
+  "fixed_fetch_ref": "refs/pull/1940/head",
+  "compose_project": "pr_starlette_1868",
+  "service_id": "starlette-endpoint-case",
+  "language": "python",
+  "container_workdir": "/opt/project",
+  "target_pattern": "starlette_workload.py",
+  "diagnosis_query": "A Starlette endpoint becomes slow while BaseHTTPMiddleware wraps request handling and streaming bodies are active. Identify whether the latency is explained by local middleware request-path behavior or an external dependency.",
+  "workload": {
+    "api": "starlette.middleware.base.BaseHTTPMiddleware",
+    "signal": "endpoint latency regression",
+    "duration_sec": 180
+  }
+}

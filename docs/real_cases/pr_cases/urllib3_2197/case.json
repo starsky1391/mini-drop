@@ -1,0 +1,19 @@
+{
+  "case_id": "urllib3_2197",
+  "repo": "https://github.com/urllib3/urllib3.git",
+  "vulnerable_revision": "4d1d2a85e787373414921ed9a29dce9d1e10e65b",
+  "vulnerable_fetch_ref": "refs/pull/2197/head",
+  "fixed_revision": "4820d2c963993c6eee33e935fba8e4396d2ba354",
+  "fixed_fetch_ref": "refs/pull/2197/head",
+  "compose_project": "pr_urllib3_2197",
+  "service_id": "urllib3-pool-case",
+  "language": "python",
+  "container_workdir": "/opt/project",
+  "target_pattern": "urllib3_pool_workload.py",
+  "diagnosis_query": "A Python HTTP client process stalls and emits pool wait errors while many concurrent requests hold a small urllib3 connection pool. Identify the strongest evidence-backed pool exhaustion or wait-site source boundary.",
+  "workload": {
+    "api": "urllib3.PoolManager.request",
+    "signal": "connection pool exhaustion and wait",
+    "duration_sec": 180
+  }
+}

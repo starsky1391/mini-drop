@@ -1,6 +1,19 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("playwright_3004", "vllm_38602", "aiohttp_10570", "kafka_2286", "pyav_751")]
+    [ValidateSet(
+        "playwright_3004",
+        "vllm_38602",
+        "aiohttp_10570",
+        "kafka_2286",
+        "pyav_751",
+        "requests_5891",
+        "starlette_1868",
+        "celery_9849",
+        "urllib3_2197",
+        "urllib3_2494",
+        "requests_cache_1050",
+        "pandas_58084"
+    )]
     [string]$Case,
 
     [int]$DurationSec = 600,

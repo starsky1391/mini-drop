@@ -1,0 +1,19 @@
+{
+  "case_id": "requests_5891",
+  "repo": "https://github.com/psf/requests.git",
+  "vulnerable_revision": "aae78010e987a414c176bddbf474cd554505219c",
+  "vulnerable_fetch_ref": "refs/pull/5924/head",
+  "fixed_revision": "442ccb48eaf9266723e58121a202f5278cffbd29",
+  "fixed_fetch_ref": "refs/pull/5924/head",
+  "compose_project": "pr_requests_5891",
+  "service_id": "requests-cpu-case",
+  "language": "python",
+  "container_workdir": "/opt/project",
+  "target_pattern": "requests_workload.py",
+  "diagnosis_query": "A Python process spends excessive self time in repeated requests.Session calls against a local HTTP dependency. Identify the strongest evidence-backed CPU hotspot or source boundary.",
+  "workload": {
+    "api": "requests.Session.get",
+    "signal": "session request CPU regression",
+    "duration_sec": 180
+  }
+}
