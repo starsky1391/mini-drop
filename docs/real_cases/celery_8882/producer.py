@@ -9,9 +9,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from celery_case_tasks import app, batch_barrier, control_success, unhandled_failure, warmup_barrier
-
-
 EVIDENCE = Path(os.environ.get("CELERY_EVIDENCE_DIR", "/evidence"))
 OBSERVATIONS = EVIDENCE / "producer_observations.ndjson"
 TASK_OBSERVATIONS = EVIDENCE / "task_observations.ndjson"
@@ -53,18 +50,34 @@ def wait_for_worker_event(event: str, *, batch: int | None = None, timeout: floa
     raise TimeoutError(f"worker did not emit {event} for batch {batch}")
 
 
+def failure_batch_timeout(failure_count: int, task_seconds: float) -> float:
+    """Allow the worker to drain a serialized failure batch before the barrier."""
+    count = max(1, int(failure_count))
+    per_task = max(0.0, float(task_seconds))
+    return max(300.0, count * max(per_task, 0.25) * 1.5 + 120.0)
+
+
 def _run() -> None:
+    from celery_case_tasks import app, batch_barrier, control_success, unhandled_failure, warmup_barrier
+
     warmup_count = max(0, int(os.environ.get("CELERY_WARMUP_COUNT", "1000")))
     failure_count = max(1, int(os.environ.get("CELERY_FAILURE_COUNT", "1000")))
     failure_batches = max(1, int(os.environ.get("CELERY_FAILURE_BATCHES", "2")))
+    failure_task_seconds = max(
+        0.0,
+        float(os.environ.get("CELERY_FAILURE_TASK_SECONDS", "0")),
+    )
     interval = max(0.0, float(os.environ.get("CELERY_PRODUCER_INTERVAL_SEC", "0")))
     settle_seconds = max(0.0, float(os.environ.get("CELERY_WARMUP_SETTLE_SEC", "10")))
+    batch_timeout = failure_batch_timeout(failure_count, failure_task_seconds)
     emit(
         "producer_start",
         broker="redis://redis:6379/0",
         warmup_count=warmup_count,
         failure_count=failure_count,
         failure_batches=failure_batches,
+        failure_task_seconds=failure_task_seconds,
+        failure_batch_timeout_sec=batch_timeout,
         warmup_settle_sec=settle_seconds,
     )
     app.connection_for_write().ensure_connection(max_retries=60, interval_start=0.2, interval_step=0.5, interval_max=2)
@@ -93,7 +106,11 @@ def _run() -> None:
             if interval:
                 time.sleep(interval)
         batch_barrier.apply_async(args=[batch, submitted_failures], queue="failure-workload")
-        barrier = wait_for_worker_event("failure_batch_barrier", batch=batch)
+        barrier = wait_for_worker_event(
+            "failure_batch_barrier",
+            batch=batch,
+            timeout=batch_timeout,
+        )
         emit(
             "failure_batch_complete",
             batch=batch,

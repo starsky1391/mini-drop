@@ -166,6 +166,15 @@ def test_diagnosis_timeout_preserves_id_and_latest_detail(monkeypatch):
     assert result["detail"]["status"] == "RUNNING"
 
 
+def test_failure_batch_timeout_covers_serialized_real_workload(monkeypatch):
+    monkeypatch.syspath_prepend(str(CASE_ROOT))
+    producer = load_module("celery_case_producer_timeout", "producer.py")
+
+    assert producer.failure_batch_timeout(1000, 0.25) == 495.0
+    assert producer.failure_batch_timeout(1000, 0.0) == 495.0
+    assert producer.failure_batch_timeout(1, 0.0) == 300.0
+
+
 def test_run_stage_keeps_partial_result_when_producer_does_not_complete(tmp_path, monkeypatch):
     runner = load_module("celery_case_partial", "run_case_vm.py")
 

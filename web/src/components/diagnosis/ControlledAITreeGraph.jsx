@@ -424,9 +424,7 @@ function placeAnnotationNodes(layoutedNodes, annotationNodes) {
     ...layoutedNodes,
     ...annotationNodes.map((node) => {
       const candidate = node.data?.candidate || {};
-      const parentId = candidate.origin_parent_candidate_id
-        || candidate.parent_candidate_ids?.[0]
-        || "";
+      const parentId = candidate.origin_parent_candidate_id || "";
       const parent = nodesByCandidateId.get(parentId);
       if (parent) {
         const offset = siblingOffsets.get(parentId) || 0;

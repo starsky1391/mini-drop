@@ -341,6 +341,45 @@ def test_session_candidate_review_keeps_candidate_when_only_probe_request_is_inv
     assert result["validation_diagnostics"][0]["failure_code"] == "invalid_probe_request"
 
 
+def test_session_candidate_review_does_not_schedule_unbound_top_level_probe():
+    evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
+    analysis = analyze_evidence(evidence, [])
+    parent_id = next(
+        node.candidate_id
+        for layer in analysis.controlled_ai_tree.layers
+        for node in [*layer.primary_causes, *layer.secondary_causes, *layer.unknown_causes, *layer.rejected_causes]
+    )
+    response = {
+        "probe_requests": ["python_heap_profile"],
+        "candidates": [{
+            "candidate_id": "ai_candidate_runtime_only",
+            "claim": "运行时路径需要继续验证",
+            "mechanism": "runtime_task_path",
+            "target": "worker",
+            "supported_level": "process",
+            "decision": "needs_more_evidence",
+            "causal_status": "needs_more_evidence",
+            "evidence_refs": ["ev-top"],
+            "parent_candidate_ids": [parent_id],
+            "probe_requests": [],
+        }],
+    }
+    with mock.patch.dict("os.environ", {"MINI_DROP_AI_API_KEY": "test-key", "MINI_DROP_AI_ENABLED": "1"}), mock.patch(
+        "server.app.rca.llm_client._call_deepseek", return_value=json.dumps(response),
+    ):
+        result = generate_session_candidate_review(
+            diagnosis_id="diag-unbound-probe",
+            fact_context={},
+            session_tree=analysis.controlled_ai_tree,
+            evidence_catalog=[{"evidence_id": "ev-top"}],
+            probe_manifest=build_probe_manifest(),
+        )
+
+    assert result["ai_review_status"] == "succeeded"
+    assert result["selected_evidence_families"] == []
+    assert result["probe_inputs"] == {}
+    assert result["validation_diagnostics"][0]["failure_code"] == "unbound_probe_request"
+
 def test_session_candidate_review_rejects_hint_id_and_unknown_evidence():
     response = {
         "probe_requests": [],

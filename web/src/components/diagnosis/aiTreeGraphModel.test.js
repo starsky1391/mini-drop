@@ -339,8 +339,40 @@ test("ordinary probe edges are hidden from the main graph while rollback and bou
   });
 
   assert.equal(graph.edges.some((edge) => edge.data?.edgeId === "probe-pending"), false);
+  assert.equal(graph.historyEdges.some((edge) => edge.data?.edgeId === "probe-pending"), true);
   assert.equal(graph.edges.some((edge) => edge.data?.edgeId === "boundary-edge" && edge.data.kind === "boundary"), true);
   assert.equal(graph.edges.some((edge) => edge.data?.edgeId === "rollback-edge"), true);
+});
+
+test("annotation placement never falls back to the first declared parent", () => {
+  const graph = buildControlledAITreeGraph({
+    layers: [
+      {
+        layer_id: "layer-0",
+        depth: 0,
+        unknown_causes: [
+          candidate({ candidate_id: "first-parent", supported_level: "resource" }),
+          candidate({ candidate_id: "actual-parent", supported_level: "resource" }),
+        ],
+      },
+      {
+        layer_id: "layer-1",
+        depth: 1,
+        unknown_causes: [candidate({
+          candidate_id: "boundary-without-origin",
+          parent_candidate_ids: ["actual-parent", "first-parent"],
+          origin_parent_candidate_id: "",
+          depth_kind: "boundary",
+          node_type: "stop_boundary",
+          supported_level: "line",
+        })],
+      },
+    ],
+  });
+
+  assert.equal(graph.orphanNodes.length, 1);
+  assert.equal(graph.edges.length, 0);
+  assert.equal(graph.historyEdges.length, 0);
 });
 
 test("layer zero is the rendered root and the graph does not invent a start node", () => {

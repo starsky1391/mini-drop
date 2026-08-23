@@ -45,12 +45,14 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
   const dataQuality = [];
   const graphEdges = [];
   const layoutEdges = [];
+  const historyEdges = [];
   const candidateIndex = new Map();
   const ambiguousCandidateIds = new Set();
   const duplicateCandidateIds = new Set();
   const orphanCandidateIds = new Set();
   const layerIndex = new Map();
   const edgeKeys = new Set();
+  const historyEdgeKeys = new Set();
   const finalLevel = tree.final_supported_level || "resource";
   const allCandidateCounts = new Map();
 
@@ -71,6 +73,15 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
     if (edgeKeys.has(key)) return false;
     edgeKeys.add(key);
     graphEdges.push(edge);
+    return true;
+  };
+
+  const pushHistoryEdge = (edge) => {
+    if (!edge.source || !edge.target || edge.source === edge.target) return false;
+    const key = `${edge.source}->${edge.target}:${edge.data?.kind || "probe"}:${edge.data?.edgeId || edge.id || ""}`;
+    if (historyEdgeKeys.has(key)) return false;
+    historyEdgeKeys.add(key);
+    historyEdges.push(edge);
     return true;
   };
 
@@ -255,12 +266,12 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
   for (const probeEdge of tree.probe_edges || []) {
     const fromNodes = resolveEdgeCandidates(probeEdge.from_candidate_ids, probeEdge.from_layer_id, layerIndex, candidateIndex);
     const toNodes = resolveEdgeCandidates(probeEdge.to_candidate_ids, probeEdge.to_layer_id, layerIndex, candidateIndex);
-    if (!shouldRenderProbeEdge(probeEdge, fromNodes, toNodes, lineagePairs)) {
+    if (!fromNodes.length || !toNodes.length) {
       continue;
     }
     for (const source of fromNodes) {
       for (const target of toNodes) {
-        pushEdge({
+        const edge = {
           id: `probe-${probeEdge.edge_id}-${source.nodeId}-${target.nodeId}`,
           source: source.nodeId,
           target: target.nodeId,
@@ -287,7 +298,11 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
           },
           animated: probeEdge.transition_type !== "backtrack"
             && ["pending", "not_started", "unknown"].includes(probeEdge.status || "unknown"),
-        });
+        };
+        pushHistoryEdge(edge);
+        if (shouldRenderProbeEdge(probeEdge, fromNodes, toNodes, lineagePairs)) {
+          pushEdge(edge);
+        }
       }
     }
   }
@@ -296,12 +311,20 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
     .map((candidateId) => candidateIndex.get(candidateId))
     .some((item) => item?.candidate?.depth_kind === "base" && item.candidate.conclusion_eligible);
 
+  const allHistoryEdges = [
+    ...graphEdges.filter((edge) => edge.data?.layoutRole === "annotation"),
+    ...historyEdges,
+  ];
+  const uniqueHistoryEdges = Array.from(
+    new Map(allHistoryEdges.map((edge) => [edge.id, edge])).values(),
+  );
+
   return {
     nodes: graphNodes,
     edges: graphEdges,
     layoutEdges,
     orphanNodes,
-    historyEdges: graphEdges.filter((edge) => edge.data?.layoutRole === "annotation"),
+    historyEdges: uniqueHistoryEdges,
     dataQuality,
     hasEligiblePrimary,
     dataQualityErrors: [

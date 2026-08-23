@@ -538,13 +538,45 @@ def test_candidate_tree_ingestion_records_deferred_and_missing_parent_candidates
     }
     assert "ai_candidate_active" in nodes
     assert "ai_candidate_deferred" not in nodes
-    diagnostics = review["tree_ingestion_diagnostics"]
-    assert {
-        item["failure_code"]
-        for item in diagnostics
-    } == {"candidate_deferred_from_tree", "tree_parent_not_emitted"}
-    active = next(
-        node
+
+
+def test_candidate_tree_ingestion_respects_explicit_empty_active_selection():
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag_empty_active_selection",
+        cluster_assessment={
+            "classification": "self_code_or_process_pressure",
+            "summary": "目标进程存在异常压力，仍需候选调查。",
+            "supported_level": "process",
+            "confidence": 0.35,
+            "evidence_refs": ["ev-rss"],
+            "conclusion_eligible": False,
+        },
+        candidates=[],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+    )
+    coarse_id = tree.emitted_coarse_ids[0]
+    review = {
+        "ai_review_status": "succeeded",
+        "active_candidate_ids": [],
+        "candidate_proposals": [{
+            "candidate_id": "ai_candidate_deferred_only",
+            "claim": "保留为审计方向，不在本轮深探。",
+            "mechanism": "unselected_path",
+            "target": "worker",
+            "supported_level": "process",
+            "role": "unknown",
+            "parent_candidate_ids": [coarse_id],
+            "origin_parent_candidate_id": coarse_id,
+            "evidence_refs": ["ev-rss"],
+        }],
+    }
+
+    updated = orchestrator_module._apply_candidate_review(tree, review)
+
+    nodes = {
+        node.candidate_id
         for layer in updated.layers
         for node in [
             *layer.primary_causes,
@@ -552,10 +584,14 @@ def test_candidate_tree_ingestion_records_deferred_and_missing_parent_candidates
             *layer.rejected_causes,
             *layer.unknown_causes,
         ]
-        if node.candidate_id == "ai_candidate_active"
-    )
-    assert active.parent_candidate_ids == [coarse_id]
-    assert active.origin_parent_candidate_id == coarse_id
+    }
+    assert "ai_candidate_deferred_only" not in nodes
+    assert review["tree_ingestion_diagnostics"][0]["failure_code"] == "candidate_deferred_from_tree"
+    diagnostics = review["tree_ingestion_diagnostics"]
+    assert {
+        item["failure_code"]
+        for item in diagnostics
+    } == {"candidate_deferred_from_tree"}
 
 
 def test_verified_line_rewrites_emitted_parent_and_attaches_runtime_observations():

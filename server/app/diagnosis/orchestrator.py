@@ -6844,6 +6844,7 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
             tree.emitted_coarse_ids[0] if len(tree.emitted_coarse_ids) == 1 else ""
         ),
     }
+    active_candidate_ids_declared = isinstance(review.get("active_candidate_ids"), list)
     active_candidate_ids = {
         str(value)
         for value in review.get("active_candidate_ids", [])
@@ -6886,7 +6887,7 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
                 "missing_parent_candidate_ids": missing_parents,
             })
             continue
-        if active_candidate_ids and candidate_id not in active_candidate_ids:
+        if active_candidate_ids_declared and candidate_id not in active_candidate_ids:
             ingestion_diagnostics.append({
                 "candidate_id": candidate_id,
                 "failure_code": "candidate_deferred_from_tree",

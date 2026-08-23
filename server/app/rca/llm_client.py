@@ -71,6 +71,7 @@ def _validation_diagnostic(
         ("candidate parent_candidate_ids 不真实", "invalid_parent", "candidates[].parent_candidate_ids"),
         ("candidate parent_candidate_ids 缺少显式来源父节点", "missing_parent_provenance", "candidates[].parent_candidate_ids"),
         ("probe_requests 包含未注册证据族", "invalid_probe_request", "probe_requests"),
+        ("probe_requests 未绑定 active candidate", "unbound_probe_request", "probe_requests"),
         ("candidates 必须是最多四个候选的数组", "invalid_candidates", "candidates"),
     )
     for marker, code, path in patterns:
@@ -633,14 +634,35 @@ def generate_session_candidate_review(
                 raise ValueError("AI 未生成任何通过结构校验的候选")
             active_ids, deferred_ids = _active_candidate_ids(normalized)
             active_set = set(active_ids)
+            active_probe_families = {
+                str(value)
+                for item in normalized
+                if item["candidate_id"] in active_set
+                for value in item["probe_requests"]
+                if str(value)
+            }
+            unbound_selected = [
+                value for value in selected
+                if value not in active_probe_families
+            ]
+            if unbound_selected:
+                validation_diagnostics.append(_validation_diagnostic(
+                    stage="candidate_generation",
+                    attempt=attempt,
+                    error=(
+                        "probe_requests 未绑定 active candidate: "
+                        + ", ".join(unbound_selected)
+                    ),
+                    raw=raw,
+                    candidate_count=len(candidates),
+                    valid_evidence_ref_count=len(valid_refs),
+                    known_candidate_ids=known_candidate_ids,
+                    initial_evidence_refs=valid_refs,
+                    initial_evidence_families=initial_evidence_context["evidence_families"],
+                    initial_evidence_statuses=initial_evidence_context["evidence_statuses"],
+                ))
             selected = list(dict.fromkeys([
-                *selected,
-                *(
-                    value
-                    for item in normalized
-                    if item["candidate_id"] in active_set
-                    for value in item["probe_requests"]
-                ),
+                *active_probe_families,
             ]))
             probe_inputs = _candidate_probe_inputs(normalized, active_ids)
             selection_diagnostics = _candidate_selection_diagnostics(
