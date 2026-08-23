@@ -1405,6 +1405,7 @@ class DiagnosisOrchestrator:
             candidates=deduped,
             followup_requests=followup_requests,
             probes=self.store.list_probes(diagnosis_id),
+            evidence_catalog=self.store.list_evidence(diagnosis_id),
             child_trees=controlled_ai_trees,
             source_snapshot_hashes=_source_snapshot_hashes(task_observations),
             previous_tree=previous_tree,
@@ -1685,6 +1686,12 @@ class DiagnosisOrchestrator:
         candidate_review_summary = _summarize_investigation_review(candidate_review)
         controlled_tree_payload = session_controlled_tree.model_dump(mode="json") if session_controlled_tree else None
         gate_failures = ai_gate_failures
+        candidate_generation_output = _candidate_generation_output(candidate_review_summary)
+        candidate_generation_output["gate_failures"] = [
+            item for item in gate_failures
+            if isinstance(item, dict)
+            and str(item.get("stage") or "").startswith(("candidate_generation", "candidate_tree_ingestion"))
+        ]
         conclusion = {
             "version": len((self.store.get_session(diagnosis_id) or {}).get("conclusion_versions", [])) + 1,
             "generated_at": utcnow().isoformat(),
@@ -1720,7 +1727,7 @@ class DiagnosisOrchestrator:
             # for API compatibility, while these fields let the UI and offline
             # replay explain why promotion stopped without reading raw probes.
             "gate_failures": gate_failures,
-            "candidate_generation_output": _candidate_generation_output(candidate_review_summary),
+            "candidate_generation_output": candidate_generation_output,
             "observations": _conclusion_observations(task_observations),
             "boundaries": _conclusion_boundaries(
                 controlled_tree_payload,
@@ -5027,6 +5034,7 @@ def _build_session_controlled_ai_tree(
     candidates: list[dict[str, Any]],
     followup_requests: list[str],
     probes: list[dict[str, Any]],
+    evidence_catalog: list[dict[str, Any]] | None = None,
     child_trees: list[dict[str, Any]],
     source_snapshot_hashes: list[str] | None = None,
     previous_tree: dict[str, Any] | None = None,
@@ -5574,7 +5582,16 @@ def _build_session_controlled_ai_tree(
     secondary_nodes = [_classify_tree_node(_restore_verified_line_parent(node)) for node in secondary_nodes]
     rejected_nodes = [_classify_tree_node(_restore_verified_line_parent(node)) for node in rejected_nodes]
     unknown_nodes = [_classify_tree_node(_restore_verified_line_parent(node)) for node in unknown_nodes]
-    observation_nodes, unknown_nodes = _split_observation_context_nodes(unknown_nodes)
+    # Runtime/userland hotspots can arrive in any Analyzer role collection.
+    # Split them before the coarse-parent fallback so a valid line parent is
+    # preserved instead of turning the observation into an orphan.
+    observation_nodes: list[AITreeCandidateNode] = []
+    split_collections: list[list[AITreeCandidateNode]] = []
+    for collection in (primary_nodes, secondary_nodes, rejected_nodes, unknown_nodes):
+        observations, base_nodes = _split_observation_context_nodes(collection)
+        observation_nodes.extend(observations)
+        split_collections.append(base_nodes)
+    primary_nodes, secondary_nodes, rejected_nodes, unknown_nodes = split_collections
     primary_nodes = [
         _attach_coarse_parent_if_missing(node, coarse_id)
         for node in primary_nodes
@@ -5970,7 +5987,10 @@ def _build_session_controlled_ai_tree(
         },
         source_context_hash=source_context_hash,
         line_anchor_eligibility=line_anchor_eligibility,
-        heap_probe_outcome=_heap_probe_outcome(probes),
+        heap_probe_outcome=_heap_probe_outcome(
+            probes,
+            evidence_catalog=evidence_catalog or [],
+        ),
         data_quality={
             "orphan_candidate_ids": [
                 node.candidate_id
@@ -6335,6 +6355,16 @@ def _candidate_generation_output(review: dict[str, Any] | None) -> dict[str, Any
         for item in validation_diagnostics
         if isinstance(item, dict) and item.get("candidate_id")
     ]
+    selection_diagnostics = review.get("candidate_selection_diagnostics")
+    if not isinstance(selection_diagnostics, list):
+        selection_diagnostics = review.get("selection_diagnostics")
+    if not isinstance(selection_diagnostics, list):
+        selection_diagnostics = []
+    gate_failures = review.get("gate_failures")
+    if not isinstance(gate_failures, list):
+        gate_failures = review.get("ai_gate_failures")
+    if not isinstance(gate_failures, list):
+        gate_failures = []
     return {
         "status": str(review.get("ai_review_status") or "unknown"),
         "error": str(review.get("ai_review_error") or "")[:500],
@@ -6352,13 +6382,12 @@ def _candidate_generation_output(review: dict[str, Any] | None) -> dict[str, Any
             for value in (review.get("deferred_candidate_ids") or [])
             if str(value)
         ],
-        "selection_diagnostics": list(
-            review.get("candidate_selection_diagnostics") or []
-        ),
+        "selection_diagnostics": list(selection_diagnostics),
         "tree_ingestion_diagnostics": list(
             review.get("tree_ingestion_diagnostics") or []
         ),
         "validation_diagnostics": validation_diagnostics,
+        "gate_failures": list(gate_failures),
         "selected_evidence_families": [
             str(value)
             for value in (review.get("selected_evidence_families") or [])
@@ -6901,16 +6930,6 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
     if not proposals:
         review["tree_ingestion_diagnostics"] = ingestion_diagnostics
         return enforce_conclusion_eligibility(tree)
-    if len(tree.layers) >= tree.budget.max_tree_depth:
-        for item in proposals:
-            ingestion_diagnostics.append({
-                "candidate_id": str(item.get("candidate_id") or ""),
-                "failure_code": "tree_depth_budget_exhausted",
-                "reason": "当前 AI 树已达到最大深度，候选保留在 candidate_review，不进入主树。",
-                "parent_candidate_ids": list(item.get("parent_candidate_ids") or []),
-            })
-        review["tree_ingestion_diagnostics"] = ingestion_diagnostics
-        return enforce_conclusion_eligibility(tree)
     valid_levels = {"resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"}
     valid_relations = {"root", "alternative", "refinement", "causal_convergence", "shared_evidence"}
     nodes = []
@@ -6979,35 +6998,118 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
     if not nodes:
         review["tree_ingestion_diagnostics"] = ingestion_diagnostics
         return enforce_conclusion_eligibility(tree)
-    node_ids = {node.candidate_id for node in nodes}
-    layers = []
-    for layer in tree.layers:
+
+    # Candidate review runs after the Analyzer has already emitted line,
+    # observation and boundary layers. Appending a new layer here makes a
+    # valid AI candidate look like it exceeded the tree budget even though
+    # its real parent is at a shallower depth. Place each proposal directly
+    # below its declared parent layer instead.
+    layer_by_candidate_id = {
+        node.candidate_id: layer
+        for layer in tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    }
+    max_depth = int(tree.budget.max_tree_depth)
+    nodes_by_depth: dict[int, list[AITreeCandidateNode]] = {}
+    for node in nodes:
+        parent_layers = [
+            layer_by_candidate_id[parent_id]
+            for parent_id in node.parent_candidate_ids
+            if parent_id in layer_by_candidate_id
+        ]
+        if not parent_layers:
+            ingestion_diagnostics.append({
+                "candidate_id": node.candidate_id,
+                "failure_code": "tree_parent_layer_missing",
+                "reason": "候选父节点虽声明存在，但无法解析其当前 session_main 层级。",
+                "parent_candidate_ids": list(node.parent_candidate_ids),
+            })
+            continue
+        target_depth = max(layer.depth for layer in parent_layers) + 1
+        if target_depth > max_depth:
+            ingestion_diagnostics.append({
+                "candidate_id": node.candidate_id,
+                "failure_code": "tree_depth_budget_exhausted",
+                "reason": (
+                    "候选的真实来源父节点位于当前树预算之外，"
+                    "不是因为已有历史/边界层数量而丢弃。"
+                ),
+                "parent_candidate_ids": list(node.parent_candidate_ids),
+                "origin_parent_candidate_id": node.origin_parent_candidate_id,
+                "parent_depth": max(layer.depth for layer in parent_layers),
+                "target_depth": target_depth,
+                "max_tree_depth": max_depth,
+            })
+            continue
+        nodes_by_depth.setdefault(target_depth, []).append(node)
+
+    if not nodes_by_depth:
+        review["tree_ingestion_diagnostics"] = ingestion_diagnostics
+        return enforce_conclusion_eligibility(tree)
+
+    # Keep the source semantics of an existing layer intact. An AI proposal
+    # may share the same depth as an Analyzer observation, but it must not
+    # relabel that observation as AI-generated. The explicit lineage edges,
+    # rather than list position, define the hierarchy.
+    proposal_layers = [
+        AITreeLayer(
+            layer_id=f"session_ai_candidate_{depth}",
+            depth=depth,
+            generated_by="ai_candidate",
+            summary="AI 基于 Analyzer 事实和证据边界生成首轮可证伪候选。",
+            primary_causes=[node for node in depth_nodes if node.role == "primary"],
+            secondary_causes=[node for node in depth_nodes if node.role == "secondary"],
+            rejected_causes=[node for node in depth_nodes if node.role == "rejected"],
+            unknown_causes=[node for node in depth_nodes if node.role == "unknown"],
+        )
+        for depth, depth_nodes in nodes_by_depth.items()
+    ]
+    layers = [*tree.layers, *proposal_layers]
+    parent_ids = {
+        parent_id
+        for depth_nodes in nodes_by_depth.values()
+        for child in depth_nodes
+        for parent_id in child.parent_candidate_ids
+    }
+    updated_layers = []
+    for layer in layers:
         updated_nodes = []
-        for node in [*layer.primary_causes, *layer.secondary_causes, *layer.rejected_causes, *layer.unknown_causes]:
-            if node.candidate_id in {parent_id for child in nodes for parent_id in child.parent_candidate_ids}:
-                child_ids = list(dict.fromkeys([*node.child_candidate_ids, *[child.candidate_id for child in nodes if node.candidate_id in child.parent_candidate_ids]]))
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]:
+            if node.candidate_id in parent_ids:
+                child_ids = list(dict.fromkeys([
+                    *node.child_candidate_ids,
+                    *[
+                        child.candidate_id
+                        for depth_nodes in nodes_by_depth.values()
+                        for child in depth_nodes
+                        if node.candidate_id in child.parent_candidate_ids
+                    ],
+                ]))
                 node = node.model_copy(update={"child_candidate_ids": child_ids})
             updated_nodes.append(node)
         grouped = {"primary": [], "secondary": [], "rejected": [], "unknown": []}
         for node in updated_nodes:
             grouped[node.role].append(node)
-        layers.append(layer.model_copy(update={
-            "primary_causes": grouped["primary"], "secondary_causes": grouped["secondary"],
-            "rejected_causes": grouped["rejected"], "unknown_causes": grouped["unknown"],
+        updated_layers.append(layer.model_copy(update={
+            "primary_causes": grouped["primary"],
+            "secondary_causes": grouped["secondary"],
+            "rejected_causes": grouped["rejected"],
+            "unknown_causes": grouped["unknown"],
         }))
-    proposal_layer = AITreeLayer(
-        layer_id=f"session_ai_candidate_{len(layers)}",
-        depth=len(layers),
-        generated_by="ai_candidate",
-        summary="AI 基于 Analyzer 事实和证据边界生成首轮可证伪候选。",
-        primary_causes=[node for node in nodes if node.role == "primary"],
-        secondary_causes=[node for node in nodes if node.role == "secondary"],
-        rejected_causes=[node for node in nodes if node.role == "rejected"],
-        unknown_causes=[node for node in nodes if node.role == "unknown"],
-    )
+    layers = updated_layers
     all_emitted_nodes = [
         node
-        for layer in [*layers, proposal_layer]
+        for layer in layers
         for node in [
             *layer.primary_causes,
             *layer.secondary_causes,
@@ -7029,7 +7131,7 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
         tree.retained_candidate_id,
     )
     updated = tree.model_copy(update={
-        "layers": [*layers, proposal_layer],
+        "layers": layers,
         "retained_candidate_id": retained_candidate_id or None,
     })
     review["tree_ingestion_diagnostics"] = ingestion_diagnostics
@@ -7390,7 +7492,11 @@ def _line_anchor_eligibility_summary(
     }
 
 
-def _heap_probe_outcome(probes: list[dict[str, Any]]) -> dict[str, Any]:
+def _heap_probe_outcome(
+    probes: list[dict[str, Any]],
+    *,
+    evidence_catalog: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     relevant = [
         probe for probe in probes
         if str((probe.get("parameters") or {}).get("evidence_gap") or "") == "python_heap_profile"
@@ -7400,57 +7506,151 @@ def _heap_probe_outcome(probes: list[dict[str, Any]]) -> dict[str, Any]:
     probe = relevant[-1]
     parameters = probe.get("parameters") if isinstance(probe.get("parameters"), dict) else {}
     outcome = probe.get("outcome") if isinstance(probe.get("outcome"), dict) else {}
+    task_id = str(probe.get("task_id") or "")
+
+    # ProbeExecution stores the scheduling result, while the collector payload
+    # is persisted as diagnosis evidence. Merge both sources so the session
+    # tree does not lose attach phases and artifact references.
+    matching_evidence: list[dict[str, Any]] = []
+    for evidence in evidence_catalog or []:
+        if not isinstance(evidence, dict):
+            continue
+        if str(evidence.get("query_or_probe") or "") != "python_heap_profile":
+            continue
+        refs = {
+            str(evidence.get("raw_artifact_ref") or ""),
+            str(evidence.get("derived_artifact_ref") or ""),
+        }
+        observed_value = evidence.get("observed_value")
+        observed_task_id = (
+            str(observed_value.get("task_id") or "")
+            if isinstance(observed_value, dict)
+            else ""
+        )
+        if task_id and not (
+            observed_task_id == task_id
+            or any(task_id in ref for ref in refs)
+        ):
+            continue
+        matching_evidence.append(evidence)
+    evidence = matching_evidence[-1] if matching_evidence else {}
+    observed = evidence.get("observed_value") if isinstance(evidence.get("observed_value"), dict) else {}
+    validity = (
+        observed.get("evidence_validity")
+        if isinstance(observed.get("evidence_validity"), dict)
+        else {}
+    )
+    if not validity and isinstance(outcome.get("evidence_validity"), dict):
+        validity = outcome["evidence_validity"]
+    evidence_status = str(
+        probe.get("evidence_status")
+        or outcome.get("evidence_status")
+        or validity.get("evidence_status")
+        or "unknown"
+    )
+    mode = str(observed.get("mode") or outcome.get("mode") or "")
+    native_fallback = (
+        mode == "native_live"
+        or str(observed.get("heap_semantics") or "") == "native_allocation_observation"
+        or str(validity.get("reason") or "") == "native_allocator_observation_only"
+    )
+    if native_fallback:
+        python_heap_status = "failed"
+        fallback_status = "native_observation"
+    elif evidence_status == "valid":
+        python_heap_status = "valid"
+        fallback_status = "none"
+    elif evidence_status in {"blocked", "failed", "unparseable", "target_exit"}:
+        python_heap_status = evidence_status
+        fallback_status = "none"
+    else:
+        python_heap_status = "partial" if evidence_status == "partial" else "unknown"
+        fallback_status = "none"
+    attach_preflight = (
+        observed.get("attach_preflight")
+        or validity.get("attach_preflight")
+        or outcome.get("attach_preflight")
+        or {}
+    )
+    helper_trace = (
+        observed.get("helper_trace")
+        or attach_preflight.get("helper_trace")
+        or outcome.get("helper_trace")
+        or {}
+    )
+    artifact_refs = _unique_strings([
+        *(
+            [
+                evidence.get("raw_artifact_ref"),
+                evidence.get("derived_artifact_ref"),
+            ]
+            if evidence
+            else []
+        ),
+        *(
+            observed.get("raw_artifact_refs")
+            if isinstance(observed.get("raw_artifact_refs"), list)
+            else []
+        ),
+        *(
+            outcome.get("evidence_refs")
+            if isinstance(outcome.get("evidence_refs"), list)
+            else []
+        ),
+        *(
+            probe.get("evidence_refs")
+            if isinstance(probe.get("evidence_refs"), list)
+            else []
+        ),
+    ])[:32]
     return {
         "status": str(probe.get("status") or "unknown").lower(),
-        "evidence_status": str(probe.get("evidence_status") or outcome.get("evidence_status") or "unknown"),
+        "execution_status": str(probe.get("status") or "unknown").lower(),
+        "evidence_status": evidence_status,
+        "python_heap_status": python_heap_status,
+        "fallback_status": fallback_status,
+        "formal_heap_retention": evidence_status == "valid" and not native_fallback,
         "attempts": len(relevant),
         "candidate_id": str(parameters.get("candidate_id") or ""),
         "origin_parent_candidate_id": str(parameters.get("origin_parent_candidate_id") or ""),
         "failure_type": str(
             probe.get("failure_type")
             or outcome.get("failure_type")
-            or (outcome.get("evidence_validity") or {}).get("failure_type")
+            or validity.get("failure_type")
+            or ("memray_attach_failed" if native_fallback else "")
             or "",
         ),
         "reason": str(
             probe.get("reason")
             or outcome.get("reason")
-            or (outcome.get("evidence_validity") or {}).get("detail")
+            or validity.get("reason")
+            or validity.get("detail")
             or "",
         )[:500],
         "failure_detail": str(
             outcome.get("failure_detail")
-            or (outcome.get("evidence_validity") or {}).get("detail")
+            or validity.get("detail")
             or probe.get("reason")
             or "",
         )[:800],
         "blocked_reason": str(
             probe.get("blocked_reason")
             or outcome.get("blocked_reason")
-            or (outcome.get("evidence_validity") or {}).get("reason")
+            or validity.get("reason")
             or "",
         )[:240],
         "retry_attempted": bool(
             outcome.get("retry_attempted")
-            or (outcome.get("evidence_validity") or {}).get("retry_attempted")
+            or validity.get("retry_attempted")
         ),
         "retry_skipped_reason": str(
             outcome.get("retry_skipped_reason")
-            or (outcome.get("evidence_validity") or {}).get("retry_skipped_reason")
+            or validity.get("retry_skipped_reason")
             or "",
         )[:240],
-        "attach_preflight": (
-            outcome.get("attach_preflight")
-            or (outcome.get("evidence_validity") or {}).get("attach_preflight")
-            or {}
-        ),
-        "helper_trace": outcome.get("helper_trace") or {},
-        "artifact_refs": _unique_strings(
-            probe.get("evidence_refs")
-            or outcome.get("evidence_refs")
-            or outcome.get("raw_artifact_refs")
-            or []
-        )[:32],
+        "attach_preflight": attach_preflight,
+        "helper_trace": helper_trace,
+        "artifact_refs": artifact_refs,
     }
 
 

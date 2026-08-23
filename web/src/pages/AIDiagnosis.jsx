@@ -787,6 +787,26 @@ function DiagnosisDetail({ detail }) {
                       缺失父节点：{item.missing_parent_candidate_ids?.join("、") || "无"}。
                     </Typography.Text>
                   ))}
+                  {candidateGenerationOutput.gate_failures?.map((item, index) => (
+                    <Space
+                      key={`candidate-gate-${item.candidate_id || "round"}-${item.failure_code || "gate"}-${index}`}
+                      direction="vertical"
+                      size={2}
+                      style={{ width: "100%" }}
+                    >
+                      <Typography.Text type="warning">
+                        正式门禁：{item.candidate_id || "整轮候选"}；
+                        失败字段：{item.failed_gates?.join("、") || item.failure_code || "未提供"}；
+                        {item.reason || "当前证据不足以升级正式结论"}。
+                      </Typography.Text>
+                      <Typography.Text type="secondary">
+                        初始证据：{item.initial_evidence_refs?.length || 0} 条；
+                        候选证据：{item.evidence_refs?.length || item.candidate_evidence_refs?.length || 0} 条；
+                        保留父节点：{item.retained_parent_candidate_id || item.origin_parent_candidate_id || "无"}；
+                        缺失证据：{item.required_probe?.join("、") || "无"}。
+                      </Typography.Text>
+                    </Space>
+                  ))}
                   {candidateGenerationOutput.initial_evidence_context?.evidence_snapshots
                     && Object.entries(candidateGenerationOutput.initial_evidence_context.evidence_snapshots).map(([ref, snapshot]) => (
                       <Typography.Text type="secondary" key={`initial-snapshot-${ref}`}>
@@ -868,8 +888,17 @@ function DiagnosisDetail({ detail }) {
                       <Typography.Text>
                         状态：{heapProbeOutcome.status}
                         {heapProbeOutcome.evidence_status ? ` / ${heapProbeOutcome.evidence_status}` : ""}
+                        {heapProbeOutcome.python_heap_status ? `；Python Heap ${heapProbeOutcome.python_heap_status}` : ""}
+                        {heapProbeOutcome.fallback_status && heapProbeOutcome.fallback_status !== "none"
+                          ? `；降级 ${heapProbeOutcome.fallback_status}`
+                          : ""}
                         {heapProbeOutcome.failure_type ? `；失败类型：${heapProbeOutcome.failure_type}` : ""}
                       </Typography.Text>
+                      {heapProbeOutcome.formal_heap_retention === false && (
+                        <Typography.Text type="secondary">
+                          当前结果不能证明 Python 对象 retention、引用链或源码行根因。
+                        </Typography.Text>
+                      )}
                       {heapProbeOutcome.reason && <Typography.Text type="secondary">{heapProbeOutcome.reason}</Typography.Text>}
                       {heapProbeOutcome.blocked_reason && (
                         <Typography.Text type="secondary">边界原因：{heapProbeOutcome.blocked_reason}</Typography.Text>

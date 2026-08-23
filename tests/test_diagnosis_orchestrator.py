@@ -685,6 +685,162 @@ def test_verified_line_rewrites_emitted_parent_and_attaches_runtime_observations
     assert nodes["python_userland_hotspot"].parent_candidate_ids == ["line-existing"]
 
 
+def test_ai_candidate_uses_real_parent_depth_when_observation_layer_already_exists():
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag_ai_candidate_after_observation",
+        cluster_assessment={
+            "classification": "python_memory_retention",
+            "summary": "worker 存在持续内存压力。",
+            "supported_level": "line",
+            "max_supported_level": "line",
+            "confidence": 0.42,
+            "evidence_refs": ["ev-rss", "ev-stack"],
+            "conclusion_eligible": False,
+            "primary_anchor": {
+                "source_context_hash": "sha256:source",
+                "source_revision": "rev-1",
+                "file": "/opt/celery-src/celery/app/trace.py",
+                "line": 651,
+                "supported_level": "line",
+                "evidence_refs": ["ev-source"],
+            },
+        },
+        candidates=[
+            {
+                "candidate_id": "line-existing",
+                "description": "异常处理行需要继续验证。",
+                "root_entity": "celery-worker",
+                "max_supported_level": "line",
+                "rank": 1,
+                "evidence_refs": ["ev-stack"],
+                "relation": "refinement",
+            },
+            {
+                "candidate_id": "python_runtime_stack_hotspot",
+                "description": "运行时栈热点观察。",
+                "root_entity": "celery-worker",
+                "max_supported_level": "process",
+                "rank": 2,
+                "evidence_refs": ["ev-stack"],
+                "relation": "evidence_context",
+                "parent_candidate_ids": ["line-existing"],
+                "origin_parent_candidate_id": "line-existing",
+            },
+        ],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+    )
+    line_id = next(
+        node.candidate_id
+        for layer in tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+        if node.supported_level == "line"
+    )
+
+    review = {
+        "ai_review_status": "succeeded",
+        "active_candidate_ids": ["ai_candidate_traceback_path"],
+        "candidate_proposals": [{
+            "candidate_id": "ai_candidate_traceback_path",
+            "claim": "异常路径需要源码机制证据。",
+            "mechanism": "traceback_path",
+            "target": "celery-worker",
+            "supported_level": "function",
+            "role": "unknown",
+            "relation": "refinement",
+            "parent_candidate_ids": [line_id],
+            "origin_parent_candidate_id": line_id,
+            "evidence_refs": ["ev-stack"],
+        }],
+    }
+
+    updated = orchestrator_module._apply_candidate_review(tree, review)
+    candidate_layer = next(
+        layer
+        for layer in updated.layers
+        if any(
+            node.candidate_id == "ai_candidate_traceback_path"
+            for node in [
+                *layer.primary_causes,
+                *layer.secondary_causes,
+                *layer.rejected_causes,
+                *layer.unknown_causes,
+            ]
+        )
+    )
+    assert candidate_layer.depth == 3
+    assert candidate_layer.depth < updated.budget.max_tree_depth
+    assert not any(
+        item["failure_code"] == "tree_depth_budget_exhausted"
+        for item in review["tree_ingestion_diagnostics"]
+    )
+
+
+def test_candidate_generation_output_exposes_selection_and_gate_failures():
+    output = orchestrator_module._candidate_generation_output({
+        "ai_review_status": "succeeded",
+        "candidate_proposals": [],
+        "candidate_selection_diagnostics": [{
+            "candidate_id": "ai_candidate_one",
+            "selection": "active",
+            "reason": "可探测",
+        }],
+        "gate_failures": [{
+            "candidate_id": "ai_candidate_one",
+            "failed_gates": ["window", "causal_status"],
+            "initial_evidence_refs": ["ev-rss"],
+            "retained_parent_candidate_id": "line-anchor",
+        }],
+        "initial_evidence_context": {
+            "evidence_refs": ["ev-rss"],
+            "evidence_snapshots": {"ev-rss": {"family": "memory_smaps"}},
+        },
+    })
+
+    assert output["selection_diagnostics"][0]["selection"] == "active"
+    assert output["gate_failures"][0]["failed_gates"] == ["window", "causal_status"]
+    assert output["initial_evidence_context"]["evidence_refs"] == ["ev-rss"]
+
+
+def test_heap_outcome_reads_evidence_payload_when_probe_outcome_is_thin():
+    outcome = orchestrator_module._heap_probe_outcome(
+        [{
+            "task_id": "heap-task",
+            "status": "COMPLETED",
+            "parameters": {"evidence_gap": "python_heap_profile"},
+            "outcome": {},
+        }],
+        evidence_catalog=[{
+            "query_or_probe": "python_heap_profile",
+            "raw_artifact_ref": "task:heap-task:artifact:python_heap_profile_json",
+            "observed_value": {
+                "task_id": "heap-task",
+                "mode": "native_live",
+                "evidence_validity": {
+                    "evidence_status": "partial",
+                    "reason": "native_allocator_observation_only",
+                    "attach_preflight": {
+                        "helper_trace": {"completed_phases": ["runtime_resolved", "attach_started"]},
+                    },
+                },
+                "raw_artifact_refs": ["artifact:native_heap_live"],
+            },
+        }],
+    )
+
+    assert outcome["python_heap_status"] == "failed"
+    assert outcome["fallback_status"] == "native_observation"
+    assert outcome["formal_heap_retention"] is False
+    assert outcome["helper_trace"]["completed_phases"] == ["runtime_resolved", "attach_started"]
+    assert "task:heap-task:artifact:python_heap_profile_json" in outcome["artifact_refs"]
+
+
 def test_readiness_gate_fails_completed_probe_without_structured_family_artifact():
     bundle = {
         "runtime_trace": [{"stage": "evidence"}],

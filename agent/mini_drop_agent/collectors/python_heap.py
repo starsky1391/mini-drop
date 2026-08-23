@@ -463,6 +463,21 @@ class PythonHeapCollector:
             process_group=True,
         )
         if result.returncode != 0 or not raw_path.is_file() or raw_path.stat().st_size <= 0:
+            attach_preflight = {
+                **preflight,
+                "native_live_attempted": True,
+                "native_live_tool": Path(tool).name,
+                "attach_failure_type": self._failure_type(
+                    attach_failure,
+                    output_dir / "memray.bin",
+                ),
+                "retry_failure_type": self._failure_type(
+                    retry_failure,
+                    output_dir / "memray-retry.bin",
+                ),
+                "helper_trace": self._helper_trace(attach_failure),
+                "retry_trace": self._helper_trace(retry_failure),
+            }
             return self._failed(
                 output_dir,
                 task,
@@ -479,12 +494,23 @@ class PythonHeapCollector:
                 retry_skipped_reason=self._stderr_excerpt(retry_failure)
                 if retry_failure.returncode == 125
                 else "",
-                preflight={
-                    **preflight,
-                    "native_live_attempted": True,
-                    "native_live_tool": Path(tool).name,
-                },
+                preflight=attach_preflight,
             )
+        attach_preflight = {
+            **preflight,
+            "native_live_attempted": True,
+            "native_live_tool": Path(tool).name,
+            "attach_failure_type": self._failure_type(
+                attach_failure,
+                output_dir / "memray.bin",
+            ),
+            "retry_failure_type": self._failure_type(
+                retry_failure,
+                output_dir / "memray-retry.bin",
+            ),
+            "helper_trace": self._helper_trace(attach_failure),
+            "retry_trace": self._helper_trace(retry_failure),
+        }
         payload = {
             "schema_version": "1.0",
             "producer": "native_allocator_live_helper",
@@ -496,13 +522,15 @@ class PythonHeapCollector:
             "call_path_hotspots": [],
             "line_candidates": [],
             "raw_artifact_refs": ["artifact:native_heap_live"],
+            "heap_status": "failed",
+            "fallback_status": "native_observation",
             "evidence_validity": {
                 "execution_status": "completed",
                 "artifact_status": "produced",
                 "evidence_status": "partial",
                 "reason": "native_allocator_observation_only",
                 "detail": "Python heap attach 不可用，已降级为 native allocator 现场观察；不能证明 Python 对象 retention。",
-                "attach_preflight": preflight,
+                "attach_preflight": attach_preflight,
                 "attach_failure_output": self._combined_output_excerpt(attach_failure),
                 "retry_failure_output": self._combined_output_excerpt(retry_failure),
                 "attach_failure_reason": self._stderr_excerpt(attach_failure),
