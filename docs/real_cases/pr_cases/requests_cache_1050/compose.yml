@@ -4,7 +4,7 @@ services:
     environment:
       CASE_EVIDENCE_ROOT: /evidence
       CASE_DURATION_SEC: ${CASE_DURATION_SEC:-180}
-      CACHE_ROOT: /evidence/http-cache
+      CACHE_ROOT: /tmp/requests-cache-case
     volumes:
       - ${PROJECT_SOURCE_ROOT:?set PROJECT_SOURCE_ROOT}:/opt/project:ro
       - ${CASE_EVIDENCE_ROOT:-./evidence}:/evidence
