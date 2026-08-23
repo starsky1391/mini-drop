@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import requests_cache
+from requests_cache.serializers.pipeline import SerializerPipeline, Stage
 
 
 EVIDENCE = Path(os.environ.get("CASE_EVIDENCE_ROOT", "/evidence"))
@@ -46,11 +47,12 @@ def main() -> None:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+    raw_pickle_serializer = SerializerPipeline([Stage(pickle)], name="pickle", is_binary=True)
     session = requests_cache.CachedSession(
         cache_name=str(CACHE_ROOT / "case-cache"),
         backend="filesystem",
         expire_after=3600,
-        serializer=pickle,
+        serializer=raw_pickle_serializer,
     )
     deadline = time.monotonic() + max(30, int(os.environ.get("CASE_DURATION_SEC", "180")))
     count = 0
