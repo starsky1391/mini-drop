@@ -3390,6 +3390,46 @@ def test_dependency_conclusion_keeps_function_depth_requests():
     assert {"cpu_profile", "off_cpu_wait_profile", "trace_endpoint_profile"} <= set(requests)
 
 
+def test_followup_uses_active_ai_candidate_level_for_source_snapshot():
+    assessment = {
+        "classification": "self_code_or_process_pressure",
+        "supported_level": "process",
+        "max_supported_level": "process",
+        "primary_anchor": {"supported_level": "process"},
+    }
+    session = {
+        "target_scope": {
+            "source_context": {
+                "source_paths": ["server/app.py"],
+                "repo_revision": "rev-1",
+            },
+        },
+        "session_main": {
+            "layers": [{
+                "primary_causes": [],
+                "secondary_causes": [],
+                "rejected_causes": [],
+                "unknown_causes": [{
+                    "candidate_id": "ai_candidate_function",
+                    "generated_by": "ai_candidate",
+                    "role": "unknown",
+                    "status": "missing_evidence",
+                    "causal_status": "unproven",
+                    "decision": "continue_probe",
+                    "supported_level": "function",
+                    "depth_kind": "base",
+                    "node_type": "base_cause",
+                }],
+            }],
+        },
+    }
+
+    requests = orchestrator_module._assessment_followup_requests(assessment, session)
+
+    assert "source_snapshot" in requests
+    assert not {"cpu_profile", "off_cpu_wait_profile", "trace_endpoint_profile"} & set(requests)
+
+
 def test_memory_followup_is_sequential_heap_runtime_then_source():
     assessment = {"classification": "self_code_or_process_pressure", "primary_anchor": {"supported_level": "process"}}
     base = {"normalized_intent": {"symptom": "memory_pressure"}, "target_scope": {}}

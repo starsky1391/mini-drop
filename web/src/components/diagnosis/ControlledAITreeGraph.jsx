@@ -12,7 +12,7 @@ import {
 import { Alert, Collapse, Drawer, Empty, Popover, Progress, Space, Tag, Typography } from "antd";
 import "@xyflow/react/dist/style.css";
 import "./ControlledAITreeGraph.css";
-import { buildControlledAITreeGraph, ROLE_LABELS } from "./aiTreeGraphModel";
+import { buildControlledAITreeGraph, candidateDisplaySemantics, ROLE_LABELS } from "./aiTreeGraphModel";
 
 let elkInstance = null;
 
@@ -177,16 +177,23 @@ function AITreeNode({ data }) {
     || candidate.causal_status === "contradicted"
   );
   const isUnresolved = candidate.causal_status === "inconclusive"
-    || (data.role === "unknown" && candidate.status === "missing_evidence");
+    || (
+      !isBoundaryStatus
+      && !isRejected
+      && candidate.status === "missing_evidence"
+      && candidate.decision === "continue_probe"
+    );
   const isForbidden = candidate.status === "forbidden" || data.status === "forbidden";
   const depthKind = candidate.node_type === "observation" ? "observation" : candidate.depth_kind || data.layoutBand || "base";
-  const roleLabel = depthKind === "observation"
-    ? "观察上下文"
-    : depthKind === "mechanism"
-    ? "机制分支"
-    : depthKind === "boundary"
-      ? "证据边界"
-      : ROLE_LABELS[data.role] || data.role;
+  const roleLabel = data.displayLabel || candidateDisplaySemantics(candidate, data.generatedBy).roleLabel || (
+    depthKind === "observation"
+      ? "观察上下文"
+      : depthKind === "mechanism"
+      ? "机制分支"
+      : depthKind === "boundary"
+        ? "证据边界"
+        : ROLE_LABELS[data.role] || data.role
+  );
   const content = (
     <Space direction="vertical" size={6} className="ai-tree-popover">
       <Typography.Text strong>{data.claim}</Typography.Text>
@@ -205,7 +212,7 @@ function AITreeNode({ data }) {
         <Handle type="target" position={Position.Top} />
         <div className="ai-tree-node-topline">
           <span className="ai-tree-node-role">{roleLabel}</span>
-          <span className="ai-tree-node-level">{data.level}</span>
+          <span className="ai-tree-node-level">{data.levelLabel || data.level}</span>
         </div>
         <Typography.Text className="ai-tree-node-title" ellipsis>
           {data.title}
@@ -240,13 +247,15 @@ function TreeDetailDrawer({ selected, evidenceMap, onClose }) {
   const candidate = value.candidate || {};
   const challenge = candidate.self_challenge || {};
   const depthKind = candidate.node_type === "observation" ? "observation" : candidate.depth_kind || value.layoutBand || "base";
-  const roleLabel = depthKind === "observation"
-    ? "观察上下文"
-    : depthKind === "mechanism"
-    ? "机制分支"
-    : depthKind === "boundary"
-      ? "证据边界"
-      : ROLE_LABELS[value.role] || value.role;
+  const roleLabel = value.displayLabel || candidateDisplaySemantics(candidate, value.generatedBy).roleLabel || (
+    depthKind === "observation"
+      ? "观察上下文"
+      : depthKind === "mechanism"
+      ? "机制分支"
+      : depthKind === "boundary"
+        ? "证据边界"
+        : ROLE_LABELS[value.role] || value.role
+  );
   const evidenceRefs = selected?.type === "edge"
     ? value.evidenceRefs || []
     : [

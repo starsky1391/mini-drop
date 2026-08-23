@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildControlledAITreeGraph, selectSessionMainTree } from "./aiTreeGraphModel.js";
+import {
+  buildControlledAITreeGraph,
+  candidateDisplaySemantics,
+  selectSessionMainTree,
+} from "./aiTreeGraphModel.js";
 
 const candidate = (overrides) => ({
   candidate_id: "candidate",
@@ -42,6 +46,44 @@ test("session main selection prefers the canonical single tree", () => {
       controlled_ai_trees: [childSnapshot],
     }),
     sessionMain,
+  );
+});
+
+test("display semantics distinguish AI pending candidates from unresolved conclusions", () => {
+  assert.deepEqual(
+    candidateDisplaySemantics({
+      supported_level: "function",
+      status: "missing_evidence",
+      causal_status: "unproven",
+      conclusion_eligible: false,
+      relation: "refinement",
+    }, "ai_candidate"),
+    { roleLabel: "AI 候补 / 待深探", levelLabel: "函数定位" },
+  );
+  assert.deepEqual(
+    candidateDisplaySemantics({
+      supported_level: "line",
+      node_type: "line_anchor",
+      conclusion_eligible: false,
+    }, "analyzer_observation"),
+    { roleLabel: "已验证源码行", levelLabel: "源码行" },
+  );
+  assert.deepEqual(
+    candidateDisplaySemantics({
+      supported_level: "function",
+      status: "blocked",
+      causal_status: "inconclusive",
+    }, "ai_guarded"),
+    { roleLabel: "证据边界", levelLabel: "函数定位" },
+  );
+  assert.deepEqual(
+    candidateDisplaySemantics({
+      supported_level: "function",
+      status: "contradicted",
+      causal_status: "contradicted",
+      role: "rejected",
+    }, "ai_guarded"),
+    { roleLabel: "已反证", levelLabel: "函数定位" },
   );
 });
 

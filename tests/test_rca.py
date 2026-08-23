@@ -105,6 +105,50 @@ def test_session_candidate_review_accepts_only_real_refs_and_canonical_parents()
     assert result["candidate_proposals"][0]["parent_candidate_ids"] == [parent_id]
 
 
+def test_session_candidate_review_rejects_first_round_level_jump_and_line():
+    evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
+    analysis = analyze_evidence(evidence, [])
+    parent_id = next(
+        node.candidate_id
+        for layer in analysis.controlled_ai_tree.layers
+        for node in [*layer.primary_causes, *layer.secondary_causes, *layer.unknown_causes, *layer.rejected_causes]
+    )
+    response = {
+        "probe_requests": [],
+        "candidates": [{
+            "candidate_id": "ai_candidate_jump_to_line",
+            "claim": "直接把首轮候选定位到源码行",
+            "mechanism": "unverified_line_mechanism",
+            "target": "Rule.compile",
+            "supported_level": "line",
+            "decision": "needs_more_evidence",
+            "causal_status": "needs_more_evidence",
+            "evidence_refs": ["ev_top"],
+            "parent_candidate_ids": [parent_id],
+        }],
+    }
+    with mock.patch.dict(
+        "os.environ",
+        {"MINI_DROP_AI_API_KEY": "test-key", "MINI_DROP_AI_ENABLED": "1"},
+    ), mock.patch(
+        "server.app.rca.llm_client._call_deepseek",
+        return_value=json.dumps(response),
+    ):
+        result = generate_session_candidate_review(
+            diagnosis_id="diag-first-round-level-jump",
+            fact_context={"localization_boundary": {"level": "function"}},
+            session_tree=analysis.controlled_ai_tree,
+            evidence_catalog=[{"evidence_id": "ev_top"}],
+            probe_manifest=build_probe_manifest(),
+        )
+
+    assert result["ai_review_status"] == "failed"
+    assert result["candidate_proposals"] == []
+    assert result["validation_diagnostics"][0]["failure_code"] == "candidate_level_jump"
+    assert result["validation_diagnostics"][0]["candidate_supported_level"] == "line"
+    assert result["validation_diagnostics"][0]["candidate_entry_level"] == "function"
+
+
 def test_session_candidate_review_keeps_valid_candidates_when_one_candidate_is_invalid():
     evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
     analysis = analyze_evidence(evidence, [])
@@ -469,7 +513,7 @@ def test_session_investigation_review_selects_registered_probe_and_guarded_propo
             "claim": "动态规则构建阶段保留分配对象，可能造成 Map 生命周期延长。",
             "mechanism": "retained_allocation_during_rule_compilation",
             "target": "Rule.compile",
-            "supported_level": "function",
+            "supported_level": "host",
             "evidence_refs": ["ev_heap"],
             "opposing_evidence_refs": [],
             "missing_evidence": ["python_heap_profile"],
@@ -508,6 +552,50 @@ def test_session_investigation_review_selects_registered_probe_and_guarded_propo
     assert result["candidate_proposals"][0]["candidate_id"].startswith("ai_proposal_")
     assert result["candidate_updates"][parent_id]["status"] == "partial"
     assert result["rollback_edges"][0]["status"] == "blocked"
+
+
+def test_session_investigation_review_rejects_refinement_level_jump():
+    evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
+    analysis = analyze_evidence(evidence, [])
+    base_layer = analysis.controlled_ai_tree.layers[0]
+    base_node = base_layer.unknown_causes[0].model_copy(update={"supported_level": "resource"})
+    tree = analysis.controlled_ai_tree.model_copy(update={
+        "final_supported_level": "line",
+        "layers": [base_layer.model_copy(update={"unknown_causes": [base_node, *base_layer.unknown_causes[1:]]}), *analysis.controlled_ai_tree.layers[1:]],
+    })
+    parent_id = tree.layers[0].unknown_causes[0].candidate_id
+    response = {
+        "selected_evidence_families": ["python_heap_profile"],
+        "candidate_proposals": [{
+            "candidate_id": "ai_proposal_level_jump",
+            "parent_candidate_ids": [parent_id],
+            "origin_parent_candidate_id": parent_id,
+            "claim": "候选直接跳到函数层。",
+            "mechanism": "unverified_function_retention",
+            "target": "Rule.compile",
+            "supported_level": "function",
+            "evidence_refs": ["ev_heap"],
+            "missing_evidence": ["python_heap_profile"],
+            "what_would_change_my_mind": "下一层证据不能支持该函数定位。",
+        }],
+    }
+    with mock.patch.dict(
+        "os.environ",
+        {"MINI_DROP_AI_API_KEY": "test-key", "MINI_DROP_AI_ENABLED": "1"},
+    ), mock.patch(
+        "server.app.rca.llm_client._call_deepseek",
+        return_value=json.dumps(response),
+    ):
+        result = generate_session_investigation_review(
+            diagnosis_id="diag-level-jump",
+            session_tree=tree,
+            evidence_catalog=[{"evidence_id": "ev_heap"}],
+            probe_manifest=build_probe_manifest(),
+            allowed_evidence_families=["python_heap_profile"],
+        )
+
+    assert result["ai_review_status"] == "failed"
+    assert result["validation_diagnostics"][0]["failure_code"] == "candidate_level_jump"
 
 
 def test_session_investigation_review_rejects_unregistered_probe():

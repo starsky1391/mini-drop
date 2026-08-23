@@ -1559,6 +1559,28 @@ class DiagnosisOrchestrator:
                     },
                 }
                 session_controlled_tree = _mark_analyzer_fallback_tree(session_controlled_tree)
+        if session_controlled_tree is not None:
+            followup_session["session_main"] = session_controlled_tree.model_dump(mode="json")
+            cluster_assessment["effective_investigation_level"] = _effective_investigation_level(
+                cluster_assessment,
+                followup_session,
+            )
+            effective_assessment_followups = _assessment_followup_requests(
+                cluster_assessment,
+                followup_session,
+            )
+            assessment_followups = _unique_strings([
+                *assessment_followups,
+                *effective_assessment_followups,
+            ])
+            followup_requests = _merge_assessment_followups(
+                followup_requests,
+                effective_assessment_followups,
+                sufficient_dependency=sufficient_dependency,
+                memory_only=str(
+                    (followup_session.get("normalized_intent") or {}).get("symptom") or ""
+                ) == "memory_pressure",
+            )
         previous_retained = (
             previous_conclusions[-1].get("retained_conclusion")
             if previous_conclusions and isinstance(previous_conclusions[-1], dict)
@@ -4758,7 +4780,77 @@ def _collector_invocation(
     )
 
 
+_INVESTIGATION_LEVEL_ORDER = {
+    "resource": 0,
+    "host": 1,
+    "process": 2,
+    "thread": 3,
+    "syscall": 4,
+    "dependency": 5,
+    "service": 6,
+    "endpoint": 7,
+    "function": 8,
+    "call_path": 9,
+    "line": 10,
+}
+
+
+def _effective_investigation_level(
+    assessment: dict[str, Any],
+    session: dict[str, Any],
+) -> str:
+    """Use active AI base candidates as an input to existing follow-up planning."""
+    analyzer_level = str(
+        assessment.get("max_supported_level")
+        or assessment.get("supported_level")
+        or "resource"
+    )
+    best_level = analyzer_level
+    tree = session.get("session_main") or session.get("controlled_ai_tree")
+    if hasattr(tree, "model_dump"):
+        tree = tree.model_dump(mode="json")
+    if not isinstance(tree, dict):
+        return best_level
+    for layer in tree.get("layers", []):
+        if not isinstance(layer, dict):
+            continue
+        for node in (
+            *(layer.get("primary_causes") or []),
+            *(layer.get("secondary_causes") or []),
+            *(layer.get("unknown_causes") or []),
+        ):
+            if not isinstance(node, dict):
+                continue
+            if str(node.get("generated_by") or "") not in {"ai_candidate", "ai_guarded"}:
+                continue
+            if str(node.get("role") or "") == "rejected":
+                continue
+            if str(node.get("status") or "") in {"rejected", "contradicted", "forbidden"}:
+                continue
+            if str(node.get("depth_kind") or "") in {"mechanism", "boundary"}:
+                continue
+            if str(node.get("node_type") or "") in {
+                "observation",
+                "mechanism_explanation",
+                "stop_boundary",
+                "evidence_gap",
+                "orphan",
+            }:
+                continue
+            level = str(node.get("supported_level") or "").strip()
+            if _INVESTIGATION_LEVEL_ORDER.get(level, -1) > _INVESTIGATION_LEVEL_ORDER.get(best_level, -1):
+                best_level = level
+    return best_level
+
+
 def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str, Any]) -> list[str]:
+    effective_level = _effective_investigation_level(assessment, session)
+    assessment = {
+        **assessment,
+        "effective_investigation_level": effective_level,
+        "supported_level": effective_level,
+        "max_supported_level": effective_level,
+    }
     classification = assessment.get("classification")
     if classification == "runtime_stall":
         return ["runtime_control_history", "log_scan"]
@@ -4887,6 +4979,8 @@ def _line_probe_diagnostic(
         or target_scope.get("repo_revision")
     )
     supported_level = str(
+        assessment.get("effective_investigation_level")
+        or
         assessment.get("max_supported_level")
         or assessment.get("supported_level")
         or "resource"
@@ -8438,7 +8532,12 @@ def _needs_function_depth(assessment: dict[str, Any]) -> bool:
     """服务或进程层结论成立时，仍允许继续请求函数/调用链证据。"""
     anchor = assessment.get("primary_anchor")
     anchor_level = anchor.get("supported_level") if isinstance(anchor, dict) else None
-    supported_level = str(anchor_level or assessment.get("supported_level") or "")
+    supported_level = str(
+        assessment.get("effective_investigation_level")
+        or anchor_level
+        or assessment.get("supported_level")
+        or ""
+    )
     return supported_level not in {"line", "call_path", "function"}
 
 

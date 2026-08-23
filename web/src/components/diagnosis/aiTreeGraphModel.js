@@ -19,6 +19,64 @@ export const ROLE_LABELS = {
   unknown: "未决",
 };
 
+const LEVEL_LABELS = {
+  resource: "资源范围",
+  host: "宿主机范围",
+  process: "进程定位",
+  thread: "线程定位",
+  syscall: "系统调用",
+  dependency: "依赖定位",
+  service: "服务定位",
+  endpoint: "端点定位",
+  function: "函数定位",
+  call_path: "调用路径",
+  line: "源码行",
+};
+
+export function candidateDisplaySemantics(candidate = {}, generatedBy = "") {
+  const nodeType = candidate.node_type || "";
+  const depthKind = candidate.depth_kind || "";
+  const status = candidate.status || "";
+  const causalStatus = candidate.causal_status || "";
+  const rejected = candidate.role === "rejected"
+    || ["contradicted", "rejected"].includes(status)
+    || causalStatus === "contradicted";
+  const boundary = ["blocked", "partial", "inconclusive"].includes(status)
+    || ["blocked", "partial", "inconclusive"].includes(causalStatus)
+    || nodeType === "stop_boundary"
+    || depthKind === "boundary";
+  const levelLabel = LEVEL_LABELS[candidate.supported_level] || candidate.supported_level || "未定位";
+
+  if (rejected) {
+    return { roleLabel: "已反证", levelLabel };
+  }
+  if (boundary) {
+    return { roleLabel: "证据边界", levelLabel };
+  }
+  if (nodeType === "observation" || candidate.relation === "evidence_context") {
+    return { roleLabel: "观察证据", levelLabel };
+  }
+  if (nodeType === "mechanism_explanation" || depthKind === "mechanism") {
+    return { roleLabel: "机制解释", levelLabel };
+  }
+  if (nodeType === "line_anchor" || (candidate.supported_level === "line" && generatedBy !== "ai_candidate")) {
+    return { roleLabel: "已验证源码行", levelLabel };
+  }
+  if (
+    ["ai_candidate", "ai_guarded"].includes(generatedBy)
+    && !candidate.conclusion_eligible
+  ) {
+    return { roleLabel: "AI 候补 / 待深探", levelLabel };
+  }
+  if (candidate.supported_level === "function") {
+    return { roleLabel: "函数定位", levelLabel };
+  }
+  if (candidate.supported_level === "call_path") {
+    return { roleLabel: "调用路径", levelLabel };
+  }
+  return { roleLabel: ROLE_LABELS[candidate.role] || candidate.role || "未决", levelLabel };
+}
+
 export function selectSessionMainTree(conclusion = {}) {
   const directTree = conclusion?.controlled_ai_tree;
   if (
@@ -155,9 +213,10 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
         ? "rejected"
         : candidate.node_type === "stop_boundary" || candidate.depth_kind === "boundary"
           ? "unknown"
-        : candidate.conclusion_eligible
-          ? candidate.role
-          : "unknown";
+          : candidate.conclusion_eligible
+            ? candidate.role
+            : "unknown";
+      const displaySemantics = candidateDisplaySemantics(candidate, layer.generated_by);
       const outsideFinalBoundary = isDeeperLevel(candidate.supported_level, finalLevel);
       const nodeId = nodeIdFor(layer.layer_id, candidate.candidate_id);
       const nodeLayoutRole = candidate.node_type === "stop_boundary"
@@ -185,6 +244,8 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
           layerSummary: layer.summary,
           candidate,
           role: visualRole,
+          displayLabel: displaySemantics.roleLabel,
+          levelLabel: displaySemantics.levelLabel,
           nodeType: candidate.node_type || nodeTypeForDepth(candidate.depth_kind, candidate.supported_level, visualRole),
           title: candidate.candidate_id,
           claim: candidate.claim,

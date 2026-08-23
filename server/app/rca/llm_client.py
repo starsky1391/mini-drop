@@ -10,6 +10,7 @@ import hashlib
 import os
 import re
 import time
+from typing import Any
 
 from server.app.ai_provider import chat_completions, get_ai_settings, is_feature_enabled
 from server.app.diagnosis.codeql_query_guard import validate_ai_generated_codeql_query
@@ -55,6 +56,9 @@ def _validation_diagnostic(
     candidate_evidence_refs: list[str] | None = None,
     candidate_parent_candidate_ids: list[str] | None = None,
     candidate_origin_parent_candidate_id: str = "",
+    candidate_supported_level: str = "",
+    candidate_entry_level: str = "",
+    candidate_parent_supported_level: str = "",
 ) -> dict:
     """Return a bounded explanation of a rejected model response."""
     message = str(error or "")
@@ -64,6 +68,7 @@ def _validation_diagnostic(
         ("candidate decision 非法", "invalid_decision", "candidates[].decision"),
         ("candidate causal_status 非法", "invalid_causal_status", "candidates[].causal_status"),
         ("candidate supported_level 非法", "invalid_supported_level", "candidates[].supported_level"),
+        ("candidate 层级跃迁非法", "candidate_level_jump", "candidates[].supported_level"),
         ("candidate role 非法", "invalid_role", "candidates[].role"),
         ("candidate relation 非法", "invalid_relation", "candidates[].relation"),
         ("candidate_id 非法或重复", "invalid_candidate_id", "candidates[].candidate_id"),
@@ -122,6 +127,9 @@ def _validation_diagnostic(
         ][:128],
         "candidate_parent_candidate_ids": candidate_parents[:64],
         "candidate_origin_parent_candidate_id": str(candidate_origin_parent_candidate_id or ""),
+        "candidate_supported_level": str(candidate_supported_level or ""),
+        "candidate_entry_level": str(candidate_entry_level or ""),
+        "candidate_parent_supported_level": str(candidate_parent_supported_level or ""),
         "missing_parent_candidate_ids": [
             parent_id
             for parent_id in candidate_parents
@@ -360,6 +368,16 @@ def _single_explicit_parent(parent_ids: list[str]) -> str:
     return unique[0] if len(unique) == 1 else ""
 
 
+def _initial_entry_boundary(
+    fact_context: dict,
+    session_tree: ControlledAITree | None,
+) -> str:
+    boundary = fact_context.get("localization_boundary")
+    if isinstance(boundary, dict) and boundary.get("level"):
+        return str(boundary["level"]).strip()
+    return str(session_tree.final_supported_level if session_tree else "resource")
+
+
 def generate_session_candidate_review(
     *,
     diagnosis_id: str,
@@ -446,6 +464,8 @@ def generate_session_candidate_review(
                 "parent_candidate_ids 只能逐字选择 allowed_parent_candidate_ids 中的 canonical 基础节点；"
                 "orphan、observation、mechanism、boundary 节点不能作为首轮候选父节点；"
                 "origin_parent_candidate_id 必须是其中唯一来源父节点（只有一个父节点时可直接使用该节点）；"
+                "首轮候选 supported_level 不得超过 Analyzer 当前 localization_boundary.level；"
+                "首轮候选不得直接生成 line，line 必须由 runtime file:line 和 source_snapshot 验证后产生；"
                 "probe_requests 只能使用 probe_manifest 中注册的 evidence_family；role 只能是 primary、secondary、unknown 或 rejected。"
             ),
         },
@@ -501,6 +521,12 @@ def generate_session_candidate_review(
                     supported_level = str(item.get("supported_level") or "resource")
                     if supported_level not in {"resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"}:
                         raise ValueError(f"candidate supported_level 非法: {supported_level}")
+                    entry_boundary = _initial_entry_boundary(fact_context, session_tree)
+                    if supported_level == "line" or _level_order(supported_level) > _level_order(entry_boundary):
+                        raise ValueError(
+                            "candidate 层级跃迁非法: "
+                            f"首轮候选 {supported_level} 超过 Analyzer 入口边界 {entry_boundary}"
+                        )
                     role = str(item.get("role") or "unknown")
                     if role not in {"primary", "secondary", "unknown", "rejected"}:
                         raise ValueError(f"candidate role 非法: {role}")
@@ -562,6 +588,12 @@ def generate_session_candidate_review(
                             if current_item
                             else ""
                         ),
+                        candidate_supported_level=(
+                            str(current_item.get("supported_level") or "")
+                            if current_item
+                            else ""
+                        ),
+                        candidate_entry_level=_initial_entry_boundary(fact_context, session_tree),
                     ))
                     continue
             registered = {
@@ -720,6 +752,12 @@ def generate_session_candidate_review(
                     if current_item
                     else ""
                 ),
+                candidate_supported_level=(
+                    str(current_item.get("supported_level") or "")
+                    if current_item
+                    else ""
+                ),
+                candidate_entry_level=_initial_entry_boundary(fact_context, session_tree),
             ))
             candidate_generation_attempts.append(_candidate_generation_attempt_record(
                 attempt=attempt,
@@ -828,6 +866,10 @@ def generate_session_investigation_review(
         for item in candidate_catalog
         if item["candidate_id"] in (candidate_ids - rejected_candidate_ids)
     ]
+    candidate_levels = {
+        item["candidate_id"]: item["supported_level"]
+        for item in candidate_catalog
+    }
     payload = {
         "diagnosis_id": diagnosis_id,
         "current_tree": session_tree.model_dump(mode="json"),
@@ -868,7 +910,9 @@ def generate_session_investigation_review(
                 "candidate_id，以及 1-8 个 object_type_hints，用于限制 PyHeap 运行时引用验证目标。"
                 "candidate_proposals 可为空；新增 candidate_id 必须以 ai_proposal_ 开头，parent_candidate_ids 必须引用 current_tree，"
                 "并且每个候选必须给出唯一 origin_parent_candidate_id，且该值必须属于 parent_candidate_ids；"
-                "evidence_refs 必须真实存在，supported_level 不得超过 current_tree.final_supported_level。"
+                "evidence_refs 必须真实存在，supported_level 不得超过 current_tree.final_supported_level；"
+                "refinement 候选最多比 origin_parent_candidate_id 深一层；不得直接生成 line 候补，"
+                "line 只能由 runtime file:line 和 source_snapshot 验证后形成。"
                 "每个候选必须包含 claim、mechanism、target、支持/反驳/缺失证据和 what_would_change_my_mind。"
                 "证据回流时可返回 candidate_updates（只能更新 current_tree 中已有候选）和 rollback_edges；"
                 "candidate_updates 只能改变该候选的解释、状态、角色和显式血缘，不能删除候选或伪造父节点；"
@@ -888,7 +932,11 @@ def generate_session_investigation_review(
             if not selected or any(item not in allowed for item in selected) or len(selected) > 3:
                 raise ValueError("selected_evidence_families 越界或为空")
             proposals = _validate_investigation_proposals(
-                data.get("candidate_proposals"), candidate_ids, valid_refs, session_tree.final_supported_level
+                data.get("candidate_proposals"),
+                candidate_ids,
+                valid_refs,
+                session_tree.final_supported_level,
+                candidate_levels=candidate_levels,
             )
             all_candidate_ids = candidate_ids | {
                 str(item.get("candidate_id") or "")
@@ -1128,7 +1176,14 @@ def _source_anchor_catalog(evidence_catalog: list[dict]) -> list[dict]:
     return result[:40]
 
 
-def _validate_investigation_proposals(value, parent_ids: set[str], valid_refs: set[str], max_level: str) -> list[dict]:
+def _validate_investigation_proposals(
+    value,
+    parent_ids: set[str],
+    valid_refs: set[str],
+    max_level: str,
+    *,
+    candidate_levels: dict[str, str] | None = None,
+) -> list[dict]:
     if value is None:
         return []
     if not isinstance(value, list) or len(value) > 2:
@@ -1156,6 +1211,18 @@ def _validate_investigation_proposals(value, parent_ids: set[str], valid_refs: s
         relation = str(item.get("relation") or ("causal_convergence" if len(parents) > 1 else "refinement"))
         if relation not in {"refinement", "causal_convergence", "shared_evidence", "alternative"}:
             raise ValueError("candidate relation 非法")
+        if level == "line":
+            raise ValueError("candidate 层级跃迁非法: line 只能由 runtime/source_snapshot 验证产生")
+        parent_level = str((candidate_levels or {}).get(origin_parent) or "").strip()
+        if (
+            relation == "refinement"
+            and parent_level
+            and _level_order(level) > _level_order(parent_level) + 1
+        ):
+            raise ValueError(
+                "candidate 层级跃迁非法: "
+                f"refinement {parent_level} -> {level} 超过 origin parent 的下一层"
+            )
         child_ids = [str(child) for child in item.get("child_candidate_ids", []) if str(child)]
         if any(child == candidate_id for child in child_ids):
             raise ValueError("candidate child_candidate_ids 不真实")
