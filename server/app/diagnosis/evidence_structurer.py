@@ -141,6 +141,12 @@ def structure_artifact_evidence(
         profile_hotspots = _trace_profile_hotspots(trace_profile)
         if profile_hotspots:
             call_path_hotspots = _with_window_metadata(profile_hotspots, window_json)
+    runtime_line_candidates = _runtime_line_candidates(
+        depth=depth,
+        runtime_profile=runtime_profile,
+        top_functions=top_functions,
+        call_path_hotspots=call_path_hotspots,
+    )
     python_scenarios = _python_scenario_values(values)
     confidence_inputs = _build_confidence_inputs(
         top_functions=top_functions,
@@ -171,7 +177,9 @@ def structure_artifact_evidence(
         redis_check=values.get("redis_check_json"),
         trace_profile=trace_profile,
         baseline=values.get("continuous_summary"),
+        runtime_line_candidates=runtime_line_candidates,
     )
+    confidence_inputs["runtime_line_candidates"] = runtime_line_candidates
     confidence_inputs["runtime_profile_quality"] = sample_quality.get("diagnostic_value") if sample_quality else "unknown"
     confidence_inputs["runtime_profile_non_idle_ratio"] = sample_quality.get("non_idle_ratio") if sample_quality else 0.0
     confidence_inputs["runtime_profile_primitive_frame_ratio"] = sample_quality.get("primitive_frame_ratio") if sample_quality else 0.0
@@ -980,6 +988,7 @@ def _python_scenario_gates(
     redis_check: Any,
     trace_profile: Any,
     baseline: Any,
+    runtime_line_candidates: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     gates: dict[str, Any] = {}
     source_state = _source_snapshot_state(source_snapshot)
@@ -996,6 +1005,7 @@ def _python_scenario_gates(
         counter_evidence=counter_evidence,
         trace_profile=trace_profile,
         baseline=baseline,
+        runtime_line_candidates=runtime_line_candidates or [],
     )
     gates.update(builtin_gates)
     for family, payload in python_scenarios.items():
@@ -1022,6 +1032,7 @@ def _builtin_python_scenario_gates(
     counter_evidence: dict[str, Any],
     trace_profile: Any,
     baseline: Any,
+    runtime_line_candidates: list[dict[str, Any]],
 ) -> dict[str, Any]:
     gates: dict[str, Any] = {}
     cpu_gate = _python_cpu_hotspot_gate(
@@ -1030,6 +1041,7 @@ def _builtin_python_scenario_gates(
         source_state=source_state,
         counter_evidence=counter_evidence,
         baseline=baseline,
+        runtime_line_candidates=runtime_line_candidates,
     )
     if cpu_gate:
         gates["python_cpu_hotspot"] = cpu_gate
@@ -1058,11 +1070,15 @@ def _python_cpu_hotspot_gate(
     source_state: dict[str, Any],
     counter_evidence: dict[str, Any],
     baseline: Any,
+    runtime_line_candidates: list[dict[str, Any]],
 ) -> dict[str, Any]:
     first = top_functions[0] if top_functions else {}
     if not first:
         return {}
-    line_candidates = _line_candidates_from_items(top_functions)
+    line_candidates = _merge_line_candidates(
+        _line_candidates_from_items(top_functions),
+        runtime_line_candidates,
+    )
     line_verified = _line_candidates_match_source(line_candidates, source_state)
     sample_count = _safe_int(stack_summary.get("sample_count") or first.get("samples"))
     percent = _safe_float(stack_summary.get("dominant_percent") or first.get("percent"))
@@ -1292,6 +1308,7 @@ def _scenario_gate_payload(
         "evidence_status": evidence_status,
         "source_policy": source_policy,
         "upstream_sources": upstream_sources[:10],
+        "line_candidates": line_candidates[:10],
         "line_candidate_count": len(line_candidates),
         "source_snapshot_status": source_state["status"],
         "source_context_hash": source_state["source_context_hash"],
@@ -1608,10 +1625,10 @@ def _line_candidates_from_items(items: list[dict[str, Any]]) -> list[dict[str, A
             for frame in reversed(item["stack"]):
                 if _looks_like_runtime_frame(str(frame)):
                     continue
-                match = re.search(r"(.+):(\d+)(?::([^:]+))?$", str(frame))
-                if match:
-                    file = match.group(1)
-                    line = _safe_int(match.group(2))
+                candidate = _line_candidate_from_frame(str(frame))
+                if candidate:
+                    file = candidate["file"]
+                    line = candidate["line"]
                     break
         if file and line > 0:
             candidates.append({
@@ -1621,6 +1638,72 @@ def _line_candidates_from_items(items: list[dict[str, Any]]) -> list[dict[str, A
                 "evidence_ref": item.get("evidence_ref"),
             })
     return candidates[:20]
+
+
+def _runtime_line_candidates(
+    *,
+    depth: dict[str, Any],
+    runtime_profile: Any,
+    top_functions: list[dict[str, Any]],
+    call_path_hotspots: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    items.extend(top_functions)
+    items.extend(call_path_hotspots)
+    if isinstance(depth, dict):
+        for key in ("line_candidates", "stack_samples", "call_path_hotspots"):
+            value = depth.get(key)
+            if isinstance(value, list):
+                items.extend(item for item in value if isinstance(item, dict))
+    if isinstance(runtime_profile, dict):
+        for key in ("line_candidates", "stack_samples", "call_path_hotspots", "top_functions"):
+            value = runtime_profile.get(key)
+            if isinstance(value, list):
+                items.extend(item for item in value if isinstance(item, dict))
+    return _merge_line_candidates(_line_candidates_from_items(items))
+
+
+def _merge_line_candidates(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, int, str]] = set()
+    for group in groups:
+        for item in group:
+            if not isinstance(item, dict):
+                continue
+            file = str(item.get("file") or "")
+            line = _safe_int(item.get("line"))
+            if not file or line <= 0:
+                continue
+            function = str(item.get("function") or item.get("symbol") or item.get("name") or "")
+            key = (file.replace("\\", "/"), line, function)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append({
+                "file": file,
+                "line": line,
+                "function": function,
+                "evidence_ref": item.get("evidence_ref"),
+            })
+    return merged[:20]
+
+
+def _line_candidate_from_frame(frame: str) -> dict[str, Any] | None:
+    traceback_match = re.search(r'File "([^"]+)", line (\d+), in ([^\s]+)', frame)
+    if traceback_match:
+        return {
+            "file": traceback_match.group(1),
+            "line": _safe_int(traceback_match.group(2)),
+            "function": traceback_match.group(3),
+        }
+    colon_match = re.search(r"(.+):(\d+)(?::([^:]+))?$", frame)
+    if colon_match:
+        return {
+            "file": colon_match.group(1),
+            "line": _safe_int(colon_match.group(2)),
+            "function": colon_match.group(3) or "",
+        }
+    return None
 
 
 def _runtime_profile_is_primitive(top_function: dict[str, Any], quality: dict[str, Any]) -> bool:

@@ -1130,6 +1130,8 @@ def build_fallback_explanation(
             else None
         )
         retained_claim = str((retained or {}).get("claim") or "").strip() if scenario_retained else ""
+        if retained_claim:
+            retained_claim = _abstained_retained_headline(retained_claim)
         headline = retained_claim or (
             f"未形成正式根因；当前证据只支持停在{level_label}级观察/定位层，"
             "尚未闭合可验证的因果链。"
@@ -1271,6 +1273,17 @@ def _build_localization_chain(
             supported_level=str(node.get("supported_level") or "resource"),
         ))
     return result
+
+
+def _abstained_retained_headline(claim: str) -> str:
+    normalized = " ".join(str(claim or "").split())
+    if not normalized:
+        return ""
+    if normalized.startswith(("未形成正式根因", "当前证据支持")):
+        return normalized
+    if "不能升级为正式根因" in normalized or "未形成正式源码根因" in normalized:
+        return f"当前证据支持场景级定位：{normalized}"
+    return f"当前证据支持场景级定位：{normalized} 但未形成正式源码根因。"
 
 
 def apply_session_review(

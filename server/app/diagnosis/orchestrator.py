@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import socket
 import threading
 from datetime import datetime, timezone
@@ -858,6 +859,9 @@ class DiagnosisOrchestrator:
         )
         if definition.probe_id == "process_source_mechanism_query":
             generated_query = step_parameters.get("ai_generated_query")
+            total_timeout_sec = step_parameters.get("total_timeout_sec")
+            if total_timeout_sec:
+                collector_parameters["total_timeout_sec"] = total_timeout_sec
             if isinstance(generated_query, dict):
                 collector_parameters["ai_generated_query"] = generated_query
         elif definition.probe_id == "process_python_heap_reference":
@@ -1226,6 +1230,11 @@ class DiagnosisOrchestrator:
                     if not isinstance(item, dict) or not item.get("file") or int(item.get("line") or 0) <= 0:
                         continue
                     add(item["file"], item["line"], item.get("symbol") or item.get("function"))
+                for item in value.get("stack_samples", []):
+                    if not isinstance(item, dict):
+                        continue
+                    for candidate in _line_candidates_from_runtime_stack_sample(item):
+                        add(candidate["file"], candidate["line"], candidate.get("function"))
         return _prioritized_line_candidates(candidates)[:64]
 
     def _append_child_task(self, diagnosis_id: str, task_id: str, definition) -> None:
@@ -2103,7 +2112,7 @@ class DiagnosisOrchestrator:
             attempt_number = len(matching_probes) + 1
             key = f"{diagnosis_id}:followup:{evidence_gap}:{target_key}:{attempt_number}"
             step_id = f"step_{hashlib.sha256(key.encode()).hexdigest()[:14]}"
-            duration = min(definition.default_duration_seconds, definition.max_duration_seconds)
+            duration = _followup_probe_duration(evidence_gap, definition)
             deferred = False
             if not requires_approval:
                 budget_block = self._followup_budget_block(
@@ -2138,6 +2147,8 @@ class DiagnosisOrchestrator:
                 target,
                 diagnosis_id,
             )
+            if evidence_gap == "source_mechanism_query":
+                collector_parameters["total_timeout_sec"] = duration
             guarded_probe_input = (
                 (probe_inputs or {}).get(evidence_gap)
                 if isinstance((probe_inputs or {}).get(evidence_gap), dict)
@@ -3392,6 +3403,12 @@ def _initial_probe_duration(probe_id: str, definition) -> int:
     return min(definition.default_duration_seconds, definition.max_duration_seconds)
 
 
+def _followup_probe_duration(evidence_gap: str, definition) -> int:
+    if evidence_gap == "source_mechanism_query":
+        return min(max(definition.default_duration_seconds + 90, definition.default_duration_seconds), definition.max_duration_seconds)
+    return min(definition.default_duration_seconds, definition.max_duration_seconds)
+
+
 def _is_runtime_log_scenario_probe(probe_id: str) -> bool:
     return probe_id in _RUNTIME_LOG_SCENARIO_PROBES
 
@@ -4631,6 +4648,76 @@ _GENERIC_RUNTIME_SOURCE_SYMBOLS = {
     "start", "worker", "main", "caller", "invoke", "new_func",
     "asynloop", "create_loop", "poll", "fire_timers",
 }
+
+
+def _line_candidates_from_runtime_stack_sample(item: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+
+    def append_candidate(file_name: Any, line: Any, function: Any = "") -> None:
+        line_number = int(_num(line))
+        file_text = str(file_name or "")
+        function_text = str(function or "")
+        if not file_text or line_number <= 0:
+            return
+        if _is_low_value_runtime_file(file_text, function_text):
+            return
+        candidate = {
+            "file": file_text,
+            "line": line_number,
+            "function": function_text,
+        }
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    append_candidate(item.get("file"), item.get("line"), item.get("function") or item.get("hot_frame"))
+    stack = item.get("stack")
+    if isinstance(stack, list):
+        for frame in reversed(stack):
+            parsed = _parse_runtime_frame_line(frame)
+            if parsed:
+                append_candidate(parsed["file"], parsed["line"], parsed.get("function"))
+    return candidates
+
+
+def _parse_runtime_frame_line(frame: Any) -> dict[str, Any] | None:
+    text = str(frame or "").strip()
+    if not text:
+        return None
+    traceback_match = re.search(r'File "([^"]+)", line (\d+), in ([^\s]+)', text)
+    if traceback_match:
+        return {
+            "file": traceback_match.group(1),
+            "line": int(traceback_match.group(2)),
+            "function": traceback_match.group(3),
+        }
+    colon_match = re.search(r"(.+):(\d+)(?::([^:]+))?$", text)
+    if colon_match:
+        return {
+            "file": colon_match.group(1),
+            "line": int(colon_match.group(2)),
+            "function": colon_match.group(3) or "",
+        }
+    return None
+
+
+def _is_low_value_runtime_file(file_name: str, symbol: str = "") -> bool:
+    text = f"{file_name} {symbol}".replace("\\", "/").lower()
+    return (
+        text.startswith(("/usr/local/lib/python", "/usr/lib/python"))
+        or "/site-packages/" in text
+        or any(
+            token in text
+            for token in (
+                "/lib/python",
+                "threading.py",
+                "queue.py",
+                "socket.py",
+                "selectors.py",
+                "asyncio/",
+                "concurrent/futures",
+            )
+        )
+    )
 
 
 def _source_symbol_semantic(symbol: Any, file_name: Any = "") -> int:

@@ -761,8 +761,90 @@ def test_valid_python_scenario_gate_can_be_retained_without_formal_cluster():
 
     assert explanation["formal_root_cause"] is None
     assert explanation["abstained"] is True
+    assert "当前证据支持场景级定位" in explanation["headline"]
+    assert "未形成正式源码根因" in explanation["headline"]
     assert "队列堆积" in explanation["headline"]
     assert explanation["why_it_happened"] == "缺少源码行和机制闭合证据。"
+
+
+def test_abstained_scenario_headline_does_not_repeat_formal_root_boundary():
+    observation = _observation(
+        service_id="requests-cpu-case",
+        instance_id="requests-worker-1",
+        pid=11,
+        refs=["python_cpu_profile.top_functions[0]"],
+    )
+    observation["evidence_index"] = {
+        "python_scenario_gates": {
+            "python_cpu_hotspot": {
+                "family": "python_cpu_hotspot",
+                "scenario_type": "python_cpu_hotspot",
+                "status": "partial",
+                "evidence_status": "valid",
+                "confidence": 0.45,
+                "max_supported_claim_type": "observation",
+                "conclusion_eligible": False,
+                "line_verified": False,
+                "eligibility_reason": "缺少源码行和机制闭合证据，不能升级为正式根因。",
+                "missing_evidence": ["source_snapshot_verification"],
+                "evidence_refs": ["python_cpu_profile.top_functions[0]"],
+                "mechanism_evidence_refs": ["python_cpu_profile.top_functions[0]"],
+                "counter_evidence_refs": [],
+            },
+        }
+    }
+    tree = {
+        "layers": [{
+            "layer": 0,
+            "primary_causes": [{
+                "candidate_id": "scenario-python-cpu",
+                "generated_by": "scenario_gate",
+                "claim_status": "active",
+                "parent_candidate_ids": [],
+                "child_candidate_ids": [],
+                "claim": (
+                    "Python 场景证据显示 requests-cpu-case 存在 python_cpu_hotspot，"
+                    "当前可作为场景级局部定位，但缺少源码行和机制闭合证据，不能升级为正式根因。"
+                ),
+                "mechanism": "python_cpu_hotspot",
+                "supported_level": "process",
+                "status": "partial",
+                "claim_type": "partial_localization",
+                "causal_status": "unproven",
+                "evidence_refs": ["python_cpu_profile.top_functions[0]"],
+            }],
+        }],
+    }
+
+    scenario_retained = build_scenario_retained_conclusion(
+        [observation],
+        tree,
+        target_service="requests-cpu-case",
+    )
+    retained = build_retained_conclusion(
+        [],
+        {
+            "classification": "insufficient_evidence",
+            "scenario_retained_conclusion": scenario_retained,
+        },
+        tree,
+    )
+
+    explanation = build_fallback_explanation(
+        [],
+        {
+            "classification": "insufficient_evidence",
+            "scenario_retained_conclusion": scenario_retained,
+        },
+        session_tree=tree,
+        qualification_boundary={"message": "仍缺少源码行和机制闭合证据。"},
+    )
+
+    assert retained["candidate_id"] == "scenario-python-cpu"
+    assert explanation["abstained"] is True
+    assert explanation["headline"].startswith("当前证据支持场景级定位：")
+    assert explanation["headline"].count("正式根因") == 1
+    assert "未形成正式源码根因" not in explanation["headline"]
 
 
 def test_dependency_and_same_host_cpu_form_two_eligible_clusters():

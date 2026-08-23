@@ -52,6 +52,23 @@ def test_audit_bundle_json_safe_replaces_non_finite_floats():
     }
 
 
+def test_runtime_stack_sample_line_candidates_skip_runtime_frames():
+    candidates = orchestrator_module._line_candidates_from_runtime_stack_sample({
+        "hot_frame": "_PyEval_EvalFrameDefault",
+        "stack": [
+            "/usr/local/lib/python3.11/threading.py:982:run",
+            "/srv/app/orders.py:42:calculate_total",
+            "/usr/local/lib/python3.11/site-packages/framework/router.py:21:dispatch",
+        ],
+    })
+
+    assert candidates == [{
+        "file": "/srv/app/orders.py",
+        "line": 42,
+        "function": "calculate_total",
+    }]
+
+
 def test_orchestrator_merges_only_valid_python_scenario_gate_clusters():
     ai_cluster = RootCauseCluster(
         cluster_id="rc-ai",
@@ -3530,6 +3547,12 @@ def test_runtime_log_scenario_initial_probes_are_low_latency():
         "process_python_retry_timeout_profile",
         definition,
     ) == 1
+
+
+def test_source_mechanism_followup_duration_covers_collector_total_timeout():
+    definition = orchestrator_module.get_probe("process_source_mechanism_query")
+
+    assert orchestrator_module._followup_probe_duration("source_mechanism_query", definition) == 120
 
 
 def test_python_scenario_router_covers_cpu_endpoint_and_io_orders():

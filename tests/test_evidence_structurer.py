@@ -83,6 +83,44 @@ def test_pyspy_sample_quality_is_preserved_in_structured_evidence():
     assert structured.evidence_index["runtime_profile_quality"]["dominant_state"] == "blocked_io"
 
 
+def test_runtime_stack_business_frame_becomes_cpu_line_candidate():
+    structured = structure_artifact_evidence(
+        task_id="runtime_business_frame",
+        artifacts=[
+            {"artifact_type": "python_stack_samples_json", "filename": "stack_samples.json"},
+        ],
+        artifact_values={
+            "top_json": [{"name": "_PyEval_EvalFrameDefault", "samples": 8, "percent": 80.0}],
+            "python_stack_samples_json": {
+                "sample_quality": {
+                    "diagnostic_value": "medium",
+                    "primitive_frame_ratio": 0.0,
+                    "framework_loop_ratio": 0.0,
+                    "target_code_ratio": 0.9,
+                    "sample_count": 8,
+                },
+                "stack_samples": [{
+                    "hot_frame": "_PyEval_EvalFrameDefault",
+                    "sample_count": 8,
+                    "percent": 80.0,
+                    "stack": [
+                        "/usr/local/lib/python3.11/runpy.py:198:_run_module_as_main",
+                        "/srv/app/orders.py:42:calculate_total",
+                        "/usr/local/lib/python3.11/site-packages/framework/router.py:21:dispatch",
+                    ],
+                }],
+            },
+        },
+    )
+
+    gate = structured.confidence_inputs["python_scenario_gates"]["python_cpu_hotspot"]
+
+    assert gate["gate_checks"]["runtime_line_candidate"] is True
+    assert gate["line_candidates"][0]["file"] == "/srv/app/orders.py"
+    assert gate["line_candidates"][0]["line"] == 42
+    assert gate["conclusion_eligible"] is False
+
+
 def test_evidence_window_metadata_distinguishes_same_window_from_followup():
     same_window = structure_artifact_evidence(
         task_id="triggered_task",
