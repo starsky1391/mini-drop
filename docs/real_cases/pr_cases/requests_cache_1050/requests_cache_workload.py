@@ -45,7 +45,12 @@ def main() -> None:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     CACHE_ROOT.mkdir(parents=True, exist_ok=True)
-    session = requests_cache.CachedSession(cache_name=str(CACHE_ROOT / "case-cache"), backend="filesystem", expire_after=3600)
+    session = requests_cache.CachedSession(
+        cache_name=str(CACHE_ROOT / "case-cache"),
+        backend="filesystem",
+        expire_after=3600,
+        serializer="pickle",
+    )
     deadline = time.monotonic() + max(30, int(os.environ.get("CASE_DURATION_SEC", "180")))
     count = 0
     (EVIDENCE / "ready").touch()
