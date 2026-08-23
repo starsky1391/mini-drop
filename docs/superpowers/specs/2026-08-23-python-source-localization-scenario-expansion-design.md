@@ -91,6 +91,40 @@ RSS/smaps
 
 ## 5. Shared Contracts
 
+### Evidence Source Rule
+
+Every evidence family in this expansion must be backed by an industrial
+collector, a standard runtime tool, or an already deployed telemetry source.
+Mini-Drop producers may normalize, bound, correlate and validate upstream
+outputs, but they must not synthesize valid evidence by hand.
+
+Accepted upstream source examples:
+
+- Memray official capture, stats or leaks output.
+- py-spy raw or collapsed stacks.
+- perf, eBPF or off-CPU sampling output.
+- OTel, SkyWalking or equivalent Trace artifacts.
+- CodeQL CLI SARIF output.
+- PyHeap dump and reference index output.
+- Fluent Bit, journald, application logs or equivalent log windows.
+- Prometheus/exporter metrics, broker APIs or dependency probes.
+
+If the upstream source is unavailable, empty, blocked, unparseable or outside
+the target window, the producer must emit one of:
+
+```text
+blocked
+source_missing
+empty_window
+unparseable
+partial
+target_exit
+```
+
+It must not emit synthetic `valid` evidence. LLM output, hand-written fixtures,
+manual JSON and rule hints can create candidates, missing-evidence records or
+test inputs, but cannot qualify as formal runtime evidence.
+
 所有场景输出统一使用以下语义：
 
 ```text
@@ -665,4 +699,3 @@ failed probes create local boundaries only
 final root cause eligibility is scenario-specific and auditable
 frontend shows scenario evidence and missing gates without inferring from text
 ```
-
