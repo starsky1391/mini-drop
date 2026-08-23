@@ -7,7 +7,7 @@
 - [x] T003 Keep Agent inputs generic and exclude issue, PR, answer, phase, batch, and fixed/vulnerable labels.
 - [x] T004 Add VM capability preflight and explicit blocked results for unsupported hardware.
 - [x] T005 Add per-case vulnerable-only one-shot entrypoints so repeated VM case runs do not require re-entering standard runner settings.
-- [x] T006 Make vulnerable-only the default acceptance path with a 600 second workload and diagnosis window.
+- [x] T006 Make vulnerable-only the default acceptance path with a 400 second workload and diagnosis window.
 - [x] T007 Keep pair control replay opt-in only and out of normal acceptance.
 
 ## Case adapters
@@ -33,10 +33,10 @@
 - [x] T033 Run PyAV vulnerable case on the VM.
 - [x] T034 Run an aiohttp pair control replay on the VM after vulnerable-only runs were stable.
 - [x] T035 Record the `vllm_38602` GPU prerequisite block without treating it as an accepted case.
-- [ ] T036 Run `requests_5891` vulnerable case on the VM.
-- [ ] T037 Run `starlette_1868` vulnerable case on the VM.
-- [ ] T038 Run `celery_9849` vulnerable case on the VM.
-- [ ] T039 Run `urllib3_2197` vulnerable case on the VM.
-- [ ] T040 Run `urllib3_2494` vulnerable case on the VM.
-- [ ] T041 Run `requests_cache_1050` vulnerable case on the VM.
-- [ ] T042 Run `pandas_58084` vulnerable case on the VM.
+- [x] T036 Run `requests_5891` vulnerable case on the VM.
+- [x] T037 Run `starlette_1868` vulnerable case on the VM.
+- [x] T038 Run `celery_9849` vulnerable case on the VM.
+- [x] T039 Run `urllib3_2197` vulnerable case on the VM.
+- [x] T040 Run `urllib3_2494` vulnerable case on the VM.
+- [x] T041 Run `requests_cache_1050` vulnerable case on the VM.
+- [x] T042 Run `pandas_58084` vulnerable case on the VM.

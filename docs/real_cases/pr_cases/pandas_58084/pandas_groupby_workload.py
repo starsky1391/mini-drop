@@ -37,7 +37,8 @@ def main() -> None:
         result = frame.groupby("group", observed=False)["value"].transform("sum")
         elapsed_ms = (time.perf_counter() - started) * 1000
         count += 1
-        emit("groupby_transform_sample", count=count, elapsed_ms=elapsed_ms, rows=len(frame), categories=len(frame["group"].cat.categories), checksum=int(result.iloc[0]))
+        if count == 1 or count % 100 == 0:
+            emit("groupby_transform_sample", count=count, elapsed_ms=elapsed_ms, rows=len(frame), categories=len(frame["group"].cat.categories), checksum=int(result.iloc[0]))
     emit("workload_complete", count=count)
     (EVIDENCE / "complete").touch()
 

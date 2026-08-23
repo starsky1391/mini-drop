@@ -16,8 +16,8 @@ param(
     )]
     [string]$Case,
 
-    [int]$DurationSec = 600,
-    [int]$DiagnosisTimeoutSec = 600,
+    [int]$DurationSec = 400,
+    [int]$DiagnosisTimeoutSec = 400,
     [string]$OutputRoot = ""
 )
 
@@ -27,7 +27,7 @@ if (-not $OutputRoot) {
 }
 
 $ts = Get-Date -Format "yyyyMMdd-HHmmss"
-$outputDir = Join-Path $OutputRoot "$Case-vulnerable-600s-$ts"
+$outputDir = Join-Path $OutputRoot "$Case-vulnerable-400s-$ts"
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
 python (Join-Path $PSScriptRoot "run_pr_case_vm.py") `

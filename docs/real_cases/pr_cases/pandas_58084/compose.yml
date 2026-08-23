@@ -5,7 +5,6 @@ services:
       CASE_EVIDENCE_ROOT: /evidence
       CASE_DURATION_SEC: ${CASE_DURATION_SEC:-180}
     volumes:
-      - ${PROJECT_SOURCE_ROOT:?set PROJECT_SOURCE_ROOT}:/opt/project:ro
       - ${CASE_EVIDENCE_ROOT:-./evidence}:/evidence
     command: ["python", "/case/pandas_groupby_workload.py"]
   monitor:
