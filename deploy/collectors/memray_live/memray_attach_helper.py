@@ -184,18 +184,18 @@ def _attach_namespace_command(
     host_pid: int,
     target_executable: str,
     visible_script: Path,
+    mount_namespace: bool = True,
 ) -> list[str]:
-    return [
+    command = [
         nsenter,
         "-t",
         str(host_pid),
-        "-m",
         "-p",
         "-n",
-        "--",
-        target_executable,
-        str(visible_script),
     ]
+    if mount_namespace:
+        command.insert(3, "-m")
+    return [*command, "--", target_executable, str(visible_script)]
 
 
 def _run_memray_attach(
@@ -222,10 +222,9 @@ def _run_memray_attach(
         )
     target_native = Path("/") / target_purelib.lstrip("/") / "memray" / native_candidates[0].name
     script_name = f"mini-drop-memray-attach-{uuid.uuid4().hex}.py"
-    target_script = Path(f"/proc/{host_pid}/root/tmp") / script_name
     visible_script = Path("/tmp") / script_name
-    target_script.parent.mkdir(parents=True, exist_ok=True)
-    target_script.write_text(
+    visible_script.parent.mkdir(parents=True, exist_ok=True)
+    visible_script.write_text(
         _attach_script_content(
             target_capture=target_capture,
             target_pid=target_pid,
@@ -257,8 +256,12 @@ def _run_memray_attach(
             _attach_namespace_command(
                 nsenter=nsenter,
                 host_pid=host_pid,
-                target_executable=target_executable,
+                # Run the Memray CLI from the Agent mount namespace so its
+                # gdb remains available. The injected library path still
+                # points at the staged target-runtime path.
+                target_executable=sys.executable,
                 visible_script=visible_script,
+                mount_namespace=False,
             ),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -292,7 +295,7 @@ def _run_memray_attach(
         signal.signal(signal.SIGTERM, previous_sigterm)
         signal.signal(signal.SIGINT, previous_sigint)
         try:
-            target_script.unlink()
+            visible_script.unlink()
         except OSError:
             pass
 

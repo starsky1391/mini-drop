@@ -27,6 +27,27 @@ def test_memray_attach_uses_target_namespace_and_executable():
     ]
 
 
+def test_memray_attach_can_keep_agent_mount_namespace_for_gdb():
+    command = _attach_namespace_command(
+        nsenter="/usr/bin/nsenter",
+        host_pid=9001,
+        target_executable="/usr/local/bin/python3.11",
+        visible_script=Path("/tmp/mini-drop-attach.py"),
+        mount_namespace=False,
+    )
+
+    assert [value.replace("\\", "/") for value in command] == [
+        "/usr/bin/nsenter",
+        "-t",
+        "9001",
+        "-p",
+        "-n",
+        "--",
+        "/usr/local/bin/python3.11",
+        "/tmp/mini-drop-attach.py",
+    ]
+
+
 def test_memray_attach_script_uses_container_pid_not_host_pid():
     script = _attach_script_content(
         target_capture=Path("/tmp/memray.bin"),
