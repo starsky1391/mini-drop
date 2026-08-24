@@ -70,10 +70,8 @@ function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
-function confidencePercent(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return 0;
-  return Math.max(0, Math.min(100, Math.round(number <= 1 ? number * 100 : number)));
+function asObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
 function Status({ value }) {
@@ -186,7 +184,7 @@ export default function AIDiagnosis() {
           service_id: values.target_service,
           environment: values.environment,
           instances,
-          dependencies: values.dependencies || [],
+          dependencies: asArray(values.dependencies),
           source_context: sourceContext || undefined,
         },
         budget_profile: values.budget_profile,
@@ -253,7 +251,7 @@ export default function AIDiagnosis() {
             <Table
               rowKey="check_id"
               columns={columns}
-              dataSource={result.checks || []}
+              dataSource={asArray(result.checks)}
               pagination={false}
               size="small"
               scroll={{ x: 850 }}
@@ -318,7 +316,8 @@ export default function AIDiagnosis() {
       {error && <Alert type="error" showIcon closable message={error} onClose={() => setError("")} />}
 
       <Row gutter={[16, 16]}>
-        <Col xs={24} xl={14}>
+        {!selected && (
+          <Col xs={24} xl={14}>
           <Card title="发起诊断" extra={<SafetyCertificateOutlined style={{ color: "#52c41a" }} />}>
             <Form
               form={form}
@@ -505,11 +504,17 @@ export default function AIDiagnosis() {
             </Form>
           </Card>
         </Col>
+        )}
 
-        <Col xs={24} xl={10}>
+        <Col xs={24} xl={selected ? 24 : 10}>
           <Card
-            title="最近会话"
-            extra={<Button size="small" icon={<ReloadOutlined />} onClick={refreshSessions}>刷新</Button>}
+            title={selected ? "最近会话（已隐藏新建表单）" : "最近会话"}
+            extra={(
+              <Space>
+                {selected && <Button size="small" onClick={() => setSelected(null)}>新建诊断</Button>}
+                <Button size="small" icon={<ReloadOutlined />} onClick={refreshSessions}>刷新</Button>
+              </Space>
+            )}
             styles={{ body: { maxHeight: 470, overflow: "auto" } }}
           >
             <List
@@ -547,7 +552,7 @@ function DiagnosisDetail({ detail }) {
   const hasEligiblePrimary = Boolean(
     !conclusion?.abstained
     && (
-      sessionMainTree?.final_primary_causes?.length
+      asArray(sessionMainTree?.final_primary_causes).length
       || candidates.length
       || rootCauseClusters.some((cluster) => cluster.conclusion_eligible)
     ),
@@ -561,6 +566,11 @@ function DiagnosisDetail({ detail }) {
   const unifiedQualification = conclusion?.qualification
     || assessment?.unified_qualification
     || {};
+  const attributionGraph = conclusion?.attribution_graph || {};
+  const attributionFacts = attributionGraph.facts || {};
+  const attributionSourceRelations = asArray(attributionGraph.source_relations);
+  const attributionMechanismNodes = asArray(attributionGraph.nodes)
+    .filter((item) => item.role === "mechanism");
   const commands = asArray(conclusion?.diagnostic_commands);
   const hypotheses = asArray(detail.hypothesis_graph?.hypotheses);
   const probes = asArray(detail.probes);
@@ -742,8 +752,49 @@ function DiagnosisDetail({ detail }) {
               style={{ marginBottom: 12 }}
             />
           )}
-          {(conclusion.candidate_validation_diagnostics?.length > 0
-            || conclusion.candidate_review?.validation_diagnostics?.length > 0) && (
+          {(
+            asArray(attributionFacts.cost_centers).length > 0
+            || asArray(attributionFacts.trigger_candidates).length > 0
+            || asArray(attributionFacts.impact_candidates).length > 0
+            || attributionSourceRelations.length > 0
+            || attributionMechanismNodes.length > 0
+            || asArray(attributionGraph.repair_clusters).length > 0
+          ) && (
+            <Alert
+              type="info"
+              showIcon
+              message="证据归因分域"
+              description={(
+                <Descriptions size="small" column={{ xs: 1, md: 2 }}>
+                  <Descriptions.Item label="成本中心">
+                    {asArray(attributionFacts.cost_centers).map((item) => item.target || item.label || item.candidate_id).join("；") || "未形成"}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="触发点">
+                    {asArray(attributionFacts.trigger_candidates).map((item) => item.statement || item.candidate_id).join("；") || "未观测"}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="影响">
+                    {asArray(attributionFacts.impact_candidates).map((item) => item.statement || item.candidate_id).join("；") || "未观测"}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="机制点">
+                    {attributionMechanismNodes.map((item) => item.label || item.node_id).join("；") || "仅有机制假设，尚无独立机制节点"}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="源码关系" span={2}>
+                    {attributionSourceRelations.map((item) => (
+                      `${item.source_ref || "runtime"} ${item.relation || "relates"} ${item.target_ref || "source"}`
+                    )).join("；") || "未形成已验证源码关系"}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="修复簇" span={2}>
+                    {asArray(attributionGraph.repair_clusters).map((item) => (
+                      `${item.cluster_id}（${item.status || "candidate"}）`
+                    )).join("；") || "仅保留候选位置，不声明修复点"}
+                  </Descriptions.Item>
+                </Descriptions>
+              )}
+              style={{ marginBottom: 12 }}
+            />
+          )}
+          {(asArray(conclusion.candidate_validation_diagnostics).length > 0
+            || asArray(conclusion.candidate_review?.validation_diagnostics).length > 0) && (
             <Alert
               type="warning"
               showIcon
@@ -757,8 +808,8 @@ function DiagnosisDetail({ detail }) {
                       第 {item.attempt || index + 1} 次：{item.failure_path || "响应结构"}；
                       实际值：{item.actual_value || item.failure_code || "未提供"}；
                       候选 {item.candidate_count ?? 0} 个，合法证据引用 {item.valid_evidence_ref_count ?? 0} 个；
-                      初始证据缺失 {item.missing_initial_evidence_refs?.join(", ") || "无"}；
-                      缺失父节点 {item.missing_parent_candidate_ids?.join(", ") || "无"}。
+                      初始证据缺失 {asArray(item.missing_initial_evidence_refs).join(", ") || "无"}；
+                      缺失父节点 {asArray(item.missing_parent_candidate_ids).join(", ") || "无"}。
                     </Typography.Text>
                   ))}
                 </Space>
@@ -849,8 +900,8 @@ function DiagnosisDetail({ detail }) {
                       {asArray(candidateGenerationOutput.accepted_candidates).map((item) => (
                         <Typography.Text key={`accepted-candidate-${item.candidate_id}`}>
                           {item.candidate_id}：{item.claim || "未提供候选说明"}
-                          {"；"}父节点：{item.origin_parent_candidate_id || item.parent_candidate_ids?.join("、") || "无"}
-                          {"；"}缺失证据：{item.missing_evidence?.join("、") || "无"}
+                          {"；"}父节点：{item.origin_parent_candidate_id || asArray(item.parent_candidate_ids).join("、") || "无"}
+                          {"；"}缺失证据：{asArray(item.missing_evidence).join("、") || "无"}
                         </Typography.Text>
                       ))}
                     </Space>
@@ -898,15 +949,14 @@ function DiagnosisDetail({ detail }) {
                       </Typography.Text>
                     </Space>
                   ))}
-                  {candidateGenerationOutput.initial_evidence_context?.evidence_snapshots
-                    && Object.entries(candidateGenerationOutput.initial_evidence_context.evidence_snapshots).map(([ref, snapshot]) => (
-                      <Typography.Text type="secondary" key={`initial-snapshot-${ref}`}>
-                        初始证据 {ref}：{snapshot?.family || "unknown"} / {snapshot?.status || "unknown"}；
-                        {snapshot?.observed_excerpt || "无摘要"}。
-                      </Typography.Text>
-                    ))}
+                  {Object.entries(asObject(candidateGenerationOutput.initial_evidence_context?.evidence_snapshots)).map(([ref, snapshot]) => (
+                          <Typography.Text type="secondary" key={`initial-snapshot-${ref}`}>
+                            初始证据 {ref}：{snapshot?.family || "unknown"} / {snapshot?.status || "unknown"}；
+                            {snapshot?.observed_excerpt || "无摘要"}。
+                          </Typography.Text>
+                        ))}
                   {candidateGenerationOutput.status !== "succeeded"
-                    && candidateGenerationOutput.accepted_candidate_ids?.length === 0
+                    && asArray(candidateGenerationOutput.accepted_candidate_ids).length === 0
                     && (
                       <Typography.Text type="secondary">
                         当前主树中的 Analyzer 方向仅作为 fallback investigation candidate，
@@ -926,18 +976,18 @@ function DiagnosisDetail({ detail }) {
               description={(
                 <Space direction="vertical" size={4}>
                   <Typography.Text>
-                    AI 首轮只读取已有证据目录；合法引用 {candidateGenerationOutput.initial_evidence_context?.evidence_refs?.length || 0} 条，
-                    生成候选 {candidateGenerationOutput.accepted_candidate_ids?.length || 0} 个，
-                    延后调查 {candidateGenerationOutput.deferred_candidate_ids?.length || 0} 个。
+                    AI 首轮只读取已有证据目录；合法引用 {asArray(candidateGenerationOutput.initial_evidence_context?.evidence_refs).length} 条，
+                    生成候选 {asArray(candidateGenerationOutput.accepted_candidate_ids).length} 个，
+                    延后调查 {asArray(candidateGenerationOutput.deferred_candidate_ids).length} 个。
                   </Typography.Text>
-                  {(candidateGenerationOutput.initial_evidence_context?.evidence_refs || []).length > 0 && (
+                  {asArray(candidateGenerationOutput.initial_evidence_context?.evidence_refs).length > 0 && (
                     <Space wrap>
-                    {(candidateGenerationOutput.initial_evidence_context?.evidence_refs || []).map((ref) => (
-                      <Tag key={ref} color={evidenceMap.has(ref) ? "blue" : "red"}>{ref}</Tag>
+                    {asArray(candidateGenerationOutput.initial_evidence_context?.evidence_refs).map((ref, index) => (
+                      <Tag key={`${ref}-${index}`} color={evidenceMap.has(ref) ? "blue" : "red"}>{ref}</Tag>
                     ))}
                     </Space>
                   )}
-                  {(candidateGenerationOutput.initial_evidence_context?.evidence_refs || []).length === 0 && (
+                  {asArray(candidateGenerationOutput.initial_evidence_context?.evidence_refs).length === 0 && (
                     <Typography.Text type="warning">
                       本轮没有可供 AI 候选引用的初始 evidence ref，无法通过证据引用门禁。
                     </Typography.Text>
@@ -1018,9 +1068,9 @@ function DiagnosisDetail({ detail }) {
                       {heapProbeOutcome.retry_skipped_reason && (
                         <Typography.Text type="secondary">重试状态：{heapProbeOutcome.retry_skipped_reason}</Typography.Text>
                       )}
-                      {heapProbeOutcome.helper_trace?.completed_phases?.length > 0 && (
+                      {asArray(heapProbeOutcome.helper_trace?.completed_phases).length > 0 && (
                         <Typography.Text type="secondary">
-                          现场阶段：{heapProbeOutcome.helper_trace.completed_phases.join(" -> ")}
+                          现场阶段：{asArray(heapProbeOutcome.helper_trace?.completed_phases).join(" -> ")}
                         </Typography.Text>
                       )}
                       {heapProbeOutcome.attach_preflight?.target_pid && (
@@ -1056,14 +1106,13 @@ function DiagnosisDetail({ detail }) {
                         保留来源父节点 {item.retained_parent_candidate_id || item.origin_parent_candidate_id || "无"}。
                       </Typography.Text>
                       <Typography.Text type="secondary">
-                        失败门禁：{item.failed_gates?.join("、") || "未提供"}；
-                        候选证据 {item.evidence_refs?.length || 0} 条；
-                        初始证据 {item.initial_evidence_refs?.length || 0} 条；
-                        缺失引用 {item.missing_initial_evidence_refs?.join(", ") || "无"}；
-                        缺失父节点 {item.missing_parent_candidate_ids?.join(", ") || "无"}。
+                        失败门禁：{asArray(item.failed_gates).join("、") || "未提供"}；
+                        候选证据 {asArray(item.evidence_refs).length} 条；
+                        初始证据 {asArray(item.initial_evidence_refs).length} 条；
+                        缺失引用 {asArray(item.missing_initial_evidence_refs).join(", ") || "无"}；
+                        缺失父节点 {asArray(item.missing_parent_candidate_ids).join(", ") || "无"}。
                       </Typography.Text>
-                      {item.initial_evidence_context?.evidence_windows
-                        && Object.entries(item.initial_evidence_context.evidence_windows).map(([ref, window]) => (
+                      {Object.entries(asObject(item.initial_evidence_context?.evidence_windows)).map(([ref, window]) => (
                           <Typography.Text type="secondary" key={`gate-window-${item.candidate_id}-${ref}`}>
                             {ref} 窗口：{window?.timing_relation || "unknown"}
                             {window?.window_start ? `，${window.window_start}` : ""}
@@ -1094,9 +1143,9 @@ function DiagnosisDetail({ detail }) {
               description={(
                 <Space direction="vertical" size={4}>
                   <Typography.Text>{qualificationBoundary.message}</Typography.Text>
-                  {qualificationBoundary.missing_evidence?.length > 0 && (
+                  {asArray(qualificationBoundary.missing_evidence).length > 0 && (
                     <Typography.Text type="secondary">
-                      尚缺：{qualificationBoundary.missing_evidence.join("；")}
+                      尚缺：{asArray(qualificationBoundary.missing_evidence).join("；")}
                     </Typography.Text>
                   )}
                 </Space>
@@ -1146,11 +1195,11 @@ function DiagnosisDetail({ detail }) {
             evidenceMap={evidenceMap}
             onInspectTree={inspectClusterInTree}
           />
-          {conclusion.residual_unknowns?.length > 0 && (
+          {asArray(conclusion.residual_unknowns).length > 0 && (
             <Alert
               type="warning"
               message="仍未确认的边界"
-              description={conclusion.residual_unknowns.join("；")}
+              description={asArray(conclusion.residual_unknowns).join("；")}
               style={{ margin: "12px 0" }}
             />
           )}
@@ -1163,7 +1212,7 @@ function DiagnosisDetail({ detail }) {
             >
               <Descriptions.Item label="跨节点判断">{assessment.classification}</Descriptions.Item>
               <Descriptions.Item label="判断置信度">{assessment.confidence}</Descriptions.Item>
-              <Descriptions.Item label="对比目标">{assessment.compared_targets?.length || 0}</Descriptions.Item>
+              <Descriptions.Item label="对比目标">{asArray(assessment.compared_targets).length}</Descriptions.Item>
               {unifiedQualification.level && (
                 <Descriptions.Item label="统一资格层级">
                   <Tag color={unifiedQualification.level === "L3" ? "green" : "gold"}>
@@ -1191,14 +1240,14 @@ function DiagnosisDetail({ detail }) {
               )}
               <Descriptions.Item label="证据引用" span={3}>
                 <Space wrap>
-                  {(assessment.evidence_refs || []).map((ref) => (
-                    <Tag key={ref} color={evidenceMap.has(ref) ? "blue" : "red"}>{ref}</Tag>
+                  {asArray(assessment.evidence_refs).map((ref, index) => (
+                    <Tag key={`${ref}-${index}`} color={evidenceMap.has(ref) ? "blue" : "red"}>{ref}</Tag>
                   ))}
                 </Space>
               </Descriptions.Item>
-              {(unifiedQualification.missing_evidence || []).length > 0 && (
+              {asArray(unifiedQualification.missing_evidence).length > 0 && (
                 <Descriptions.Item label="统一证据缺口" span={3}>
-                  {unifiedQualification.missing_evidence.join("；")}
+                  {asArray(unifiedQualification.missing_evidence).join("；")}
                 </Descriptions.Item>
               )}
             </Descriptions>
@@ -1217,13 +1266,13 @@ function DiagnosisDetail({ detail }) {
                 {
                   title: "证据",
                   dataIndex: "evidence_refs",
-                  render: (refs = []) => <Space wrap>{refs.map((ref) => <Tag key={ref} color={evidenceMap.has(ref) ? "blue" : "red"}>{ref}</Tag>)}</Space>,
+                  render: (refs = []) => <Space wrap>{asArray(refs).map((ref, index) => <Tag key={`${ref}-${index}`} color={evidenceMap.has(ref) ? "blue" : "red"}>{ref}</Tag>)}</Space>,
                 },
               ]}
             />
           )}
-          {conclusion.limitations?.length > 0 && (
-            <Alert type="warning" message="限制与缺失证据" description={conclusion.limitations.join("；")} style={{ marginTop: 12 }} />
+          {asArray(conclusion.limitations).length > 0 && (
+            <Alert type="warning" message="限制与缺失证据" description={asArray(conclusion.limitations).join("；")} style={{ marginTop: 12 }} />
           )}
         </Card>
       )}
@@ -1244,7 +1293,7 @@ function DiagnosisDetail({ detail }) {
           )}
         >
           <Alert
-            type={sessionMainTree.probe_edges?.length ? "warning" : "success"}
+            type={asArray(sessionMainTree.probe_edges).length ? "warning" : "success"}
             showIcon
             message={sessionMainTree.stop_reason || "AI 树已按当前证据边界停止。"}
             description={`树中会保留比正式结论更深的已观察节点，并标记为“未入终态”；这些节点不等于正式根因。预算：AI rounds ${sessionMainTree.budget?.used_ai_rounds || 0}/${sessionMainTree.budget?.max_ai_rounds || 0}，探针请求 ${sessionMainTree.budget?.used_probe_requests || 0}/${sessionMainTree.budget?.max_probe_requests_per_round || 0}`}
@@ -1259,14 +1308,20 @@ function DiagnosisDetail({ detail }) {
         </Card>
       )}
 
+      <Collapse
+        items={[{
+          key: "diagnostic-details",
+          label: `证据、采集与调试明细（证据 ${evidence.length} 条，探针 ${probes.length} 个，子任务 ${asArray(detail.child_task_ids).length} 个）`,
+          children: (
+            <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       {traceProfiles.length > 0 && (
         <Card title="Trace / 栈结构化证据">
           {traceProfiles.map((profile, index) => {
             const stack = profile.stack_source || {};
             const trace = profile.trace_source || {};
             const correlation = profile.correlation_status || {};
-            const hotspots = profile.call_path_hotspots || [];
-            const topFunctions = profile.top_functions || [];
+            const hotspots = asArray(profile.call_path_hotspots);
+            const topFunctions = asArray(profile.top_functions);
             return (
               <Card key={`${profile.task_id || "trace"}-${index}`} size="small" type="inner" style={{ marginBottom: 12 }}>
                 <Descriptions size="small" bordered column={{ xs: 1, md: 3 }}>
@@ -1319,7 +1374,7 @@ function DiagnosisDetail({ detail }) {
             const cause = profile.cause_summary || {};
             const quality = profile.stack_quality || {};
             const correlation = profile.correlation || {};
-            const stacks = profile.top_wait_stacks || [];
+            const stacks = asArray(profile.top_wait_stacks);
             return (
               <Card key={`${profile.task_id || "offcpu"}-${index}`} size="small" type="inner" style={{ marginBottom: 12 }}>
                 <Descriptions size="small" bordered column={{ xs: 1, md: 3 }}>
@@ -1407,28 +1462,34 @@ function DiagnosisDetail({ detail }) {
               {
                 title: "来源",
                 dataIndex: "upstream_sources",
-                render: (sources = []) => (
+                render: (sources = []) => {
+                  const safeSources = asArray(sources);
+                  return (
                   <Space wrap>
-                    {sources.length > 0
-                      ? sources.map((source, index) => (
+                    {safeSources.length > 0
+                      ? safeSources.map((source, index) => (
                         <Tag key={`${source.source_kind || source.kind}-${index}`} color="blue">
                           {source.source_kind || source.kind || "unknown"} / {source.record_count || 0}
                         </Tag>
                       ))
                       : <Tag color="default">无来源摘要</Tag>}
                   </Space>
-                ),
+                  );
+                },
               },
               {
                 title: "缺失门禁",
                 dataIndex: "missing_evidence",
-                render: (items = []) => (
+                render: (items = []) => {
+                  const safeItems = asArray(items);
+                  return (
                   <Space wrap>
-                    {items.length > 0
-                      ? items.slice(0, 5).map((item) => <Tag key={item} color="gold">{item}</Tag>)
+                    {safeItems.length > 0
+                      ? safeItems.slice(0, 5).map((item, index) => <Tag key={`${item}-${index}`} color="gold">{item}</Tag>)
                       : <Tag color="green">无</Tag>}
                   </Space>
-                ),
+                  );
+                },
               },
               { title: "说明", dataIndex: "eligibility_reason", render: (value) => value || "-" },
             ]}
@@ -1441,11 +1502,11 @@ function DiagnosisDetail({ detail }) {
           {pythonScenarioProfiles.map((profile, index) => {
             const validity = profile.evidence_validity || {};
             const adapter = profile.adapter || {};
-            const sources = adapter.sources || [];
-            const lineCandidates = profile.line_candidates || [];
+            const sources = asArray(adapter.sources);
+            const lineCandidates = asArray(profile.line_candidates);
             const scenarioRows = [
-              ...(profile.wait_sites || []).map((item) => ({ ...item, kind: "等待点" })),
-              ...(profile.exception_clusters || []).map((item) => ({
+              ...asArray(profile.wait_sites).map((item) => ({ ...item, kind: "等待点" })),
+              ...asArray(profile.exception_clusters).map((item) => ({
                 ...item,
                 kind: "异常簇",
                 function: item.throw_site?.function,
@@ -1453,11 +1514,11 @@ function DiagnosisDetail({ detail }) {
                 line: item.throw_site?.line,
                 samples: item.occurrence_count,
               })),
-              ...(profile.slow_task_candidates || []).map((item) => ({ ...item, kind: "慢任务", function: item.task_name, samples: item.duration_ms })),
-              ...(profile.active_tasks || []).map((item) => ({ ...item, kind: "活跃任务", function: item.task_name, samples: item.duration_ms })),
-              ...(profile.acquire_sites || []).map((item) => ({ ...item, kind: "获取点" })),
-              ...(profile.retry_clusters || []).map((item) => ({ ...item, kind: "重试点" })),
-              ...(profile.timeout_sites || []).map((item) => ({ ...item, kind: "超时点" })),
+              ...asArray(profile.slow_task_candidates).map((item) => ({ ...item, kind: "慢任务", function: item.task_name, samples: item.duration_ms })),
+              ...asArray(profile.active_tasks).map((item) => ({ ...item, kind: "活跃任务", function: item.task_name, samples: item.duration_ms })),
+              ...asArray(profile.acquire_sites).map((item) => ({ ...item, kind: "获取点" })),
+              ...asArray(profile.retry_clusters).map((item) => ({ ...item, kind: "重试点" })),
+              ...asArray(profile.timeout_sites).map((item) => ({ ...item, kind: "超时点" })),
             ].slice(0, 12);
             return (
               <Card key={`${profile.task_id || profile.scenario_type || "python-scenario"}-${index}`} size="small" type="inner" style={{ marginBottom: 12 }}>
@@ -1488,8 +1549,8 @@ function DiagnosisDetail({ detail }) {
                   </Descriptions.Item>
                   <Descriptions.Item label="缺失门禁" span={3}>
                     <Space wrap>
-                      {(profile.missing_evidence || []).length > 0
-                        ? profile.missing_evidence.map((item) => <Tag key={item} color="gold">{item}</Tag>)
+                      {asArray(profile.missing_evidence).length > 0
+                        ? asArray(profile.missing_evidence).map((item, itemIndex) => <Tag key={`${item}-${itemIndex}`} color="gold">{item}</Tag>)
                         : <Tag color="green">无</Tag>}
                     </Space>
                   </Descriptions.Item>
@@ -1639,27 +1700,34 @@ function DiagnosisDetail({ detail }) {
 
       <Card title="状态事件">
         <Timeline
-          items={(detail.events || []).map((event) => ({
+          items={asArray(detail.events).map((event, index) => ({
+            key: `${event.event_type || "event"}-${event.to_status || "status"}-${index}`,
             color: event.to_status === "FAILED" ? "red" : "blue",
             children: <Space><Typography.Text>{event.event_type}</Typography.Text><Status value={event.to_status} /></Space>,
           }))}
         />
       </Card>
 
-      <ChildTaskList taskIds={detail.child_task_ids || []} />
+      <ChildTaskList taskIds={asArray(detail.child_task_ids)} />
+
+            </Space>
+          ),
+        }]}
+      />
     </Space>
   );
 }
 
 function countControlledTreeBranches(tree) {
   const initial = { primary: 0, secondary: 0, rejected: 0, unknown: 0 };
-  if (!tree?.layers?.length) return initial;
-  return tree.layers.reduce((acc, layer) => {
+  const layers = asArray(tree?.layers);
+  if (!layers.length) return initial;
+  return layers.reduce((acc, layer = {}) => {
     const candidates = [
-      ...(layer.primary_causes || []),
-      ...(layer.secondary_causes || []),
-      ...(layer.rejected_causes || []),
-      ...(layer.unknown_causes || []),
+      ...asArray(layer.primary_causes),
+      ...asArray(layer.secondary_causes),
+      ...asArray(layer.rejected_causes),
+      ...asArray(layer.unknown_causes),
     ];
     for (const candidate of candidates) {
       const rejected = candidate.status !== "forbidden" && (
@@ -1677,33 +1745,34 @@ function countControlledTreeBranches(tree) {
 }
 
 function ChildTaskList({ taskIds }) {
+  const safeTaskIds = useMemo(() => asArray(taskIds), [taskIds]);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    if (!taskIds.length) {
+    if (!safeTaskIds.length) {
       setItems([]);
       return () => { cancelled = true; };
     }
     setLoading(true);
-    Promise.allSettled(taskIds.map((taskId) => getTask(taskId)))
+    Promise.allSettled(safeTaskIds.map((taskId) => getTask(taskId)))
       .then((results) => {
         if (cancelled) return;
         setItems(results.map((result, index) => (
           result.status === "fulfilled"
             ? result.value
-            : { id: taskIds[index], status: "LOAD_FAILED", load_error: result.reason?.message || "加载失败" }
+            : { id: safeTaskIds[index], status: "LOAD_FAILED", load_error: result.reason?.message || "加载失败" }
         )));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [taskIds]);
+  }, [safeTaskIds]);
 
   return (
-    <Card title={<Space>采集子任务 <Tag>{taskIds.length}</Tag></Space>}>
+    <Card title={<Space>采集子任务 <Tag>{safeTaskIds.length}</Tag></Space>}>
       <Alert
         type="info"
         showIcon

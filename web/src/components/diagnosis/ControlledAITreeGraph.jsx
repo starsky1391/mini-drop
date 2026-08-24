@@ -8,6 +8,7 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
+  useReactFlow,
 } from "@xyflow/react";
 import { Alert, Collapse, Drawer, Empty, Popover, Progress, Space, Tag, Typography } from "antd";
 import "@xyflow/react/dist/style.css";
@@ -29,11 +30,31 @@ const EDGE_COLORS = {
   lineage: "#748094",
 };
 
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function confidencePercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(100, Math.round(number <= 1 ? number * 100 : number)));
+}
+
 function ControlledAITreeGraphInner({ tree, evidenceMap, highlightedCandidateIds = [] }) {
-  const sourceGraph = useMemo(
-    () => buildControlledAITreeGraph(tree, highlightedCandidateIds),
-    [tree, highlightedCandidateIds],
+  const safeHighlightedCandidateIds = useMemo(
+    () => asArray(highlightedCandidateIds),
+    [highlightedCandidateIds],
   );
+  const safeTree = useMemo(() => ({
+    ...(tree && typeof tree === "object" ? tree : {}),
+    layers: asArray(tree?.layers),
+    probe_edges: asArray(tree?.probe_edges),
+  }), [tree]);
+  const sourceGraph = useMemo(
+    () => buildControlledAITreeGraph(safeTree, safeHighlightedCandidateIds),
+    [safeTree, safeHighlightedCandidateIds],
+  );
+  const { fitView } = useReactFlow();
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -44,9 +65,12 @@ function ControlledAITreeGraphInner({ tree, evidenceMap, highlightedCandidateIds
       if (cancelled) return;
       setNodes(nextNodes);
       setEdges(nextEdges);
+      if (nextNodes.length > 0) {
+        requestAnimationFrame(() => fitView({ padding: 0.2, duration: 200 }));
+      }
     });
     return () => { cancelled = true; };
-  }, [sourceGraph]);
+  }, [sourceGraph, fitView]);
 
   const nodeTypes = useMemo(() => ({ aiTreeNode: AITreeNode }), []);
   const decoratedEdges = useMemo(
@@ -63,7 +87,7 @@ function ControlledAITreeGraphInner({ tree, evidenceMap, highlightedCandidateIds
     setSelected({ type: "edge", value: edge.data, label: edge.label });
   }, []);
 
-  if (!tree?.layers?.length) {
+  if (safeTree.layers.length === 0) {
     return <Empty description="当前诊断没有 AI 树数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />;
   }
 
@@ -84,7 +108,7 @@ function ControlledAITreeGraphInner({ tree, evidenceMap, highlightedCandidateIds
           主树只展示显性父子血缘；探针历史、回退和孤儿节点仅在下方审计区查看。
         </Typography.Text>
       </div>
-      {sourceGraph.orphanNodes?.length > 0 && (
+      {asArray(sourceGraph.orphanNodes).length > 0 && (
         <Alert
           type="warning"
           showIcon
@@ -94,7 +118,7 @@ function ControlledAITreeGraphInner({ tree, evidenceMap, highlightedCandidateIds
               <Typography.Text type="secondary">
                 这些记录没有被静默接到 coarse，也不代表当前正式根因。
               </Typography.Text>
-              {sourceGraph.orphanNodes.map((node) => (
+              {asArray(sourceGraph.orphanNodes).map((node) => (
                 <Typography.Text key={node.id}>
                   {node.data?.candidate?.candidate_id || node.data?.title}：
                   {node.data?.claim || "缺少显式来源父节点"}
@@ -112,8 +136,6 @@ function ControlledAITreeGraphInner({ tree, evidenceMap, highlightedCandidateIds
           nodeTypes={nodeTypes}
           onNodeClick={onNodeClick}
           onEdgeClick={onEdgeClick}
-          fitView
-          fitViewOptions={{ padding: 0.2 }}
           minZoom={0.35}
           maxZoom={1.45}
           nodesDraggable={false}
@@ -125,21 +147,21 @@ function ControlledAITreeGraphInner({ tree, evidenceMap, highlightedCandidateIds
           <MiniMap pannable zoomable nodeColor={(node) => miniMapColor(node.data?.role)} />
         </ReactFlow>
       </div>
-      {(sourceGraph.historyEdges?.length > 0 || sourceGraph.dataQuality?.length > 0) && (
+      {(asArray(sourceGraph.historyEdges).length > 0 || asArray(sourceGraph.dataQuality).length > 0) && (
         <Collapse
           ghost
           items={[{
             key: "tree-audit",
-            label: `调查历史与数据质量（${sourceGraph.historyEdges?.length || 0} 条历史边，${sourceGraph.dataQuality?.length || 0} 条记录）`,
+            label: `调查历史与数据质量（${asArray(sourceGraph.historyEdges).length} 条历史边，${asArray(sourceGraph.dataQuality).length} 条记录）`,
             children: (
               <Space direction="vertical" size={6} style={{ width: "100%" }}>
-                {sourceGraph.historyEdges?.map((edge) => (
+                {asArray(sourceGraph.historyEdges).map((edge) => (
                   <Typography.Text key={`history-${edge.id}`}>
                     {edge.label || edge.data?.kind || "历史边"}：
                     {edge.data?.reason || edge.data?.status || "未说明"}
                   </Typography.Text>
                 ))}
-                {sourceGraph.dataQuality?.map((item, index) => (
+                {asArray(sourceGraph.dataQuality).map((item, index) => (
                   <Typography.Text type="warning" key={`quality-${item.candidate_id || index}`}>
                     数据质量：{item.candidate_id || item.title || "未命名节点"}；
                     {item.claim || item.status || "父节点或节点关系无效"}。
@@ -199,8 +221,8 @@ function AITreeNode({ data }) {
       <Typography.Text strong>{data.claim}</Typography.Text>
       <Typography.Text type="secondary">为什么是它：{challenge.why_this_claim || "未说明"}</Typography.Text>
       <Typography.Text type="secondary">为什么不是其他：{challenge.why_not_other_claims || "未说明"}</Typography.Text>
-      {(challenge.missing_evidence || []).length > 0 && (
-        <Typography.Text type="warning">缺失：{challenge.missing_evidence.join("；")}</Typography.Text>
+      {asArray(challenge.missing_evidence).length > 0 && (
+        <Typography.Text type="warning">缺失：{asArray(challenge.missing_evidence).join("；")}</Typography.Text>
       )}
       <Typography.Text type="secondary">改变结论条件：{challenge.what_would_change_my_mind || "未说明"}</Typography.Text>
     </Space>
@@ -222,15 +244,15 @@ function AITreeNode({ data }) {
         </Typography.Paragraph>
         <div className="ai-tree-node-footer">
           <Progress
-            percent={Math.round((data.confidence || 0) * 100)}
+            percent={confidencePercent(data.confidence)}
             size="small"
             showInfo={false}
             strokeColor={progressColor(data.role)}
             trailColor="#edf0f5"
           />
           <Space size={4} wrap>
-            {(data.badges || []).slice(0, 4).map((badge) => (
-              <Tag key={badge} className="ai-tree-node-badge">{badge}</Tag>
+            {asArray(data.badges).slice(0, 4).map((badge, index) => (
+              <Tag key={`${badge}-${index}`} className="ai-tree-node-badge">{badge}</Tag>
             ))}
           </Space>
           {data.outsideFinalBoundary && <span className="ai-tree-node-boundary-note">未入终态</span>}
@@ -257,11 +279,11 @@ function TreeDetailDrawer({ selected, evidenceMap, onClose }) {
         : ROLE_LABELS[value.role] || value.role
   );
   const evidenceRefs = selected?.type === "edge"
-    ? value.evidenceRefs || []
+    ? asArray(value.evidenceRefs)
     : [
-      ...(candidate.evidence_refs || []),
-      ...(challenge.supporting_evidence_refs || []),
-      ...(challenge.opposing_evidence_refs || []),
+      ...asArray(candidate.evidence_refs),
+      ...asArray(challenge.supporting_evidence_refs),
+      ...asArray(challenge.opposing_evidence_refs),
     ];
 
   return (
@@ -280,11 +302,11 @@ function TreeDetailDrawer({ selected, evidenceMap, onClose }) {
             <Tag color={value.reuseStatus === "reuse_hit" ? "green" : "gold"}>{value.reuseStatus || "not_checked"}</Tag>
             <Tag>{value.effect || "pending"}</Tag>
           </Space>
-          <TagList title="请求探针" values={value.probeRequests || []} color="blue" />
+          <TagList title="请求探针" values={asArray(value.probeRequests)} color="blue" />
           <TagList title="证据引用" values={evidenceRefs} evidenceMap={evidenceMap} color="geekblue" />
           <TagList
             title="探针结果"
-            values={(value.probeResults || []).map((item) => item.blocked_reason || item.status)}
+            values={asArray(value.probeResults).map((item) => item.blocked_reason || item.status)}
             color="orange"
           />
         </Space>
@@ -314,10 +336,10 @@ function TreeDetailDrawer({ selected, evidenceMap, onClose }) {
           <Typography.Paragraph>为什么是它：{challenge.why_this_claim || "未说明"}</Typography.Paragraph>
           <Typography.Paragraph>为什么不是其他：{challenge.why_not_other_claims || "未说明"}</Typography.Paragraph>
           <Typography.Paragraph>改变结论条件：{challenge.what_would_change_my_mind || "未说明"}</Typography.Paragraph>
-          <TagList title="支持证据" values={challenge.supporting_evidence_refs || []} evidenceMap={evidenceMap} color="blue" />
-          <TagList title="反驳证据" values={challenge.opposing_evidence_refs || []} evidenceMap={evidenceMap} color="red" />
-          <TagList title="缺失证据" values={challenge.missing_evidence || []} color="gold" />
-          <TagList title="候选证据" values={candidate.evidence_refs || []} evidenceMap={evidenceMap} color="geekblue" />
+          <TagList title="支持证据" values={asArray(challenge.supporting_evidence_refs)} evidenceMap={evidenceMap} color="blue" />
+          <TagList title="反驳证据" values={asArray(challenge.opposing_evidence_refs)} evidenceMap={evidenceMap} color="red" />
+          <TagList title="缺失证据" values={asArray(challenge.missing_evidence)} color="gold" />
+          <TagList title="候选证据" values={asArray(candidate.evidence_refs)} evidenceMap={evidenceMap} color="geekblue" />
         </Space>
       )}
     </Drawer>
@@ -325,13 +347,14 @@ function TreeDetailDrawer({ selected, evidenceMap, onClose }) {
 }
 
 function TagList({ title, values = [], evidenceMap, color }) {
-  if (!values.length) return null;
+  const safeValues = asArray(values);
+  if (!safeValues.length) return null;
   return (
     <Space direction="vertical" size={4} style={{ width: "100%" }}>
       <Typography.Text strong>{title}</Typography.Text>
       <Space wrap>
-        {values.map((value) => (
-          <Tag key={value} color={evidenceMap ? (evidenceMap.has(value) ? color : "red") : color}>
+        {safeValues.map((value, index) => (
+          <Tag key={`${String(value)}-${index}`} color={evidenceMap ? (evidenceMap.has(value) ? color : "red") : color}>
             {value}
           </Tag>
         ))}
@@ -341,10 +364,14 @@ function TagList({ title, values = [], evidenceMap, color }) {
 }
 
 async function layoutGraph(graph) {
-  const layoutNodes = graph.nodes.filter((node) => node.data?.layoutRole !== "annotation");
-  const annotationNodes = graph.nodes.filter((node) => node.data?.layoutRole === "annotation");
-  const layoutEdges = graph.layoutEdges || graph.edges.filter((edge) => edge.data?.layoutRole === "tree");
-  const visibleEdges = graph.edges.filter((edge) => (
+  const graphNodes = asArray(graph?.nodes);
+  const graphEdges = asArray(graph?.edges);
+  const layoutNodes = graphNodes.filter((node) => node.data?.layoutRole !== "annotation");
+  const annotationNodes = graphNodes.filter((node) => node.data?.layoutRole === "annotation");
+  const layoutEdges = asArray(graph?.layoutEdges).length
+    ? asArray(graph.layoutEdges)
+    : graphEdges.filter((edge) => edge.data?.layoutRole === "tree");
+  const visibleEdges = graphEdges.filter((edge) => (
     edge.data?.layoutRole === "tree"
     || edge.data?.kind === "boundary"
   ));
@@ -372,7 +399,7 @@ async function layoutGraph(graph) {
   try {
     const elk = await getElk();
     const layouted = await elk.layout(elkGraph);
-    const positions = new Map((layouted.children || []).map((node) => [node.id, node]));
+    const positions = new Map(asArray(layouted.children).map((node) => [node.id, node]));
     const positionedLayoutNodes = layoutNodes.map((node) => {
       const position = positions.get(node.id);
       return {

@@ -16,9 +16,182 @@ from server.app.rca.models import (
 )
 from server.app.rca.controlled_tree import qualify_ai_candidate, select_terminal_candidate_ids
 from server.app.diagnosis.canonical_claim_lineage import ensure_claim_lineage, hash_claim
+from server.app.diagnosis.attribution_models import QualificationResult
 
 
 ELIGIBLE_CAUSE_LEVELS = {"direct_root_cause", "complete_source_root_cause"}
+
+
+def build_session_qualification(
+    clusters: list[RootCauseCluster],
+    session_tree: dict[str, Any] | None,
+    *,
+    base: dict[str, Any] | None = None,
+    retained_conclusion: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Derive one session qualification from the emitted AI tree and its clusters."""
+    base = base if isinstance(base, dict) else {}
+    nodes = _all_tree_nodes(session_tree)
+    candidate_ids = _unique(
+        str(node.get("candidate_id") or "")
+        for node in nodes
+        if node.get("candidate_id")
+    )
+    ai_nodes = [
+        node for node in nodes
+        if str(node.get("generated_by") or "") in {"ai", "ai_candidate", "ai_guarded"}
+    ]
+    ai_candidate_ids = {
+        str(node.get("candidate_id") or "")
+        for node in ai_nodes
+        if node.get("candidate_id")
+    }
+    eligible_ids = _unique(
+        str(cluster.candidate_ids[0] if cluster.candidate_ids else "")
+        for cluster in clusters
+        if cluster.conclusion_eligible and cluster.candidate_ids
+    )
+    eligible_ids = [
+        candidate_id for candidate_id in eligible_ids
+        if candidate_id in ai_candidate_ids
+    ]
+    evidence_refs = _unique([
+        *(base.get("evidence_refs") or []),
+        *(ref for cluster in clusters for ref in cluster.evidence_refs),
+        *(ref for node in nodes for ref in (node.get("evidence_refs") or [])),
+    ])
+    missing = _unique([
+        *(base.get("missing_evidence") or []),
+        *(item for cluster in clusters for item in cluster.residual_unknowns),
+    ])
+    supported_level = _deepest_level([
+        str(cluster.supported_level)
+        for cluster in clusters
+        if cluster.evidence_refs
+    ] + [
+        str(node.get("supported_level") or "resource")
+        for node in nodes
+        if node.get("claim") and node.get("status") not in {"rejected", "contradicted"}
+    ])
+    if eligible_ids:
+        confidence = max(
+            (cluster.confidence for cluster in clusters if cluster.conclusion_eligible),
+            default=0.0,
+        )
+        result = QualificationResult(
+            level="L3",
+            qualification="formal_root_cause",
+            decision="conclude",
+            causal_status="supported",
+            confidence=confidence,
+            confidence_level="高" if confidence >= 0.75 else "中",
+            target=base.get("target") if isinstance(base.get("target"), dict) else {},
+            window=base.get("window") if isinstance(base.get("window"), dict) else {},
+            evidence_refs=evidence_refs,
+            candidate_ids=candidate_ids,
+            eligible_candidate_ids=eligible_ids,
+            supported_level=supported_level,
+            reason="受控 AI 候选通过候选、证据引用、因果状态和父节点门禁。",
+        )
+    elif ai_nodes or clusters or retained_conclusion:
+        level = "L2" if any(
+            node.get("mechanism") and node.get("evidence_refs")
+            for node in ai_nodes
+        ) else "L1"
+        confidence = max(
+            (cluster.confidence for cluster in clusters if cluster.evidence_refs),
+            default=0.35 if level == "L1" else 0.5,
+        )
+        result = QualificationResult(
+            level=level,
+            qualification="mechanism_hypothesis" if level == "L2" else "partial_localization",
+            decision="continue_probe" if base.get("next_evidence_requests") else "abstain",
+            causal_status="unproven",
+            confidence=min(confidence, 0.6),
+            confidence_level="低" if confidence < 0.5 else "中",
+            target=base.get("target") if isinstance(base.get("target"), dict) else {},
+            window=base.get("window") if isinstance(base.get("window"), dict) else {},
+            evidence_refs=evidence_refs,
+            candidate_ids=candidate_ids,
+            supported_level=supported_level,
+            missing_evidence=missing or ["eligible_ai_candidate"],
+            reason="存在事实、定位或机制方向，但没有受控 AI 候选通过正式根因资格门禁。",
+        )
+    else:
+        result = QualificationResult(
+            level="L0",
+            qualification="observation",
+            decision="abstain",
+            causal_status="inconclusive",
+            confidence=0.0,
+            confidence_level="不可判断",
+            target=base.get("target") if isinstance(base.get("target"), dict) else {},
+            window=base.get("window") if isinstance(base.get("window"), dict) else {},
+            evidence_refs=evidence_refs,
+            candidate_ids=candidate_ids,
+            supported_level=supported_level,
+            missing_evidence=missing or ["eligible_ai_candidate"],
+            reason="当前没有可用于正式归因的 AI 候选或足够的定位事实。",
+        )
+    return result.model_dump(mode="json")
+
+
+def apply_session_qualification(
+    explanation: dict[str, Any],
+    qualification: dict[str, Any],
+    *,
+    all_clusters: list[RootCauseCluster],
+) -> dict[str, Any]:
+    """Make every formal conclusion field derive from the same qualification."""
+    result = dict(explanation)
+    eligible_ids = {
+        str(item)
+        for item in qualification.get("eligible_candidate_ids", [])
+        if item
+    }
+    formal_clusters = [
+        cluster for cluster in all_clusters
+        if cluster.conclusion_eligible
+        and eligible_ids.intersection({
+            *[str(item) for item in cluster.candidate_ids],
+            *[str(item) for item in cluster.source_tree_candidate_ids],
+        })
+    ]
+    if qualification.get("qualification") == "formal_root_cause" and formal_clusters:
+        result["root_cause_clusters"] = formal_clusters
+        result["causal_chain"] = [
+            step for cluster in formal_clusters for step in cluster.causal_chain
+        ]
+        result["formal_root_cause"] = _formal_root_cause(formal_clusters)
+        result["abstained"] = False
+        result["confidence_level"] = qualification.get("confidence_level") or "中"
+        result["classification"] = classify_cluster_set(formal_clusters)
+        return result
+
+    retained = result.get("retained_conclusion") if isinstance(result.get("retained_conclusion"), dict) else {}
+    retained_claim = str(retained.get("claim") or "").strip()
+    result["root_cause_clusters"] = []
+    result["causal_chain"] = []
+    result["formal_root_cause"] = None
+    result["abstained"] = True
+    result["confidence_level"] = qualification.get("confidence_level") or "不可判断"
+    result["classification"] = "insufficient_evidence"
+    result["headline"] = (
+        _abstained_retained_headline(retained_claim)
+        if retained_claim
+        else "未形成正式根因；当前证据只支持观察、局部定位或机制假设。"
+    )
+    result["why_it_happened"] = str(
+        qualification.get("reason")
+        or result.get("why_it_happened")
+        or "没有候选通过统一正式根因资格门禁。"
+    )
+    result["possible_root_causes"] = [
+        cluster.model_dump(mode="json")
+        for cluster in all_clusters
+        if cluster.qualification in {"possible_root_cause", "partial_localization"}
+    ]
+    return result
 
 
 def build_root_cause_clusters(
@@ -1748,6 +1921,42 @@ def _tree_candidate_ids_by_mechanism(tree: dict[str, Any] | None) -> dict[str, l
                 if mechanism and candidate_id:
                     output.setdefault(mechanism, []).append(candidate_id)
     return output
+
+
+def _all_tree_nodes(tree: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(tree, dict):
+        return []
+    result = []
+    for layer in tree.get("layers", []):
+        if not isinstance(layer, dict):
+            continue
+        for group in ("primary_causes", "secondary_causes", "rejected_causes", "unknown_causes"):
+            result.extend(
+                item for item in layer.get(group, [])
+                if isinstance(item, dict) and item.get("candidate_id")
+            )
+    return result
+
+
+def _deepest_level(values: Iterable[str]) -> str:
+    order = {
+        "resource": 0,
+        "host": 1,
+        "process": 2,
+        "thread": 3,
+        "syscall": 4,
+        "dependency": 5,
+        "service": 6,
+        "endpoint": 7,
+        "function": 8,
+        "call_path": 9,
+        "line": 10,
+    }
+    return max(
+        (str(value) for value in values if str(value) in order),
+        key=lambda value: order[value],
+        default="resource",
+    )
 
 
 def _unique(values: Iterable[Any]) -> list[str]:

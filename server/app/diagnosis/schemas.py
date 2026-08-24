@@ -208,6 +208,12 @@ class ProbeDefinition(StrictModel):
     # Deprecated compatibility field; it is not a root-cause whitelist.
     applicable_hypotheses: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def normalize_distinguishing_hints(self):
+        if not self.may_help_distinguish and self.applicable_hypotheses:
+            self.may_help_distinguish = list(self.applicable_hypotheses)
+        return self
+
 
 class ProbePlan(StrictModel):
     step_id: str

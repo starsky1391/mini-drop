@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any
 
 from server.app.diagnosis.attribution_models import (
+    AttributionEdge,
     AttributionGraph,
     AttributionLevel,
+    AttributionNode,
     CostCenterCandidate,
     EvidenceQualityEntry,
     EvidenceSignal,
     ImpactCandidate,
     ObservedRelation,
     QualificationResult,
+    RepairCluster,
     ScenarioFacts,
     SourceRelation,
     TriggerCandidate,
@@ -63,6 +67,11 @@ def build_attribution_graph(
         str(sorted((target or {}).items())).encode("utf-8")
         + str(facts.model_dump(mode="json")).encode("utf-8")
     ).hexdigest()[:16]
+    nodes, runtime_relations, causal_edges, repair_clusters = _build_graph_context(
+        facts=facts,
+        source_relations=source_relations,
+        evidence=evidence,
+    )
     entities = [
         {
             "entity_id": item.candidate_id,
@@ -76,7 +85,12 @@ def build_attribution_graph(
         graph_id=graph_id,
         target=target or {},
         facts=facts,
+        nodes=nodes,
+        runtime_relations=runtime_relations,
         source_relations=source_relations,
+        causal_edges=causal_edges,
+        repair_clusters=repair_clusters,
+        boundaries=list(facts.missing_evidence),
         entities=entities,
         graph_relations=facts.observed_relations,
     )
@@ -153,6 +167,9 @@ def build_scenario_facts(evidence: dict[str, Any]) -> ScenarioFacts:
                     window=window,
                     status="observed",
                 ))
+
+    _append_generic_trigger_candidates(evidence, window, triggers, relations)
+    _append_generic_impact_candidates(evidence, window, impacts, signals)
 
     for item in _line_candidates(evidence):
         relation_id = f"relation:runtime-calls:{item['file']}:{item['line']}"
@@ -245,6 +262,7 @@ def qualify_attribution(
     mechanism_refs: list[str] | None = None,
     impact_refs: list[str] | None = None,
     disconfirming_evidence_refs: list[str] | None = None,
+    ai_candidate_ids: list[str] | None = None,
 ) -> QualificationResult:
     facts = graph.facts
     cost_refs = [item.candidate_id for item in facts.cost_centers]
@@ -265,14 +283,26 @@ def qualify_attribution(
         for item in graph.source_relations
         if item.status in {"verified", "supported"}
     ]
+    candidate_ids = _unique([
+        *cost_refs,
+        *triggers,
+        *mechanisms,
+        *impacts,
+        *source_refs,
+    ])
+    supported_level = _max_supported_level(graph)
     if not facts.symptom_signals:
         return QualificationResult(
             level="L0",
             qualification="observation",
             decision="abstain",
+            confidence=0.0,
+            confidence_level="不可判断",
             target=graph.target,
             window=facts.evidence_window,
             evidence_refs=evidence_refs,
+            candidate_ids=candidate_ids,
+            supported_level=supported_level,
             missing_evidence=_unique([*facts.missing_evidence, "symptom_signal"]),
             reason="没有有效的同窗症状信号，不能进行归因。",
         )
@@ -281,10 +311,14 @@ def qualify_attribution(
             level="L0",
             qualification="observation",
             decision="continue_probe",
+            confidence=0.2,
+            confidence_level="低",
             target=graph.target,
             window=facts.evidence_window,
             symptom_refs=[item.signal_id for item in facts.symptom_signals],
             evidence_refs=evidence_refs,
+            candidate_ids=candidate_ids,
+            supported_level=supported_level,
             missing_evidence=_unique([*facts.missing_evidence, "cost_center"]),
             reason="只能确认症状，尚未定位到运行时成本中心。",
         )
@@ -304,6 +338,8 @@ def qualify_attribution(
             qualification="partial_localization" if level == "L1" else "mechanism_hypothesis",
             decision="continue_probe",
             causal_status="unproven",
+            confidence=0.45 if level == "L1" else 0.6,
+            confidence_level="低" if level == "L1" else "中",
             target=graph.target,
             window=facts.evidence_window,
             symptom_refs=[item.signal_id for item in facts.symptom_signals],
@@ -313,6 +349,8 @@ def qualify_attribution(
             impact_refs=impacts,
             source_relation_refs=source_refs,
             evidence_refs=evidence_refs,
+            candidate_ids=candidate_ids,
+            supported_level=supported_level,
             missing_evidence=missing,
             disconfirming_evidence_refs=_unique(disconfirming_evidence_refs or []),
             reason="已定位到成本中心或源码关系，但触发、机制、影响和证据闭环尚未全部满足。",
@@ -323,6 +361,8 @@ def qualify_attribution(
             qualification="mechanism_hypothesis",
             decision="abstain",
             causal_status="contradicted",
+            confidence=0.2,
+            confidence_level="低",
             target=graph.target,
             window=facts.evidence_window,
             symptom_refs=[item.signal_id for item in facts.symptom_signals],
@@ -333,13 +373,40 @@ def qualify_attribution(
             source_relation_refs=source_refs,
             evidence_refs=evidence_refs,
             disconfirming_evidence_refs=_unique(disconfirming_evidence_refs),
+            candidate_ids=candidate_ids,
+            supported_level=supported_level,
             reason="存在同窗反证，不能宣布正式根因。",
+        )
+    eligible_candidate_ids = _unique(ai_candidate_ids or [])
+    if not eligible_candidate_ids:
+        return QualificationResult(
+            level="L2",
+            qualification="mechanism_hypothesis",
+            decision="continue_probe",
+            causal_status="supported",
+            confidence=0.7,
+            confidence_level="中",
+            target=graph.target,
+            window=facts.evidence_window,
+            symptom_refs=[item.signal_id for item in facts.symptom_signals],
+            cost_center_refs=cost_refs,
+            trigger_refs=triggers,
+            mechanism_refs=mechanisms,
+            impact_refs=impacts,
+            source_relation_refs=source_refs,
+            evidence_refs=evidence_refs,
+            candidate_ids=candidate_ids,
+            supported_level=supported_level,
+            missing_evidence=["eligible_ai_candidate"],
+            reason="事实、影响和源码关系已经闭合为机制假设，但正式根因必须由受控 AI 候选承接。",
         )
     return QualificationResult(
         level="L3",
         qualification="formal_root_cause",
         decision="conclude",
         causal_status="supported",
+        confidence=0.85,
+        confidence_level="高",
         target=graph.target,
         window=facts.evidence_window,
         symptom_refs=[item.signal_id for item in facts.symptom_signals],
@@ -349,8 +416,274 @@ def qualify_attribution(
         impact_refs=impacts,
         source_relation_refs=source_refs,
         evidence_refs=evidence_refs,
+        candidate_ids=candidate_ids,
+        eligible_candidate_ids=eligible_candidate_ids,
+        supported_level=supported_level,
         reason="同窗症状、成本中心、触发、机制、影响和已验证源码关系均有真实证据引用。",
     )
+
+
+def _build_graph_context(
+    *,
+    facts: ScenarioFacts,
+    source_relations: list[SourceRelation],
+    evidence: dict[str, Any],
+) -> tuple[list[AttributionNode], list[AttributionEdge], list[AttributionEdge], list[RepairCluster]]:
+    nodes: list[AttributionNode] = []
+    runtime_edges: list[AttributionEdge] = []
+    causal_edges: list[AttributionEdge] = []
+    for item in facts.cost_centers:
+        file_path, line = _split_location(item.target)
+        nodes.append(AttributionNode(
+            node_id=item.candidate_id,
+            role="cost_center",
+            symbol=item.target if not file_path else "",
+            file=file_path,
+            line=line,
+            supported_level=item.level,
+            evidence_refs=item.evidence_refs,
+            source_status="supported" if item.evidence_refs else "unproven",
+            window=facts.evidence_window,
+            label=item.target,
+        ))
+    for item in facts.trigger_candidates:
+        nodes.append(AttributionNode(
+            node_id=item.candidate_id,
+            role="trigger",
+            supported_level="process",
+            evidence_refs=item.evidence_refs,
+            source_status="supported" if item.status == "observed" else "unproven",
+            window=facts.evidence_window,
+            label=item.statement,
+        ))
+    for item in facts.impact_candidates:
+        nodes.append(AttributionNode(
+            node_id=item.candidate_id,
+            role="impact",
+            supported_level="process",
+            evidence_refs=item.evidence_refs,
+            source_status="supported" if item.status == "observed" else "unproven",
+            window=facts.evidence_window,
+            label=item.statement,
+        ))
+    for item in source_relations:
+        source_id = f"source:{item.source_ref}"
+        target_id = f"source:{item.target_ref}"
+        file_path, line = _split_location(item.target_ref)
+        nodes.extend([
+            AttributionNode(
+                node_id=source_id,
+                role="source",
+                symbol=item.source_ref if not _split_location(item.source_ref)[0] else "",
+                supported_level="function",
+                evidence_refs=item.evidence_refs,
+                source_status=item.status,
+                window=facts.evidence_window,
+                label=item.source_ref,
+            ),
+            AttributionNode(
+                node_id=target_id,
+                role="source",
+                symbol=item.target_ref if not file_path else "",
+                file=file_path,
+                line=line,
+                supported_level="line" if line else "function",
+                evidence_refs=item.evidence_refs,
+                source_status=item.status,
+                window=facts.evidence_window,
+                label=item.target_ref,
+            ),
+        ])
+        edge = AttributionEdge(
+            edge_id=item.relation_id,
+            from_node=source_id,
+            relation=item.relation,
+            to_node=target_id,
+            evidence_refs=item.evidence_refs,
+            same_window=_same_window(facts.evidence_window),
+            confidence=1.0 if item.status == "verified" else 0.65,
+            status=item.status,
+        )
+        runtime_edges.append(edge)
+        causal_edges.append(edge)
+
+    for item in facts.observed_relations:
+        edge = AttributionEdge(
+            edge_id=item.relation_id,
+            from_node=item.source_ref,
+            relation=item.relation,
+            to_node=item.target_ref,
+            evidence_refs=item.evidence_refs,
+            same_window=_same_window(facts.evidence_window),
+            confidence=0.8 if item.status == "observed" else 0.35,
+            status=item.status,
+        )
+        runtime_edges.append(edge)
+        causal_edges.append(edge)
+
+    node_ids = {item.node_id for item in nodes}
+    repairs = []
+    if source_relations:
+        repairs.append(RepairCluster(
+            cluster_id="repair:source-relations",
+            node_refs=[item.node_id for item in nodes if item.role in {"source", "cost_center"}],
+            source_relation_refs=[item.relation_id for item in source_relations],
+            evidence_refs=_unique(ref for item in source_relations for ref in item.evidence_refs),
+            status="supported" if any(item.status == "verified" for item in source_relations) else "candidate",
+            reason="仅由源码关系聚合候选修复位置，不能单独证明需要修改。",
+        ))
+    return _dedupe_nodes(nodes), _dedupe_edges(runtime_edges), _dedupe_edges(causal_edges), repairs
+
+
+def _append_generic_trigger_candidates(
+    evidence: dict[str, Any],
+    window: dict[str, Any],
+    triggers: list[TriggerCandidate],
+    relations: list[ObservedRelation],
+) -> None:
+    for key, value in _candidate_fields(evidence, {
+        "input", "input_shape", "input_profile", "request", "task", "queue",
+        "config", "configuration", "schedule", "trigger", "producer", "workload",
+    }):
+        refs = _generic_evidence_refs(evidence)
+        if not refs:
+            continue
+        statement = _summarize_value(value)
+        if not statement:
+            continue
+        candidate_id = f"trigger:{key}"
+        if any(item.candidate_id == candidate_id for item in triggers):
+            continue
+        triggers.append(TriggerCandidate(
+            candidate_id=candidate_id,
+            statement=f"结构化证据记录了 {key}：{statement}",
+            evidence_refs=refs,
+            status="observed",
+        ))
+        if len(triggers) > 12:
+            break
+
+
+def _append_generic_impact_candidates(
+    evidence: dict[str, Any],
+    window: dict[str, Any],
+    impacts: list[ImpactCandidate],
+    signals: list[EvidenceSignal],
+) -> None:
+    for key, value in _candidate_fields(evidence, {
+        "error", "errors", "latency", "duration", "backlog", "queue_depth",
+        "timeout", "retries", "cache", "retention", "rss", "memory", "status",
+    }):
+        refs = _generic_evidence_refs(evidence)
+        if not refs:
+            continue
+        statement = _summarize_value(value)
+        if not statement:
+            continue
+        candidate_id = f"impact:{key}"
+        if any(item.candidate_id == candidate_id for item in impacts):
+            continue
+        impacts.append(ImpactCandidate(
+            candidate_id=candidate_id,
+            statement=f"结构化证据记录了 {key}：{statement}",
+            evidence_refs=refs,
+            status="observed",
+        ))
+        signals.append(EvidenceSignal(
+            signal_id=f"signal:{key}",
+            signal_type=key,
+            value=value,
+            evidence_refs=refs,
+            window=window,
+            status="observed",
+        ))
+        if len(impacts) > 16:
+            break
+
+
+def _candidate_fields(value: Any, keys: set[str], prefix: str = "") -> list[tuple[str, Any]]:
+    result: list[tuple[str, Any]] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if str(key).lower() in keys and child not in (None, "", [], {}):
+                result.append((path, child))
+            if isinstance(child, (dict, list)):
+                result.extend(_candidate_fields(child, keys, path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value[:20]):
+            result.extend(_candidate_fields(child, keys, f"{prefix}[{index}]"))
+    return result
+
+
+def _summarize_value(value: Any) -> str:
+    if isinstance(value, (str, int, float, bool)):
+        return str(value)[:180]
+    if isinstance(value, dict):
+        keys = list(value)[:8]
+        return ", ".join(f"{key}={str(value[key])[:40]}" for key in keys)
+    if isinstance(value, list):
+        return f"{len(value)} items"
+    return ""
+
+
+def _generic_evidence_refs(evidence: dict[str, Any]) -> list[str]:
+    refs = _collect_refs(evidence)
+    if refs:
+        return refs[:8]
+    index = evidence.get("evidence_index")
+    if isinstance(index, dict):
+        refs = _collect_refs(index)
+    return refs[:8]
+
+
+def _split_location(value: Any) -> tuple[str, int | None]:
+    text = str(value or "")
+    match = re.match(r"^(.*):(\d+)$", text)
+    if not match:
+        return "", None
+    return match.group(1), _positive_int(match.group(2))
+
+
+def _same_window(window: dict[str, Any]) -> bool | None:
+    relation = str(window.get("timing_relation") or "")
+    if not relation:
+        return None
+    return relation == "same_window"
+
+
+def _max_supported_level(graph: AttributionGraph) -> AttributionLevel:
+    levels = [
+        item.level for item in graph.facts.cost_centers
+    ] + [
+        "line" if item.line_number else "function"
+        for item in graph.source_relations
+        if item.status in {"verified", "supported"}
+    ]
+    return max(levels, key=lambda item: _LEVEL_ORDER.get(item, 0), default="resource")
+
+
+def _dedupe_nodes(values: list[AttributionNode]) -> list[AttributionNode]:
+    result = []
+    seen = set()
+    for item in values:
+        if item.node_id in seen:
+            continue
+        seen.add(item.node_id)
+        result.append(item)
+    return result
+
+
+def _dedupe_edges(values: list[AttributionEdge]) -> list[AttributionEdge]:
+    result = []
+    seen = set()
+    for item in values:
+        key = (item.from_node, item.relation, item.to_node, tuple(item.evidence_refs))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
 
 
 def _evidence_window(evidence: dict[str, Any]) -> dict[str, Any]:

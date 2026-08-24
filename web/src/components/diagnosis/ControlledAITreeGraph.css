@@ -11,12 +11,18 @@
 
 .ai-tree-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 12px 14px;
   border-bottom: 1px solid #dbe3ef;
   background: rgba(255, 255, 255, 0.76);
+}
+
+.ai-tree-toolbar > .ant-typography {
+  flex: 1 1 260px;
+  min-width: 0;
 }
 
 .ai-tree-canvas {
@@ -208,4 +214,11 @@
   border: 1px solid #dbe3ef;
   border-radius: 10px;
   overflow: hidden;
+}
+
+@media (max-width: 760px) {
+  .ai-tree-canvas {
+    height: 60vh;
+    min-height: 360px;
+  }
 }

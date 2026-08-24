@@ -1,6 +1,6 @@
 """诊断探针注册表测试。"""
 
-from server.app.diagnosis.probe_registry import choose_probe_ids, get_probe, list_probes
+from server.app.diagnosis.probe_registry import build_probe_manifest, choose_probe_ids, get_probe, list_probes
 
 
 def test_probe_registry_exposes_depth_probes():
@@ -77,3 +77,14 @@ def test_choose_probe_ids_prefers_deeper_collection_for_cpu_and_latency():
     assert "process_python_input_profile" in choose_probe_ids("input_slow_path")
     assert "process_source_snapshot" in choose_probe_ids("queue_backlog")
     assert "process_source_snapshot" in choose_probe_ids("retry_timeout")
+
+
+def test_legacy_hypotheses_are_exposed_only_as_distinguishing_hints():
+    probe = get_probe("process_python_input_profile")
+    assert probe.may_help_distinguish == probe.applicable_hypotheses
+    manifest_item = next(
+        item for item in build_probe_manifest()["available_probes"]
+        if item["probe_id"] == "process_python_input_profile"
+    )
+    assert manifest_item["may_help_distinguish"] == probe.may_help_distinguish
+    assert manifest_item["cannot_establish"]

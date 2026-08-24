@@ -19,6 +19,8 @@ from server.app.rca.llm_client import (
     _attach_analysis_result,
     _collect_evidence_paths,
     _extract_json,
+    _filter_probe_request_specs,
+    _normalize_probe_requests,
     _call_deepseek,
     _ref_exists,
     _validate_and_parse,
@@ -66,6 +68,98 @@ def test_forbidden_upgrade_boundary_is_inconclusive_not_counterevidence():
     assert node.conclusion_eligible is False
     assert node.candidate_id in guarded.final_unknown_causes
     assert node.candidate_id not in guarded.final_rejected_causes
+
+
+def test_structured_probe_request_keeps_valid_request_and_normalizes_observations():
+    families, specs = _normalize_probe_requests([
+        {
+            "evidence_family": "python_heap_profile",
+            "question": "对象保留是否集中在规则编译路径？",
+            "why_needed": "区分热点与实际保留链。",
+            "input_refs": ["ev-top"],
+            "expected_observation": "同一对象类型在保留快照中持续增长",
+            "disconfirming_observation": ["保留链不经过规则编译路径"],
+        }
+    ])
+
+    accepted_families, accepted_specs, rejected = _filter_probe_request_specs(
+        families,
+        specs,
+        {"ev-top"},
+    )
+
+    assert accepted_families == ["python_heap_profile"]
+    assert accepted_specs[0]["expected_observation"] == ["同一对象类型在保留快照中持续增长"]
+    assert accepted_specs[0]["disconfirming_observation"] == ["保留链不经过规则编译路径"]
+    assert rejected == []
+
+
+def test_structured_probe_request_rejects_missing_fields_and_unknown_refs():
+    families, specs = _normalize_probe_requests([
+        {
+            "evidence_family": "python_heap_profile",
+            "question": "是否存在对象保留？",
+            "why_needed": "",
+            "input_refs": ["ev-missing"],
+            "expected_observation": ["对象数量上升"],
+            "disconfirming_observation": ["对象数量稳定"],
+        },
+        {
+            "evidence_family": "source_mechanism_query",
+            "question": "是否存在对应源码机制？",
+            "why_needed": "验证调用点与机制关系。",
+            "input_refs": [],
+            "expected_observation": ["命中源码关系"],
+            "disconfirming_observation": ["未命中源码关系"],
+        },
+    ])
+
+    accepted_families, accepted_specs, rejected = _filter_probe_request_specs(
+        families,
+        specs,
+        {"ev-top"},
+    )
+
+    assert accepted_families == []
+    assert accepted_specs == []
+    assert [item["evidence_family"] for item in rejected] == [
+        "python_heap_profile",
+        "source_mechanism_query",
+    ]
+    assert rejected[0]["invalid_input_refs"] == ["ev-missing"]
+    assert rejected[1]["invalid_input_refs"] == []
+    assert "真实 evidence ref" in rejected[1]["reason"]
+
+
+def test_structured_probe_request_rejection_does_not_drop_valid_sibling():
+    families, specs = _normalize_probe_requests([
+        {
+            "evidence_family": "python_heap_profile",
+            "question": "是否存在对象保留？",
+            "why_needed": "验证保留链。",
+            "input_refs": ["ev-invalid"],
+            "expected_observation": ["对象数量上升"],
+            "disconfirming_observation": ["对象数量稳定"],
+        },
+        {
+            "evidence_family": "runtime_stack",
+            "question": "当前运行栈是否指向业务函数？",
+            "why_needed": "排除运行时等待栈。",
+            "input_refs": ["ev-top"],
+            "expected_observation": ["出现业务调用栈"],
+            "disconfirming_observation": ["只有运行时等待栈"],
+        },
+    ])
+
+    accepted_families, accepted_specs, rejected = _filter_probe_request_specs(
+        families,
+        specs,
+        {"ev-top"},
+    )
+
+    assert accepted_families == ["runtime_stack"]
+    assert accepted_specs[0]["evidence_family"] == "runtime_stack"
+    assert [item["evidence_family"] for item in rejected] == ["python_heap_profile"]
 
 
 def test_session_candidate_review_accepts_only_real_refs_and_canonical_parents():

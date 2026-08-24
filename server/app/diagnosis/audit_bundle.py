@@ -520,11 +520,15 @@ def _normalize_conclusion(latest: dict[str, Any]) -> dict[str, Any]:
         "retained_parent_conclusions": latest.get("retained_parent_conclusions", []),
         "qualification": latest.get("qualification") or assessment.get("unified_qualification") or {},
         "attribution_graph": latest.get("attribution_graph") or {},
+        "formal_root_cause": latest.get("formal_root_cause"),
+        "root_cause_clusters": latest.get("root_cause_clusters", []),
+        "root_cause_candidates": latest.get("root_cause_candidates", []),
+        "abstained": abstained,
+        "supported_level": (latest.get("qualification") or {}).get("supported_level"),
+        "eligible_candidate_ids": (latest.get("qualification") or {}).get("eligible_candidate_ids", []),
         "canonical_candidate_state": (latest.get("controlled_ai_tree") or {}).get("data_quality", {}),
         "canonical_probe_plan": (latest.get("controlled_ai_tree") or {}).get("canonical_probe_plan", []),
         "probe_conflicts": (latest.get("controlled_ai_tree") or {}).get("probe_conflicts", []),
-        "qualification": latest.get("qualification") or assessment.get("unified_qualification") or {},
-        "attribution_graph": latest.get("attribution_graph") or {},
         "candidate_sources": sorted({
             str(node.get("generated_by"))
             for layer in (latest.get("controlled_ai_tree") or {}).get("layers", [])
@@ -538,8 +542,6 @@ def _normalize_conclusion(latest: dict[str, Any]) -> dict[str, Any]:
         "domain_type": assessment.get("domain_type") or primary.get("domain_type"),
         "classification": assessment.get("classification") or primary.get("classification"),
         "root_entity": assessment.get("root_entity") or primary.get("root_entity"),
-        "abstained": abstained,
-        "root_cause_candidates": candidates,
         "possible_root_causes": possible,
         "supporting_evidence_refs": assessment.get("evidence_refs") or primary.get("evidence_refs", []),
         "missing_evidence": latest.get("missing_evidence") or assessment.get("missing_evidence", []),

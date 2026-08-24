@@ -71,6 +71,8 @@ from server.app.diagnosis.session_conclusion import (
     build_retained_conclusion,
     build_root_cause_clusters,
     build_scenario_retained_conclusion,
+    build_session_qualification,
+    apply_session_qualification,
     collect_candidate_generation_gate_failures,
     collect_ai_gate_failures,
     derive_localization_frontier_from_ai_tree,
@@ -715,7 +717,7 @@ class DiagnosisOrchestrator:
                             {**fingerprint_inputs, **collector_parameters},
                         ),
                     },
-                    reason=f"用于区分 {', '.join(definition.applicable_hypotheses[:3])} 等候选假设",
+                    reason=f"用于区分 {', '.join(definition.may_help_distinguish[:3])} 等候选假设",
                     risk_level=definition.risk_level,
                     requires_approval=definition.requires_approval and auto_policy != "all_registered",
                 ))
@@ -1773,15 +1775,14 @@ class DiagnosisOrchestrator:
             tree_payload,
             valid_evidence_refs=valid_session_evidence_refs,
         )
-        root_cause_clusters = _merge_python_scenario_gate_clusters(
-            root_cause_clusters,
-            build_root_cause_clusters(
-                task_observations,
-                cluster_assessment,
-                current_session,
-                tree_payload,
-            ),
-            valid_session_evidence_refs=valid_session_evidence_refs,
+        # Analyzer/scenario gates remain evidence and localization inputs. They
+        # are intentionally not promoted into formal session clusters without
+        # an eligible AI candidate from the canonical session tree.
+        engineering_clusters = build_root_cause_clusters(
+            task_observations,
+            cluster_assessment,
+            current_session,
+            tree_payload,
         )
         localization_frontier = derive_localization_frontier_from_ai_tree(
             tree_payload,
@@ -1913,6 +1914,18 @@ class DiagnosisOrchestrator:
                     session_controlled_tree.layers,
                     final_retained_id,
                 )
+        session_qualification = build_session_qualification(
+            root_cause_clusters,
+            session_tree_payload,
+            base=cluster_assessment,
+            retained_conclusion=explanation.get("retained_conclusion"),
+        )
+        cluster_assessment["unified_qualification"] = session_qualification
+        explanation = apply_session_qualification(
+            explanation,
+            session_qualification,
+            all_clusters=root_cause_clusters,
+        )
         if explanation["classification"] == "compound_incident":
             cluster_assessment["classification"] = "compound_incident"
             cluster_assessment.update(_compound_location_fields(explanation["root_cause_clusters"], current_session))
@@ -1921,8 +1934,12 @@ class DiagnosisOrchestrator:
             [] if cluster_assessment.get("classification") == "runtime_stall" else deduped
         )
         possible_clusters = [
-            item for item in explanation["root_cause_clusters"]
-            if not item.conclusion_eligible and item.qualification in {"possible_root_cause", "partial_localization"}
+            item for item in engineering_clusters
+            if (
+                not item.conclusion_eligible
+                and item.qualification in {"possible_root_cause", "partial_localization"}
+                and item.cause_level not in {"observation", "call_path"}
+            )
         ]
         if not cluster_candidates:
             cluster_assessment["observation_confidence"] = cluster_assessment.get("confidence")
@@ -1930,6 +1947,10 @@ class DiagnosisOrchestrator:
             cluster_assessment["confidence_level"] = "低" if possible_clusters else "不可判断"
         candidate_review_summary = _summarize_investigation_review(candidate_review)
         controlled_tree_payload = session_controlled_tree.model_dump(mode="json") if session_controlled_tree else None
+        controlled_tree_payload = _apply_session_tree_qualification(
+            controlled_tree_payload,
+            session_qualification,
+        )
         gate_failures = ai_gate_failures
         candidate_generation_output = _candidate_generation_output(candidate_review_summary)
         candidate_generation_output["line_probe_diagnostic"] = (
@@ -1997,18 +2018,13 @@ class DiagnosisOrchestrator:
                 controlled_tree_payload,
                 explanation.get("retained_conclusion"),
             ),
-            "confidence_level": (
-                cluster_assessment.get("confidence_level")
-                if cluster_candidates
-                else (explanation.get("confidence_level") or "低")
-                if possible_clusters
-                else "不可判断"
-            ),
+            "confidence_level": session_qualification.get("confidence_level") or "不可判断",
             "cluster_assessment": cluster_assessment,
-            "qualification": cluster_assessment.get("unified_qualification") or {},
+            "qualification": session_qualification,
+            "attribution_graph": _merge_attribution_graphs(task_observations),
             "root_cause_candidates": cluster_candidates,
             "possible_root_causes": [item.model_dump(mode="json") for item in possible_clusters],
-            "abstained": not bool(cluster_candidates),
+            "abstained": session_qualification.get("qualification") != "formal_root_cause",
             "ruled_out": cluster_assessment["ruled_out"],
             "diagnostic_commands": diagnostic_commands,
             "recommendations": [
@@ -3361,6 +3377,114 @@ def _merge_unified_qualifications(values: list[dict[str, Any]]) -> dict[str, Any
         result["reason"] = (
             "不同采集任务的资格层级不一致，会话结论按最保守的共同层级输出。"
         )
+    return result
+
+
+def _merge_attribution_graphs(observations: list[dict[str, Any]]) -> dict[str, Any]:
+    graphs = [
+        item.get("attribution_graph")
+        for item in observations
+        if isinstance(item.get("attribution_graph"), dict)
+    ]
+    if not graphs:
+        return {}
+    result = {
+        "schema_version": "2.0",
+        "graph_id": "session:attribution",
+        "target": {},
+        "facts": {
+            "schema_version": "2.0",
+            "symptom_signals": [],
+            "cost_centers": [],
+            "trigger_candidates": [],
+            "impact_candidates": [],
+            "observed_relations": [],
+            "missing_evidence": [],
+            "evidence_quality": [],
+            "evidence_refs": [],
+            "evidence_window": {},
+        },
+        "nodes": [],
+        "runtime_relations": [],
+        "source_relations": [],
+        "causal_edges": [],
+        "repair_clusters": [],
+        "boundaries": [],
+        "entities": [],
+        "graph_relations": [],
+    }
+    list_fields = (
+        ("facts", "symptom_signals"),
+        ("facts", "cost_centers"),
+        ("facts", "trigger_candidates"),
+        ("facts", "impact_candidates"),
+        ("facts", "observed_relations"),
+        ("facts", "evidence_quality"),
+        ("nodes", None),
+        ("runtime_relations", None),
+        ("source_relations", None),
+        ("causal_edges", None),
+        ("repair_clusters", None),
+        ("entities", None),
+        ("graph_relations", None),
+    )
+    for graph in graphs:
+        result["target"] = result["target"] or graph.get("target") or {}
+        facts = graph.get("facts") if isinstance(graph.get("facts"), dict) else {}
+        result["facts"]["missing_evidence"].extend(facts.get("missing_evidence") or [])
+        result["facts"]["evidence_refs"].extend(facts.get("evidence_refs") or [])
+        if not result["facts"]["evidence_window"]:
+            result["facts"]["evidence_window"] = facts.get("evidence_window") or {}
+        for container, field in list_fields:
+            source = graph.get(container) if container != "facts" else facts
+            if not isinstance(source, dict):
+                continue
+            values = source.get(field) if field else source
+            if not isinstance(values, list):
+                continue
+            result[container][field].extend(values) if field else result[container].extend(values)
+        result["boundaries"].extend(graph.get("boundaries") or [])
+    for container, field in list_fields:
+        values = result[container][field] if field else result[container]
+        seen = set()
+        deduped = []
+        for value in values:
+            key = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(value)
+        if field:
+            result[container][field] = deduped
+        else:
+            result[container] = deduped
+    return result
+
+
+def _apply_session_tree_qualification(
+    tree: dict[str, Any] | None,
+    qualification: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not isinstance(tree, dict):
+        return tree
+    eligible = {
+        str(item)
+        for item in qualification.get("eligible_candidate_ids", [])
+        if item
+    }
+    result = dict(tree)
+    if qualification.get("qualification") != "formal_root_cause":
+        result["final_primary_causes"] = []
+        result["final_secondary_causes"] = []
+        return result
+    result["final_primary_causes"] = [
+        str(item) for item in tree.get("final_primary_causes", [])
+        if str(item) in eligible
+    ]
+    result["final_secondary_causes"] = [
+        str(item) for item in tree.get("final_secondary_causes", [])
+        if str(item) in eligible
+    ]
     return result
 
 

@@ -64,6 +64,7 @@ def test_memray_attach_failure_is_failed_after_one_light_retry(tmp_path):
     assert validity["evidence_status"] == "failed"
     assert validity["reason"] == "memray_attach_failed"
     assert validity["failure_type"] == "permission_denied"
+    assert validity["failure_category"] == "permission_denied"
     assert validity["retry_attempted"] is False
     assert validity["retry_skipped_reason"] == (
         "retry_skipped_reason=ptrace_conflict_or_attach_permission_denied"
@@ -106,6 +107,7 @@ def test_memray_attach_failure_preserves_stdout_for_diagnosis(tmp_path, monkeypa
     payload = result.artifacts[0]["metadata"]["data"]
     validity = payload["evidence_validity"]
     assert validity["failure_type"] == "collector_exit_nonzero"
+    assert validity["failure_category"] == "memray_attach_failed"
     assert "target process couldn't open" in validity["stdout_excerpt"]
     assert "target process couldn't open" in validity["detail"]
 
@@ -400,6 +402,33 @@ def test_memray_missing_target_is_blocked_without_running_collector(tmp_path):
     payload = result.artifacts[0]["metadata"]["data"]
     assert payload["mode"] == "blocked"
     assert payload["evidence_validity"]["reason"] == "missing_target_pid"
+    assert payload["evidence_validity"]["failure_category"] == "target_exit"
+
+
+def test_memray_preflight_namespace_failure_uses_stable_category(tmp_path):
+    collector = PythonHeapCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    task = CollectorTask(
+        id="heap-namespace",
+        collector_type="python_heap_profile",
+        target_pid=1234,
+        sample_rate=1,
+        duration_sec=5,
+        options={},
+    )
+    preflight = {
+        "target_pid": 1234,
+        "blocked_reason": "namespace_inaccessible",
+        "failure_type": "namespace_unreachable",
+        "detail": "PID namespace unavailable",
+    }
+    with mock.patch("shutil.which", return_value="/usr/bin/memray"), mock.patch.object(
+        collector, "_pid_exists", return_value=True
+    ), mock.patch.object(collector, "_attach_preflight", return_value=preflight):
+        result = collector.collect(task)
+
+    payload = result.artifacts[0]["metadata"]["data"]
+    assert payload["evidence_validity"]["failure_category"] == "namespace_unreachable"
 
 
 def test_memray_official_stats_are_normalized_with_lines(tmp_path, monkeypatch):

@@ -122,8 +122,8 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
       dataQualityErrors: [`${tree?.tree_kind || "tree"}_not_renderable`],
     };
   }
-  const layers = tree.layers || [];
-  const highlighted = new Set(highlightedCandidateIds);
+  const layers = Array.isArray(tree.layers) ? tree.layers : [];
+  const highlighted = new Set(Array.isArray(highlightedCandidateIds) ? highlightedCandidateIds : []);
   const graphNodes = [];
   const orphanNodes = [];
   const dataQuality = [];
@@ -377,7 +377,7 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
       .map((edge) => `${edge.source}->${edge.target}`),
   );
 
-  for (const probeEdge of tree.probe_edges || []) {
+  for (const probeEdge of (Array.isArray(tree.probe_edges) ? tree.probe_edges : [])) {
     const fromNodes = resolveEdgeCandidates(probeEdge.from_candidate_ids, probeEdge.from_layer_id, layerIndex, candidateIndex);
     const toNodes = resolveEdgeCandidates(probeEdge.to_candidate_ids, probeEdge.to_layer_id, layerIndex, candidateIndex);
     if (!fromNodes.length || !toNodes.length) {
@@ -394,7 +394,9 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
             ? "回溯转查"
             : probeEdge.transition_type === "boundary"
               ? "证据边界"
-            : probeEdge.probe_requests?.join(" + ") || "探针补证",
+            : Array.isArray(probeEdge.probe_requests) && probeEdge.probe_requests.length > 0
+              ? probeEdge.probe_requests.join(" + ")
+              : "探针补证",
           data: {
             kind: probeEdge.transition_type === "backtrack" || probeEdge.effect === "rollback" ? "backtrack" : probeEdge.transition_type === "boundary" ? "boundary" : "probe",
             layoutRole: "annotation",
@@ -403,12 +405,14 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
             effect: probeEdge.effect,
             reuseStatus: probeEdge.reuse_status,
             reason: probeEdge.reason,
-            probeRequests: probeEdge.probe_requests || [],
+            probeRequests: Array.isArray(probeEdge.probe_requests) ? probeEdge.probe_requests : [],
             evidenceRefs: [
-              ...(probeEdge.evidence_refs || []),
-              ...((probeEdge.probe_results || []).flatMap((item) => item.evidence_refs || [])),
+              ...(Array.isArray(probeEdge.evidence_refs) ? probeEdge.evidence_refs : []),
+              ...((Array.isArray(probeEdge.probe_results) ? probeEdge.probe_results : []).flatMap((item) => (
+                Array.isArray(item.evidence_refs) ? item.evidence_refs : []
+              ))),
             ],
-            probeResults: probeEdge.probe_results || [],
+            probeResults: Array.isArray(probeEdge.probe_results) ? probeEdge.probe_results : [],
           },
           animated: probeEdge.transition_type !== "backtrack"
             && ["pending", "not_started", "unknown"].includes(probeEdge.status || "unknown"),
@@ -421,7 +425,7 @@ export function buildControlledAITreeGraph(tree = {}, highlightedCandidateIds = 
     }
   }
 
-  const hasEligiblePrimary = (tree.final_primary_causes || [])
+  const hasEligiblePrimary = (Array.isArray(tree.final_primary_causes) ? tree.final_primary_causes : [])
     .map((candidateId) => candidateIndex.get(candidateId))
     .some((item) => item?.candidate?.depth_kind === "base" && item.candidate.conclusion_eligible);
 
@@ -465,10 +469,10 @@ function shouldRenderProbeEdge(probeEdge, fromNodes, toNodes, lineagePairs) {
 
 export function flattenLayerCandidates(layer = {}) {
   return [
-    ...(layer.primary_causes || []),
-    ...(layer.secondary_causes || []),
-    ...(layer.rejected_causes || []),
-    ...(layer.unknown_causes || []),
+    ...(Array.isArray(layer.primary_causes) ? layer.primary_causes : []),
+    ...(Array.isArray(layer.secondary_causes) ? layer.secondary_causes : []),
+    ...(Array.isArray(layer.rejected_causes) ? layer.rejected_causes : []),
+    ...(Array.isArray(layer.unknown_causes) ? layer.unknown_causes : []),
   ];
 }
 
@@ -529,7 +533,7 @@ function orphanNodeFor(layer, candidate, missingParentId) {
 }
 
 function resolveEdgeCandidates(candidateIds, layerId, layerIndex, candidateIndex) {
-  const explicit = (candidateIds || [])
+  const explicit = (Array.isArray(candidateIds) ? candidateIds : [])
     .map((candidateId) => candidateIndex.get(candidateId))
     .filter(Boolean);
   if (explicit.length) return explicit;

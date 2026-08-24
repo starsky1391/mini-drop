@@ -42,10 +42,21 @@ const RECOMMENDATION_LABELS = {
   permanent_fix: "长期修复",
 };
 
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function confidencePercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(100, Math.round(number <= 1 ? number * 100 : number)));
+}
+
 export default function RootCauseClusters({ clusters = [], evidenceMap, onInspectTree }) {
-  if (!clusters.length) return null;
-  const confirmedCount = clusters.filter((item) => item.qualification === "confirmed_root_cause").length;
-  const pendingCount = clusters.length - confirmedCount;
+  const safeClusters = asArray(clusters);
+  if (!safeClusters.length) return null;
+  const confirmedCount = safeClusters.filter((item) => item.qualification === "confirmed_root_cause").length;
+  const pendingCount = safeClusters.length - confirmedCount;
 
   return (
     <section className="root-cause-clusters" aria-label="根因簇">
@@ -61,9 +72,9 @@ export default function RootCauseClusters({ clusters = [], evidenceMap, onInspec
       </div>
       <Collapse
         className="root-cause-cluster-list"
-        defaultActiveKey={clusters[0]?.cluster_id ? [clusters[0].cluster_id] : []}
-        items={clusters.map((cluster) => ({
-          key: cluster.cluster_id,
+        defaultActiveKey={safeClusters[0]?.cluster_id ? [safeClusters[0].cluster_id] : []}
+        items={safeClusters.map((cluster, index) => ({
+          key: cluster.cluster_id || `cluster-${index}`,
           label: <ClusterLabel cluster={cluster} />,
           children: (
             <ClusterDetail
@@ -92,7 +103,7 @@ function ClusterLabel({ cluster }) {
       </Space>
       <Typography.Text strong>{cluster.claim}</Typography.Text>
       <Progress
-        percent={Math.round((cluster.confidence || 0) * 100)}
+        percent={confidencePercent(cluster.confidence)}
         size="small"
         showInfo={false}
         strokeColor={cluster.conclusion_eligible ? "#389e0d" : cluster.qualification === "possible_root_cause" ? "#d48806" : "#08979c"}
@@ -102,24 +113,28 @@ function ClusterLabel({ cluster }) {
 }
 
 function ClusterDetail({ cluster, evidenceMap, onInspectTree }) {
-  const sourceIds = cluster.source_tree_candidate_ids || [];
-  const recommendations = cluster.recommendations || [];
+  const sourceIds = asArray(cluster.source_tree_candidate_ids);
+  const recommendations = asArray(cluster.recommendations);
+  const explainedSymptoms = asArray(cluster.explained_symptoms);
+  const causalChain = asArray(cluster.causal_chain);
+  const residualUnknowns = asArray(cluster.residual_unknowns);
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       <Descriptions size="small" column={{ xs: 1, md: 2 }}>
         <Descriptions.Item label="作用目标"><Typography.Text code>{cluster.target}</Typography.Text></Descriptions.Item>
         <Descriptions.Item label="故障机制"><Typography.Text code>{cluster.mechanism}</Typography.Text></Descriptions.Item>
         <Descriptions.Item label="为什么会这样" span={2}>{cluster.why_it_happened}</Descriptions.Item>
-        <Descriptions.Item label="解释的症状" span={2}>{(cluster.explained_symptoms || []).join("；") || "未明确"}</Descriptions.Item>
+        <Descriptions.Item label="解释的症状" span={2}>{explainedSymptoms.join("；") || "未明确"}</Descriptions.Item>
         {cluster.relation_to_primary && <Descriptions.Item label="与主因关系" span={2}>{cluster.relation_to_primary}</Descriptions.Item>}
       </Descriptions>
 
-      {(cluster.causal_chain || []).length > 0 && (
+      {causalChain.length > 0 && (
         <div>
           <Typography.Text strong><BranchesOutlined /> 因果链</Typography.Text>
           <Timeline
             className="root-cause-chain"
-            items={cluster.causal_chain.map((step) => ({
+            items={causalChain.map((step, index) => ({
+              key: `${step.statement || "step"}-${index}`,
               color: "blue",
               children: (
                 <div>
@@ -132,12 +147,12 @@ function ClusterDetail({ cluster, evidenceMap, onInspectTree }) {
         </div>
       )}
 
-      {(cluster.residual_unknowns || []).length > 0 && (
+      {residualUnknowns.length > 0 && (
         <Alert
           type="warning"
           showIcon
           message="仍未确认"
-          description={cluster.residual_unknowns.join("；")}
+          description={residualUnknowns.join("；")}
         />
       )}
 
@@ -169,11 +184,12 @@ function ClusterDetail({ cluster, evidenceMap, onInspectTree }) {
 }
 
 function EvidenceTags({ refs = [], evidenceMap }) {
-  if (!refs.length) return <Typography.Text type="secondary">无证据引用</Typography.Text>;
+  const safeRefs = asArray(refs);
+  if (!safeRefs.length) return <Typography.Text type="secondary">无证据引用</Typography.Text>;
   return (
     <Space wrap size={4}>
-      {refs.map((ref) => (
-        <Tag key={ref} color={evidenceMap?.has(ref) ? "blue" : "red"}>{ref}</Tag>
+      {safeRefs.map((ref, index) => (
+        <Tag key={`${ref}-${index}`} color={evidenceMap?.has(ref) ? "blue" : "red"}>{ref}</Tag>
       ))}
     </Space>
   );

@@ -369,24 +369,26 @@ def _normalize_probe_requests(value: Any) -> tuple[list[str], list[dict[str, Any
             family = item.strip()
             spec = {
                 "evidence_family": family,
+                "_structured": False,
                 "question": "",
                 "why_needed": "",
                 "input_refs": [],
-                "expected_observation": "",
-                "disconfirming_observation": "",
+                "expected_observation": [],
+                "disconfirming_observation": [],
             }
         elif isinstance(item, dict):
             family = str(item.get("evidence_family") or "").strip()
             spec = {
                 "evidence_family": family,
+                "_structured": True,
                 "question": str(item.get("question") or "").strip()[:500],
                 "why_needed": str(item.get("why_needed") or "").strip()[:500],
                 "input_refs": [
                     str(ref) for ref in item.get("input_refs", [])
                     if str(ref)
                 ][:32],
-                "expected_observation": str(item.get("expected_observation") or "").strip()[:500],
-                "disconfirming_observation": str(item.get("disconfirming_observation") or "").strip()[:500],
+                "expected_observation": _normalize_probe_observations(item.get("expected_observation")),
+                "disconfirming_observation": _normalize_probe_observations(item.get("disconfirming_observation")),
             }
         else:
             continue
@@ -395,6 +397,58 @@ def _normalize_probe_requests(value: Any) -> tuple[list[str], list[dict[str, Any
         families.append(family)
         specs.append(spec)
     return families, specs
+
+
+def _filter_probe_request_specs(
+    families: list[str],
+    specs: list[dict[str, Any]],
+    valid_refs: set[str],
+) -> tuple[list[str], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Drop only invalid probe requests; keep valid sibling requests/candidates."""
+    accepted_families: list[str] = []
+    accepted_specs: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    specs_by_family = {str(item.get("evidence_family") or ""): item for item in specs}
+    for family in families:
+        spec = specs_by_family.get(family) or {
+            "evidence_family": family,
+            "_structured": False,
+            "input_refs": [],
+        }
+        refs = [str(ref) for ref in spec.get("input_refs", []) if str(ref)]
+        invalid_refs = [ref for ref in refs if ref not in valid_refs]
+        missing_fields = [
+            field
+            for field in ("question", "why_needed", "expected_observation", "disconfirming_observation")
+            if not spec.get(field)
+        ]
+        if spec.get("_structured") and (not refs or invalid_refs or missing_fields):
+            rejected.append({
+                "evidence_family": family,
+                "invalid_input_refs": invalid_refs,
+                "missing_fields": missing_fields,
+                "reason": (
+                    "结构化 probe request 必须引用当前会话真实 evidence ref。"
+                    if not refs else
+                    "结构化 probe request 引用了当前会话不存在的 evidence ref。"
+                    if invalid_refs else
+                    f"结构化 probe request 缺少字段: {', '.join(missing_fields)}。"
+                ),
+            })
+            continue
+        accepted_families.append(family)
+        accepted_specs.append(spec)
+    return accepted_families, accepted_specs, rejected
+
+
+def _normalize_probe_observations(value: Any) -> list[str]:
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, list):
+        values = value
+    else:
+        values = []
+    return [str(item).strip()[:300] for item in values if str(item).strip()][:8]
 
 
 def _normalize_initial_candidate_decision(value: Any) -> str:
@@ -601,6 +655,27 @@ def generate_session_candidate_review(
                         if not str(item.get(field) or "").strip():
                             raise ValueError(f"candidate 缺少 {field}")
                     probe_requests, probe_request_specs = _normalize_probe_requests(item.get("probe_requests"))
+                    probe_requests, probe_request_specs, rejected_probe_specs = _filter_probe_request_specs(
+                        probe_requests,
+                        probe_request_specs,
+                        valid_refs,
+                    )
+                    for rejected_spec in rejected_probe_specs:
+                        validation_diagnostics.append(_validation_diagnostic(
+                            stage="candidate_generation",
+                            attempt=attempt,
+                            error=str(rejected_spec.get("reason") or "probe request evidence ref 无效"),
+                            raw=raw,
+                            candidate_id=candidate_id,
+                            candidate_count=len(candidates),
+                            valid_evidence_ref_count=len(valid_refs),
+                            known_candidate_ids=known_candidate_ids,
+                            initial_evidence_refs=valid_refs,
+                            initial_evidence_families=initial_evidence_context["evidence_families"],
+                            initial_evidence_statuses=initial_evidence_context["evidence_statuses"],
+                            candidate_evidence_refs=refs,
+                            candidate_parent_candidate_ids=parent_ids,
+                        ))
                     normalized.append({
                         "candidate_id": candidate_id,
                         "claim": str(item["claim"]).strip(),
@@ -998,6 +1073,20 @@ def generate_session_investigation_review(
             if raw_probe_requests is None:
                 raw_probe_requests = data.get("selected_evidence_families", [])
             requested_families, probe_request_specs = _normalize_probe_requests(raw_probe_requests)
+            requested_families, probe_request_specs, rejected_probe_specs = _filter_probe_request_specs(
+                requested_families,
+                probe_request_specs,
+                valid_refs,
+            )
+            for rejected_spec in rejected_probe_specs:
+                validation_diagnostics.append({
+                    "stage": "investigation_round",
+                    "attempt": attempt,
+                    "failure_code": "invalid_probe_input_ref",
+                    "evidence_family": rejected_spec.get("evidence_family"),
+                    "invalid_input_refs": rejected_spec.get("invalid_input_refs", []),
+                    "reason": rejected_spec.get("reason"),
+                })
             selected = [item for item in requested_families if item in allowed]
             if not selected or len(selected) > 3:
                 raise ValueError("probe_requests 越界或为空")

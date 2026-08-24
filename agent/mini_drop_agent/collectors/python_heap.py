@@ -43,7 +43,13 @@ class PythonHeapCollector:
                 return self._blocked(output_dir, task, "instrumented_result_missing", "Memray 官方产物不存在或为空")
         elif not supplied_reports:
             if not task.target_pid or not self._pid_exists(task.target_pid):
-                return self._blocked(output_dir, task, "missing_target_pid", "目标 PID 不存在或不可访问")
+                return self._blocked(
+                    output_dir,
+                    task,
+                    "missing_target_pid",
+                    "目标 PID 不存在或不可访问",
+                    failure_type="target_exit",
+                )
             preflight = self._attach_preflight(task, helper_available=bool(managed_helper))
             attach_preflight = preflight
             if preflight["blocked_reason"]:
@@ -53,6 +59,7 @@ class PythonHeapCollector:
                     preflight["blocked_reason"],
                     preflight["detail"],
                     preflight=preflight,
+                    failure_type=preflight.get("failure_type") or preflight["blocked_reason"],
                 )
             if not memray and native_live_tool:
                 return self._collect_native_live(
@@ -592,6 +599,7 @@ class PythonHeapCollector:
             "ptrace_scope": None,
             "helper_available": bool(helper_available),
             "blocked_reason": "",
+            "failure_type": "",
             "detail": "",
         }
         status_path = f"/proc/{pid}/status"
@@ -629,16 +637,19 @@ class PythonHeapCollector:
             try:
                 if int(expected_uid) != int(result["target_uid"]):
                     result["blocked_reason"] = "permission_denied"
+                    result["failure_type"] = "permission_denied"
                     result["detail"] = "目标进程 UID 与诊断任务声明不一致"
                     return result
             except (TypeError, ValueError):
                 result["blocked_reason"] = "permission_denied"
+                result["failure_type"] = "permission_denied"
                 result["detail"] = "目标 UID 声明不可解析"
                 return result
         if result["same_pid_namespace"] is False and not (
             helper_available or task.options.get("allow_pid_namespace_mismatch")
         ):
             result["blocked_reason"] = "namespace_inaccessible"
+            result["failure_type"] = "namespace_unreachable"
             result["detail"] = "Agent 与目标进程不在同一 PID namespace，不能可靠 attach"
         elif result["same_pid_namespace"] is False:
             result["detail"] = "默认 attach 不在同一 PID namespace，将尝试容器内 helper"
@@ -715,6 +726,38 @@ class PythonHeapCollector:
         if not output_path.is_file() or output_path.stat().st_size <= 0:
             return "output_missing"
         return "collector_failed"
+
+    @classmethod
+    def _failure_category(
+        cls,
+        failure_type: str,
+        *,
+        reason: str = "",
+        detail: str = "",
+    ) -> str:
+        """Return the stable failure vocabulary while preserving legacy names."""
+        value = str(failure_type or "").strip()
+        text = f"{reason} {detail}".lower()
+        if value == "timeout":
+            return "timeout"
+        if value == "permission_denied":
+            return "permission_denied"
+        if value in {"namespace_inaccessible", "namespace_unreachable"}:
+            return "namespace_unreachable"
+        if value in {"incompatible_runtime", "runtime_mismatch"}:
+            return "runtime_mismatch"
+        if value in {"output_missing", "artifact_missing"}:
+            return "artifact_missing"
+        if value == "target_exit" or any(
+            token in text
+            for token in ("target exited", "target_exit", "process exited", "pid disappeared")
+        ):
+            return "target_exit"
+        if value in {"memray_attach_failed", "collector_exit_nonzero", "collector_failed"}:
+            return "memray_attach_failed"
+        if "artifact" in text and ("missing" in text or "not found" in text):
+            return "artifact_missing"
+        return value or "memray_attach_failed"
 
     @classmethod
     def _retry_skip_reason(
@@ -890,6 +933,7 @@ class PythonHeapCollector:
         detail: str,
         *,
         preflight: dict[str, Any] | None = None,
+        failure_type: str = "",
     ) -> CollectorResult:
         payload = {
             "schema_version": "1.0",
@@ -908,6 +952,12 @@ class PythonHeapCollector:
                 "evidence_status": "blocked",
                 "reason": reason,
                 "detail": detail,
+                "failure_type": failure_type or reason,
+                "failure_category": self._failure_category(
+                    failure_type or reason,
+                    reason=reason,
+                    detail=detail,
+                ),
             },
         }
         return self._write_status_result(output_dir, task, payload, detail)
@@ -949,6 +999,11 @@ class PythonHeapCollector:
                 "reason": reason,
                 "detail": detail,
                 "failure_type": failure_type,
+                "failure_category": self._failure_category(
+                    failure_type,
+                    reason=reason,
+                    detail=detail,
+                ),
                 "exit_code": exit_code,
                 "stdout_excerpt": stdout_excerpt,
                 "stderr_excerpt": stderr_excerpt,

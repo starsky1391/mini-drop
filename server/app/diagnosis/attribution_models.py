@@ -91,6 +91,40 @@ class ObservedRelation(BaseModel):
     statement: str = ""
 
 
+class AttributionNode(BaseModel):
+    node_id: str
+    role: Literal["cost_center", "trigger", "mechanism", "impact", "repair_cluster", "runtime", "source"] = "runtime"
+    symbol: str = ""
+    file: str = ""
+    line: int | None = Field(default=None, ge=1)
+    supported_level: AttributionLevel = "resource"
+    evidence_refs: list[str] = Field(default_factory=list)
+    source_status: Literal["none", "unproven", "supported", "verified", "contradicted"] = "none"
+    window: dict[str, Any] = Field(default_factory=dict)
+    label: str = ""
+
+
+class AttributionEdge(BaseModel):
+    edge_id: str
+    from_node: str
+    relation: RelationKind
+    to_node: str
+    evidence_refs: list[str] = Field(default_factory=list)
+    same_window: bool | None = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    status: Literal["observed", "supported", "verified", "unproven", "contradicted"] = "unproven"
+
+
+class RepairCluster(BaseModel):
+    cluster_id: str
+    node_refs: list[str] = Field(default_factory=list)
+    mechanism_refs: list[str] = Field(default_factory=list)
+    source_relation_refs: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    status: Literal["candidate", "supported", "blocked"] = "candidate"
+    reason: str = ""
+
+
 class ScenarioFacts(BaseModel):
     schema_version: str = "2.0"
     symptom_signals: list[EvidenceSignal] = Field(default_factory=list)
@@ -121,7 +155,12 @@ class AttributionGraph(BaseModel):
     graph_id: str
     target: dict[str, Any] = Field(default_factory=dict)
     facts: ScenarioFacts = Field(default_factory=ScenarioFacts)
+    nodes: list[AttributionNode] = Field(default_factory=list)
+    runtime_relations: list[AttributionEdge] = Field(default_factory=list)
     source_relations: list[SourceRelation] = Field(default_factory=list)
+    causal_edges: list[AttributionEdge] = Field(default_factory=list)
+    repair_clusters: list[RepairCluster] = Field(default_factory=list)
+    boundaries: list[str] = Field(default_factory=list)
     entities: list[dict[str, Any]] = Field(default_factory=list)
     graph_relations: list[ObservedRelation] = Field(default_factory=list)
 
@@ -139,6 +178,8 @@ class QualificationResult(BaseModel):
     ] = "observation"
     decision: Literal["continue_probe", "conclude", "abstain"] = "abstain"
     causal_status: Literal["supported", "unproven", "contradicted", "inconclusive"] = "inconclusive"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    confidence_level: Literal["高", "中", "低", "不可判断"] = "不可判断"
     target: dict[str, Any] = Field(default_factory=dict)
     window: dict[str, Any] = Field(default_factory=dict)
     symptom_refs: list[str] = Field(default_factory=list)
@@ -150,6 +191,9 @@ class QualificationResult(BaseModel):
     evidence_refs: list[str] = Field(default_factory=list)
     missing_evidence: list[str] = Field(default_factory=list)
     disconfirming_evidence_refs: list[str] = Field(default_factory=list)
+    candidate_ids: list[str] = Field(default_factory=list)
+    eligible_candidate_ids: list[str] = Field(default_factory=list)
+    supported_level: AttributionLevel = "resource"
     reason: str = ""
 
 
