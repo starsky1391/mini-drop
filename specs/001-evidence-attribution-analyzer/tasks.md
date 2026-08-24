@@ -1712,7 +1712,7 @@ AI 全部失败时才生成 fallback，且不进入正式根因
 line 探测失败有具体 eligibility 原因
 Heap attach 不要求目标预加载，失败后诊断继续
 前端主树、历史子树和数据质量区互不污染
-vulnerable-only 600s case 可形成完整运行终态
+vulnerable-only 400s case 可形成完整运行终态
 ```
 
 ## Task Group CG - Final Integrated Closure (Authoritative)

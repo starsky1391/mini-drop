@@ -1,11 +1,11 @@
 param(
-    [int]$DurationSec = 600,
-    [int]$DiagnosisTimeoutSec = 600,
+    [int]$DurationSec = 400,
+    [int]$DiagnosisTimeoutSec = 400,
     [string]$OutputRoot = "reports/eval/real-open-source"
 )
 
 $ts = Get-Date -Format "yyyyMMdd-HHmmss"
-$outputDir = Join-Path $OutputRoot "celery-8882-vulnerable-600s-$ts"
+$outputDir = Join-Path $OutputRoot "celery-8882-vulnerable-400s-$ts"
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
 python (Join-Path $PSScriptRoot "run_case_vm.py") `
