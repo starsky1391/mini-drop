@@ -7510,11 +7510,43 @@ def _tree_localization_chain(
         origin = str(node.origin_parent_candidate_id or "").strip()
         current_id = origin if origin in nodes else ""
     ordered.reverse()
+    if ordered:
+        children_by_parent: dict[str, list[str]] = {}
+        for node in nodes.values():
+            origin = str(node.origin_parent_candidate_id or "").strip()
+            if origin:
+                children_by_parent.setdefault(origin, []).append(node.candidate_id)
+        line_path: list[AITreeCandidateNode] | None = None
+        queue: list[tuple[str, list[AITreeCandidateNode]]] = [
+            (ordered[-1].candidate_id, [ordered[-1]])
+        ]
+        visited_descendants: set[str] = set()
+        while queue:
+            parent_id, path = queue.pop(0)
+            for child_id in sorted(children_by_parent.get(parent_id, [])):
+                if child_id in visited_descendants or child_id not in nodes:
+                    continue
+                visited_descendants.add(child_id)
+                child = nodes[child_id]
+                child_path = [*path, child]
+                if (
+                    child.generated_by in {"ai", "ai_candidate", "ai_guarded"}
+                    and child.node_type == "line_anchor"
+                    and child.supported_level == "line"
+                    and child.claim_transform == "refined"
+                ):
+                    line_path = child_path
+                queue.append((child_id, child_path))
+        if line_path:
+            ordered.extend(line_path[1:])
     return [
         CausalExplanationStep(
             step_id=f"localization_{node.candidate_id}",
+            candidate_id=node.candidate_id,
             statement=node.claim,
             evidence_refs=_unique_strings(node.evidence_refs),
+            claim_status=node.claim_status,
+            supported_level=node.supported_level,
         )
         for node in ordered
         if node.claim.strip()
@@ -7774,6 +7806,7 @@ def _candidate_generation_output(review: dict[str, Any] | None) -> dict[str, Any
             "deferred_candidate_ids": [],
             "selection_diagnostics": [],
             "tree_ingestion_diagnostics": [],
+            "line_refinement_diagnostics": [],
             "validation_diagnostics": [],
             "selected_evidence_families": [],
             "initial_evidence_context": {},
@@ -7854,6 +7887,9 @@ def _candidate_generation_output(review: dict[str, Any] | None) -> dict[str, Any
         "selection_diagnostics": list(selection_diagnostics),
         "tree_ingestion_diagnostics": list(
             review.get("tree_ingestion_diagnostics") or []
+        ),
+        "line_refinement_diagnostics": list(
+            review.get("line_refinement_diagnostics") or []
         ),
         "validation_diagnostics": validation_diagnostics,
         "gate_failures": list(gate_failures),
@@ -8372,11 +8408,250 @@ def _retained_parent_candidate_id(
     return ""
 
 
+def _add_ai_line_refinements(
+    tree: ControlledAITree,
+) -> tuple[ControlledAITree, list[dict[str, Any]]]:
+    """Bind AI call-path candidates to a verified source line without bypassing gates."""
+    if str((tree.line_anchor_eligibility or {}).get("status") or "") != "verified":
+        return tree, []
+
+    line_nodes = [
+        node
+        for layer in tree.layers
+        for node in _layer_nodes_for_validation(layer)
+        if (
+            node.supported_level == "line"
+            and node.node_type == "line_anchor"
+            and node.depth_kind == "base"
+        )
+    ]
+    if not line_nodes:
+        return tree, []
+
+    eligibility = tree.line_anchor_eligibility or {}
+    file_name = str(eligibility.get("file") or "").replace("\\", "/")
+    line_number = int(_num(eligibility.get("line")))
+    if not file_name or line_number <= 0:
+        return tree, []
+    anchor_label = f"{file_name}:{line_number}"
+
+    all_nodes = [
+        node
+        for layer in tree.layers
+        for node in _layer_nodes_for_validation(layer)
+    ]
+    by_id = {node.candidate_id: node for node in all_nodes}
+    layer_by_id = {
+        node.candidate_id: layer
+        for layer in tree.layers
+        for node in _layer_nodes_for_validation(layer)
+    }
+    existing_ids = set(by_id)
+    diagnostics: list[dict[str, Any]] = []
+    refinements_by_depth: dict[int, list[AITreeCandidateNode]] = {}
+    updated_layers = list(tree.layers)
+
+    for candidate in all_nodes:
+        if (
+            candidate.generated_by not in {"ai", "ai_candidate", "ai_guarded"}
+            or candidate.depth_kind != "base"
+            or candidate.node_type in {
+                "observation",
+                "mechanism_explanation",
+                "stop_boundary",
+                "evidence_gap",
+                "orphan",
+                "line_anchor",
+            }
+            or candidate.role == "rejected"
+            or candidate.supported_level not in {"function", "call_path"}
+        ):
+            continue
+        if any(
+            by_id.get(parent_id) is not None
+            and by_id[parent_id].supported_level == "line"
+            for parent_id in candidate.parent_candidate_ids
+        ):
+            continue
+
+        candidate_refs = set(candidate.evidence_refs)
+        matching_lines = [
+            line_node
+            for line_node in line_nodes
+            if candidate_refs.intersection(line_node.evidence_refs)
+        ]
+        if len(matching_lines) != 1:
+            diagnostics.append({
+                "candidate_id": candidate.candidate_id,
+                "status": "not_refined",
+                "reason": (
+                    "verified line 存在，但 AI candidate 没有唯一同证据 cohort，"
+                    "未猜测其源码父行。"
+                ),
+                "supported_level": candidate.supported_level,
+                "verified_line": anchor_label,
+            })
+            continue
+
+        line_node = matching_lines[0]
+        refinement_id = f"{candidate.candidate_id}#line"
+        parent_layer = layer_by_id.get(candidate.candidate_id)
+        if parent_layer is None:
+            continue
+        target_depth = parent_layer.depth + 1
+        if target_depth > int(tree.budget.max_tree_depth):
+            diagnostics.append({
+                "candidate_id": candidate.candidate_id,
+                "status": "blocked",
+                "reason": "AI line refinement 超出当前 session_main 深度预算。",
+                "verified_line": anchor_label,
+                "target_depth": target_depth,
+                "max_tree_depth": tree.budget.max_tree_depth,
+            })
+            continue
+
+        missing = list(candidate.self_challenge.missing_evidence)
+        if not candidate.mechanism.strip() and "mechanism" not in missing:
+            missing.append("mechanism")
+        if not candidate.source_relation_refs and "verified_source_relation" not in missing:
+            missing.append("verified_source_relation")
+        line_claim = (
+            f"{candidate.claim}（运行时 file:line 与 source_snapshot 已定位到 "
+            f"{anchor_label}。）"
+        )
+        generated_by = (
+            "ai_guarded"
+            if candidate.generated_by == "ai_guarded"
+            else "ai_candidate"
+        )
+        claim_origin = "ai_update" if generated_by == "ai_guarded" else "ai_proposal"
+        line_evidence_refs = list(dict.fromkeys([
+            *candidate.evidence_refs,
+            *line_node.evidence_refs,
+        ]))
+        line_challenge = candidate.self_challenge.model_copy(update={
+            "missing_evidence": list(dict.fromkeys(missing)),
+            "supporting_evidence_refs": list(dict.fromkeys([
+                *candidate.self_challenge.supporting_evidence_refs,
+                *line_node.evidence_refs,
+            ])),
+            "why_this_claim": line_claim,
+        })
+        line_fields = {
+            **canonical_claim_fields(
+                line_claim,
+                generated_by=generated_by,
+                claim_origin=claim_origin,
+                claim_transform="refined",
+                source_candidate_id=candidate.candidate_id,
+                source_claim_hash=candidate.claim_hash,
+            ),
+            "lineage_id": f"{candidate.lineage_id or candidate.candidate_id}#line",
+            "parent_candidate_ids": [candidate.candidate_id],
+            "origin_parent_candidate_id": candidate.candidate_id,
+            "relation": "refinement",
+            "node_type": "line_anchor",
+            "role": candidate.role,
+            "claim": line_claim,
+            "supported_level": "line",
+            "confidence": candidate.confidence,
+            "status": candidate.status,
+            "claim_type": candidate.claim_type,
+            "causal_status": candidate.causal_status,
+            "decision": candidate.decision,
+            "mechanism": candidate.mechanism,
+            "target": f"{candidate.target} @ {anchor_label}",
+            "primitive_kind": candidate.primitive_kind,
+            "depth_kind": "base",
+            "conclusion_eligible": False,
+            "eligibility_reason": (
+                f"已定位到 {anchor_label}；"
+                + (
+                    "仍缺少机制和已验证 source relation，不能形成正式源码根因。"
+                    if missing
+                    else "仍需通过统一 session qualification gate。"
+                )
+            ),
+            "evidence_refs": line_evidence_refs,
+            "cost_center_refs": list(candidate.cost_center_refs),
+            "trigger_refs": list(candidate.trigger_refs),
+            "mechanism_refs": list(candidate.mechanism_refs),
+            "impact_refs": list(candidate.impact_refs),
+            "source_relation_refs": list(candidate.source_relation_refs),
+            "self_challenge": line_challenge,
+        }
+        if refinement_id in existing_ids:
+            updated_line = by_id[refinement_id].model_copy(update=line_fields)
+            for layer_index, layer in enumerate(updated_layers):
+                updated_layers[layer_index] = layer.model_copy(update={
+                    group: [
+                        updated_line if item.candidate_id == refinement_id else item
+                        for item in getattr(layer, group)
+                    ]
+                    for group in (
+                        "primary_causes",
+                        "secondary_causes",
+                        "rejected_causes",
+                        "unknown_causes",
+                    )
+                })
+            by_id[refinement_id] = updated_line
+            diagnostics.append({
+                "candidate_id": candidate.candidate_id,
+                "line_candidate_id": refinement_id,
+                "status": "updated",
+                "verified_line": anchor_label,
+                "missing_evidence": list(dict.fromkeys(missing)),
+            })
+            continue
+        line_refinement = AITreeCandidateNode(
+            candidate_id=refinement_id,
+            **line_fields,
+        )
+        refinements_by_depth.setdefault(target_depth, []).append(line_refinement)
+        existing_ids.add(refinement_id)
+        diagnostics.append({
+            "candidate_id": candidate.candidate_id,
+            "line_candidate_id": refinement_id,
+            "status": "refined",
+            "verified_line": anchor_label,
+            "parent_candidate_id": candidate.candidate_id,
+            "line_anchor_candidate_id": line_node.candidate_id,
+            "formal_root_cause_eligible": False,
+            "missing_evidence": list(dict.fromkeys(missing)),
+        })
+
+    if not refinements_by_depth:
+        return tree, diagnostics
+
+    for depth, nodes in sorted(refinements_by_depth.items()):
+        updated_layers.append(AITreeLayer(
+            layer_id=f"session_ai_line_refinement_{depth}_{len(updated_layers)}",
+            depth=depth,
+            generated_by="ai_candidate",
+            summary=(
+                "真实 AI 候选沿同证据 cohort 细化到 verified source line；"
+                "line refinement 不自动等同于正式根因。"
+            ),
+            unknown_causes=nodes,
+        ))
+
+    updated = tree.model_copy(update={"layers": updated_layers})
+    retained_id = str(updated.retained_candidate_id or "").strip()
+    if retained_id:
+        updated = updated.model_copy(update={
+            "localization_chain": _tree_localization_chain(updated.layers, retained_id),
+        })
+    return updated, diagnostics
+
+
 def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> ControlledAITree:
     """Attach first-round AI candidates to the existing canonical DAG."""
     proposals = review.get("candidate_proposals") if isinstance(review.get("candidate_proposals"), list) else []
     ingestion_diagnostics: list[dict[str, Any]] = []
     if not proposals:
+        tree, line_refinement_diagnostics = _add_ai_line_refinements(tree)
+        review["line_refinement_diagnostics"] = line_refinement_diagnostics
         review["tree_ingestion_diagnostics"] = ingestion_diagnostics
         return enforce_conclusion_eligibility(tree)
     existing_ids = {
@@ -8445,6 +8720,8 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
         eligible_proposals.append(normalized_item)
     proposals = eligible_proposals
     if not proposals:
+        tree, line_refinement_diagnostics = _add_ai_line_refinements(tree)
+        review["line_refinement_diagnostics"] = line_refinement_diagnostics
         review["tree_ingestion_diagnostics"] = ingestion_diagnostics
         return enforce_conclusion_eligibility(tree)
     valid_levels = {"resource", "host", "process", "thread", "syscall", "dependency", "service", "endpoint", "function", "call_path", "line"}
@@ -8534,6 +8811,8 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
             ),
         ))
     if not nodes:
+        tree, line_refinement_diagnostics = _add_ai_line_refinements(tree)
+        review["line_refinement_diagnostics"] = line_refinement_diagnostics
         review["tree_ingestion_diagnostics"] = ingestion_diagnostics
         return enforce_conclusion_eligibility(tree)
 
@@ -8587,6 +8866,8 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
         nodes_by_depth.setdefault(target_depth, []).append(node)
 
     if not nodes_by_depth:
+        tree, line_refinement_diagnostics = _add_ai_line_refinements(tree)
+        review["line_refinement_diagnostics"] = line_refinement_diagnostics
         review["tree_ingestion_diagnostics"] = ingestion_diagnostics
         return enforce_conclusion_eligibility(tree)
 
@@ -8645,6 +8926,10 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
             "unknown_causes": grouped["unknown"],
         }))
     layers = updated_layers
+    updated = tree.model_copy(update={"layers": layers})
+    updated, line_refinement_diagnostics = _add_ai_line_refinements(updated)
+    review["line_refinement_diagnostics"] = line_refinement_diagnostics
+    layers = updated.layers
     all_emitted_nodes = [
         node
         for layer in layers
@@ -8668,10 +8953,14 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
         ),
         tree.retained_candidate_id,
     )
-    updated = tree.model_copy(update={
+    updated = updated.model_copy(update={
         "layers": layers,
         "retained_candidate_id": retained_candidate_id or None,
     })
+    if retained_candidate_id:
+        updated = updated.model_copy(update={
+            "localization_chain": _tree_localization_chain(updated.layers, retained_candidate_id),
+        })
     review["tree_ingestion_diagnostics"] = ingestion_diagnostics
     return enforce_conclusion_eligibility(updated)
 
@@ -8978,6 +9267,8 @@ def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) 
             "used_probe_requests": tree.budget.used_probe_requests + len(selected),
         }),
     })
+    updated, line_refinement_diagnostics = _add_ai_line_refinements(updated)
+    review["line_refinement_diagnostics"] = line_refinement_diagnostics
     return enforce_conclusion_eligibility(updated)
 
 

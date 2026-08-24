@@ -10,6 +10,7 @@ from server.app.diagnosis.session_conclusion import (
     build_retained_conclusion,
     build_root_cause_clusters,
     build_scenario_retained_conclusion,
+    build_session_qualification,
     collect_candidate_generation_gate_failures,
     collect_ai_gate_failures,
     derive_localization_frontier_from_ai_tree,
@@ -93,6 +94,73 @@ def test_ai_gate_failure_is_exposed_and_not_derived_as_formal_cluster():
     assert failures[0]["gate_checks"]["causal_status"] is False
     assert "causal_status" in failures[0]["failed_gates"]
     assert derive_root_cause_clusters_from_ai_tree(tree, valid_evidence_refs={"ev-rss"}) == []
+
+
+def test_verified_line_localization_reports_mechanism_and_source_relation_gaps():
+    qualification = build_session_qualification(
+        [],
+        {
+            "line_anchor_eligibility": {
+                "status": "verified",
+                "file": "requests/structures.py",
+                "line": 83,
+            },
+            "layers": [{
+                "unknown_causes": [{
+                    "candidate_id": "coarse",
+                    "generated_by": "analyzer_observation",
+                    "relation": "root",
+                    "node_type": "cluster_root",
+                    "claim": "Python CPU 热点",
+                    "supported_level": "resource",
+                    "status": "unknown",
+                }],
+            }, {
+                "unknown_causes": [{
+                    "candidate_id": "ai-cpu#line",
+                    "generated_by": "ai_candidate",
+                    "relation": "refinement",
+                    "node_type": "line_anchor",
+                    "depth_kind": "base",
+                    "parent_candidate_ids": ["ai-cpu"],
+                    "origin_parent_candidate_id": "ai-cpu",
+                    "claim": "requests/structures.py:83 的 CPU 热点",
+                    "supported_level": "line",
+                    "status": "missing_evidence",
+                    "claim_type": "partial_localization",
+                    "causal_status": "unproven",
+                    "decision": "continue_probe",
+                    "mechanism": "",
+                    "target": "requests/structures.py:83",
+                    "evidence_refs": ["ev-runtime", "ev-source"],
+                }, {
+                    "candidate_id": "ai-cpu",
+                    "generated_by": "ai_candidate",
+                    "relation": "refinement",
+                    "node_type": "call_path_context",
+                    "depth_kind": "base",
+                    "parent_candidate_ids": ["coarse"],
+                    "origin_parent_candidate_id": "coarse",
+                    "claim": "Python 请求路径持续消耗 CPU",
+                    "supported_level": "call_path",
+                    "status": "missing_evidence",
+                    "claim_type": "likely_root_cause",
+                    "causal_status": "unproven",
+                    "decision": "continue_probe",
+                    "mechanism": "",
+                    "target": "requests CPU call path",
+                    "evidence_refs": ["ev-runtime"],
+                }],
+            }],
+        },
+        base={"evidence_refs": ["ev-runtime", "ev-source"]},
+        retained_conclusion={"candidate_id": "ai-cpu", "claim": "Python 请求路径持续消耗 CPU"},
+    )
+
+    assert qualification["qualification"] == "partial_localization"
+    assert qualification["supported_level"] == "line"
+    assert {"mechanism", "verified_source_relation"} <= set(qualification["missing_evidence"])
+    assert qualification["eligible_candidate_ids"] == []
 
 
 def test_ai_gate_failure_marks_missing_window_and_parent_as_failed_gates():

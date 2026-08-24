@@ -93,6 +93,23 @@ def build_session_qualification(
         *(base.get("missing_evidence") or []),
         *(item for cluster in clusters for item in cluster.residual_unknowns),
     ])
+    line_eligibility = (
+        session_tree.get("line_anchor_eligibility")
+        if isinstance(session_tree, dict)
+        and isinstance(session_tree.get("line_anchor_eligibility"), dict)
+        else {}
+    )
+    if str(line_eligibility.get("status") or "") == "verified" and ai_nodes:
+        ai_line_nodes = [
+            node for node in ai_nodes
+            if str(node.get("supported_level") or "") == "line"
+            and str(node.get("node_type") or "") == "line_anchor"
+        ]
+        line_candidates = ai_line_nodes or ai_nodes
+        if not any(str(node.get("mechanism") or "").strip() for node in line_candidates):
+            missing.append("mechanism")
+        if not any(node.get("source_relation_refs") for node in line_candidates):
+            missing.append("verified_source_relation")
     if graph_result is not None:
         missing = _unique([*missing, *graph_result.missing_evidence])
     supported_level = _deepest_level([
@@ -121,6 +138,7 @@ def build_session_qualification(
             graph_result.confidence_level = "中" if graph_result.confidence >= 0.5 else "低"
             graph_result.missing_evidence = _unique([
                 *graph_result.missing_evidence,
+                *missing,
                 "session_ai_candidate_cluster",
             ])
             graph_result.reason = (
@@ -1509,6 +1527,36 @@ def _build_localization_chain(
         for candidate_id in ready:
             emitted.add(candidate_id)
             ordered.append(nodes[candidate_id])
+    children_by_parent: dict[str, list[str]] = {}
+    for node in nodes.values():
+        origin = str(node.get("origin_parent_candidate_id") or "").strip()
+        if origin:
+            children_by_parent.setdefault(origin, []).append(str(node["candidate_id"]))
+    line_path: list[dict[str, Any]] | None = None
+    if ordered:
+        queue: list[tuple[str, list[dict[str, Any]]]] = [
+            (str(ordered[-1].get("candidate_id") or ""), [ordered[-1]])
+        ]
+        visited_descendants: set[str] = set()
+        while queue:
+            parent_id, path = queue.pop(0)
+            for child_id in sorted(children_by_parent.get(parent_id, [])):
+                if child_id in visited_descendants or child_id not in nodes:
+                    continue
+                visited_descendants.add(child_id)
+                child = nodes[child_id]
+                child_path = [*path, child]
+                if (
+                    str(child.get("generated_by") or "")
+                    in {"ai", "ai_candidate", "ai_guarded"}
+                    and str(child.get("node_type") or "") == "line_anchor"
+                    and str(child.get("supported_level") or "") == "line"
+                    and str(child.get("claim_transform") or "") == "refined"
+                ):
+                    line_path = child_path
+                queue.append((child_id, child_path))
+        if line_path:
+            ordered.extend(line_path[1:])
     result: list[CausalExplanationStep] = []
     emitted_hashes: set[str] = set()
     for node in ordered:

@@ -5686,6 +5686,85 @@ def test_verified_source_line_is_synthesized_as_base_parent_for_mechanism():
     assert nodes["ai_proposal_trace_cycle"].parent_candidate_ids == [line_id]
 
 
+def test_ai_candidate_is_refined_to_verified_line_without_formal_promotion():
+    assessment = {
+        "classification": "self_code_or_process_pressure",
+        "summary": "运行时行和源码快照已形成 verified line。",
+        "supported_level": "line",
+        "confidence": 0.72,
+        "evidence_refs": ["ev-runtime", "ev-source"],
+        "conclusion_eligible": False,
+        "primary_anchor": {
+            "supported_level": "line",
+            "source_context_hash": "sha256:requests",
+            "source_revision": "rev-requests",
+            "file": "requests/structures.py",
+            "line": 83,
+            "function": "CaseInsensitiveDict.__setitem__",
+            "runtime_line_candidates": [{
+                "file": "/opt/project/requests/structures.py",
+                "line": 83,
+                "symbol": "CaseInsensitiveDict.__setitem__",
+            }],
+        },
+    }
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-ai-line-refinement",
+        cluster_assessment=assessment,
+        candidates=[],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+        source_snapshot_hashes=["sha256:requests"],
+    )
+    review = {
+        "candidate_proposals": [{
+            "candidate_id": "ai_candidate_python_eval_cpu_hot_call_path",
+            "claim": "Python 请求路径持续消耗 CPU。",
+            "mechanism": "",
+            "target": "requests CPU call path",
+            "role": "primary",
+            "relation": "refinement",
+            "supported_level": "call_path",
+            "decision": "needs_more_evidence",
+            "causal_status": "needs_more_evidence",
+            "evidence_refs": ["ev-runtime"],
+            "parent_candidate_ids": ["coarse_insufficient_evidence"],
+            "origin_parent_candidate_id": "coarse_insufficient_evidence",
+            "missing_evidence": [],
+        }],
+        "active_candidate_ids": ["ai_candidate_python_eval_cpu_hot_call_path"],
+    }
+
+    updated = orchestrator_module._apply_candidate_review(tree, review)
+    nodes = {
+        node.candidate_id: node
+        for layer in updated.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    }
+    line = nodes["ai_candidate_python_eval_cpu_hot_call_path#line"]
+
+    assert updated.line_anchor_eligibility["status"] == "verified"
+    assert line.generated_by == "ai_candidate"
+    assert line.node_type == "line_anchor"
+    assert line.supported_level == "line"
+    assert line.parent_candidate_ids == ["ai_candidate_python_eval_cpu_hot_call_path"]
+    assert line.origin_parent_candidate_id == "ai_candidate_python_eval_cpu_hot_call_path"
+    assert line.conclusion_eligible is False
+    assert {"mechanism", "verified_source_relation"} <= set(line.self_challenge.missing_evidence)
+    assert review["line_refinement_diagnostics"][0]["status"] == "refined"
+    assert [
+        (step.candidate_id, step.supported_level)
+        for step in updated.localization_chain
+    ][-1] == ("ai_candidate_python_eval_cpu_hot_call_path#line", "line")
+    assert updated.final_primary_causes == []
+
+
 def test_generic_event_loop_frame_does_not_upgrade_call_path_to_line():
     values = {
         "depth_evidence_json": {
