@@ -87,6 +87,8 @@ def test_ai_gate_failure_is_exposed_and_not_derived_as_formal_cluster():
     assert failures[0]["failure_code"] == "eligibility_gate"
     assert failures[0]["gate_checks"]["source_is_ai"] is True
     assert failures[0]["gate_checks"]["evidence_refs_exist"] is True
+    assert failures[0]["gate_checks"]["runtime_or_source_anchor"] is False
+    assert "runtime_or_source_anchor" in failures[0]["failed_gates"]
     assert failures[0]["gate_checks"]["window"] is True
     assert failures[0]["gate_checks"]["causal_status"] is False
     assert "causal_status" in failures[0]["failed_gates"]
@@ -586,7 +588,7 @@ def test_duplicate_dependency_observations_merge_into_one_cluster():
     assert set(clusters[0].evidence_refs) == {"ev-1", "ev-2"}
 
 
-def test_python_scenario_gate_becomes_confirmed_root_cause_cluster():
+def test_python_scenario_gate_never_becomes_formal_root_cause_cluster():
     observation = _observation(
         service_id="checkoutservice",
         instance_id="checkout-1",
@@ -596,10 +598,11 @@ def test_python_scenario_gate_becomes_confirmed_root_cause_cluster():
     observation["evidence_index"] = {
         "python_scenario_gates": {
             "python_exception_profile": {
-                "family": "python_exception_profile",
-                "scenario_type": "python_exception_storm",
-                "max_supported_claim_type": "direct_root_cause",
-                "conclusion_eligible": True,
+                    "family": "python_exception_profile",
+                    "scenario_type": "python_exception_storm",
+                    "evidence_status": "valid",
+                    "max_supported_claim_type": "direct_failure_mechanism",
+                    "conclusion_eligible": False,
                 "line_verified": True,
                 "mechanism_evidence_refs": ["ev-exception-profile"],
                 "counter_evidence_refs": [],
@@ -615,23 +618,15 @@ def test_python_scenario_gate_becomes_confirmed_root_cause_cluster():
         {"target_scope": {"target_service": "checkoutservice"}},
     )
 
-    assert len(clusters) == 1
-    assert clusters[0].mechanism == "python_exception_storm"
-    assert clusters[0].target == "checkoutservice"
-    assert clusters[0].cause_level == "direct_root_cause"
-    assert clusters[0].supported_level == "line"
-    assert clusters[0].conclusion_eligible is True
-    assert clusters[0].qualification == "confirmed_root_cause"
-    assert set(clusters[0].evidence_refs) == {"ev-exception-profile", "ev-structured"}
-
-    explanation = build_fallback_explanation(
-        clusters,
-        _assessment(classification="insufficient_evidence", conclusion_eligible=False),
+    assert clusters == []
+    retained = build_scenario_retained_conclusion(
+        [observation],
+        None,
+        target_service="checkoutservice",
     )
-
-    assert explanation["abstained"] is False
-    assert explanation["formal_root_cause"]["mechanism"] == "python_exception_storm"
-    assert explanation["root_cause_clusters"][0].conclusion_eligible is True
+    assert retained is not None
+    assert retained["qualification"] == "partial_localization"
+    assert retained["causal_status"] == "inconclusive"
 
 
 def test_python_scenario_gate_with_counter_evidence_stays_out_of_clusters():

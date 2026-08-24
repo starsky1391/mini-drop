@@ -69,7 +69,7 @@ def test_runtime_stack_sample_line_candidates_skip_runtime_frames():
     }]
 
 
-def test_orchestrator_merges_only_valid_python_scenario_gate_clusters():
+def test_orchestrator_never_merges_python_scenario_gate_clusters():
     ai_cluster = RootCauseCluster(
         cluster_id="rc-ai",
         mechanism="python_exception_storm",
@@ -117,7 +117,7 @@ def test_orchestrator_merges_only_valid_python_scenario_gate_clusters():
         valid_session_evidence_refs={"ev-ai", "ev-retry", "ev-exception"},
     )
 
-    assert [cluster.cluster_id for cluster in merged] == ["rc-ai", "rc-scenario"]
+    assert [cluster.cluster_id for cluster in merged] == ["rc-ai"]
 
 
 def test_readiness_gate_tolerates_truncated_runtime_counts():

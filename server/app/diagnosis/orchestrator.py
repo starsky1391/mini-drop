@@ -50,7 +50,13 @@ from server.app.rca.llm_client import (
     generate_session_conclusion_review,
     generate_session_investigation_review,
 )
-from server.app.rca.controlled_tree import classify_primitive, enforce_conclusion_eligibility
+from server.app.rca.controlled_tree import (
+    classify_primitive,
+    enforce_conclusion_eligibility,
+    evidence_refs_with_anchors,
+    evidence_refs_with_line_anchors,
+    evidence_refs_with_runtime_anchors,
+)
 from server.app.rca.models import (
     AITreeBudgetSnapshot,
     AITreeCandidateNode,
@@ -1771,9 +1777,21 @@ class DiagnosisOrchestrator:
             for key in ("evidence_id", "evidence_ref", "raw_artifact_ref", "derived_artifact_ref")
             if item.get(key)
         }
+        anchor_session_evidence_refs = evidence_refs_with_anchors(
+            self.store.list_evidence(diagnosis_id)
+        )
+        runtime_anchor_session_evidence_refs = evidence_refs_with_runtime_anchors(
+            self.store.list_evidence(diagnosis_id)
+        )
+        line_anchor_session_evidence_refs = evidence_refs_with_line_anchors(
+            self.store.list_evidence(diagnosis_id)
+        )
         root_cause_clusters = derive_root_cause_clusters_from_ai_tree(
             tree_payload,
             valid_evidence_refs=valid_session_evidence_refs,
+            anchor_evidence_refs=anchor_session_evidence_refs,
+            runtime_anchor_evidence_refs=runtime_anchor_session_evidence_refs,
+            line_anchor_evidence_refs=line_anchor_session_evidence_refs,
         )
         # Analyzer/scenario gates remain evidence and localization inputs. They
         # are intentionally not promoted into formal session clusters without
@@ -1787,6 +1805,9 @@ class DiagnosisOrchestrator:
         localization_frontier = derive_localization_frontier_from_ai_tree(
             tree_payload,
             valid_evidence_refs=valid_session_evidence_refs,
+            anchor_evidence_refs=anchor_session_evidence_refs,
+            runtime_anchor_evidence_refs=runtime_anchor_session_evidence_refs,
+            line_anchor_evidence_refs=line_anchor_session_evidence_refs,
         )
         ai_gate_failures = [
             *collect_candidate_generation_gate_failures(candidate_review),
@@ -9750,26 +9771,9 @@ def _merge_python_scenario_gate_clusters(
     *,
     valid_session_evidence_refs: set[str],
 ) -> list[Any]:
-    merged = list(primary_clusters or [])
-    existing = {
-        (str(cluster.mechanism or ""), str(cluster.target or ""))
-        for cluster in merged
-    }
-    for cluster in engineering_clusters or []:
-        if not (
-            str(cluster.mechanism or "").startswith("python_")
-            and cluster.conclusion_eligible
-            and cluster.cause_level == "direct_root_cause"
-            and cluster.evidence_refs
-            and not (set(cluster.evidence_refs) - valid_session_evidence_refs)
-        ):
-            continue
-        key = (str(cluster.mechanism or ""), str(cluster.target or ""))
-        if key in existing:
-            continue
-        existing.add(key)
-        merged.append(cluster)
-    return merged
+    # Compatibility helper for old callers. Scenario gates are not formal
+    # clusters; only qualified session AI candidates may enter the result.
+    return list(primary_clusters or [])
 
 
 def _cluster_dimensions(cluster, session: dict[str, Any]) -> tuple[str, list[str]]:

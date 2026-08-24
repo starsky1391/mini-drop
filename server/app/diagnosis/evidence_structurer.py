@@ -936,7 +936,10 @@ def _compact_python_scenario(value: dict[str, Any]) -> dict[str, Any]:
         "mechanism_evidence_refs": (value.get("mechanism_evidence_refs") or [])[:20],
         "counter_evidence_refs": (value.get("counter_evidence_refs") or [])[:20],
         "missing_evidence": (value.get("missing_evidence") or [])[:20],
-        "conclusion_eligible": bool(value.get("conclusion_eligible")),
+        # Collector payloads may contain a legacy eligibility flag; the
+        # structurer must never forward it as a formal conclusion.
+        "conclusion_eligible": False,
+        "formal_qualification": "session_ai_candidate_required",
         "eligibility_reason": value.get("eligibility_reason"),
         "wait_sites": (value.get("wait_sites") or [])[:10],
         "holder_candidates": (value.get("holder_candidates") or [])[:10],
@@ -1110,6 +1113,7 @@ def _python_cpu_hotspot_gate(
         missing.append("dependency_or_host_counter_evidence")
     if not direct:
         missing.append("scenario_root_cause_gate")
+    missing.append("session_ai_candidate_qualification")
     return _scenario_gate_payload(
         family="python_cpu_hotspot",
         scenario_type="python_cpu_hotspot",
@@ -1302,6 +1306,21 @@ def _scenario_gate_payload(
     baseline: Any,
     conclusion_eligible: bool = False,
 ) -> dict[str, Any]:
+    # Scenario gates describe evidence quality and the highest defensible
+    # localization boundary. Formal root-cause qualification belongs to the
+    # session AI candidate gate.
+    supported_claim_type = (
+        "direct_failure_mechanism"
+        if claim_type == "direct_root_cause"
+        else claim_type
+    )
+    boundary_reason = reason
+    if claim_type == "direct_root_cause":
+        boundary_reason = (
+            f"{reason} 当前仅表示证据支持的直接故障机制；"
+            "Evidence Structurer 不直接产出正式根因，需由受控 AI candidate "
+            "引用真实运行时/源码锚点后再执行统一资格门禁。"
+        )
     return {
         "family": family,
         "scenario_type": scenario_type,
@@ -1313,15 +1332,16 @@ def _scenario_gate_payload(
         "source_snapshot_status": source_state["status"],
         "source_context_hash": source_state["source_context_hash"],
         "line_verified": line_verified,
-        "max_supported_claim_type": claim_type,
-        "conclusion_eligible": conclusion_eligible,
-        "eligibility_reason": reason,
+        "max_supported_claim_type": supported_claim_type,
+        "conclusion_eligible": False,
+        "eligibility_reason": boundary_reason,
         "gate_checks": checks,
         "missing_evidence": list(dict.fromkeys(str(item) for item in missing if str(item or "").strip()))[:20],
         "mechanism_evidence_refs": [str(ref) for ref in mechanism_refs if str(ref or "").strip()][:20],
         "counter_evidence_refs": [str(ref) for ref in counter_refs if str(ref or "").strip()][:20],
         "trace_correlation_status": _trace_profile_status(trace_profile, "correlation_status"),
         "baseline_status": _evidence_status(baseline) if isinstance(baseline, dict) else "",
+        "formal_qualification": "session_ai_candidate_required",
     }
 
 
@@ -1465,6 +1485,7 @@ def _python_scenario_gate(
                 "verified_runtime_file_line_candidate",
             }
         ]
+    missing.append("session_ai_candidate_qualification")
     missing = list(dict.fromkeys(str(item) for item in missing if str(item or "").strip()))
     return {
         "family": family,
@@ -1488,15 +1509,23 @@ def _python_scenario_gate(
         "source_snapshot_status": source_state["status"],
         "source_context_hash": source_state["source_context_hash"],
         "line_verified": line_verified,
-        "max_supported_claim_type": claim_type,
-        "conclusion_eligible": claim_type == "direct_root_cause",
-        "eligibility_reason": gate_reason,
+        "max_supported_claim_type": (
+            "direct_failure_mechanism"
+            if claim_type == "direct_root_cause"
+            else claim_type
+        ),
+        "conclusion_eligible": False,
+        "eligibility_reason": (
+            f"{gate_reason} 当前仅保留为证据支持的机制/定位边界；"
+            "正式根因必须由受控 AI candidate 承接并通过统一资格门禁。"
+        ),
         "gate_checks": checks,
         "missing_evidence": missing[:20],
         "mechanism_evidence_refs": (payload.get("mechanism_evidence_refs") or [])[:20],
         "counter_evidence_refs": counter_evidence["evidence_refs"][:20],
         "trace_correlation_status": _trace_profile_status(trace_profile, "correlation_status"),
         "baseline_status": _evidence_status(baseline) if isinstance(baseline, dict) else "",
+        "formal_qualification": "session_ai_candidate_required",
     }
 
 

@@ -1,4 +1,9 @@
-from server.app.rca.controlled_tree import classify_primitive, enforce_conclusion_eligibility
+from server.app.rca.controlled_tree import (
+    classify_primitive,
+    enforce_conclusion_eligibility,
+    evidence_refs_with_anchors,
+    qualify_ai_candidate,
+)
 from server.app.rca.models import (
     AITreeCandidateNode,
     AITreeLayer,
@@ -60,6 +65,68 @@ def test_mechanism_claim_with_target_and_evidence_passes_gate():
 
     assert tree.layers[0].primary_causes[0].conclusion_eligible is True
     assert tree.final_primary_causes == ["redis_timeout"]
+
+
+def test_formal_ai_candidate_requires_a_real_runtime_or_source_anchor():
+    node = AITreeCandidateNode(
+        candidate_id="unanchored-cause",
+        generated_by="ai",
+        claim_origin="ai_proposal",
+        relation="root",
+        role="primary",
+        claim="缓存策略导致请求变慢。",
+        supported_level="service",
+        status="supported",
+        claim_type="direct_root_cause",
+        causal_status="supported",
+        decision="conclude",
+        mechanism="cache_policy",
+        target="checkoutservice",
+        evidence_refs=["ev-summary"],
+    )
+
+    eligible, reason = qualify_ai_candidate(
+        node,
+        valid_evidence_refs={"ev-summary"},
+        anchor_evidence_refs=set(),
+    )
+
+    assert eligible is False
+    assert "真实运行时或源码锚点" in reason
+    assert evidence_refs_with_anchors([
+        {"evidence_id": "ev-summary", "observed_value": {"summary": {"message": "slow"}}},
+        {"evidence_id": "ev-runtime", "observed_value": {"pid": 42, "function": "checkout"}},
+    ]) == {"ev-runtime"}
+
+
+def test_source_snapshot_alone_cannot_promote_formal_root_or_line():
+    node = AITreeCandidateNode(
+        candidate_id="source-only-line",
+        generated_by="ai",
+        claim_origin="ai_proposal",
+        relation="root",
+        role="primary",
+        claim="worker.py:42 的逻辑导致请求变慢。",
+        supported_level="line",
+        status="supported",
+        claim_type="direct_root_cause",
+        causal_status="supported",
+        decision="conclude",
+        mechanism="slow_branch",
+        target="worker.py:42",
+        evidence_refs=["ev-source"],
+    )
+
+    eligible, reason = qualify_ai_candidate(
+        node,
+        valid_evidence_refs={"ev-source"},
+        anchor_evidence_refs={"ev-source"},
+        runtime_anchor_evidence_refs=set(),
+        line_anchor_evidence_refs={"ev-source"},
+    )
+
+    assert eligible is False
+    assert "运行时锚点" in reason
 
 
 def test_runtime_stack_observation_cannot_be_promoted_to_primary_cause():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any, Iterable
 
 from server.app.rca.models import AITreeCandidateNode, AITreeLayer, ControlledAITree
 
@@ -169,6 +170,9 @@ def qualify_ai_candidate(
     *,
     valid_evidence_refs: set[str] | None = None,
     known_candidate_ids: set[str] | None = None,
+    anchor_evidence_refs: set[str] | None = None,
+    runtime_anchor_evidence_refs: set[str] | None = None,
+    line_anchor_evidence_refs: set[str] | None = None,
 ) -> tuple[bool, str]:
     """Return the single eligibility decision used by formal conclusions."""
     if node.generated_by not in {"ai", "ai_candidate", "ai_guarded"}:
@@ -186,12 +190,180 @@ def qualify_ai_candidate(
         return False, "candidate 引用了当前 AI DAG 不存在的父节点。"
     if valid_evidence_refs is not None and any(ref not in valid_evidence_refs for ref in node.evidence_refs):
         return False, "candidate 包含当前会话不存在的 evidence ref。"
+    if anchor_evidence_refs is not None and not (
+        set(node.evidence_refs) & anchor_evidence_refs
+    ):
+        return False, "candidate 没有引用真实运行时或源码锚点证据。"
+    if runtime_anchor_evidence_refs is not None and not (
+        set(node.evidence_refs) & runtime_anchor_evidence_refs
+    ):
+        return False, "candidate 只有源码上下文或摘要证据，没有同窗运行时锚点。"
+    if (
+        node.supported_level == "line"
+        and line_anchor_evidence_refs is not None
+        and not (set(node.evidence_refs) & line_anchor_evidence_refs)
+    ):
+        return False, "candidate 声明 line，但引用证据没有真实 file:line 锚点。"
     guarded = _guard_candidate(node)
     if not guarded.conclusion_eligible:
         return False, guarded.eligibility_reason
     if guarded.decision != "conclude" or guarded.causal_status != "supported":
         return False, "AI 候选尚未以 supported/conclude 状态闭合。"
     return True, guarded.eligibility_reason
+
+
+def evidence_refs_with_anchors(
+    evidence_catalog: Iterable[dict[str, Any]] | None,
+) -> set[str]:
+    """Return evidence IDs that contain a bounded runtime/source anchor."""
+    result: set[str] = set()
+    for item in evidence_catalog or []:
+        if not isinstance(item, dict) or not _contains_runtime_or_source_anchor(item):
+            continue
+        for key in ("evidence_id", "evidence_ref", "raw_artifact_ref", "derived_artifact_ref"):
+            value = str(item.get(key) or "").strip()
+            if value:
+                result.add(value)
+    return result
+
+
+def evidence_refs_with_runtime_anchors(
+    evidence_catalog: Iterable[dict[str, Any]] | None,
+) -> set[str]:
+    result: set[str] = set()
+    for item in evidence_catalog or []:
+        if not isinstance(item, dict) or not _contains_runtime_anchor(item):
+            continue
+        for key in ("evidence_id", "evidence_ref", "raw_artifact_ref", "derived_artifact_ref"):
+            value = str(item.get(key) or "").strip()
+            if value:
+                result.add(value)
+    return result
+
+
+def evidence_refs_with_line_anchors(
+    evidence_catalog: Iterable[dict[str, Any]] | None,
+) -> set[str]:
+    result: set[str] = set()
+    for item in evidence_catalog or []:
+        if not isinstance(item, dict) or not _contains_line_anchor(item):
+            continue
+        for key in ("evidence_id", "evidence_ref", "raw_artifact_ref", "derived_artifact_ref"):
+            value = str(item.get(key) or "").strip()
+            if value:
+                result.add(value)
+    return result
+
+
+def _contains_runtime_or_source_anchor(value: Any, *, depth: int = 0) -> bool:
+    if depth > 4:
+        return False
+    if isinstance(value, dict):
+        if any(
+            key in value and value.get(key)
+            for key in (
+                "runtime_anchor",
+                "source_anchor",
+                "specific_anchor",
+                "primary_anchor",
+                "runtime_line_candidates",
+                "line_candidates",
+                "call_path_hotspots",
+                "stack_samples",
+                "top_wait_stacks",
+                "runtime_control_event",
+                "source_relations",
+                "mechanism_paths",
+            )
+        ):
+            return True
+        if any(
+            key in value and value.get(key)
+            for key in (
+                "pid",
+                "tid",
+                "service_id",
+                "instance_id",
+                "endpoint",
+                "dependency_id",
+                "file",
+                "file_path",
+                "line",
+                "symbol",
+                "function",
+                "call_path",
+                "top_frame",
+            )
+        ):
+            return True
+        return any(
+            _contains_runtime_or_source_anchor(child, depth=depth + 1)
+            for child in value.values()
+        )
+    if isinstance(value, list):
+        return any(
+            _contains_runtime_or_source_anchor(child, depth=depth + 1)
+            for child in value
+        )
+    return False
+
+
+def _contains_runtime_anchor(value: Any, *, depth: int = 0) -> bool:
+    if depth > 4:
+        return False
+    if isinstance(value, dict):
+        if any(
+            key in value and value.get(key)
+            for key in (
+                "runtime_anchor",
+                "specific_anchor",
+                "primary_anchor",
+                "runtime_line_candidates",
+                "call_path_hotspots",
+                "stack_samples",
+                "top_wait_stacks",
+                "runtime_control_event",
+                "pid",
+                "tid",
+                "service_id",
+                "instance_id",
+                "endpoint",
+                "dependency_id",
+                "top_frame",
+            )
+        ):
+            return True
+        return any(
+            _contains_runtime_anchor(child, depth=depth + 1)
+            for child in value.values()
+        )
+    if isinstance(value, list):
+        return any(
+            _contains_runtime_anchor(child, depth=depth + 1)
+            for child in value
+        )
+    return False
+
+
+def _contains_line_anchor(value: Any, *, depth: int = 0) -> bool:
+    if depth > 4:
+        return False
+    if isinstance(value, dict):
+        line = value.get("line", value.get("line_number", value.get("focus_line")))
+        if (
+            value.get("file") or value.get("file_path")
+        ) and str(line or "").isdigit() and int(line) > 0:
+            return True
+        return any(
+            _contains_line_anchor(child, depth=depth + 1)
+            for child in value.values()
+        )
+    if isinstance(value, list):
+        return any(
+            _contains_line_anchor(child, depth=depth + 1)
+            for child in value
+        )
+    return False
 
 
 def _layer_nodes(layer: AITreeLayer) -> list[AITreeCandidateNode]:

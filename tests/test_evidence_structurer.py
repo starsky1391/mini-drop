@@ -591,9 +591,9 @@ def test_python_exception_scenario_can_become_direct_root_with_impact_and_source
     )
 
     gate = structured.confidence_inputs["python_scenario_gates"]["python_exception_profile"]
-    assert gate["max_supported_claim_type"] == "direct_root_cause"
-    assert gate["conclusion_eligible"] is True
-    assert "scenario_root_cause_gate" not in gate["missing_evidence"]
+    assert gate["max_supported_claim_type"] == "direct_failure_mechanism"
+    assert gate["conclusion_eligible"] is False
+    assert "session_ai_candidate_qualification" in gate["missing_evidence"]
 
 
 def test_builtin_python_cpu_gate_rejects_runtime_primitives_and_requires_source_snapshot():
@@ -669,9 +669,9 @@ def test_builtin_python_cpu_gate_can_become_direct_root_when_all_gates_pass():
     )
 
     gate = structured.confidence_inputs["python_scenario_gates"]["python_cpu_hotspot"]
-    assert gate["max_supported_claim_type"] == "direct_root_cause"
-    assert gate["conclusion_eligible"] is True
-    assert "scenario_root_cause_gate" not in gate["missing_evidence"]
+    assert gate["max_supported_claim_type"] == "direct_failure_mechanism"
+    assert gate["conclusion_eligible"] is False
+    assert "session_ai_candidate_qualification" in gate["missing_evidence"]
 
 
 def test_builtin_python_endpoint_gate_keeps_dependency_counter_evidence_as_blocker():
@@ -872,9 +872,9 @@ def test_lock_queue_pool_and_retry_scenario_gates_can_become_direct_roots():
         "python_pool_profile",
         "python_retry_timeout_profile",
     ):
-        assert gates[family]["max_supported_claim_type"] == "direct_root_cause"
-        assert gates[family]["conclusion_eligible"] is True
-        assert "scenario_root_cause_gate" not in gates[family]["missing_evidence"]
+        assert gates[family]["max_supported_claim_type"] == "direct_failure_mechanism"
+        assert gates[family]["conclusion_eligible"] is False
+        assert "session_ai_candidate_qualification" in gates[family]["missing_evidence"]
 
 
 def test_python_scenario_gate_rejects_valid_payload_without_industrial_source_provenance():
@@ -944,8 +944,8 @@ def test_endpoint_and_io_builtin_gates_can_become_direct_roots_with_local_mechan
         },
     )
     endpoint_gate = endpoint.confidence_inputs["python_scenario_gates"]["python_endpoint_latency"]
-    assert endpoint_gate["max_supported_claim_type"] == "direct_root_cause"
-    assert endpoint_gate["conclusion_eligible"] is True
+    assert endpoint_gate["max_supported_claim_type"] == "direct_failure_mechanism"
+    assert endpoint_gate["conclusion_eligible"] is False
 
     io = structure_artifact_evidence(
         task_id="io_direct",
@@ -973,8 +973,8 @@ def test_endpoint_and_io_builtin_gates_can_become_direct_roots_with_local_mechan
         },
     )
     io_gate = io.confidence_inputs["python_scenario_gates"]["python_io_blocking"]
-    assert io_gate["max_supported_claim_type"] == "direct_root_cause"
-    assert io_gate["conclusion_eligible"] is True
+    assert io_gate["max_supported_claim_type"] == "direct_failure_mechanism"
+    assert io_gate["conclusion_eligible"] is False
 
 
 def test_off_cpu_compact_evidence_keeps_cause_and_trace_correlation():

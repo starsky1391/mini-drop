@@ -14,7 +14,13 @@ from server.app.rca.models import (
     RootCauseRecommendation,
     SessionConclusionReview,
 )
-from server.app.rca.controlled_tree import qualify_ai_candidate, select_terminal_candidate_ids
+from server.app.rca.controlled_tree import (
+    evidence_refs_with_anchors,
+    evidence_refs_with_line_anchors,
+    evidence_refs_with_runtime_anchors,
+    qualify_ai_candidate,
+    select_terminal_candidate_ids,
+)
 from server.app.diagnosis.canonical_claim_lineage import ensure_claim_lineage, hash_claim
 from server.app.diagnosis.attribution_models import QualificationResult
 
@@ -206,8 +212,6 @@ def build_root_cause_clusters(
     same_host_ids = {str(item) for item in scope.get("same_host_instance_ids", [])}
     source_ids = _tree_candidate_ids_by_mechanism(session_tree)
     candidates: list[dict[str, Any]] = []
-
-    candidates.extend(_scenario_gate_cluster_candidates(observations, target_service, source_ids))
 
     failed_dependency_seen = False
     for observation in observations:
@@ -426,6 +430,9 @@ def derive_root_cause_clusters_from_ai_tree(
     session_tree: dict[str, Any] | None,
     *,
     valid_evidence_refs: set[str] | None = None,
+    anchor_evidence_refs: set[str] | None = None,
+    runtime_anchor_evidence_refs: set[str] | None = None,
+    line_anchor_evidence_refs: set[str] | None = None,
 ) -> list[RootCauseCluster]:
     """Derive formal clusters only from qualified AI nodes in the DAG."""
     if not isinstance(session_tree, dict):
@@ -453,6 +460,9 @@ def derive_root_cause_clusters_from_ai_tree(
             ai_node,
             valid_evidence_refs=valid_evidence_refs,
             known_candidate_ids=known_ids,
+            anchor_evidence_refs=anchor_evidence_refs,
+            runtime_anchor_evidence_refs=runtime_anchor_evidence_refs,
+            line_anchor_evidence_refs=line_anchor_evidence_refs,
         )
         if not eligible:
             continue
@@ -505,6 +515,9 @@ def derive_localization_frontier_from_ai_tree(
     session_tree: dict[str, Any] | None,
     *,
     valid_evidence_refs: set[str] | None = None,
+    anchor_evidence_refs: set[str] | None = None,
+    runtime_anchor_evidence_refs: set[str] | None = None,
+    line_anchor_evidence_refs: set[str] | None = None,
 ) -> list[CausalExplanationStep]:
     """Return deepest evidence-backed, non-formal findings from each DAG branch."""
     if not isinstance(session_tree, dict):
@@ -530,6 +543,9 @@ def derive_localization_frontier_from_ai_tree(
             parsed,
             valid_evidence_refs=valid_evidence_refs,
             known_candidate_ids=known_ids,
+            anchor_evidence_refs=anchor_evidence_refs,
+            runtime_anchor_evidence_refs=runtime_anchor_evidence_refs,
+            line_anchor_evidence_refs=line_anchor_evidence_refs,
         )
         if formal:
             formal_ids.add(parsed.candidate_id)
@@ -588,6 +604,9 @@ def collect_ai_gate_failures(
         if node.get("generated_by") in {"ai", "ai_candidate", "ai_guarded"}
     ]
     known_ids = {str(node.get("candidate_id") or "") for node in all_nodes if node.get("candidate_id")}
+    anchor_refs = evidence_refs_with_anchors(evidence_catalog or [])
+    runtime_anchor_refs = evidence_refs_with_runtime_anchors(evidence_catalog or [])
+    line_anchor_refs = evidence_refs_with_line_anchors(evidence_catalog or [])
     failures: list[dict[str, Any]] = []
     for node in nodes:
         try:
@@ -604,6 +623,9 @@ def collect_ai_gate_failures(
             ai_node,
             valid_evidence_refs=valid_evidence_refs,
             known_candidate_ids=known_ids,
+            anchor_evidence_refs=anchor_refs,
+            runtime_anchor_evidence_refs=runtime_anchor_refs,
+            line_anchor_evidence_refs=line_anchor_refs,
         )
         missing_parents = [
             parent_id for parent_id in ai_node.parent_candidate_ids
@@ -631,6 +653,14 @@ def collect_ai_gate_failures(
             "evidence_refs_exist": not (
                 valid_evidence_refs is not None
                 and any(ref not in known_refs for ref in ai_node.evidence_refs)
+            ),
+            "runtime_or_source_anchor": (
+                bool(set(ai_node.evidence_refs) & anchor_refs)
+            ),
+            "runtime_anchor": bool(set(ai_node.evidence_refs) & runtime_anchor_refs),
+            "line_anchor": (
+                ai_node.supported_level != "line"
+                or bool(set(ai_node.evidence_refs) & line_anchor_refs)
             ),
             "target": bool(ai_node.target.strip()),
             "window": has_verified_window,
@@ -1698,44 +1728,10 @@ def _scenario_gate_cluster_candidates(
     target_service: str,
     source_ids: dict[str, list[str]],
 ) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
-    for observation in observations:
-        target = _scenario_observation_target(observation, target_service)
-        cohort = _cohort(observation)
-        for gate in _scenario_gates_from_observation(observation):
-            if not _scenario_gate_supports_direct_root_cause(gate):
-                continue
-            scenario_type = str(
-                gate.get("scenario_type")
-                or gate.get("family")
-                or "python_scenario"
-            ).strip()
-            refs = _unique([
-                *(gate.get("mechanism_evidence_refs") or []),
-                *observation.get("evidence_refs", []),
-            ])
-            reason = str(
-                gate.get("eligibility_reason")
-                or "Python 场景门禁已通过同窗源码行、机制证据和反证校验。"
-            )
-            candidates.append(_cluster_template(
-                mechanism=scenario_type,
-                target=target,
-                cause_level="direct_root_cause",
-                claim=f"Python 场景门禁确认 {scenario_type} 在 {target} 形成直接源码根因。",
-                why=reason,
-                symptoms=[f"{target_service} Python 场景异常"],
-                refs=refs,
-                confidence=0.86,
-                cohort=cohort,
-                propagation_path=f"{scenario_type}->{target_service}",
-                source_ids=source_ids.get(scenario_type, []) + source_ids.get(str(gate.get("family") or ""), []),
-                eligible=True,
-                unknowns=_unique(gate.get("missing_evidence") or []),
-                causal_status="primary",
-                supported_level="line",
-            ))
-    return candidates
+    # Kept as a compatibility seam for callers and old audit data. Scenario
+    # gates are evidence/localization inputs only; they cannot manufacture a
+    # formal root-cause cluster without a qualified session AI candidate.
+    return []
 
 
 def _scenario_gates_from_observation(observation: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1773,15 +1769,9 @@ def _scenario_gates_from_observation(observation: dict[str, Any]) -> list[dict[s
 
 
 def _scenario_gate_supports_direct_root_cause(gate: dict[str, Any]) -> bool:
-    refs = _unique(gate.get("mechanism_evidence_refs") or [])
-    counter_refs = _unique(gate.get("counter_evidence_refs") or [])
-    return bool(
-        gate.get("conclusion_eligible") is True
-        and gate.get("max_supported_claim_type") == "direct_root_cause"
-        and gate.get("line_verified") is True
-        and refs
-        and not counter_refs
-    )
+    # Legacy compatibility helper. The Evidence Structurer never grants
+    # formal eligibility; only a session AI candidate can do so.
+    return False
 
 
 def _scenario_observation_target(observation: dict[str, Any], fallback: str) -> str:
