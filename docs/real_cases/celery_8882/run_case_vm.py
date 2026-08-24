@@ -69,6 +69,11 @@ WORKER_CONCURRENCY = env_int("CELERY_L4_WORKER_CONCURRENCY", 1)
 BARRIER_GC_COLLECT = env_int("CELERY_L4_BARRIER_GC_COLLECT", 0)
 DEFAULT_CASE_DURATION_SEC = 400
 DEFAULT_DIAGNOSIS_TIMEOUT_SEC = 400
+TERMINAL_STATUSES = {
+    "COMPLETED", "INSUFFICIENT_EVIDENCE", "PARTIAL_COMPLETED",
+    "BUDGET_EXHAUSTED", "TOPOLOGY_UNAVAILABLE", "FAILED",
+}
+RUNNER_RELEASE_TIMEOUT_REASON = "diagnosis_timeout"
 
 
 def progress(message: str) -> None:
@@ -213,22 +218,58 @@ def diagnosis(
                 "approver_id": "celery_l4_vm_runner",
             }, timeout=60)
             approved.add(step_id)
-        if latest.get("status") in {
-            "COMPLETED", "INSUFFICIENT_EVIDENCE", "PARTIAL_COMPLETED",
-            "BUDGET_EXHAUSTED", "TOPOLOGY_UNAVAILABLE", "FAILED",
-        }:
-            return {"diagnosis_id": diagnosis_id, "detail": latest}
+        control = latest.get("runner_control") if isinstance(latest.get("runner_control"), dict) else {}
+        if control.get("release_requested"):
+            return {
+                "diagnosis_id": diagnosis_id,
+                "detail": latest,
+                "terminal": latest.get("status") in TERMINAL_STATUSES,
+                "runner_release": control,
+                "runner_release_reason": control.get("reason") or "diagnosis_settled",
+            }
         time.sleep(3)
     if not latest:
         try:
             latest = api.call(f"/api/v1/diagnoses/{diagnosis_id}", timeout=60)
         except (TimeoutError, urllib.error.URLError):
             latest = {}
+    control = latest.get("runner_control") if isinstance(latest.get("runner_control"), dict) else {}
+    if control.get("release_requested"):
+        return {
+            "diagnosis_id": diagnosis_id,
+            "detail": latest,
+            "terminal": latest.get("status") in TERMINAL_STATUSES,
+            "runner_release": control,
+            "runner_release_reason": control.get("reason") or "diagnosis_settled",
+        }
+    if not control and latest.get("status") in TERMINAL_STATUSES:
+        legacy_control = {
+            "release_requested": True,
+            "reason": "legacy_terminal_status",
+            "released_at": None,
+            "outstanding_probes": [],
+        }
+        return {
+            "diagnosis_id": diagnosis_id,
+            "detail": latest,
+            "terminal": True,
+            "runner_release": legacy_control,
+            "runner_release_reason": legacy_control["reason"],
+        }
     return {
         "diagnosis_id": diagnosis_id,
         "detail": latest,
         "runner_status": "diagnosis_timeout",
+        "runner_release_reason": RUNNER_RELEASE_TIMEOUT_REASON,
         "terminal": False,
+        "runner_release": {
+            "release_requested": False,
+            "reason": RUNNER_RELEASE_TIMEOUT_REASON,
+            "released_at": None,
+            "outstanding_probes": (
+                latest.get("probes", []) if isinstance(latest.get("probes"), list) else []
+            ),
+        },
         "timeout_sec": timeout,
     }
 
@@ -409,24 +450,55 @@ def run_stage(
             result["diagnosis"] = diagnosis(
                 API(api_key or ""), target, source_context, diagnosis_timeout_sec, time_range
             )
-            progress(f"{stage_role}: Analyzer diagnosis reached a terminal state")
-        completion_timeout = max(180, duration_sec + 300)
-        producer_completed = True
-        try:
-            remote.run(
-                f"for attempt in $(seq 1 {completion_timeout}); do "
-                f"grep -q 'producer_complete' {evidence_root}/producer_observations.ndjson 2>/dev/null && exit 0; "
-                f"grep -q 'producer_failed' {evidence_root}/producer_observations.ndjson 2>/dev/null && "
-                "echo 'producer reported workload failure' >&2 && exit 1; "
-                "sleep 1; done; "
-                "echo 'producer did not complete the workload' >&2; exit 1",
-                timeout=completion_timeout + 30,
-            )
-        except RuntimeError:
+            progress(f"{stage_role}: Analyzer diagnosis polling finished")
+        diagnosis_result = result.get("diagnosis") if isinstance(result.get("diagnosis"), dict) else {}
+        release = (
+            diagnosis_result.get("runner_release")
+            if isinstance(diagnosis_result.get("runner_release"), dict)
+            else {}
+        )
+        release_requested = bool(release.get("release_requested"))
+        timeout_release = diagnosis_result.get("runner_release_reason") == RUNNER_RELEASE_TIMEOUT_REASON
+        result["runner_control"] = {
+            "release_requested": release_requested,
+            "reason": (
+                release.get("reason")
+                or diagnosis_result.get("runner_release_reason")
+                or ("workload_complete" if diagnosis_mode != "full" else "diagnosis_unavailable")
+            ),
+            "released_at": release.get("released_at"),
+            "outstanding_probes": release.get("outstanding_probes") or [],
+            "diagnosis_terminal_status": (
+                (diagnosis_result.get("detail") or {}).get("status")
+                if isinstance(diagnosis_result.get("detail"), dict)
+                else None
+            ),
+        }
+        if diagnosis_mode == "full" and (release_requested or timeout_release):
             producer_completed = False
-            progress(f"{stage_role}: producer did not complete within the wait window; saving partial evidence")
+            result["workload_stopped_by_runner_release"] = True
+            progress(
+                f"{stage_role}: stopping workload after "
+                f"{result['runner_control']['reason']}"
+            )
         else:
-            progress(f"{stage_role}: producer completed both worker-side barriers")
+            completion_timeout = max(180, duration_sec + 300)
+            producer_completed = True
+            try:
+                remote.run(
+                    f"for attempt in $(seq 1 {completion_timeout}); do "
+                    f"grep -q 'producer_complete' {evidence_root}/producer_observations.ndjson 2>/dev/null && exit 0; "
+                    f"grep -q 'producer_failed' {evidence_root}/producer_observations.ndjson 2>/dev/null && "
+                    "echo 'producer reported workload failure' >&2 && exit 1; "
+                    "sleep 1; done; "
+                    "echo 'producer did not complete the workload' >&2; exit 1",
+                    timeout=completion_timeout + 30,
+                )
+            except RuntimeError:
+                producer_completed = False
+                progress(f"{stage_role}: producer did not complete within the wait window; saving partial evidence")
+            else:
+                progress(f"{stage_role}: producer completed both worker-side barriers")
         return {
             "stage_role": stage_role,
             "diagnosis_mode": diagnosis_mode,

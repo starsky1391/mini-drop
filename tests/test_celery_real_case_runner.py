@@ -174,6 +174,101 @@ def test_diagnosis_timeout_preserves_id_and_latest_detail(monkeypatch):
     assert result["detail"]["status"] == "RUNNING"
 
 
+def test_diagnosis_waits_for_runner_release_after_terminal_status(monkeypatch):
+    runner = load_module("celery_case_release", "run_case_vm.py")
+    calls = {"get_count": 0}
+
+    class SettlingAPI:
+        def call(self, path, method="GET", body=None, timeout=90):
+            if path == "/api/v1/diagnoses":
+                return {"diagnosis_id": "diag-settling"}
+            calls["get_count"] += 1
+            if calls["get_count"] == 1:
+                return {
+                    "status": "INSUFFICIENT_EVIDENCE",
+                    "runner_control": {
+                        "release_requested": False,
+                        "reason": "outstanding_probes",
+                        "outstanding_probes": [{"step_id": "step-source", "status": "RUNNING"}],
+                    },
+                    "probes": [{"step_id": "step-source", "status": "RUNNING"}],
+                }
+            return {
+                "status": "INSUFFICIENT_EVIDENCE",
+                "runner_control": {
+                    "release_requested": True,
+                    "reason": "diagnosis_settled",
+                    "released_at": "2026-08-24T00:00:00+00:00",
+                    "outstanding_probes": [],
+                },
+                "probes": [{"step_id": "step-source", "status": "COMPLETED"}],
+            }
+
+    monkeypatch.setattr(runner.time, "monotonic", iter([0.0, 1.0, 2.0]).__next__)
+    monkeypatch.setattr(runner.time, "sleep", lambda _: None)
+
+    result = runner.diagnosis(
+        SettlingAPI(),
+        {"service_id": "celery-worker"},
+        {"repo_revision": runner.VULNERABLE_REVISION},
+        timeout=10,
+        time_range={},
+    )
+
+    assert result["runner_release_reason"] == "diagnosis_settled"
+    assert result["runner_release"]["release_requested"] is True
+    assert calls["get_count"] == 2
+
+
+def test_run_stage_stops_workload_after_runner_release(tmp_path, monkeypatch):
+    runner = load_module("celery_case_stage_release", "run_case_vm.py")
+    commands: list[str] = []
+
+    class ReleaseRemote(FakeRemote):
+        def run(self, command: str, *, timeout: int = 600) -> str:
+            commands.append(command)
+            if "docker inspect" in command:
+                return f"1234|5678|{'a' * 64}\n"
+            if command == "date -u +%Y-%m-%dT%H:%M:%S%z":
+                return "2026-08-21T00:00:00+0000\n"
+            return ""
+
+    monkeypatch.setattr(
+        runner,
+        "diagnosis",
+        lambda *args, **kwargs: {
+            "diagnosis_id": "diag-release",
+            "detail": {"status": "PARTIAL_COMPLETED"},
+            "terminal": True,
+            "runner_release_reason": "diagnosis_settled",
+            "runner_release": {
+                "release_requested": True,
+                "reason": "diagnosis_settled",
+                "released_at": "2026-08-24T00:00:00+00:00",
+                "outstanding_probes": [],
+            },
+        },
+    )
+
+    result = runner.run_stage(
+        ReleaseRemote(),
+        "test-key",
+        stage="vulnerable",
+        revision=runner.VULNERABLE_REVISION,
+        remote_root_value="/tmp/python_worker_failure_case",
+        duration_sec=400,
+        diagnosis_timeout_sec=400,
+        output_root=tmp_path,
+        stage_role="diagnosis_target",
+        diagnosis_mode="full",
+        keep_running=False,
+    )
+
+    assert result["runner_control"]["release_requested"] is True
+    assert result["workload_stopped_by_runner_release"] is True
+    assert not any("producer_complete" in command for command in commands)
+
+
 def test_failure_batch_timeout_covers_serialized_real_workload(monkeypatch):
     monkeypatch.syspath_prepend(str(CASE_ROOT))
     producer = load_module("celery_case_producer_timeout", "producer.py")
