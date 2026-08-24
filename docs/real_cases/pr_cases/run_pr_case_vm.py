@@ -164,6 +164,12 @@ def diagnosis(api: ControlAPI, manifest: dict, duration_sec: int, timeout_sec: i
         if latest.get("status") in TERMINAL_STATUSES:
             return {"diagnosis_id": diagnosis_id, "detail": latest, "terminal": True}
         time.sleep(3)
+    try:
+        latest = api.call(f"/api/v1/diagnoses/{diagnosis_id}")
+        if latest.get("status") in TERMINAL_STATUSES:
+            return {"diagnosis_id": diagnosis_id, "detail": latest, "terminal": True}
+    except (TimeoutError, urllib.error.URLError):
+        pass
     return {
         "diagnosis_id": diagnosis_id,
         "detail": latest,

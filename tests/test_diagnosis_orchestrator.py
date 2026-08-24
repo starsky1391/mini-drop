@@ -3363,18 +3363,32 @@ def test_deferred_followup_reloaded_before_conclusion(client: TestClient):
     )
 
 
-def test_stale_running_child_task_is_failed_before_waiting(client: TestClient, monkeypatch):
+@pytest.mark.parametrize("active_status", [
+    TaskStatus.RUNNING,
+    TaskStatus.UPLOADING,
+    TaskStatus.ANALYZING,
+])
+def test_stale_active_child_task_is_failed_before_waiting(
+    client: TestClient,
+    monkeypatch,
+    active_status: TaskStatus,
+):
     monkeypatch.setenv("MINI_DROP_DIAGNOSIS_TASK_STALE_GRACE_SEC", "0")
     data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
     diagnosis_id = data["diagnosis_id"]
     task_id = data["child_task_ids"][0]
     repo.transition_task(task_id, TaskStatus.RUNNING, "agent accepted", Actor.SERVER)
+    if active_status in {TaskStatus.UPLOADING, TaskStatus.ANALYZING}:
+        repo.transition_task(task_id, TaskStatus.UPLOADING, "collected", Actor.AGENT)
+    if active_status == TaskStatus.ANALYZING:
+        repo.transition_task(task_id, TaskStatus.ANALYZING, "analyzing", Actor.ANALYZER)
     repo.tasks[task_id].started_at = repo.tasks[task_id].started_at - timedelta(seconds=999)
 
     detail = client.get(f"/api/v1/diagnoses/{diagnosis_id}").json()["data"]
     probe = next(item for item in detail["probes"] if item.get("task_id") == task_id)
 
     assert repo.tasks[task_id].status == TaskStatus.FAILED
+    assert repo.tasks[task_id].finished_at is not None
     assert probe["status"] == "FAILED"
 
 
@@ -4076,6 +4090,99 @@ def test_source_snapshot_upgrades_matching_call_path_anchor_to_line_only():
     assert upgraded["supported_level"] == "line"
     assert upgraded["source_context_hash"] == "sha256:verified"
     assert mismatched["supported_level"] == "call_path"
+
+
+def test_source_snapshot_upgrades_unique_runtime_candidate_with_container_prefix():
+    anchor = {
+        "supported_level": "function",
+        "anchor": "_PyEval_EvalFrameDefault",
+        "file": "",
+        "line": 0,
+        "function": "_PyEval_EvalFrameDefault",
+        "runtime_line_candidates": [
+            {
+                "file": "/opt/project/requests/sessions.py",
+                "line": 70,
+                "symbol": "merge_setting",
+                "samples": 18,
+                "percent": 42.0,
+            },
+        ],
+    }
+    observations = [{
+        "evidence_refs": ["ev-source"],
+        "source_snapshot": {
+            "source_context_hash": "sha256:verified",
+            "revision": "abc123",
+            "snippets": [{
+                "file": "requests/sessions.py",
+                "focus_line": 70,
+                "symbol": "merge_setting",
+                "lines": [{"line": 70, "text": "def merge_setting(request_setting, session_setting):"}],
+            }],
+            "evidence_validity": {"evidence_status": "valid"},
+        },
+    }]
+
+    result = orchestrator_module._verified_source_anchor(anchor, observations)
+
+    assert result["supported_level"] == "line"
+    assert result["file"] == "requests/sessions.py"
+    assert result["line"] == 70
+    assert result["function"] == "merge_setting"
+    assert result["root_claim_allowed"] is False
+
+
+def test_top_function_anchor_carries_runtime_line_candidates():
+    values = {
+        "python_stack_samples_json": {
+            "line_candidates": [{
+                "file": "/opt/project/requests/sessions.py",
+                "line": 70,
+                "symbol": "merge_setting",
+                "samples": 18,
+                "percent": 42.0,
+            }],
+        },
+    }
+
+    anchor = orchestrator_module._specific_diagnostic_anchor(
+        values,
+        {"service_id": "svc", "instance_id": "inst", "pid": 123},
+        {},
+        [{"name": "_PyEval_EvalFrameDefault", "samples": 30, "percent": 60.0}],
+    )
+
+    assert anchor["supported_level"] == "function"
+    assert anchor["runtime_line_candidates"][0]["file"] == "/opt/project/requests/sessions.py"
+    assert anchor["runtime_line_candidates"][0]["line"] == 70
+
+
+def test_source_snapshot_does_not_upgrade_tied_generic_runtime_candidates():
+    anchor = {
+        "supported_level": "function",
+        "anchor": "_PyEval_EvalFrameDefault",
+        "runtime_line_candidates": [
+            {"file": "/opt/project/pkg/a.py", "line": 10, "symbol": "helper", "samples": 5},
+            {"file": "/opt/project/pkg/b.py", "line": 20, "symbol": "helper", "samples": 5},
+        ],
+    }
+    observations = [{
+        "source_snapshot": {
+            "source_context_hash": "sha256:verified",
+            "revision": "abc123",
+            "snippets": [
+                {"file": "pkg/a.py", "focus_line": 10, "symbol": "helper", "lines": [{"line": 10}]},
+                {"file": "pkg/b.py", "focus_line": 20, "symbol": "helper", "lines": [{"line": 20}]},
+            ],
+            "evidence_validity": {"evidence_status": "valid"},
+        },
+    }]
+
+    result = orchestrator_module._verified_source_anchor(anchor, observations)
+
+    assert result["supported_level"] == "function"
+    assert "source_context_hash" not in result
 
 
 def test_python_call_path_keeps_verified_project_frame_for_source_upgrade():

@@ -3704,6 +3704,7 @@ def _specific_diagnostic_anchor(
         call_path = top.get("call_path") if isinstance(top.get("call_path"), list) else []
         if top and call_path:
             source_candidate = _source_line_candidate_for_call_path(values, call_paths)
+            runtime_line_candidates = _runtime_line_candidates_from_values(values, call_paths)
             return {
                 **base,
                 "supported_level": "call_path",
@@ -3715,14 +3716,7 @@ def _specific_diagnostic_anchor(
                 "samples": int(_num(top.get("samples"))),
                 "percent": _num(top.get("percent")),
                 "evidence_ref": top.get("evidence_ref") or "structured_evidence.call_path_hotspots[0]",
-                "runtime_line_candidates": [
-                    item for item in (
-                        (values.get("python_stack_samples_json") or {}).get("line_candidates", [])
-                        if isinstance(values.get("python_stack_samples_json"), dict)
-                        else (values.get("depth_evidence_json") or {}).get("line_candidates", [])
-                    )
-                    if isinstance(item, dict)
-                ],
+                "runtime_line_candidates": runtime_line_candidates,
                 "blocked_upgrade_reason": "缺少 line profiler 或源码映射，不能直接升级到具体代码行。",
             }
 
@@ -3731,6 +3725,7 @@ def _specific_diagnostic_anchor(
         name = str(top.get("name") or top.get("function") or top.get("symbol") or "").strip()
         if name:
             primitive_kind = classify_primitive(name)
+            runtime_line_candidates = _runtime_line_candidates_from_values(values, top_items)
             return {
                 **base,
                 "supported_level": "syscall" if primitive_kind else "function",
@@ -3743,6 +3738,7 @@ def _specific_diagnostic_anchor(
                 "samples": int(_num(top.get("samples"))),
                 "percent": _num(top.get("percent")),
                 "evidence_ref": top.get("evidence_ref") or "top_functions[0]",
+                "runtime_line_candidates": runtime_line_candidates,
                 "blocked_upgrade_reason": "缺少源码符号映射或行级采样证据，不能直接升级到代码行。",
             }
 
@@ -3769,6 +3765,48 @@ def _specific_diagnostic_anchor(
         "evidence_ref": "sys_metrics.summary",
         "blocked_upgrade_reason": "缺少 off-CPU 等待栈、CPU profile 或 trace 回连，当前不能判断具体函数。",
     }
+
+
+def _runtime_line_candidates_from_values(
+    values: dict[str, Any],
+    *candidate_groups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+
+    def add(item: dict[str, Any]) -> None:
+        file_name = str(item.get("file") or "")
+        line = int(_num(item.get("line") or item.get("focus_line")))
+        if not file_name or line <= 0:
+            return
+        normalized = {
+            "file": file_name,
+            "line": line,
+            "symbol": str(item.get("symbol") or item.get("function") or item.get("name") or ""),
+            "samples": int(_num(item.get("samples") or item.get("sample_count"))),
+            "percent": _num(item.get("percent")),
+            "evidence_ref": item.get("evidence_ref"),
+        }
+        if normalized not in candidates:
+            candidates.append(normalized)
+
+    for group in candidate_groups:
+        for item in group:
+            if isinstance(item, dict):
+                add(item)
+    for key in ("depth_evidence_json", "python_stack_samples_json", "go_heap_profile_json"):
+        payload = values.get(key)
+        if not isinstance(payload, dict):
+            continue
+        for list_key in ("line_candidates", "top_functions", "call_path_hotspots", "hotspots"):
+            for item in payload.get(list_key, []):
+                if isinstance(item, dict):
+                    add(item)
+        for item in payload.get("stack_samples", []):
+            if not isinstance(item, dict):
+                continue
+            for candidate in _line_candidates_from_runtime_stack_sample(item):
+                add(candidate)
+    return _prioritized_line_candidates(candidates)[:64]
 
 
 def _source_line_candidate_for_call_path(
@@ -4062,17 +4100,14 @@ def _verified_source_anchor(anchor: dict[str, Any], observations: list[dict[str,
             }
             focus_line = int(_num(snippet.get("focus_line")))
             if anchor.get("file") and anchor_line > 0 and (
-                not (anchor_file.endswith(snippet_file) or snippet_file.endswith(anchor_file))
+                not _source_files_match(anchor_file, snippet_file)
                 or anchor_line not in lines
             ):
                 runtime_match = next(
                     (
                         item for item in runtime_candidates
                         if int(_num(item.get("line"))) == focus_line
-                        and (
-                            str(item.get("file") or "").replace("\\", "/").endswith(snippet_file)
-                            or snippet_file.endswith(str(item.get("file") or "").replace("\\", "/"))
-                        )
+                        and _source_files_match(str(item.get("file") or ""), snippet_file)
                     ),
                     None,
                 )
@@ -4083,10 +4118,7 @@ def _verified_source_anchor(anchor: dict[str, Any], observations: list[dict[str,
                     (
                         item for item in runtime_candidates
                         if int(_num(item.get("line"))) == focus_line
-                        and (
-                            str(item.get("file") or "").replace("\\", "/").endswith(snippet_file)
-                            or snippet_file.endswith(str(item.get("file") or "").replace("\\", "/"))
-                        )
+                        and _source_files_match(str(item.get("file") or ""), snippet_file)
                     ),
                     None,
                 )
@@ -4102,7 +4134,7 @@ def _verified_source_anchor(anchor: dict[str, Any], observations: list[dict[str,
             if (
                 anchor.get("file")
                 and anchor_line > 0
-                and anchor_file.endswith(snippet_file)
+                and _source_files_match(anchor_file, snippet_file)
                 and anchor_line in lines
                 and direct_semantic
             ):
@@ -4124,17 +4156,19 @@ def _verified_source_anchor(anchor: dict[str, Any], observations: list[dict[str,
             source_matches.append((runtime_match or {}, snippet, snapshot))
 
     if source_matches:
-        def source_score(item: tuple[dict[str, Any], dict[str, Any], dict[str, Any]]) -> tuple[int, int, int, int]:
+        def source_score(item: tuple[dict[str, Any], dict[str, Any], dict[str, Any]]) -> tuple[int, int, int, int, float]:
             runtime, snippet, _snapshot = item
             file_name = str(snippet.get("file") or "").replace("\\", "/")
             symbol = str(snippet.get("symbol") or runtime.get("symbol") or "").lower()
             semantic = _source_symbol_priority(symbol, file_name)
             generic_runtime_frame = int(symbol in _GENERIC_RUNTIME_SOURCE_SYMBOLS)
             project = int("/site-packages/" not in file_name and not file_name.startswith("/usr/"))
-            return semantic, -generic_runtime_frame, project, -source_matches.index(item)
+            samples = int(_num(runtime.get("samples") or runtime.get("sample_count")))
+            percent = _num(runtime.get("percent"))
+            return semantic, project, -generic_runtime_frame, samples, percent
 
         best_score = max(source_score(item) for item in source_matches)
-        if best_score[0] == 0:
+        if best_score[0] == 0 and (best_score[1] == 0 or best_score[2] < 0):
             return anchor
         best = [item for item in source_matches if source_score(item) == best_score]
         if len(best) != 1:
@@ -4168,6 +4202,22 @@ def _verified_source_anchor(anchor: dict[str, Any], observations: list[dict[str,
             "blocked_upgrade_reason": "源码行已验证，但当前运行时证据只支持 partial_localization，不能把该行直接提升为根因。",
         }
     return anchor
+
+
+def _source_files_match(left: Any, right: Any) -> bool:
+    left_text = str(left or "").replace("\\", "/").lstrip("/")
+    right_text = str(right or "").replace("\\", "/").lstrip("/")
+    if not left_text or not right_text:
+        return False
+    if left_text == right_text or left_text.endswith(f"/{right_text}") or right_text.endswith(f"/{left_text}"):
+        return True
+    left_parts = [part for part in left_text.split("/") if part]
+    right_parts = [part for part in right_text.split("/") if part]
+    max_suffix = min(len(left_parts), len(right_parts))
+    for length in range(max_suffix, 1, -1):
+        if left_parts[-length:] == right_parts[-length:]:
+            return True
+    return False
 
 
 def _mechanism_enriched_anchor(anchor: dict[str, Any], observations: list[dict[str, Any]]) -> dict[str, Any]:
