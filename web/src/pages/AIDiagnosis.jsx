@@ -718,15 +718,100 @@ function DiagnosisDetail({ detail }) {
             )}
             style={{ marginBottom: 12 }}
           />
-          {aiReviewStatus !== "succeeded" && conclusion.ai_review_error && (
+          {qualificationBoundary.message && (
             <Alert
-              type="warning"
+              type={qualificationBoundary.status === "blocked" ? "warning" : "info"}
               showIcon
-              message="当前结论不是 AI 最终裁决"
-              description={conclusion.ai_review_error}
+              message="证据边界"
+              description={(
+                <Space direction="vertical" size={4}>
+                  <Typography.Text>{qualificationBoundary.message}</Typography.Text>
+                  {asArray(qualificationBoundary.missing_evidence).length > 0 && (
+                    <Typography.Text type="secondary">
+                      尚缺：{asArray(qualificationBoundary.missing_evidence).join("；")}
+                    </Typography.Text>
+                  )}
+                </Space>
+              )}
               style={{ marginBottom: 12 }}
             />
           )}
+          <RootCauseClusters
+            clusters={rootCauseClusters}
+            evidenceMap={evidenceMap}
+            onInspectTree={inspectClusterInTree}
+          />
+          {asArray(conclusion.residual_unknowns).length > 0 && (
+            <Alert
+              type="warning"
+              message="仍未确认的边界"
+              description={asArray(conclusion.residual_unknowns).join("；")}
+              style={{ margin: "12px 0" }}
+            />
+          )}
+          {asArray(conclusion.limitations).length > 0 && (
+            <Alert type="warning" message="限制与缺失证据" description={asArray(conclusion.limitations).join("；")} style={{ marginTop: 12 }} />
+          )}
+        </Card>
+      )}
+
+      {sessionMainTree && (
+        <Card
+          id="controlled-ai-tree"
+          title="受控 AI 树（当前状态）"
+          extra={(
+            <Space wrap>
+              <Tag color="red">主因 {treeStats.primary}</Tag>
+              <Tag color="default">反证 {treeStats.rejected}</Tag>
+              <Tag color="cyan">未决/阻断 {treeStats.unknown}</Tag>
+              <Tag color={hasEligiblePrimary ? "green" : "gold"}>
+                {hasEligiblePrimary ? "正式结论" : "当前证据边界"}：{sessionMainTree.final_supported_level}
+              </Tag>
+            </Space>
+          )}
+        >
+          <Alert
+            type={asArray(sessionMainTree.probe_edges).length ? "warning" : "success"}
+            showIcon
+            message={sessionMainTree.stop_reason || "AI 树已按当前证据边界停止。"}
+            description={`树中会保留比正式结论更深的已观察节点，并标记为“未入终态”；这些节点不等于正式根因。预算：AI rounds ${sessionMainTree.budget?.used_ai_rounds || 0}/${sessionMainTree.budget?.max_ai_rounds || 0}，探针请求 ${sessionMainTree.budget?.used_probe_requests || 0}/${sessionMainTree.budget?.max_probe_requests_per_round || 0}`}
+            style={{ marginBottom: 12 }}
+          />
+          <ControlledAITreeGraph
+            key={`${detail.diagnosis_id}:${sessionMainTree.tree_id || "tree"}`}
+            tree={sessionMainTree}
+            evidenceMap={evidenceMap}
+            highlightedCandidateIds={highlightedTreeCandidates}
+          />
+        </Card>
+      )}
+
+      <Collapse
+        defaultActiveKey={[]}
+        items={[{
+          key: "session-meta",
+          label: "诊断元信息",
+          children: (
+            <Descriptions size="small" column={{ xs: 1, md: 3 }}>
+              <Descriptions.Item label="诊断 ID"><Typography.Text copyable>{detail.diagnosis_id}</Typography.Text></Descriptions.Item>
+              <Descriptions.Item label="状态"><Status value={detail.status} /></Descriptions.Item>
+              <Descriptions.Item label="目标服务">{detail.target_scope?.target_service || "未解析"}</Descriptions.Item>
+              <Descriptions.Item label="拓扑快照">{detail.topology_snapshot_id}</Descriptions.Item>
+              <Descriptions.Item label="症状">{detail.normalized_intent?.symptom}</Descriptions.Item>
+              <Descriptions.Item label="模型">{detail.model_version}</Descriptions.Item>
+              <Descriptions.Item label="规划器">{detail.planner_version}</Descriptions.Item>
+              <Descriptions.Item label="采集预算">
+                {usedBudget}s / {totalBudget}s
+              </Descriptions.Item>
+              <Descriptions.Item label="初始采集上限">{initialBudget}s</Descriptions.Item>
+              <Descriptions.Item label="Follow-up 保留">{followUpReserve}s</Descriptions.Item>
+            </Descriptions>
+          ),
+        }, {
+          key: "ai-candidate-audit",
+          label: `AI 候选、门禁与审核过程（候选 ${candidateGenerationAttempts.length} 轮，门禁 ${gateFailures.length} 条，已确认 ${candidates.length} 个）`,
+          children: (
+            <Space direction="vertical" size="middle" style={{ width: "100%" }}>
           {probeConflicts.length > 0 && (
             <Alert
               type="warning"
@@ -1114,33 +1199,6 @@ function DiagnosisDetail({ detail }) {
               style={{ marginBottom: 12 }}
             />
           )}
-          {!hasEligiblePrimary && possibleCauses.length > 0 && (
-            <Alert
-              type="warning"
-              showIcon
-              message="当前保留的是可能根因，不是最终根因"
-              description="深探被阻断或结果不完整不会否定上一层候选；系统已保留已有证据、未验证因果边和下一步补证请求。"
-              style={{ marginBottom: 12 }}
-            />
-          )}
-          {qualificationBoundary.message && (
-            <Alert
-              type={qualificationBoundary.status === "blocked" ? "warning" : "info"}
-              showIcon
-              message="证据边界"
-              description={(
-                <Space direction="vertical" size={4}>
-                  <Typography.Text>{qualificationBoundary.message}</Typography.Text>
-                  {asArray(qualificationBoundary.missing_evidence).length > 0 && (
-                    <Typography.Text type="secondary">
-                      尚缺：{asArray(qualificationBoundary.missing_evidence).join("；")}
-                    </Typography.Text>
-                  )}
-                </Space>
-              )}
-              style={{ marginBottom: 12 }}
-            />
-          )}
           {retainedParentConclusions.length > 0 && (
             <Alert
               type="success"
@@ -1176,19 +1234,6 @@ function DiagnosisDetail({ detail }) {
                 </Space>
               )}
               style={{ marginBottom: 12 }}
-            />
-          )}
-          <RootCauseClusters
-            clusters={rootCauseClusters}
-            evidenceMap={evidenceMap}
-            onInspectTree={inspectClusterInTree}
-          />
-          {asArray(conclusion.residual_unknowns).length > 0 && (
-            <Alert
-              type="warning"
-              message="仍未确认的边界"
-              description={asArray(conclusion.residual_unknowns).join("；")}
-              style={{ margin: "12px 0" }}
             />
           )}
           {assessment && (
@@ -1259,63 +1304,7 @@ function DiagnosisDetail({ detail }) {
               ]}
             />
           )}
-          {asArray(conclusion.limitations).length > 0 && (
-            <Alert type="warning" message="限制与缺失证据" description={asArray(conclusion.limitations).join("；")} style={{ marginTop: 12 }} />
-          )}
-        </Card>
-      )}
-
-      {sessionMainTree && (
-        <Card
-          id="controlled-ai-tree"
-          title="受控 AI 树（当前状态）"
-          extra={(
-            <Space wrap>
-              <Tag color="red">主因 {treeStats.primary}</Tag>
-              <Tag color="default">反证 {treeStats.rejected}</Tag>
-              <Tag color="cyan">未决/阻断 {treeStats.unknown}</Tag>
-              <Tag color={hasEligiblePrimary ? "green" : "gold"}>
-                {hasEligiblePrimary ? "正式结论" : "当前证据边界"}：{sessionMainTree.final_supported_level}
-              </Tag>
             </Space>
-          )}
-        >
-          <Alert
-            type={asArray(sessionMainTree.probe_edges).length ? "warning" : "success"}
-            showIcon
-            message={sessionMainTree.stop_reason || "AI 树已按当前证据边界停止。"}
-            description={`树中会保留比正式结论更深的已观察节点，并标记为“未入终态”；这些节点不等于正式根因。预算：AI rounds ${sessionMainTree.budget?.used_ai_rounds || 0}/${sessionMainTree.budget?.max_ai_rounds || 0}，探针请求 ${sessionMainTree.budget?.used_probe_requests || 0}/${sessionMainTree.budget?.max_probe_requests_per_round || 0}`}
-            style={{ marginBottom: 12 }}
-          />
-          <ControlledAITreeGraph
-            key={`${detail.diagnosis_id}:${sessionMainTree.tree_id || "tree"}`}
-            tree={sessionMainTree}
-            evidenceMap={evidenceMap}
-            highlightedCandidateIds={highlightedTreeCandidates}
-          />
-        </Card>
-      )}
-
-      <Collapse
-        defaultActiveKey={[]}
-        items={[{
-          key: "session-meta",
-          label: "诊断元信息",
-          children: (
-            <Descriptions size="small" column={{ xs: 1, md: 3 }}>
-              <Descriptions.Item label="诊断 ID"><Typography.Text copyable>{detail.diagnosis_id}</Typography.Text></Descriptions.Item>
-              <Descriptions.Item label="状态"><Status value={detail.status} /></Descriptions.Item>
-              <Descriptions.Item label="目标服务">{detail.target_scope?.target_service || "未解析"}</Descriptions.Item>
-              <Descriptions.Item label="拓扑快照">{detail.topology_snapshot_id}</Descriptions.Item>
-              <Descriptions.Item label="症状">{detail.normalized_intent?.symptom}</Descriptions.Item>
-              <Descriptions.Item label="模型">{detail.model_version}</Descriptions.Item>
-              <Descriptions.Item label="规划器">{detail.planner_version}</Descriptions.Item>
-              <Descriptions.Item label="采集预算">
-                {usedBudget}s / {totalBudget}s
-              </Descriptions.Item>
-              <Descriptions.Item label="初始采集上限">{initialBudget}s</Descriptions.Item>
-              <Descriptions.Item label="Follow-up 保留">{followUpReserve}s</Descriptions.Item>
-            </Descriptions>
           ),
         }, {
           key: "diagnostic-details",
