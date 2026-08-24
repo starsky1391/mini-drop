@@ -74,6 +74,11 @@ def build_audit_bundle(diagnosis_id: str, orchestrator, repo) -> dict[str, Any] 
             "candidate_sources": _candidate_sources(latest),
             "qualification": latest.get("qualification") or assessment.get("unified_qualification") or {},
             "gate_failures": latest.get("gate_failures") or latest.get("ai_gate_failures") or [],
+            "probe_request_specs": (
+                latest.get("candidate_generation_output", {}).get("probe_request_specs", [])
+                if isinstance(latest.get("candidate_generation_output"), dict)
+                else []
+            ),
             "abstained": bool(latest.get("abstained", True)),
             "formal_root_cause": latest.get("formal_root_cause"),
             "causal_chain": latest.get("causal_chain") or [],
@@ -105,6 +110,7 @@ def _candidate_sources(latest: dict[str, Any]) -> list[dict[str, Any]]:
                     "claim_status": node.get("claim_status"),
                     "conclusion_eligible": bool(node.get("conclusion_eligible")),
                     "evidence_refs": node.get("evidence_refs") or [],
+                    "probe_request_specs": node.get("probe_request_specs") or [],
                 })
     return result
 

@@ -15,7 +15,12 @@ from server.app.diagnosis import orchestrator as orchestrator_module
 from server.app.main import app, repo
 from server.app.main import diagnosis_orchestrator
 from server.app.models import Base
-from server.app.rca.models import AITreeCandidateNode, AITreeLayer, RootCauseCluster
+from server.app.rca.models import (
+    AITreeCandidateNode,
+    AITreeLayer,
+    ControlledAITree,
+    RootCauseCluster,
+)
 from server.app.state_machine import Actor, TaskStatus
 
 
@@ -415,7 +420,7 @@ def test_diagnosis_audit_bundle_exports_runtime_trace_and_readiness_gate(client:
     )
 
 
-def test_repeated_analysis_records_one_guard_event_per_child_task(client: TestClient):
+def test_repeated_analysis_does_not_emit_child_ai_guard_event(client: TestClient):
     data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
     task_id = data["child_task_ids"][0]
     _finish_sys_metrics_task(task_id, _normal_summary())
@@ -431,7 +436,7 @@ def test_repeated_analysis_records_one_guard_event_per_child_task(client: TestCl
         and event["payload"].get("task_id") == task_id
     ]
 
-    assert len(guard_events) == 1
+    assert guard_events == []
 
 
 def test_diagnosis_child_task_skips_legacy_single_task_rca(client: TestClient):
@@ -2738,7 +2743,12 @@ class TestDiagnosisSessionAPI:
 
         detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
         assessment = detail["latest_conclusion"]["cluster_assessment"]
-        assert detail["status"] in {"COMPLETED", "COLLECTING", "WAITING_APPROVAL"}
+        assert detail["status"] in {
+            "COMPLETED",
+            "COLLECTING",
+            "WAITING_APPROVAL",
+            "INSUFFICIENT_EVIDENCE",
+        }
         assert assessment["classification"] == "same_host_noisy_neighbor"
         assert assessment["confidence_level"] == "不可判断"
         assert assessment["observation_confidence"] >= assessment["confidence"]
@@ -3955,6 +3965,80 @@ def test_investigation_review_does_not_relabel_analyzer_layer_as_ai_guarded():
         layer.generated_by == "analyzer_observation"
         for layer in updated.layers
     )
+
+
+def test_investigation_probe_specs_are_persisted_on_candidate_and_edge():
+    parent = AITreeCandidateNode(
+        candidate_id="verified-line-parent",
+        generated_by="ai_candidate",
+        claim_origin="ai_proposal",
+        relation="root",
+        node_type="line_anchor",
+        role="unknown",
+        claim="已验证运行时源码行。",
+        supported_level="line",
+        status="supported",
+        claim_type="partial_localization",
+        causal_status="supported",
+        decision="continue_probe",
+        depth_kind="base",
+        evidence_refs=["ev-runtime"],
+    )
+    tree = ControlledAITree(
+        tree_id="diag-structured-probe-spec",
+        final_supported_level="line",
+        layers=[
+            AITreeLayer(
+                layer_id="line-layer",
+                depth=0,
+                generated_by="ai_candidate",
+                unknown_causes=[parent],
+            )
+        ],
+    )
+    spec = {
+        "evidence_family": "python_heap_reference",
+        "question": "对象保留链是否经过该源码行？",
+        "why_needed": "区分热点位置和实际引用链。",
+        "input_refs": ["ev-runtime"],
+        "expected_observation": ["返回同一候选的运行时入向引用链"],
+        "disconfirming_observation": ["引用链不经过该源码路径"],
+        "candidate_id": "ai_proposal_heap",
+        "origin_parent_candidate_id": "verified-line-parent",
+    }
+
+    updated = orchestrator_module._apply_investigation_review(tree, {
+        "selected_evidence_families": ["python_heap_reference"],
+        "probe_requests": [spec],
+        "candidate_proposals": [{
+            "candidate_id": "ai_proposal_heap",
+            "claim": "该源码行可能对应对象保留路径。",
+            "mechanism": "object_retention",
+            "target": "worker",
+            "parent_candidate_ids": ["verified-line-parent"],
+            "origin_parent_candidate_id": "verified-line-parent",
+            "relation": "refinement",
+            "evidence_refs": ["ev-runtime"],
+            "probe_request_specs": [spec],
+            "what_would_change_my_mind": "出现不经过该源码行的实际引用链。",
+        }],
+        "candidate_updates": {},
+        "rollback_edges": [],
+    })
+
+    node = next(
+        node
+        for layer in updated.layers
+        for node in layer.unknown_causes
+        if node.candidate_id == "ai_proposal_heap"
+    )
+    edge = next(edge for edge in updated.probe_edges if edge.edge_id.startswith("session_ai_probe_"))
+    assert node.probe_request_specs[0].evidence_family == "python_heap_reference"
+    assert node.probe_request_specs[0].expected_observation == [
+        "返回同一候选的运行时入向引用链"
+    ]
+    assert edge.probe_request_specs[0].candidate_id == "ai_proposal_heap"
+    assert edge.probe_request_specs[0].origin_parent_candidate_id == "verified-line-parent"
 
 
 def test_memory_followup_is_sequential_heap_runtime_then_source():

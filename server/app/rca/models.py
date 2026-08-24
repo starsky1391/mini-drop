@@ -288,6 +288,19 @@ class AITreeSelfChallenge(BaseModel):
     what_would_change_my_mind: str = ""
 
 
+class ProbeRequestSpec(BaseModel):
+    """One structured, evidence-bounded request selected by AI."""
+
+    evidence_family: str
+    question: str = ""
+    why_needed: str = ""
+    input_refs: list[str] = Field(default_factory=list)
+    expected_observation: list[str] = Field(default_factory=list)
+    disconfirming_observation: list[str] = Field(default_factory=list)
+    candidate_id: str = ""
+    origin_parent_candidate_id: str = ""
+
+
 class AITreeCandidateNode(BaseModel):
     """受控 AI 树某一层里的候选结论。"""
 
@@ -399,6 +412,7 @@ class AITreeCandidateNode(BaseModel):
     mechanism_refs: list[str] = Field(default_factory=list)
     impact_refs: list[str] = Field(default_factory=list)
     source_relation_refs: list[str] = Field(default_factory=list)
+    probe_request_specs: list[ProbeRequestSpec] = Field(default_factory=list)
     self_challenge: AITreeSelfChallenge = Field(default_factory=AITreeSelfChallenge)
 
     @model_validator(mode="before")
@@ -462,6 +476,7 @@ class AITreeProbeEdge(BaseModel):
     from_candidate_ids: list[str] = Field(default_factory=list)
     to_candidate_ids: list[str] = Field(default_factory=list)
     probe_requests: list[str] = Field(default_factory=list)
+    probe_request_specs: list[ProbeRequestSpec] = Field(default_factory=list)
     probe_results: list[AITreeProbeResult] = Field(default_factory=list)
     status: Literal["completed", "inconclusive", "blocked", "failed", "reused", "not_started", "unknown"] = "unknown"
     evidence_refs: list[str] = Field(default_factory=list)

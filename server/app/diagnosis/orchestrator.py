@@ -41,10 +41,6 @@ from server.app.diagnosis.schemas import (
 )
 from server.app.diagnosis.store import DiagnosisStore, utcnow
 from server.app.event_bus import BUS
-from server.app.rca.calibrator import calibrate
-from server.app.rca.candidates import generate_candidates
-from server.app.rca.evidence import collect_evidence
-from server.app.rca.attribution import analyze_evidence
 from server.app.rca.llm_client import (
     _source_anchor_catalog,
     generate_session_candidate_review,
@@ -72,9 +68,10 @@ from server.app.rca.models import (
     CandidateHint,
     LocalizationBoundary,
     EvidenceInput,
+    ProbeRequestSpec,
 )
-from server.app.diagnosis.evidence_structurer import rca_inputs_from_structured, structure_artifact_evidence
-from server.app.diagnosis.attribution_engine import qualify_attribution
+from server.app.diagnosis.evidence_structurer import structure_artifact_evidence
+from server.app.diagnosis.attribution_engine import build_attribution_graph, qualify_attribution
 from server.app.diagnosis.attribution_models import AttributionGraph
 from server.app.diagnosis.session_conclusion import (
     apply_session_review,
@@ -1300,17 +1297,11 @@ class DiagnosisOrchestrator:
 
     def _analyze_tasks(self, diagnosis_id: str, tasks: list[Any]) -> bool:
         self._last_followup_scheduled = False
-        all_candidates: list[dict[str, Any]] = []
         followup_requests: list[str] = []
         controlled_ai_trees: list[dict[str, Any]] = []
         task_observations: list[dict[str, Any]] = []
         missing: list[str] = []
         failed_targets: list[str] = []
-        existing_guard_tasks = {
-            str((event.get("payload") or {}).get("task_id") or "")
-            for event in (self.store.get_detail(diagnosis_id) or {}).get("events", [])
-            if event.get("event_type") == "controlled_ai_tree_guard_result"
-        }
         for task in tasks:
             status = status_value(task.status)
             artifacts = self.repo.artifacts.get(task.id, [])
@@ -1342,7 +1333,6 @@ class DiagnosisOrchestrator:
                         evidence_reason=evidence_reason,
                     )
                     break
-            structured_inputs = rca_inputs_from_structured(structured_evidence)
             evidence_ids.append(self._add_artifact_evidence(
                 diagnosis_id,
                 task,
@@ -1360,132 +1350,34 @@ class DiagnosisOrchestrator:
                 missing.append(f"{task.id}:structured_artifact")
                 continue
 
-            values = {**structured_inputs, **artifact_values}
+            values = {
+                **artifact_values,
+                **structured_evidence.model_dump(mode="json"),
+            }
             values["artifact_refs"] = structured_evidence.artifact_refs
             values["stack_summary"] = structured_evidence.stack_summary
             values["call_path_hotspots"] = structured_evidence.call_path_hotspots
             values["confidence_inputs"] = structured_evidence.confidence_inputs
-            task_events = [self.repo.as_dict(event) for event in self.repo.events if event.task_id == task.id]
-            session_for_evidence = self.store.get_session(diagnosis_id) or {}
-            evidence = collect_evidence(
-                task_id=task.id,
-                task_record=task,
-                top_functions=values.get("top_functions") if isinstance(values.get("top_functions"), list) else None,
-                ebpf_metrics=values.get("ebpf_metrics") if isinstance(values.get("ebpf_metrics"), dict) else None,
-                sys_metrics=values.get("sys_metrics") if isinstance(values.get("sys_metrics"), dict) else None,
-                failure_events=[event.get("reason", "") for event in task_events if event.get("reason")],
-                agent_stats=self.repo.agent_metrics.get(task.agent_id, {}),
-                evidence_index=values.get("evidence_index") if isinstance(values.get("evidence_index"), dict) else {},
-                tool_results=_tool_results_from_structured_values(values),
-                source_context=_source_context_for_target(
-                    self._target_for_task(diagnosis_id, task),
-                    session_for_evidence.get("target_scope", {}),
-                ),
+            target = self._target_for_task(diagnosis_id, task)
+            attribution_graph = build_attribution_graph(
+                evidence=structured_evidence.model_dump(mode="json"),
+                target=target,
+                source_snapshot=values.get("source_snapshot_json"),
+                source_mechanism=values.get("source_mechanism_json"),
             )
-            evidence = evidence.model_copy(update={
-                "source_snapshot_json": values.get("source_snapshot_json")
-                if isinstance(values.get("source_snapshot_json"), dict)
-                else None,
-                "source_mechanism_json": values.get("source_mechanism_json")
-                if isinstance(values.get("source_mechanism_json"), dict)
-                else None,
-                "python_heap_reference_json": values.get("python_heap_reference_json")
-                if isinstance(values.get("python_heap_reference_json"), dict)
-                else None,
-                "structured_values": values,
-            })
-            candidates = generate_candidates(evidence, self.repo.get_feedback_priors())
-            analysis_result = analyze_evidence(evidence, candidates)
-            values["attribution_graph"] = analysis_result.attribution_graph
-            values["qualification"] = analysis_result.qualification
+            qualification = qualify_attribution(attribution_graph)
+            values["attribution_graph"] = attribution_graph.model_dump(mode="json")
+            values["qualification"] = qualification.model_dump(mode="json")
             task_observations.append(
                 self._build_task_observation(diagnosis_id, task, values, evidence_ids)
             )
-            probe_manifest = build_probe_manifest()
-            analysis_payload = analysis_result.model_dump(mode="json")
-            analysis_payload["probe_registry_manifest"] = probe_manifest
-            controlled_tree = analysis_result.controlled_ai_tree
-            source_snapshot = values.get("source_snapshot_json")
-            if controlled_tree is not None and isinstance(source_snapshot, dict) and source_snapshot.get("source_context_hash"):
-                controlled_tree.source_context_hash = str(source_snapshot["source_context_hash"])
-            ai_settings = get_ai_settings()
-            if task.id not in existing_guard_tasks:
-                self.store.record_event(
-                    diagnosis_id,
-                    "controlled_ai_tree_guard_result",
-                    {
-                        "task_id": task.id,
-                        "ai_source": ai_settings.source,
-                        "ai_enabled": ai_settings.enabled,
-                        "rca_enabled": is_feature_enabled("rca"),
-                        "has_api_key": bool(ai_settings.api_key),
-                        "compact_guard_attempted": False,
-                        "compact_guard_succeeded": False,
-                        "reason": "child tasks produce Analyzer evidence trees; LLM adjudication runs once at session scope",
-                        "generated_by": sorted({
-                            layer.generated_by
-                            for layer in (controlled_tree.layers if controlled_tree else [])
-                        }),
-                        "layer_count": len(controlled_tree.layers) if controlled_tree else 0,
-                    },
-                )
-                existing_guard_tasks.add(task.id)
-            analysis_result = analysis_result.model_copy(update={"controlled_ai_tree": controlled_tree})
-            if analysis_result.controlled_ai_tree is not None:
-                controlled_ai_trees.append(
-                    analysis_result.controlled_ai_tree.model_copy(
-                        update={"tree_kind": "child_snapshot", "renderable": False}
-                    ).model_dump(mode="json")
-                )
-            for tree_node in analysis_result.ai_tree:
-                for request_id in tree_node.next_evidence_requests:
-                    if request_id not in followup_requests:
-                        followup_requests.append(request_id)
-            if analysis_result.controlled_ai_tree is not None:
-                for edge in analysis_result.controlled_ai_tree.probe_edges:
-                    for request_id in edge.probe_requests:
-                        if request_id not in followup_requests:
-                            followup_requests.append(request_id)
-            calibrated = calibrate(candidates, evidence, self.repo.get_feedback_priors())
-            for candidate in calibrated:
-                if candidate.candidate_id == "insufficient_data":
-                    continue
-                all_candidates.append({
-                    "candidate_id": candidate.candidate_id,
-                    "description": candidate.description,
-                    "evidence_refs": evidence_ids,
-                    "missing_evidence": candidate.missing_evidence,
-                    "independent": True,
-                    "score_components": {
-                        "rule_match": _quality(candidate.rule_score),
-                        "evidence_quality": _quality(candidate.evidence_quality),
-                        "baseline_support": _quality(candidate.baseline_support),
-                        "source_independence": _quality(candidate.cross_collector_agreement),
-                    },
-                    "sort_score": candidate.final_confidence,
-                })
 
-        if not all_candidates and not task_observations:
+        if not task_observations:
             return False
-        all_candidates.sort(key=lambda item: item["sort_score"], reverse=True)
+        # Current session AI receives Analyzer facts and the localization
+        # boundary. It creates new candidates after the structured evidence
+        # stage; no legacy rule candidate is inserted here.
         deduped: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for candidate in all_candidates:
-            if candidate["candidate_id"] in seen:
-                continue
-            seen.add(candidate["candidate_id"])
-            candidate.pop("sort_score", None)
-            candidate["rank"] = len(deduped) + 1
-            candidate["confidence_level"] = self._confidence_level(candidate)
-            candidate["supporting_claims"] = [{
-                "statement": candidate["description"],
-                "evidence_refs": candidate["evidence_refs"],
-                "strength": "medium" if len(candidate["evidence_refs"]) > 1 else "weak",
-            }]
-            candidate.update(_candidate_location_fields(candidate, self.store.get_session(diagnosis_id) or {}))
-            deduped.append(candidate)
-            if len(deduped) >= 3:
-                break
 
         cluster_assessment = self._build_cluster_assessment(diagnosis_id, task_observations)
         _enrich_dependency_control_assessment(cluster_assessment, task_observations)
@@ -3636,14 +3528,6 @@ def _registered_probe_families(review: dict[str, Any], manifest: dict[str, Any])
             if family in registered and family not in requested:
                 requested.append(family)
     return requested[:3]
-
-
-def _quality(value: float) -> str:
-    if value >= 0.75:
-        return "high"
-    if value >= 0.4:
-        return "medium"
-    return "low"
 
 
 def _reuse_max_age_seconds() -> int | None:
@@ -7843,6 +7727,10 @@ def _candidate_generation_output(review: dict[str, Any] | None) -> dict[str, Any
             "parent_candidate_ids": _unique_strings(item.get("parent_candidate_ids", []))[:32],
             "origin_parent_candidate_id": str(item.get("origin_parent_candidate_id") or ""),
             "probe_requests": _unique_strings(item.get("probe_requests", []))[:16],
+            "probe_request_specs": [
+                spec.model_dump(mode="json")
+                for spec in _probe_request_specs(item.get("probe_request_specs"))
+            ][:16],
         })
     rejected_ids = [
         str(item.get("candidate_id"))
@@ -7898,6 +7786,10 @@ def _candidate_generation_output(review: dict[str, Any] | None) -> dict[str, Any
             for value in (review.get("selected_evidence_families") or [])
             if str(value)
         ],
+        "probe_request_specs": [
+            spec.model_dump(mode="json")
+            for spec in _probe_request_specs(review.get("probe_requests"))
+        ][:16],
         "initial_evidence_context": initial_context,
     }
 
@@ -8194,6 +8086,34 @@ def _completed_session_probe_requests(probes: list[dict[str, Any]]) -> list[str]
         if gap and gap not in completed:
             completed.append(gap)
     return completed
+
+
+def _probe_request_specs(
+    value: Any,
+    *,
+    selected: set[str] | None = None,
+) -> list[ProbeRequestSpec]:
+    """Keep only validated structured probe requests for tree persistence."""
+    if not isinstance(value, list):
+        return []
+    result: list[ProbeRequestSpec] = []
+    seen: set[str] = set()
+    for item in value:
+        if isinstance(item, ProbeRequestSpec):
+            spec = item
+        elif isinstance(item, dict):
+            try:
+                spec = ProbeRequestSpec.model_validate(item)
+            except (TypeError, ValueError):
+                continue
+        else:
+            continue
+        family = str(spec.evidence_family or "").strip()
+        if not family or family in seen or (selected is not None and family not in selected):
+            continue
+        seen.add(family)
+        result.append(spec.model_copy(update={"evidence_family": family}))
+    return result
 
 
 def _followup_provenance(evidence_gap: str, probe_input: dict[str, Any]) -> tuple[str, str]:
@@ -8803,6 +8723,7 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
             source_relation_refs=list(dict.fromkeys(
                 str(value) for value in item.get("source_relation_refs", []) if str(value)
             )),
+            probe_request_specs=_probe_request_specs(item.get("probe_request_specs")),
             self_challenge=AITreeSelfChallenge(
                 why_this_claim=str(item["claim"]),
                 supporting_evidence_refs=refs,
@@ -8967,6 +8888,10 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
 
 def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) -> ControlledAITree:
     selected = [str(item) for item in review.get("selected_evidence_families", []) if str(item)]
+    selected_specs = _probe_request_specs(
+        review.get("probe_requests"),
+        selected=set(selected),
+    )
     proposals = review.get("candidate_proposals") if isinstance(review.get("candidate_proposals"), list) else []
     candidate_updates = review.get("candidate_updates") if isinstance(review.get("candidate_updates"), dict) else {}
     rollback_specs = review.get("rollback_edges") if isinstance(review.get("rollback_edges"), list) else []
@@ -9127,6 +9052,7 @@ def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) 
                 source_relation_refs=list(dict.fromkeys(
                     str(value) for value in item.get("source_relation_refs", []) if str(value)
                 )),
+                probe_request_specs=_probe_request_specs(item.get("probe_request_specs")),
                 self_challenge=AITreeSelfChallenge(
                     why_this_claim=item["claim"],
                     supporting_evidence_refs=item["evidence_refs"],
@@ -9194,6 +9120,7 @@ def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) 
                 from_candidate_ids=parent_ids,
                 to_candidate_ids=[node.candidate_id for node in grouped_nodes],
                 probe_requests=selected,
+                probe_request_specs=selected_specs,
                 status="not_started",
                 effect="added_candidate",
                 transition_type="probe",
@@ -9203,6 +9130,7 @@ def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) 
     elif selected and edges:
         edges[-1] = edges[-1].model_copy(update={
             "probe_requests": selected,
+            "probe_request_specs": selected_specs,
             "reason": "AI 调查轮从本轮允许的注册探针中选择最小必要补证。",
         })
 
@@ -9226,6 +9154,7 @@ def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) 
             from_candidate_ids=list(dict.fromkeys(from_ids)),
             to_candidate_ids=list(dict.fromkeys(to_ids)),
             probe_requests=[str(value) for value in spec.get("probe_requests", []) if str(value)],
+            probe_request_specs=_probe_request_specs(spec.get("probe_request_specs")),
             status=str(spec.get("status") or "inconclusive"),
             evidence_refs=list(dict.fromkeys(str(value) for value in spec.get("evidence_refs", []) if str(value))),
             effect="rollback",
