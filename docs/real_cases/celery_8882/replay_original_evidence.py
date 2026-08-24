@@ -41,18 +41,40 @@ def _evidence_index(evidence: list[dict[str, Any]]) -> tuple[set[str], dict[str,
         ]
         item_refs = {str(value) for value in candidates if value}
         refs.update(item_refs)
+        observed_value = item.get("observed_value")
+        observed_value = observed_value if isinstance(observed_value, dict) else {}
         family = str(
             item.get("query_or_probe")
-            or (item.get("observed_value") or {}).get("collector_type")
+            or observed_value.get("collector_type")
             or "unknown"
         )
-        status = str(
-            ((item.get("observed_value") or {}).get("summary") or {})
-            .get("confidence_inputs", {})
-            .get("evidence_validity_by_family", {})
-            or (item.get("data_quality") or {}).get("completeness")
-            or "unknown"
+        summary = observed_value.get("summary")
+        summary = summary if isinstance(summary, dict) else {}
+        confidence_inputs = summary.get("confidence_inputs")
+        confidence_inputs = (
+            confidence_inputs
+            if isinstance(confidence_inputs, dict)
+            else {}
         )
+        raw_confidence_inputs = summary.get("confidence_inputs")
+        if isinstance(raw_confidence_inputs, dict):
+            family_statuses = confidence_inputs.get("evidence_validity_by_family")
+            if isinstance(family_statuses, dict):
+                status_value = (
+                    family_statuses.get(family)
+                    or family_statuses.get("status")
+                    or family_statuses
+                )
+            else:
+                status_value = family_statuses
+        else:
+            status_value = raw_confidence_inputs
+        data_quality = item.get("data_quality")
+        if isinstance(data_quality, dict):
+            completeness = data_quality.get("completeness")
+        else:
+            completeness = data_quality
+        status = str(status_value or completeness or "unknown")
         for ref in item_refs:
             families[ref] = family
             statuses[ref] = status
