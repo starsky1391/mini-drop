@@ -234,10 +234,149 @@ def test_explicit_ai_candidate_can_promote_a_closed_graph():
             }],
         },
     )
-    qualification = qualify_attribution(graph, ai_candidate_ids=["ai_candidate_worker"])
+    qualification = qualify_attribution(
+        graph,
+        ai_candidate_ids=["ai_candidate_worker"],
+        ai_candidates=[{
+            "candidate_id": "ai_candidate_worker",
+            "generated_by": "ai_guarded",
+            "claim": "输入基数沿源码调用路径放大了热点计算。",
+            "mechanism": "input_cardinality_amplification",
+            "target": "worker",
+            "supported_level": "line",
+            "evidence_refs": ["ev:runtime", "ev:source", "ev:impact"],
+            "causal_status": "supported",
+            "decision": "conclude",
+            "parent_candidate_ids": ["cost:function:0"],
+            "trigger_refs": ["trigger:input"],
+            "mechanism_refs": ["source:mechanism:0:0"],
+            "impact_refs": ["impact:latency"],
+            "source_relation_refs": ["source:mechanism:0:0"],
+        }],
+    )
     assert qualification.level == "L3"
     assert qualification.qualification == "formal_root_cause"
     assert qualification.eligible_candidate_ids == ["ai_candidate_worker"]
+
+
+def test_candidate_id_without_ai_record_cannot_promote_a_closed_graph():
+    graph = build_attribution_graph(
+        evidence={
+            "evidence_window": {"timing_relation": "same_window"},
+            "evidence_refs": ["ev:runtime", "ev:source", "ev:impact"],
+            "top_functions": [{
+                "name": "worker",
+                "file": "app.py",
+                "line": 42,
+                "percent": 80.0,
+                "samples": 80,
+                "evidence_ref": "ev:runtime",
+            }],
+            "input": {"cardinality": 4096},
+            "latency": {"p95_ms": 900},
+            "sys_metrics": {"summary": {"avg_cpu_user_pct": 80.0}},
+            "evidence_index": {
+                "evidence_validity_by_family": {
+                    "python_runtime_profile": "valid",
+                    "source_snapshot": "valid",
+                    "source_mechanism_query": "valid",
+                },
+            },
+            "source_snapshot_json": {
+                "verified_line_candidates": [{
+                    "file": "app.py",
+                    "line": 42,
+                    "symbol": "worker",
+                    "evidence_ref": "ev:source",
+                    "eligibility_status": "verified",
+                }],
+            },
+        },
+        source_mechanism={
+            "mechanism_paths": [{
+                "status": "supported",
+                "relations": ["propagates_to"],
+                "evidence_ref": "ev:source",
+                "nodes": [
+                    {"file": "app.py", "line": 42, "symbol": "worker"},
+                    {"file": "app.py", "line": 43, "symbol": "hot_path"},
+                ],
+            }],
+        },
+    )
+
+    qualification = qualify_attribution(
+        graph,
+        ai_candidate_ids=["ai_candidate_worker"],
+    )
+
+    assert qualification.qualification == "mechanism_hypothesis"
+    assert qualification.eligible_candidate_ids == []
+    assert qualification.candidate_gate_failures == [{
+        "candidate_id": "ai_candidate_worker",
+        "reasons": ["candidate_record_missing"],
+    }]
+
+
+def test_source_snapshot_line_without_runtime_location_is_not_a_source_relation():
+    graph = build_attribution_graph(
+        evidence={
+            "evidence_window": {"timing_relation": "same_window"},
+            "top_functions": [{
+                "name": "_PyEval_EvalFrameDefault",
+                "percent": 80.0,
+                "samples": 80,
+                "evidence_ref": "ev:runtime",
+            }],
+            "evidence_index": {
+                "evidence_validity_by_family": {
+                    "python_runtime_profile": "valid",
+                    "source_snapshot": "valid",
+                },
+            },
+            "source_snapshot_json": {
+                "verified_line_candidates": [{
+                    "file": "app.py",
+                    "line": 42,
+                    "symbol": "worker",
+                    "evidence_ref": "ev:source",
+                    "eligibility_status": "verified",
+                }],
+            },
+        },
+    )
+
+    assert graph.source_relations == []
+
+
+def test_runtime_call_path_is_exposed_as_observed_relation():
+    graph = build_attribution_graph(
+        evidence={
+            "evidence_window": {"timing_relation": "same_window"},
+            "top_functions": [{
+                "name": "worker",
+                "percent": 80.0,
+                "samples": 80,
+                "evidence_ref": "ev:runtime",
+            }],
+            "call_path_hotspots": [{
+                "call_path": ["worker", "handle", "compute"],
+                "evidence_ref": "ev:path",
+            }],
+            "evidence_index": {
+                "evidence_validity_by_family": {
+                    "python_runtime_profile": "valid",
+                },
+            },
+        },
+    )
+
+    observed = {
+        (item.source_ref, item.target_ref, item.relation)
+        for item in graph.facts.observed_relations
+    }
+    assert ("worker", "handle", "calls") in observed
+    assert ("handle", "compute", "calls") in observed
 
 
 def test_unknown_structured_input_yields_open_facts_and_graph_domains():
@@ -316,3 +455,53 @@ def test_session_qualification_abstains_without_eligible_ai_candidate():
     assert explanation["root_cause_clusters"] == []
     assert explanation["causal_chain"] == []
     assert explanation["abstained"] is True
+
+
+def test_session_qualification_cannot_bypass_attribution_graph_gate():
+    cluster = RootCauseCluster(
+        cluster_id="ai-cluster",
+        candidate_ids=["ai-candidate"],
+        source_tree_candidate_ids=["ai-candidate"],
+        mechanism="open_mechanism",
+        target="service-a",
+        claim="AI candidate claims a mechanism.",
+        evidence_refs=["ev-1"],
+        qualification="confirmed_root_cause",
+        conclusion_eligible=True,
+        cause_level="direct_root_cause",
+        supported_level="line",
+    )
+    qualification = build_session_qualification(
+        [cluster],
+        {
+            "layers": [{
+                "primary_causes": [{
+                    "candidate_id": "ai-candidate",
+                    "generated_by": "ai_guarded",
+                    "claim": "AI candidate claims a mechanism.",
+                    "mechanism": "open_mechanism",
+                    "target": "service-a",
+                    "supported_level": "line",
+                    "status": "supported",
+                    "causal_status": "supported",
+                    "decision": "conclude",
+                    "evidence_refs": ["ev-1"],
+                }],
+            }],
+        },
+        attribution_qualification={
+            "level": "L2",
+            "qualification": "mechanism_hypothesis",
+            "decision": "continue_probe",
+            "causal_status": "unproven",
+            "confidence": 0.6,
+            "confidence_level": "中",
+            "eligible_candidate_ids": [],
+            "candidate_ids": ["ai-candidate"],
+            "missing_evidence": ["verified_source_relation"],
+        },
+    )
+
+    assert qualification["qualification"] == "mechanism_hypothesis"
+    assert qualification["eligible_candidate_ids"] == []
+    assert qualification["missing_evidence"] == ["verified_source_relation"]

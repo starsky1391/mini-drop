@@ -70,6 +70,8 @@ from server.app.rca.models import (
     EvidenceInput,
 )
 from server.app.diagnosis.evidence_structurer import rca_inputs_from_structured, structure_artifact_evidence
+from server.app.diagnosis.attribution_engine import qualify_attribution
+from server.app.diagnosis.attribution_models import AttributionGraph
 from server.app.diagnosis.session_conclusion import (
     apply_session_review,
     build_qualification_boundary,
@@ -1940,6 +1942,10 @@ class DiagnosisOrchestrator:
             session_tree_payload,
             base=cluster_assessment,
             retained_conclusion=explanation.get("retained_conclusion"),
+            attribution_qualification=_session_attribution_qualification(
+                _merge_attribution_graphs(task_observations),
+                session_tree_payload,
+            ),
         )
         cluster_assessment["unified_qualification"] = session_qualification
         explanation = apply_session_qualification(
@@ -3482,6 +3488,60 @@ def _merge_attribution_graphs(observations: list[dict[str, Any]]) -> dict[str, A
     return result
 
 
+def _session_attribution_qualification(
+    graph_payload: dict[str, Any],
+    session_tree: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(graph_payload, dict) or not graph_payload:
+        return None
+    try:
+        graph = AttributionGraph.model_validate(graph_payload)
+    except Exception:
+        return None
+    nodes = _all_session_tree_nodes(session_tree)
+    ai_candidates = [
+        {
+            "candidate_id": str(node.get("candidate_id") or ""),
+            "generated_by": node.get("generated_by"),
+            "claim": node.get("claim"),
+            "mechanism": node.get("mechanism"),
+            "target": node.get("target"),
+            "supported_level": node.get("supported_level"),
+            "evidence_refs": node.get("evidence_refs") or [],
+            "causal_status": node.get("causal_status"),
+            "decision": node.get("decision"),
+            "parent_candidate_ids": node.get("parent_candidate_ids") or [],
+            "origin_parent_candidate_id": node.get("origin_parent_candidate_id"),
+            "trigger_refs": node.get("trigger_refs") or [],
+            "mechanism_refs": node.get("mechanism_refs") or [],
+            "impact_refs": node.get("impact_refs") or [],
+            "source_relation_refs": node.get("source_relation_refs") or [],
+        }
+        for node in nodes
+        if str(node.get("generated_by") or "") in {"ai", "ai_candidate", "ai_guarded"}
+        and node.get("candidate_id")
+    ]
+    result = qualify_attribution(
+        graph,
+        ai_candidate_ids=[str(item["candidate_id"]) for item in ai_candidates],
+        ai_candidates=ai_candidates,
+    )
+    return result.model_dump(mode="json")
+
+
+def _all_session_tree_nodes(tree: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(tree, dict):
+        return []
+    return [
+        node
+        for layer in tree.get("layers", [])
+        if isinstance(layer, dict)
+        for group in ("primary_causes", "secondary_causes", "rejected_causes", "unknown_causes")
+        for node in layer.get(group, [])
+        if isinstance(node, dict)
+    ]
+
+
 def _apply_session_tree_qualification(
     tree: dict[str, Any] | None,
     qualification: dict[str, Any],
@@ -4019,7 +4079,8 @@ def _runtime_line_candidates_from_values(
 
     def add(item: dict[str, Any]) -> None:
         file_name = str(item.get("file") or "")
-        line = int(_num(item.get("line") or item.get("focus_line")))
+        line_value = _num(item.get("line") or item.get("focus_line"))
+        line = int(line_value) if line_value is not None else 0
         if not file_name or line <= 0:
             return
         normalized = {
@@ -4028,7 +4089,8 @@ def _runtime_line_candidates_from_values(
             "symbol": str(item.get("symbol") or item.get("function") or item.get("name") or ""),
             "samples": int(_num(item.get("samples") or item.get("sample_count"))),
             "percent": _num(item.get("percent")),
-            "evidence_ref": item.get("evidence_ref"),
+            "evidence_ref": item.get("evidence_ref") or item.get("evidence_id"),
+            "call_path": item.get("call_path") if isinstance(item.get("call_path"), list) else [],
         }
         if normalized not in candidates:
             candidates.append(normalized)
@@ -5334,8 +5396,9 @@ def _normalize_structured_artifact_values(values: dict[str, Any]) -> dict[str, A
     normalized = dict(values)
     python_stacks = normalized.get("python_stack_samples_json")
     if isinstance(python_stacks, dict):
-        normalized.setdefault("top_json", python_stacks.get("top_functions") or [])
-        normalized.setdefault("depth_evidence_json", {
+        if not isinstance(normalized.get("top_json"), list) or not normalized.get("top_json"):
+            normalized["top_json"] = python_stacks.get("top_functions") or []
+        python_depth = {
             "stack_samples": [
                 {
                     **item,
@@ -5352,7 +5415,14 @@ def _normalize_structured_artifact_values(values: dict[str, Any]) -> dict[str, A
             "line_candidates": python_stacks.get("line_candidates") or [],
             "call_path_hotspots": python_stacks.get("call_path_hotspots") or [],
             "context": {"collection_mode": "stack_sampling"},
-        })
+        }
+        existing_depth = normalized.get("depth_evidence_json")
+        if not isinstance(existing_depth, dict):
+            existing_depth = {}
+        for key, value in python_depth.items():
+            if not existing_depth.get(key) and value:
+                existing_depth[key] = value
+        normalized["depth_evidence_json"] = existing_depth
     heap_profile = normalized.get("python_heap_profile_json")
     if isinstance(heap_profile, dict) and "top_json" not in normalized:
         heap_hotspots = heap_profile.get("retained_allocation_hotspots") or heap_profile.get("allocation_hotspots") or []
@@ -5371,7 +5441,7 @@ def _normalize_structured_artifact_values(values: dict[str, Any]) -> dict[str, A
     go_heap_profile = normalized.get("go_heap_profile_json")
     if isinstance(go_heap_profile, dict):
         hotspots = go_heap_profile.get("hotspots") if isinstance(go_heap_profile.get("hotspots"), list) else []
-        if "top_json" not in normalized:
+        if not isinstance(normalized.get("top_json"), list) or not normalized.get("top_json"):
             normalized["top_json"] = [
                 {
                     "name": item.get("function"),
@@ -5384,7 +5454,7 @@ def _normalize_structured_artifact_values(values: dict[str, Any]) -> dict[str, A
                 for item in hotspots
                 if isinstance(item, dict)
             ]
-        normalized.setdefault("depth_evidence_json", {
+        go_depth = {
             "stack_samples": [
                 {
                     "hot_frame": item.get("function"),
@@ -5402,15 +5472,30 @@ def _normalize_structured_artifact_values(values: dict[str, Any]) -> dict[str, A
             ],
             "line_candidates": go_heap_profile.get("line_candidates") or [],
             "context": {"collection_mode": "go_heap_profile"},
-        })
+        }
+        existing_depth = normalized.get("depth_evidence_json")
+        if not isinstance(existing_depth, dict):
+            existing_depth = {}
+        for key, value in go_depth.items():
+            if not existing_depth.get(key) and value:
+                existing_depth[key] = value
+        normalized["depth_evidence_json"] = existing_depth
     trace_profile = normalized.get("trace_endpoint_profile_json")
     if isinstance(trace_profile, dict):
-        normalized.setdefault("top_json", trace_profile.get("top_functions") or [])
-        normalized.setdefault("depth_evidence_json", {
+        if not isinstance(normalized.get("top_json"), list) or not normalized.get("top_json"):
+            normalized["top_json"] = trace_profile.get("top_functions") or []
+        trace_depth = {
             "stack_samples": trace_profile.get("call_path_hotspots") or [],
             "context": trace_profile.get("target") or {},
             "call_path_hotspots": trace_profile.get("call_path_hotspots") or [],
-        })
+        }
+        existing_depth = normalized.get("depth_evidence_json")
+        if not isinstance(existing_depth, dict):
+            existing_depth = {}
+        for key, value in trace_depth.items():
+            if not existing_depth.get(key) and value:
+                existing_depth[key] = value
+        normalized["depth_evidence_json"] = existing_depth
     if "top_json" not in normalized and "continuous_top_json" in normalized:
         normalized["top_json"] = normalized["continuous_top_json"]
     if "top_json" not in normalized and isinstance(normalized.get("off_cpu_wait_json"), dict):
@@ -6603,17 +6688,25 @@ def _build_session_controlled_ai_tree(
     primary_anchor_origin = str(
         primary_anchor.get("origin_parent_candidate_id") or ""
     ).strip()
-    has_verified_line_anchor = bool(
+    has_line_anchor_candidate = bool(
         final_level == "line"
         and primary_anchor.get("source_context_hash")
         and primary_anchor.get("source_revision")
         and primary_anchor.get("file")
         and int(primary_anchor.get("line") or 0) > 0
     )
+    has_verified_line_anchor = bool(
+        has_line_anchor_candidate
+        and (
+            primary_anchor.get("runtime_line_candidates")
+            or cluster_assessment.get("conclusion_eligible")
+        )
+    )
     line_anchor_eligibility = _line_anchor_eligibility_summary(
         primary_anchor,
         has_verified_line_anchor=has_verified_line_anchor,
         source_snapshot_hashes=source_snapshot_hashes or [],
+        origin_parent_candidate_id=primary_anchor_origin or coarse_id,
     )
 
     # A verified source line is itself a base localization node. Mechanism
@@ -6628,7 +6721,7 @@ def _build_session_controlled_ai_tree(
             and node.candidate_id not in OBSERVATION_CANDIDATE_IDS
         )
     }
-    if has_verified_line_anchor:
+    if has_line_anchor_candidate:
         line_candidate_id = _verified_line_candidate_id(
             primary_anchor,
             str(cluster_assessment.get("classification") or "source"),
@@ -8904,6 +8997,7 @@ def _line_anchor_eligibility_summary(
     *,
     has_verified_line_anchor: bool,
     source_snapshot_hashes: list[str],
+    origin_parent_candidate_id: str | None = None,
 ) -> dict[str, Any]:
     anchor = anchor if isinstance(anchor, dict) else {}
     file_name = str(anchor.get("file") or "").replace("\\", "/")
@@ -8915,15 +9009,30 @@ def _line_anchor_eligibility_summary(
     checks = {
         "source_revision": bool(anchor.get("source_revision")),
         "source_context_hash": bool(anchor.get("source_context_hash") or source_snapshot_hashes),
+        "source_context_valid": bool(anchor.get("source_context_hash") or source_snapshot_hashes),
         "file": bool(file_name),
         "positive_line": line_number > 0,
         "runtime_line_candidate": bool(runtime_candidates),
         "runtime_source_match": has_verified_line_anchor,
+        "parent_provenance": bool(origin_parent_candidate_id),
     }
+    failure_reasons: list[str] = []
+    if not runtime_candidates:
+        failure_reasons.append("runtime_anchor_missing")
+        if anchor.get("source_context_hash") or source_snapshot_hashes:
+            failure_reasons.append("source_snapshot_valid_but_no_runtime_line")
+    if runtime_candidates and not has_verified_line_anchor:
+        failure_reasons.append("runtime_source_match_failed")
+    if not (anchor.get("source_context_hash") or source_snapshot_hashes):
+        failure_reasons.append("source_context_invalid")
+    if not origin_parent_candidate_id:
+        failure_reasons.append("parent_provenance_missing")
     if has_verified_line_anchor:
         return {
             "status": "verified",
+            "eligibility_status": "verified",
             "checks": checks,
+            "failure_reasons": [],
             "file": file_name,
             "line": line_number,
             "reason": "运行时行候选、源码 revision、文件和正行号已形成可验证锚点。",
@@ -8941,7 +9050,9 @@ def _line_anchor_eligibility_summary(
         )
     return {
         "status": "blocked",
+        "eligibility_status": "not_verified",
         "checks": checks,
+        "failure_reasons": list(dict.fromkeys(failure_reasons)),
         "file": file_name,
         "line": line_number,
         "runtime_candidates": runtime_candidates[:12],
@@ -9656,12 +9767,23 @@ def _assessment_location_fields(
     session: dict[str, Any],
 ) -> dict[str, Any]:
     classification = str(assessment.get("classification") or "")
+    anchor = assessment.get("primary_anchor")
+    anchor_level = (
+        str(anchor.get("supported_level") or "").strip()
+        if isinstance(anchor, dict)
+        else ""
+    )
+    supported_level = (
+        anchor_level
+        if anchor_level in _INVESTIGATION_LEVEL_ORDER
+        else ""
+    )
     if classification == "runtime_stall":
         return {
             "location_type": "self",
             "domain_type": "runtime",
             "root_entity": _target_service(session) or "target_process",
-            "max_supported_level": "process",
+            "max_supported_level": supported_level or "process",
         }
     if classification == "downstream_dependency":
         root_entity = _dependency_root_entity(session)
@@ -9692,7 +9814,7 @@ def _assessment_location_fields(
             "location_type": "process",
             "domain_type": "process_pressure",
             "root_entity": _target_service(session) or "target_process",
-            "max_supported_level": "process",
+            "max_supported_level": supported_level or "process",
         }
     return {}
 

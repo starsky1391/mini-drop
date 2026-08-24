@@ -103,6 +103,7 @@ export default function AIDiagnosis() {
   const [agents, setAgents] = useState([]);
   const [sessions, setSessions] = useState([]);
   const [selected, setSelected] = useState(null);
+  const [createOpen, setCreateOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [validationRunning, setValidationRunning] = useState(false);
   const [error, setError] = useState("");
@@ -190,6 +191,7 @@ export default function AIDiagnosis() {
         budget_profile: values.budget_profile,
       });
       setSelected(detail);
+      setCreateOpen(false);
       navigate(`/ai-diagnosis/${detail.diagnosis_id}`, { replace: false });
       await refreshSessions();
       message.success("诊断会话已创建；系统会自动执行已注册采集器，无法自动完成的事项会单独提示");
@@ -294,10 +296,13 @@ export default function AIDiagnosis() {
 
   return (
     <Space className="ai-diagnosis-page" direction="vertical" size="large" style={{ width: "100%" }}>
-      <Space>
+      <Space wrap>
         <RobotOutlined style={{ fontSize: 22, color: "#722ed1" }} />
         <Typography.Title level={4} style={{ margin: 0 }}>AI 集群诊断</Typography.Title>
         <Tag color="purple">证据驱动</Tag>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+          发起诊断
+        </Button>
         <Button
           size="small"
           icon={<ExperimentOutlined />}
@@ -315,11 +320,19 @@ export default function AIDiagnosis() {
       />
       {error && <Alert type="error" showIcon closable message={error} onClose={() => setError("")} />}
 
-      <Row gutter={[16, 16]}>
-        {!selected && (
-          <Col xs={24} xl={14}>
-          <Card title="发起诊断" extra={<SafetyCertificateOutlined style={{ color: "#52c41a" }} />}>
-            <Form
+      <Modal
+        title="发起 AI 集群诊断"
+        open={createOpen}
+        onCancel={() => {
+          if (!loading) setCreateOpen(false);
+        }}
+        footer={null}
+        width={960}
+        maskClosable={!loading}
+        styles={{ body: { maxHeight: "70vh", overflowY: "auto" } }}
+      >
+        <Card title="发起诊断" extra={<SafetyCertificateOutlined style={{ color: "#52c41a" }} />}>
+          <Form
               form={form}
               layout="vertical"
               initialValues={{
@@ -499,24 +512,17 @@ export default function AIDiagnosis() {
                 )}
               </Form.List>
               <Button type="primary" htmlType="submit" loading={loading} icon={<RobotOutlined />}>
-                创建诊断会话
+                开始诊断
               </Button>
-            </Form>
-          </Card>
-        </Col>
-        )}
+          </Form>
+        </Card>
+      </Modal>
 
-        <Col xs={24} xl={selected ? 24 : 10}>
-          <Card
-            title={selected ? "最近会话（已隐藏新建表单）" : "最近会话"}
-            extra={(
-              <Space>
-                {selected && <Button size="small" onClick={() => setSelected(null)}>新建诊断</Button>}
-                <Button size="small" icon={<ReloadOutlined />} onClick={refreshSessions}>刷新</Button>
-              </Space>
-            )}
-            styles={{ body: { maxHeight: 470, overflow: "auto" } }}
-          >
+      <Card
+        title="最近会话"
+        extra={<Button size="small" icon={<ReloadOutlined />} onClick={refreshSessions}>刷新</Button>}
+        styles={{ body: { maxHeight: 360, overflow: "auto" } }}
+      >
             <List
               dataSource={sessions}
               locale={{ emptyText: "暂无 AI 诊断会话" }}
@@ -530,11 +536,9 @@ export default function AIDiagnosis() {
               )}
             />
           </Card>
-        </Col>
-      </Row>
 
       <Spin spinning={loading}>
-        {selected ? <DiagnosisDetail detail={selected} /> : <Card><Empty description="创建或打开一个诊断会话以查看假设、探针和证据" /></Card>}
+        {selected ? <DiagnosisDetail detail={selected} /> : <Card><Empty description="发起或打开一个诊断会话，优先查看结论与 AI 树" /></Card>}
       </Spin>
     </Space>
   );
@@ -681,22 +685,6 @@ function DiagnosisDetail({ detail }) {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-      <Card title={<Space>诊断详情 <Status value={detail.status} /></Space>}>
-          <Descriptions size="small" column={{ xs: 1, md: 3 }}>
-          <Descriptions.Item label="诊断 ID"><Typography.Text copyable>{detail.diagnosis_id}</Typography.Text></Descriptions.Item>
-          <Descriptions.Item label="目标服务">{detail.target_scope?.target_service || "未解析"}</Descriptions.Item>
-          <Descriptions.Item label="拓扑快照">{detail.topology_snapshot_id}</Descriptions.Item>
-          <Descriptions.Item label="症状">{detail.normalized_intent?.symptom}</Descriptions.Item>
-          <Descriptions.Item label="模型">{detail.model_version}</Descriptions.Item>
-          <Descriptions.Item label="规划器">{detail.planner_version}</Descriptions.Item>
-          <Descriptions.Item label="采集预算">
-            {usedBudget}s / {totalBudget}s
-          </Descriptions.Item>
-          <Descriptions.Item label="初始采集上限">{initialBudget}s</Descriptions.Item>
-          <Descriptions.Item label="Follow-up 保留">{followUpReserve}s</Descriptions.Item>
-        </Descriptions>
-      </Card>
-
       {conclusion && (
         <Card title="最新结论">
           <Alert
@@ -1309,7 +1297,27 @@ function DiagnosisDetail({ detail }) {
       )}
 
       <Collapse
+        defaultActiveKey={[]}
         items={[{
+          key: "session-meta",
+          label: "诊断元信息",
+          children: (
+            <Descriptions size="small" column={{ xs: 1, md: 3 }}>
+              <Descriptions.Item label="诊断 ID"><Typography.Text copyable>{detail.diagnosis_id}</Typography.Text></Descriptions.Item>
+              <Descriptions.Item label="状态"><Status value={detail.status} /></Descriptions.Item>
+              <Descriptions.Item label="目标服务">{detail.target_scope?.target_service || "未解析"}</Descriptions.Item>
+              <Descriptions.Item label="拓扑快照">{detail.topology_snapshot_id}</Descriptions.Item>
+              <Descriptions.Item label="症状">{detail.normalized_intent?.symptom}</Descriptions.Item>
+              <Descriptions.Item label="模型">{detail.model_version}</Descriptions.Item>
+              <Descriptions.Item label="规划器">{detail.planner_version}</Descriptions.Item>
+              <Descriptions.Item label="采集预算">
+                {usedBudget}s / {totalBudget}s
+              </Descriptions.Item>
+              <Descriptions.Item label="初始采集上限">{initialBudget}s</Descriptions.Item>
+              <Descriptions.Item label="Follow-up 保留">{followUpReserve}s</Descriptions.Item>
+            </Descriptions>
+          ),
+        }, {
           key: "diagnostic-details",
           label: `证据、采集与调试明细（证据 ${evidence.length} 条，探针 ${probes.length} 个，子任务 ${asArray(detail.child_task_ids).length} 个）`,
           children: (

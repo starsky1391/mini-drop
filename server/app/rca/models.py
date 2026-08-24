@@ -383,6 +383,10 @@ class AITreeCandidateNode(BaseModel):
     boundary_message: str = ""
     blocked_probe: str = ""
     evidence_refs: list[str] = Field(default_factory=list)
+    trigger_refs: list[str] = Field(default_factory=list)
+    mechanism_refs: list[str] = Field(default_factory=list)
+    impact_refs: list[str] = Field(default_factory=list)
+    source_relation_refs: list[str] = Field(default_factory=list)
     self_challenge: AITreeSelfChallenge = Field(default_factory=AITreeSelfChallenge)
 
     @model_validator(mode="before")

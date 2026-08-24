@@ -182,6 +182,7 @@ def build_scenario_facts(evidence: dict[str, Any]) -> ScenarioFacts:
             status="observed",
             statement="工业运行时栈与已验证源码位置建立调用映射。",
         ))
+    _append_runtime_call_path_relations(evidence, relations)
 
     if not signals:
         missing.append("symptom_signal")
@@ -263,6 +264,7 @@ def qualify_attribution(
     impact_refs: list[str] | None = None,
     disconfirming_evidence_refs: list[str] | None = None,
     ai_candidate_ids: list[str] | None = None,
+    ai_candidates: list[dict[str, Any]] | None = None,
 ) -> QualificationResult:
     facts = graph.facts
     cost_refs = [item.candidate_id for item in facts.cost_centers]
@@ -377,7 +379,28 @@ def qualify_attribution(
             supported_level=supported_level,
             reason="存在同窗反证，不能宣布正式根因。",
         )
-    eligible_candidate_ids = _unique(ai_candidate_ids or [])
+    candidate_gate_failures = _validate_ai_candidates(
+        graph,
+        ai_candidate_ids=ai_candidate_ids or [],
+        ai_candidates=ai_candidates or [],
+        available_evidence_refs=set(evidence_refs),
+        supported_level=supported_level,
+        trigger_refs=triggers,
+        mechanism_refs=mechanisms,
+        impact_refs=impacts,
+        source_relation_refs=source_refs,
+    )
+    failed_ids = {
+        str(item.get("candidate_id") or "")
+        for item in candidate_gate_failures
+        if str(item.get("candidate_id") or "")
+    }
+    eligible_candidate_ids = _unique([
+        str(item.get("candidate_id") or "")
+        for item in (ai_candidates or [])
+        if isinstance(item, dict)
+        and str(item.get("candidate_id") or "") not in failed_ids
+    ])
     if not eligible_candidate_ids:
         return QualificationResult(
             level="L2",
@@ -398,6 +421,7 @@ def qualify_attribution(
             candidate_ids=candidate_ids,
             supported_level=supported_level,
             missing_evidence=["eligible_ai_candidate"],
+            candidate_gate_failures=candidate_gate_failures,
             reason="事实、影响和源码关系已经闭合为机制假设，但正式根因必须由受控 AI 候选承接。",
         )
     return QualificationResult(
@@ -418,9 +442,104 @@ def qualify_attribution(
         evidence_refs=evidence_refs,
         candidate_ids=candidate_ids,
         eligible_candidate_ids=eligible_candidate_ids,
+        candidate_gate_failures=candidate_gate_failures,
         supported_level=supported_level,
         reason="同窗症状、成本中心、触发、机制、影响和已验证源码关系均有真实证据引用。",
     )
+
+
+def _validate_ai_candidates(
+    graph: AttributionGraph,
+    *,
+    ai_candidate_ids: list[str],
+    ai_candidates: list[dict[str, Any]],
+    available_evidence_refs: set[str],
+    supported_level: AttributionLevel,
+    trigger_refs: list[str],
+    mechanism_refs: list[str],
+    impact_refs: list[str],
+    source_relation_refs: list[str],
+) -> list[dict[str, Any]]:
+    """Require an actual guarded AI record before allowing L3 promotion."""
+    records = [
+        item
+        for item in ai_candidates
+        if isinstance(item, dict) and str(item.get("candidate_id") or "").strip()
+    ]
+    requested_ids = _unique([
+        *ai_candidate_ids,
+        *(str(item.get("candidate_id") or "") for item in records),
+    ])
+    failed: list[dict[str, Any]] = []
+    level_order = {key: value for key, value in _LEVEL_ORDER.items()}
+    for candidate_id in requested_ids:
+        record = next(
+            (
+                item
+                for item in records
+                if str(item.get("candidate_id") or "") == candidate_id
+            ),
+            None,
+        )
+        reasons: list[str] = []
+        if record is None:
+            reasons.append("candidate_record_missing")
+        else:
+            generated_by = str(
+                record.get("generated_by")
+                or record.get("source")
+                or ""
+            ).lower()
+            if generated_by not in {"ai", "ai_candidate", "ai_guarded", "llm"}:
+                reasons.append("candidate_not_ai_generated")
+            for field in ("claim", "mechanism", "target"):
+                if not str(record.get(field) or "").strip():
+                    reasons.append(f"{field}_missing")
+            refs = _unique([
+                str(ref)
+                for ref in record.get("evidence_refs", [])
+                if str(ref)
+            ])
+            if not refs:
+                reasons.append("candidate_evidence_refs_missing")
+            elif any(ref not in available_evidence_refs for ref in refs):
+                reasons.append("candidate_evidence_ref_invalid")
+            if str(record.get("causal_status") or "") != "supported":
+                reasons.append("causal_status_not_supported")
+            if str(record.get("decision") or "") != "conclude":
+                reasons.append("decision_not_conclude")
+            level = str(record.get("supported_level") or "resource")
+            if level not in level_order:
+                reasons.append("supported_level_invalid")
+            elif level_order[level] > level_order.get(supported_level, 0):
+                reasons.append("supported_level_exceeds_graph")
+            if not (
+                str(record.get("origin_parent_candidate_id") or "").strip()
+                or record.get("parent_candidate_ids")
+            ):
+                reasons.append("parent_provenance_missing")
+            relation_refs = {
+                "trigger": record.get("trigger_refs") or [],
+                "mechanism": record.get("mechanism_refs") or [],
+                "impact": record.get("impact_refs") or [],
+                "source_relation": record.get("source_relation_refs") or [],
+            }
+            if not any(relation_refs.values()):
+                reasons.append("causal_chain_refs_missing")
+            if relation_refs["trigger"] and not set(relation_refs["trigger"]).intersection(trigger_refs):
+                reasons.append("trigger_relation_missing")
+            if relation_refs["mechanism"] and not set(relation_refs["mechanism"]).intersection(mechanism_refs):
+                reasons.append("mechanism_relation_missing")
+            if relation_refs["impact"] and not set(relation_refs["impact"]).intersection(impact_refs):
+                reasons.append("impact_relation_missing")
+            if relation_refs["source_relation"] and not set(relation_refs["source_relation"]).intersection(source_relation_refs):
+                reasons.append("source_relation_missing")
+        if reasons:
+            failed.append({
+                "candidate_id": candidate_id,
+                "reasons": list(dict.fromkeys(reasons)),
+            })
+    return failed
 
 
 def _build_graph_context(
@@ -726,6 +845,7 @@ def _quality_entries(evidence: dict[str, Any], window: dict[str, Any]) -> list[E
 
 def _line_candidates(evidence: dict[str, Any]) -> list[dict[str, Any]]:
     result = []
+    runtime_locations = _runtime_location_keys(evidence)
     source = evidence.get("source_snapshot_json")
     if isinstance(source, dict):
         for key in ("verified_line_candidates", "line_candidates", "candidates"):
@@ -734,9 +854,29 @@ def _line_candidates(evidence: dict[str, Any]) -> list[dict[str, Any]]:
                 continue
             for item in values:
                 if isinstance(item, dict):
+                    file_path = str(item.get("file") or item.get("file_path") or "")
+                    line = _positive_int(item.get("line") or item.get("focus_line"))
+                    explicit_runtime = bool(
+                        item.get("runtime_verified")
+                        or item.get("runtime_file")
+                        or item.get("runtime_line")
+                    )
+                    runtime_match = (
+                        explicit_runtime
+                        or any(
+                            _source_paths_match(file_path, runtime_file)
+                            and line == runtime_line
+                            for runtime_file, runtime_line in runtime_locations
+                        )
+                    )
+                    if not runtime_match:
+                        continue
                     result.append({
                         **item,
-                        "verified": item.get("eligibility_status") in {None, "", "verified"} or item.get("verified") is True,
+                        "verified": (
+                            item.get("eligibility_status") in {None, "", "verified"}
+                            or item.get("verified") is True
+                        ),
                         "evidence_ref": item.get("evidence_ref") or f"source_snapshot.{key}",
                     })
             if result:
@@ -745,6 +885,100 @@ def _line_candidates(evidence: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(index, dict) and isinstance(index.get("line_candidates"), list):
         result.extend(item for item in index["line_candidates"] if isinstance(item, dict))
     return result
+
+
+def _runtime_location_keys(evidence: dict[str, Any]) -> set[tuple[str, int]]:
+    result: set[tuple[str, int]] = set()
+    containers: list[Any] = [
+        evidence.get("top_functions"),
+        evidence.get("call_path_hotspots"),
+        evidence.get("line_candidates"),
+    ]
+    for key in ("depth_evidence_json", "python_stack_samples_json", "go_heap_profile_json"):
+        payload = evidence.get(key)
+        if not isinstance(payload, dict):
+            continue
+        containers.extend(
+            payload.get(list_key)
+            for list_key in (
+                "line_candidates",
+                "top_functions",
+                "call_path_hotspots",
+                "hotspots",
+                "stack_samples",
+            )
+        )
+    for container in containers:
+        if not isinstance(container, list):
+            continue
+        for item in container:
+            if not isinstance(item, dict):
+                continue
+            file_path = str(item.get("file") or item.get("file_path") or "")
+            line = _positive_int(item.get("line") or item.get("focus_line"))
+            if file_path and line:
+                result.add((file_path.replace("\\", "/"), line))
+    return result
+
+
+def _source_paths_match(left: str, right: str) -> bool:
+    left_text = str(left or "").replace("\\", "/").lstrip("./")
+    right_text = str(right or "").replace("\\", "/").lstrip("./")
+    if not left_text or not right_text:
+        return False
+    return left_text == right_text or left_text.endswith("/" + right_text) or right_text.endswith("/" + left_text)
+
+
+def _append_runtime_call_path_relations(
+    evidence: dict[str, Any],
+    relations: list[ObservedRelation],
+) -> None:
+    containers: list[Any] = [evidence.get("call_path_hotspots")]
+    for key in ("depth_evidence_json", "python_stack_samples_json", "trace_endpoint_profile_json"):
+        payload = evidence.get(key)
+        if isinstance(payload, dict):
+            containers.append(payload.get("call_path_hotspots"))
+    seen = {
+        (item.relation, item.source_ref, item.target_ref, tuple(item.evidence_refs))
+        for item in relations
+    }
+    for container in containers:
+        if not isinstance(container, list):
+            continue
+        for index, item in enumerate(container):
+            if not isinstance(item, dict):
+                continue
+            path = item.get("call_path")
+            if isinstance(path, str):
+                path = [part.strip() for part in path.split(";") if part.strip()]
+            if not isinstance(path, list):
+                continue
+            path = [str(part).strip() for part in path if str(part).strip()]
+            if len(path) < 2:
+                continue
+            evidence_ref = str(
+                item.get("evidence_ref")
+                or f"evidence_index.call_path_hotspots[{index}]"
+            )
+            for left, right in zip(path, path[1:]):
+                relation = ObservedRelation(
+                    relation_id=f"relation:runtime-calls:{left}:{right}:{evidence_ref}",
+                    relation="calls",
+                    source_ref=left,
+                    target_ref=right,
+                    evidence_refs=[evidence_ref],
+                    status="observed",
+                    statement=f"工业采集器在同窗调用路径中观察到 {left} -> {right}。",
+                )
+                key = (
+                    relation.relation,
+                    relation.source_ref,
+                    relation.target_ref,
+                    tuple(relation.evidence_refs),
+                )
+                if key not in seen:
+                    relations.append(relation)
+                    seen.add(key)
 
 
 def _node_ref(node: Any) -> str:

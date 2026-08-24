@@ -181,6 +181,10 @@ def test_session_candidate_review_accepts_only_real_refs_and_canonical_parents()
             "decision": "needs_more_evidence",
             "causal_status": "needs_more_evidence",
             "evidence_refs": ["ev_top"],
+            "trigger_refs": ["ev_top"],
+            "mechanism_refs": ["ev_top"],
+            "impact_refs": ["ev_top"],
+            "source_relation_refs": ["ev_top"],
             "parent_candidate_ids": [parent_id],
         }],
     }
@@ -197,6 +201,7 @@ def test_session_candidate_review_accepts_only_real_refs_and_canonical_parents()
     assert result["ai_review_status"] == "succeeded"
     assert result["candidate_proposals"][0]["candidate_id"] == "ai_candidate_rule_compile"
     assert result["candidate_proposals"][0]["parent_candidate_ids"] == [parent_id]
+    assert result["candidate_proposals"][0]["source_relation_refs"] == ["ev_top"]
 
 
 def test_session_candidate_review_rejects_first_round_level_jump_and_line():

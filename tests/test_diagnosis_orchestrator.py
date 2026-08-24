@@ -69,6 +69,75 @@ def test_runtime_stack_sample_line_candidates_skip_runtime_frames():
     }]
 
 
+def test_python_stack_artifact_fills_empty_depth_evidence_without_overwriting_existing_values():
+    normalized = orchestrator_module._normalize_structured_artifact_values({
+        "depth_evidence_json": {},
+        "python_stack_samples_json": {
+            "top_functions": [{
+                "name": "_PyEval_EvalFrameDefault",
+                "samples": 20,
+            }],
+            "line_candidates": [{
+                "file": "/srv/app/orders.py",
+                "line": 42,
+                "symbol": "calculate_total",
+                "evidence_ref": "ev:stack",
+            }],
+            "stack_samples": [{
+                "call_path": ["worker", "calculate_total"],
+                "file": "/srv/app/orders.py",
+                "line": 42,
+            }],
+        },
+    })
+
+    assert normalized["top_json"][0]["name"] == "_PyEval_EvalFrameDefault"
+    assert normalized["depth_evidence_json"]["line_candidates"][0]["line"] == 42
+    assert normalized["depth_evidence_json"]["stack_samples"][0]["call_path"] == "worker;calculate_total"
+
+
+def test_assessment_location_fields_preserve_runtime_anchor_depth():
+    fields = orchestrator_module._assessment_location_fields(
+        {
+            "classification": "self_code_or_process_pressure",
+            "primary_anchor": {"supported_level": "call_path"},
+        },
+        [],
+        {"target_scope": {}},
+    )
+
+    assert fields["max_supported_level"] == "call_path"
+
+
+def test_line_anchor_eligibility_reports_structured_failure_reasons():
+    blocked = orchestrator_module._line_anchor_eligibility_summary(
+        {"file": "app.py", "line": 42},
+        has_verified_line_anchor=False,
+        source_snapshot_hashes=[],
+        origin_parent_candidate_id=None,
+    )
+
+    assert blocked["eligibility_status"] == "not_verified"
+    assert "runtime_anchor_missing" in blocked["failure_reasons"]
+    assert "source_context_invalid" in blocked["failure_reasons"]
+    assert "parent_provenance_missing" in blocked["failure_reasons"]
+
+    mismatch = orchestrator_module._line_anchor_eligibility_summary(
+        {
+            "file": "app.py",
+            "line": 42,
+            "source_context_hash": "hash",
+            "source_revision": "rev",
+            "runtime_line_candidates": [{"file": "other.py", "line": 9}],
+        },
+        has_verified_line_anchor=False,
+        source_snapshot_hashes=["hash"],
+        origin_parent_candidate_id="coarse-root",
+    )
+
+    assert mismatch["failure_reasons"] == ["runtime_source_match_failed"]
+
+
 def test_orchestrator_never_merges_python_scenario_gate_clusters():
     ai_cluster = RootCauseCluster(
         cluster_id="rc-ai",

@@ -193,6 +193,7 @@ class QualificationResult(BaseModel):
     disconfirming_evidence_refs: list[str] = Field(default_factory=list)
     candidate_ids: list[str] = Field(default_factory=list)
     eligible_candidate_ids: list[str] = Field(default_factory=list)
+    candidate_gate_failures: list[dict[str, Any]] = Field(default_factory=list)
     supported_level: AttributionLevel = "resource"
     reason: str = ""
 

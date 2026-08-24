@@ -34,6 +34,7 @@ def build_session_qualification(
     *,
     base: dict[str, Any] | None = None,
     retained_conclusion: dict[str, Any] | None = None,
+    attribution_qualification: dict[str, Any] | QualificationResult | None = None,
 ) -> dict[str, Any]:
     """Derive one session qualification from the emitted AI tree and its clusters."""
     base = base if isinstance(base, dict) else {}
@@ -61,6 +62,22 @@ def build_session_qualification(
         candidate_id for candidate_id in eligible_ids
         if candidate_id in ai_candidate_ids
     ]
+    graph_result = None
+    if attribution_qualification is not None:
+        try:
+            graph_result = (
+                attribution_qualification
+                if isinstance(attribution_qualification, QualificationResult)
+                else QualificationResult.model_validate(attribution_qualification)
+            )
+        except Exception:
+            graph_result = None
+    if graph_result is not None:
+        graph_eligible_ids = set(graph_result.eligible_candidate_ids)
+        eligible_ids = [
+            candidate_id for candidate_id in eligible_ids
+            if candidate_id in graph_eligible_ids
+        ]
     evidence_refs = _unique([
         *(base.get("evidence_refs") or []),
         *(ref for cluster in clusters for ref in cluster.evidence_refs),
@@ -70,6 +87,8 @@ def build_session_qualification(
         *(base.get("missing_evidence") or []),
         *(item for cluster in clusters for item in cluster.residual_unknowns),
     ])
+    if graph_result is not None:
+        missing = _unique([*missing, *graph_result.missing_evidence])
     supported_level = _deepest_level([
         str(cluster.supported_level)
         for cluster in clusters
@@ -79,6 +98,29 @@ def build_session_qualification(
         for node in nodes
         if node.get("claim") and node.get("status") not in {"rejected", "contradicted"}
     ])
+    if graph_result is not None:
+        graph_result.candidate_ids = _unique([
+            *candidate_ids,
+            *graph_result.candidate_ids,
+        ])
+        graph_result.eligible_candidate_ids = eligible_ids
+        if graph_result.qualification == "formal_root_cause" and eligible_ids:
+            return graph_result.model_dump(mode="json")
+        if graph_result.qualification == "formal_root_cause":
+            graph_result.level = "L2"
+            graph_result.qualification = "mechanism_hypothesis"
+            graph_result.decision = "continue_probe"
+            graph_result.causal_status = "unproven"
+            graph_result.confidence = min(graph_result.confidence, 0.6)
+            graph_result.confidence_level = "中" if graph_result.confidence >= 0.5 else "低"
+            graph_result.missing_evidence = _unique([
+                *graph_result.missing_evidence,
+                "session_ai_candidate_cluster",
+            ])
+            graph_result.reason = (
+                "统一归因图已闭合，但当前 session tree 没有可承接正式根因的合格 AI 候选。"
+            )
+        return graph_result.model_dump(mode="json")
     if eligible_ids:
         confidence = max(
             (cluster.confidence for cluster in clusters if cluster.conclusion_eligible),
@@ -686,6 +728,10 @@ def collect_ai_gate_failures(
                 ai_node.self_challenge.why_this_claim.strip()
                 and ai_node.evidence_refs
             ),
+            "trigger_relation_refs": bool(ai_node.trigger_refs),
+            "mechanism_relation_refs": bool(ai_node.mechanism_refs),
+            "impact_relation_refs": bool(ai_node.impact_refs),
+            "source_relation_refs": bool(ai_node.source_relation_refs),
         }
         if not eligible or missing_parents:
             evidence_refs = _unique(ai_node.evidence_refs)

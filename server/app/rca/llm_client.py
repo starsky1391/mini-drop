@@ -489,6 +489,35 @@ def _initial_entry_boundary(
     return str(session_tree.final_supported_level if session_tree else "resource")
 
 
+def _attribution_relation_refs(fact_context: dict) -> set[str]:
+    """Collect relation/node IDs exposed by the structured attribution graph."""
+    result: set[str] = set()
+    facts = fact_context.get("facts") if isinstance(fact_context, dict) else []
+    if not isinstance(facts, list):
+        return result
+    for observation in facts:
+        if not isinstance(observation, dict):
+            continue
+        graph = observation.get("attribution_graph")
+        if not isinstance(graph, dict):
+            continue
+        graph_facts = graph.get("facts") if isinstance(graph.get("facts"), dict) else {}
+        for container, identifier in (
+            (graph_facts.get("trigger_candidates"), "candidate_id"),
+            (graph_facts.get("impact_candidates"), "candidate_id"),
+            (graph_facts.get("observed_relations"), "relation_id"),
+            (graph.get("source_relations"), "relation_id"),
+        ):
+            if not isinstance(container, list):
+                continue
+            result.update(
+                str(item.get(identifier) or "")
+                for item in container
+                if isinstance(item, dict) and item.get(identifier)
+            )
+    return result
+
+
 def generate_session_candidate_review(
     *,
     diagnosis_id: str,
@@ -519,6 +548,7 @@ def generate_session_candidate_review(
         if item.get(key)
     }
     initial_evidence_context = _initial_evidence_context(evidence_catalog, valid_refs)
+    relation_refs = _attribution_relation_refs(fact_context)
     base["initial_evidence_context"] = initial_evidence_context
     if not is_feature_enabled("rca"):
         return {
@@ -570,8 +600,11 @@ def generate_session_candidate_review(
                 "你是 Mini-Drop 首轮候选生成器，只输出 JSON。Analyzer 只提供事实、观察、定位边界和未证实提示；"
                 "你必须生成可证伪的 AI 候选，不能把 Analyzer hint 直接当成根因。"
                 "候选字段为 candidate_id、claim、mechanism、target、supported_level、decision、causal_status、"
-                "evidence_refs、missing_evidence、parent_candidate_ids、origin_parent_candidate_id、probe_requests、role。"
+                "evidence_refs、trigger_refs、mechanism_refs、impact_refs、source_relation_refs、"
+                "missing_evidence、parent_candidate_ids、origin_parent_candidate_id、probe_requests、role。"
                 "candidate_id 必须以 ai_candidate_ 开头；evidence_refs 只能使用 valid_evidence_refs；"
+                "trigger_refs、mechanism_refs、impact_refs、source_relation_refs 只能使用 fact_context 中已暴露的真实关系或节点 ID；"
+                "这些字段描述因果链引用，不是自由文本，缺失时只能停在机制假设而不能进入正式根因。"
                 "parent_candidate_ids 只能逐字选择 allowed_parent_candidate_ids 中的 canonical 基础节点；"
                 "orphan、observation、mechanism、boundary 节点不能作为首轮候选父节点；"
                 "origin_parent_candidate_id 必须是其中唯一来源父节点（只有一个父节点时可直接使用该节点）；"
@@ -610,6 +643,25 @@ def generate_session_candidate_review(
                     refs = [str(ref) for ref in item.get("evidence_refs", []) if str(ref)]
                     if any(ref not in valid_refs for ref in refs):
                         raise ValueError("candidate evidence_refs 不真实")
+                    relation_fields = {
+                        field: [
+                            str(ref)
+                            for ref in item.get(field, [])
+                            if str(ref)
+                        ]
+                        for field in (
+                            "trigger_refs",
+                            "mechanism_refs",
+                            "impact_refs",
+                            "source_relation_refs",
+                        )
+                    }
+                    if any(
+                        ref not in relation_refs and ref not in valid_refs
+                        for refs_for_field in relation_fields.values()
+                        for ref in refs_for_field
+                    ):
+                        raise ValueError("candidate 因果关系引用不真实")
                     parent_ids = [str(value) for value in item.get("parent_candidate_ids", []) if str(value)]
                     if any(parent_id not in known_candidate_ids for parent_id in parent_ids):
                         raise ValueError("candidate parent_candidate_ids 不真实")
@@ -687,6 +739,7 @@ def generate_session_candidate_review(
                         "decision": decision,
                         "causal_status": causal_status,
                         "evidence_refs": refs,
+                        **relation_fields,
                         "missing_evidence": [str(value) for value in item.get("missing_evidence", []) if str(value)],
                         "parent_candidate_ids": parent_ids,
                         "origin_parent_candidate_id": origin_parent or None,
