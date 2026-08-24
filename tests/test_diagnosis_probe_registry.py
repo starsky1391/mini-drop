@@ -93,3 +93,38 @@ def test_legacy_hypotheses_are_exposed_only_as_distinguishing_hints():
     )
     assert manifest_item["may_help_distinguish"] == probe.may_help_distinguish
     assert manifest_item["cannot_establish"]
+
+
+def test_every_manifest_entry_has_capability_and_quality_contract():
+    manifest = build_probe_manifest()
+    required_keys = {
+        "probe_id",
+        "evidence_family",
+        "name",
+        "purpose",
+        "can_answer",
+        "cannot_establish",
+        "produces",
+        "input_requirements",
+        "quality_gate",
+        "risk_level",
+        "max_duration_seconds",
+        "output_contract",
+        "may_help_distinguish",
+    }
+    for item in manifest["available_probes"]:
+        assert required_keys <= set(item)
+        assert item["probe_id"]
+        assert item["evidence_family"]
+        assert item["can_answer"]
+        assert item["cannot_establish"]
+        assert item["produces"]
+        assert item["input_requirements"]
+        assert item["quality_gate"]["same_target_required"] is True
+        assert item["quality_gate"]["same_window_required"] is True
+        assert item["quality_gate"]["empty_window_is_invalid"] is True
+        assert item["output_contract"].endswith("_json")
+        assert item["auto_executable_when_policy_all_registered"] is (
+            item["risk_level"] in {"R0", "R1", "R2"}
+        )
+        assert "applicable_hypotheses" not in item

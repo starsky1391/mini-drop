@@ -252,6 +252,66 @@ def test_source_relations_keep_query_revision_and_explicit_anchors():
     assert mechanism_relation.target_anchor["line"] == 43
 
 
+def test_qualification_collects_nested_fact_refs_without_top_level_ref_list():
+    graph = _closed_graph("nested-ref")
+    graph = graph.model_copy(update={
+        "facts": graph.facts.model_copy(update={"evidence_refs": []}),
+    })
+    qualification = qualify_attribution(
+        graph,
+        ai_candidates=[{
+            "candidate_id": "ai_candidate_nested_refs",
+            "generated_by": "ai_guarded",
+            "claim": "输入放大了 worker 的计算成本。",
+            "mechanism": "input_cardinality_amplification",
+            "target": "worker",
+            "supported_level": "line",
+            "evidence_refs": ["ev:runtime", "ev:source", "ev:impact"],
+            "causal_status": "supported",
+            "decision": "conclude",
+            "parent_candidate_ids": ["cost:line:0"],
+            "cost_center_refs": ["cost:line:0"],
+            "trigger_refs": ["trigger:input"],
+            "mechanism_refs": ["source:mechanism:0:0"],
+            "impact_refs": ["impact:latency"],
+            "source_relation_refs": ["source:mechanism:0:0"],
+        }],
+    )
+
+    assert qualification.qualification == "formal_root_cause"
+    assert {"ev:runtime", "ev:source", "ev:impact"} <= set(qualification.evidence_refs)
+
+
+def test_explicit_relation_refs_cannot_bypass_the_current_graph():
+    graph = _closed_graph("relation-boundary")
+    qualification = qualify_attribution(
+        graph,
+        trigger_refs=["trigger:not-in-graph"],
+        mechanism_refs=["source:mechanism:0:0"],
+        impact_refs=["impact:latency"],
+        ai_candidates=[{
+            "candidate_id": "ai_candidate_invalid_relation",
+            "generated_by": "ai_guarded",
+            "claim": "候选试图引用不存在的触发关系。",
+            "mechanism": "open_mechanism",
+            "target": "worker",
+            "supported_level": "line",
+            "evidence_refs": ["ev:runtime", "ev:source", "ev:impact"],
+            "causal_status": "supported",
+            "decision": "conclude",
+            "parent_candidate_ids": ["cost:line:0"],
+            "cost_center_refs": ["cost:line:0"],
+            "trigger_refs": ["trigger:not-in-graph"],
+            "mechanism_refs": ["source:mechanism:0:0"],
+            "impact_refs": ["impact:latency"],
+            "source_relation_refs": ["source:mechanism:0:0"],
+        }],
+    )
+
+    assert qualification.qualification != "formal_root_cause"
+    assert "trigger_relation_invalid:trigger:not-in-graph" in qualification.missing_evidence
+
+
 def test_one_cost_center_can_keep_multiple_open_mechanisms():
     graph = _closed_graph("pandas")
     candidates = [

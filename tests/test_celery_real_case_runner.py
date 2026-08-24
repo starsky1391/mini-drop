@@ -139,6 +139,7 @@ def test_pair_stage_modes_create_only_one_diagnosis(tmp_path, monkeypatch):
     assert fixed["diagnosis_mode"] == "none"
     assert "diagnosis" not in fixed
     assert vulnerable["runtime_manifest"]["workload"] == fixed["runtime_manifest"]["workload"]
+    assert vulnerable["runtime_manifest"]["workload"]["duration_sec"] == 60
 
 
 def test_diagnosis_timeout_preserves_id_and_latest_detail(monkeypatch):

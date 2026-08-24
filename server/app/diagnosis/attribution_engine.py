@@ -336,18 +336,99 @@ def qualify_attribution(
 ) -> QualificationResult:
     facts = graph.facts
     cost_refs = [item.candidate_id for item in facts.cost_centers]
-    evidence_refs = _unique([
-        *facts.evidence_refs,
-        *(ref for item in graph.source_relations for ref in item.evidence_refs),
-    ])
-    triggers = _unique(trigger_refs or [item.candidate_id for item in facts.trigger_candidates if item.status == "observed"])
-    mechanisms = _unique(mechanism_refs or [
+    observed_trigger_refs = {
+        item.candidate_id
+        for item in facts.trigger_candidates
+        if item.status == "observed"
+    }
+    observed_mechanism_refs = {
         item.relation_id
         for item in graph.source_relations
-        if item.relation in {"retains", "explains", "acquires", "holds", "releases", "amplifies", "propagates_to"}
+        if item.relation in {
+            "retains",
+            "explains",
+            "acquires",
+            "holds",
+            "releases",
+            "amplifies",
+            "propagates_to",
+        }
         and item.status in {"verified", "supported"}
+    }
+    observed_impact_refs = {
+        item.candidate_id
+        for item in facts.impact_candidates
+        if item.status == "observed"
+    }
+    invalid_relation_refs: list[str] = []
+    if trigger_refs is None:
+        triggers = sorted(observed_trigger_refs)
+    else:
+        requested = _unique(trigger_refs)
+        triggers = [ref for ref in requested if ref in observed_trigger_refs]
+        invalid_relation_refs.extend(
+            f"trigger_relation_invalid:{ref}"
+            for ref in requested
+            if ref not in observed_trigger_refs
+        )
+    if mechanism_refs is None:
+        mechanisms = [
+            item.relation_id
+            for item in graph.source_relations
+            if item.relation_id in observed_mechanism_refs
+        ]
+    else:
+        requested = _unique(mechanism_refs)
+        mechanisms = [ref for ref in requested if ref in observed_mechanism_refs]
+        invalid_relation_refs.extend(
+            f"mechanism_relation_invalid:{ref}"
+            for ref in requested
+            if ref not in observed_mechanism_refs
+        )
+    if impact_refs is None:
+        impacts = sorted(observed_impact_refs)
+    else:
+        requested = _unique(impact_refs)
+        impacts = [ref for ref in requested if ref in observed_impact_refs]
+        invalid_relation_refs.extend(
+            f"impact_relation_invalid:{ref}"
+            for ref in requested
+            if ref not in observed_impact_refs
+        )
+    evidence_refs = _unique([
+        *facts.evidence_refs,
+        *(
+            ref
+            for item in facts.symptom_signals
+            for ref in item.evidence_refs
+        ),
+        *(
+            ref
+            for item in facts.cost_centers
+            for ref in item.evidence_refs
+        ),
+        *(
+            ref
+            for item in facts.trigger_candidates
+            for ref in item.evidence_refs
+        ),
+        *(
+            ref
+            for item in facts.impact_candidates
+            for ref in item.evidence_refs
+        ),
+        *(
+            ref
+            for item in facts.observed_relations
+            for ref in item.evidence_refs
+        ),
+        *(
+            item.evidence_ref
+            for item in facts.evidence_quality
+            if item.evidence_ref
+        ),
+        *(ref for item in graph.source_relations for ref in item.evidence_refs),
     ])
-    impacts = _unique(impact_refs or [item.candidate_id for item in facts.impact_candidates if item.status == "observed"])
     source_refs = [
         item.relation_id
         for item in graph.source_relations
@@ -376,6 +457,27 @@ def qualify_attribution(
             missing_evidence=_unique([*facts.missing_evidence, "symptom_signal"]),
             reason="没有有效的同窗症状信号，不能进行归因。",
         )
+    if not any(item.status in {"valid", "partial"} for item in facts.evidence_quality):
+        return QualificationResult(
+            level="L0",
+            qualification="observation",
+            decision="continue_probe",
+            causal_status="inconclusive",
+            confidence=0.1,
+            confidence_level="不可判断",
+            target=graph.target,
+            window=facts.evidence_window,
+            symptom_refs=[item.signal_id for item in facts.symptom_signals],
+            evidence_refs=evidence_refs,
+            candidate_ids=candidate_ids,
+            supported_level=supported_level,
+            missing_evidence=_unique([
+                *facts.missing_evidence,
+                "valid_evidence_quality",
+                *invalid_relation_refs,
+            ]),
+            reason="当前结构化采集结果没有通过最小证据质量门槛，不能继续升级归因。",
+        )
     if not facts.cost_centers:
         return QualificationResult(
             level="L0",
@@ -389,11 +491,16 @@ def qualify_attribution(
             evidence_refs=evidence_refs,
             candidate_ids=candidate_ids,
             supported_level=supported_level,
-            missing_evidence=_unique([*facts.missing_evidence, "cost_center"]),
+            missing_evidence=_unique([
+                *facts.missing_evidence,
+                "cost_center",
+                *invalid_relation_refs,
+            ]),
             reason="只能确认症状，尚未定位到运行时成本中心。",
         )
-    if not triggers or not mechanisms or not impacts or not source_refs:
+    if invalid_relation_refs or not triggers or not mechanisms or not impacts or not source_refs:
         missing = []
+        missing.extend(invalid_relation_refs)
         if not triggers:
             missing.append("trigger")
         if not mechanisms:
@@ -421,7 +528,7 @@ def qualify_attribution(
             evidence_refs=evidence_refs,
             candidate_ids=candidate_ids,
             supported_level=supported_level,
-            missing_evidence=missing,
+            missing_evidence=_unique(missing),
             disconfirming_evidence_refs=_unique(disconfirming_evidence_refs or []),
             reason="已定位到成本中心或源码关系，但触发、机制、影响和证据闭环尚未全部满足。",
         )
@@ -1142,6 +1249,49 @@ def _collect_refs(evidence: dict[str, Any]) -> list[str]:
                     refs.append(item)
                 elif isinstance(item, dict):
                     refs.extend(str(item.get(key2) or "") for key2 in ("evidence_ref", "evidence_id", "object_key"))
+    return _unique(refs)
+
+
+def _graph_evidence_refs(graph: AttributionGraph) -> list[str]:
+    """Collect refs from structured graph members, including nested samples."""
+    refs = [
+        *graph.facts.evidence_refs,
+        *(
+            ref
+            for item in graph.facts.symptom_signals
+            for ref in item.evidence_refs
+        ),
+        *(
+            ref
+            for item in graph.facts.cost_centers
+            for ref in item.evidence_refs
+        ),
+        *(
+            ref
+            for item in graph.facts.trigger_candidates
+            for ref in item.evidence_refs
+        ),
+        *(
+            ref
+            for item in graph.facts.impact_candidates
+            for ref in item.evidence_refs
+        ),
+        *(
+            ref
+            for item in graph.facts.observed_relations
+            for ref in item.evidence_refs
+        ),
+        *(
+            item.evidence_ref
+            for item in graph.facts.evidence_quality
+            if item.evidence_ref
+        ),
+        *(
+            ref
+            for item in graph.source_relations
+            for ref in item.evidence_refs
+        ),
+    ]
     return _unique(refs)
 
 

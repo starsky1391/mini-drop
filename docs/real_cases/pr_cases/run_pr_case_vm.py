@@ -295,7 +295,10 @@ def run_stage(remote: Remote, case: dict, *, revision: str, stage: str, mode: st
             "source_context": source_context,
             "target": target,
             "diagnosis_query": case["diagnosis_query"],
-            "workload": case["workload"],
+            "workload": {
+                **case["workload"],
+                "duration_sec": duration_sec,
+            },
         }
         remote.run(
             f"python3 -c {shlex.quote('import json; print(json.dumps(' + repr(manifest) + '))')} > {shlex.quote(evidence_root)}/runtime-manifest.json"
