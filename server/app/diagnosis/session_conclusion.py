@@ -35,6 +35,7 @@ def build_session_qualification(
     base: dict[str, Any] | None = None,
     retained_conclusion: dict[str, Any] | None = None,
     attribution_qualification: dict[str, Any] | QualificationResult | None = None,
+    session_ai_review_status: str | None = None,
 ) -> dict[str, Any]:
     """Derive one session qualification from the emitted AI tree and its clusters."""
     base = base if isinstance(base, dict) else {}
@@ -62,6 +63,11 @@ def build_session_qualification(
         candidate_id for candidate_id in eligible_ids
         if candidate_id in ai_candidate_ids
     ]
+    if session_ai_review_status is not None and session_ai_review_status != "succeeded":
+        # A candidate can be technically guardable while the session-level
+        # adjudication is unavailable. Keep it as investigation state, never
+        # let the qualification reducer turn it into a formal conclusion.
+        eligible_ids = []
     graph_result = None
     if attribution_qualification is not None:
         try:
@@ -465,6 +471,23 @@ def build_root_cause_clusters(
         if first_eligible:
             first_eligible.role = "primary"
             first_eligible.causal_status = "primary"
+    if isinstance(session_tree, dict):
+        # This helper still supplies bounded engineering observations for
+        # legacy callers, but once a canonical session tree exists its
+        # Analyzer-derived output is never a formal cluster.  Formal clusters
+        # are derived exclusively from the AI DAG below.
+        for cluster in clusters:
+            cluster.conclusion_eligible = False
+            cluster.role = "independent"
+            cluster.causal_status = "unknown"
+            if cluster.cause_level in {"direct_root_cause", "complete_source_root_cause"}:
+                cluster.cause_level = "direct_failure_mechanism"
+            cluster.qualification = (
+                "possible_root_cause"
+                if cluster.mechanism and cluster.evidence_refs
+                else "observation"
+            )
+            cluster.confidence = min(cluster.confidence, 0.49)
     return clusters
 
 
@@ -1322,97 +1345,84 @@ def build_fallback_explanation(
     qualification_boundary: dict[str, Any] | None = None,
     localization_frontier: list[CausalExplanationStep] | None = None,
 ) -> dict[str, Any]:
-    eligible = [cluster for cluster in clusters if cluster.conclusion_eligible]
-    primary = eligible[0] if eligible else None
+    # A session-level AI failure cannot be converted into a formal conclusion
+    # by reusing an already-shaped cluster. Preserve the direction as a
+    # retained/localization result and explicitly demote formal fields.
+    fallback_clusters = [
+        cluster.model_copy(update={
+            "conclusion_eligible": False,
+            "role": "independent",
+            "causal_status": "unknown",
+            "cause_level": (
+                "direct_failure_mechanism"
+                if cluster.cause_level in {"direct_root_cause", "complete_source_root_cause"}
+                else cluster.cause_level
+            ),
+            "qualification": (
+                "possible_root_cause"
+                if cluster.mechanism and cluster.evidence_refs
+                else "observation"
+            ),
+            "confidence": min(cluster.confidence, 0.49),
+        })
+        for cluster in clusters
+    ]
+    eligible: list[RootCauseCluster] = []
+    primary = None
     possible = next(
         (
-            cluster for cluster in clusters
+            cluster for cluster in fallback_clusters
             if cluster.qualification in {"possible_root_cause", "partial_localization"}
             and str(cluster.cause_level or "") not in {"observation", "call_path"}
         ),
         None,
     )
-    if primary:
-        primary.role = "primary"
-        primary.causal_status = "primary"
-    for cluster in eligible[1:]:
-        if cluster.causal_status == "contributing":
-            cluster.role = "contributing"
-            cluster.relation_to_primary = "目标调度受压证据表明该原因会放大主因造成的用户症状。"
-        else:
-            cluster.role = "independent"
-            cluster.relation_to_primary = "该异常与主因同窗独立成立，但现有证据未证明它影响目标服务。"
-    if len(eligible) > 1:
-        headline = "当前确认存在多个相关故障方向：" + "；".join(cluster.claim for cluster in eligible) + "。"
-        why = "；".join(
-            cluster.why_it_happened or cluster.claim
-            for cluster in eligible
-        )
-    elif primary:
-        headline = primary.claim
-        why = primary.why_it_happened
     retained = build_retained_conclusion(
-        clusters,
+        fallback_clusters,
         assessment,
         session_tree,
         previous_retained=previous_retained,
         inherited=True,
     )
-    if primary:
-        retained = retained or build_retained_conclusion(clusters, assessment, session_tree)
-    assessment_claim = str(assessment.get("diagnostic_claim") or "").strip()
-    if len(eligible) <= 1 and primary:
-        headline = primary.claim
-    elif not primary:
-        retained_level = str((retained or {}).get("supported_level") or "").strip()
-        level_label = {
-            "resource": "资源",
-            "host": "主机",
-            "process": "进程",
-            "thread": "线程",
-            "syscall": "系统调用",
-            "dependency": "依赖",
-            "service": "服务",
-            "endpoint": "端点",
-            "function": "函数",
-            "call_path": "调用路径",
-            "line": "源码行",
-        }.get(retained_level, "观察/定位")
-        scenario_retained = (
-            assessment.get("scenario_retained_conclusion")
-            if isinstance(assessment.get("scenario_retained_conclusion"), dict)
-            else None
-        )
-        retained_claim = str((retained or {}).get("claim") or "").strip() if scenario_retained else ""
-        if retained_claim:
-            retained_claim = _abstained_retained_headline(retained_claim)
-        headline = retained_claim or (
+    retained_level = str((retained or {}).get("supported_level") or "").strip()
+    level_label = {
+        "resource": "资源",
+        "host": "主机",
+        "process": "进程",
+        "thread": "线程",
+        "syscall": "系统调用",
+        "dependency": "依赖",
+        "service": "服务",
+        "endpoint": "端点",
+        "function": "函数",
+        "call_path": "调用路径",
+        "line": "源码行",
+    }.get(retained_level, "观察/定位")
+    retained_claim = str((retained or {}).get("claim") or "").strip()
+    headline = (
+        _abstained_retained_headline(retained_claim)
+        if retained_claim
+        else (
             f"未形成正式根因；当前证据只支持停在{level_label}级观察/定位层，"
             "尚未闭合可验证的因果链。"
         )
-    if len(eligible) <= 1:
-        if primary:
-            why = primary.why_it_happened
-        elif possible:
-            why = possible.why_it_happened
-        elif retained and isinstance(assessment.get("scenario_retained_conclusion"), dict):
-            boundary = qualification_boundary if isinstance(qualification_boundary, dict) else {}
-            why = str(
-                boundary.get("message")
-                or retained.get("qualification")
-                or "当前结论是证据支持的局部定位，尚未达到正式根因门禁。"
-            )
-        else:
-            why = str(assessment.get("eligibility_reason") or "当前只有观察事实，尚未建立可引用证据支持的因果机制。")
+    )
+    boundary = qualification_boundary if isinstance(qualification_boundary, dict) else {}
+    why = str(
+        boundary.get("message")
+        or (possible.why_it_happened if possible else "")
+        or ((retained or {}).get("qualification") if retained else "")
+        or assessment.get("eligibility_reason")
+        or "当前只有观察事实，尚未建立可引用证据支持的因果机制。"
+    )
     residual = _unique(
         item
-        for cluster in clusters
+        for cluster in fallback_clusters
         for item in cluster.residual_unknowns
     )
-    classification = classify_cluster_set(clusters)
+    classification = "insufficient_evidence"
     if classification == "insufficient_evidence" and assessment.get("classification"):
         classification = str(assessment["classification"])
-    formal_chain = [step for cluster in eligible for step in cluster.causal_chain]
     localization_chain = _merge_explanation_steps(
         localization_frontier or [],
         _build_localization_chain(session_tree, retained),
@@ -1420,26 +1430,31 @@ def build_fallback_explanation(
     return {
         "headline": headline,
         "why_it_happened": why,
-        "causal_chain": formal_chain,
+        "causal_chain": [],
         "localization_chain": localization_chain,
-        "root_cause_clusters": clusters,
+        "root_cause_clusters": [],
+        "possible_root_causes": [
+            cluster.model_dump(mode="json")
+            for cluster in fallback_clusters
+            if cluster.qualification in {"possible_root_cause", "partial_localization"}
+        ],
         "ruled_out_summary": [
             str(item.get("reason"))
             for item in assessment.get("ruled_out", [])
             if isinstance(item, dict) and item.get("reason")
         ],
         "residual_unknowns": residual,
-        "recommendations": [recommendation for cluster in eligible for recommendation in cluster.recommendations],
+        "recommendations": [],
         "classification": classification,
         "ai_review_status": status,
         "ai_review_scope": "session",
         "ai_review_attempts": attempts,
         "ai_review_model": model,
         "ai_review_error": error[:500],
-        "confidence_level": "高" if primary else "中" if retained else "不可判断",
-        "abstained": not bool(primary),
+        "confidence_level": "低" if retained else "不可判断",
+        "abstained": True,
         "retained_conclusion": retained,
-        "formal_root_cause": _formal_root_cause(clusters),
+        "formal_root_cause": None,
         "qualification_boundary": qualification_boundary or build_qualification_boundary(
             assessment,
             origin_parent_candidate_id=(retained or {}).get("candidate_id"),

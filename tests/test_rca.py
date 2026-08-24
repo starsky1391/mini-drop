@@ -1230,8 +1230,8 @@ class TestControlledAITreeMerge:
         )
         evidence.analysis_result = analysis.model_dump(mode="json")
         proposed_tree = analysis.controlled_ai_tree.model_copy(deep=True)
-        proposed_primary = proposed_tree.layers[0].primary_causes[0]
-        proposed_tree.layers[0].primary_causes[0] = proposed_primary.model_copy(update={
+        proposed_primary = proposed_tree.layers[0].unknown_causes[0]
+        proposed_tree.layers[0].unknown_causes[0] = proposed_primary.model_copy(update={
             "claim": "AI 提议：热点集中在 compute_hotspot，当前只支持函数层定位。",
             "self_challenge": proposed_primary.self_challenge.model_copy(update={
                 "why_this_claim": "CPU 与 top function 证据同向支持。",
@@ -1252,7 +1252,7 @@ class TestControlledAITreeMerge:
 
         attached = _attach_analysis_result(report, evidence)
 
-        assert attached.controlled_ai_tree.layers[0].primary_causes[0].claim.startswith("AI 提议")
+        assert attached.controlled_ai_tree.layers[0].unknown_causes[0].claim.startswith("AI 提议")
         assert attached.controlled_ai_tree.final_primary_causes == analysis.controlled_ai_tree.final_primary_causes
         assert attached.controlled_ai_tree.probe_edges == analysis.controlled_ai_tree.probe_edges
 
@@ -1272,8 +1272,8 @@ class TestControlledAITreeMerge:
         )
         evidence.analysis_result = analysis.model_dump(mode="json")
         unsafe_tree = analysis.controlled_ai_tree.model_copy(deep=True)
-        unsafe_primary = unsafe_tree.layers[0].primary_causes[0]
-        unsafe_tree.layers[0].primary_causes[0] = unsafe_primary.model_copy(update={
+        unsafe_primary = unsafe_tree.layers[0].unknown_causes[0]
+        unsafe_tree.layers[0].unknown_causes[0] = unsafe_primary.model_copy(update={
             "supported_level": "line",
             "claim": "越权提升到代码行。",
             "evidence_refs": ["evidence_index.fake_line[0]"],
@@ -1375,6 +1375,7 @@ class TestControlledAITreeMerge:
         bad_tree.probe_edges[0] = bad_tree.probe_edges[0].model_copy(update={
             "probe_requests": ["arbitrary_shell"],
         })
+        candidate_id = analysis.controlled_ai_tree.layers[0].unknown_causes[0].candidate_id
         compact_review = {
             "tree_id": analysis.controlled_ai_tree.tree_id,
             "primary": analysis.controlled_ai_tree.final_primary_causes,
@@ -1386,7 +1387,7 @@ class TestControlledAITreeMerge:
             "probe_requests": ["cpu_profile"],
             "stop_reason": "AI review 确认当前只能停在函数热点候选，需要继续补 CPU profile。",
             "self_challenges": {
-                analysis.controlled_ai_tree.final_primary_causes[0]: {
+                candidate_id: {
                     "why_this_claim": "top_functions 显示 compute_hotspot 占比最高。",
                     "why_not_other_claims": "没有同等强度的 IO 或依赖证据。",
                     "supporting_evidence_refs": ["top_functions"],

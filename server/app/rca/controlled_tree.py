@@ -91,12 +91,15 @@ def _guard_candidate(node: AITreeCandidateNode) -> AITreeCandidateNode:
         *node.self_challenge.supporting_evidence_refs,
     ]))
     reason = ""
+    # Analyzer output is an observation/localization input only.  Even when
+    # legacy payloads carry conclusion_eligible=true, formal promotion must
+    # come from an AI candidate that passed the shared session gates.
     eligible = (
         node.generated_by in {"ai", "ai_candidate", "ai_guarded"}
-        or node.generated_by == "analyzer" and node.conclusion_eligible
-    ) and node.claim_status not in {"boundary", "duplicate", "rejected"}
+        and node.claim_status not in {"boundary", "duplicate", "rejected"}
+    )
     if not eligible:
-        reason = "候选尚未通过 AI 或 Analyzer 工程资格门禁。"
+        reason = "候选尚未通过 AI 工程资格门禁。"
     observational_candidate = (
         node.candidate_id in _OBSERVATIONAL_CANDIDATE_IDS
         or node.mechanism in _OBSERVATIONAL_CANDIDATE_IDS

@@ -304,8 +304,8 @@ def test_controlled_ai_tree_contains_layers_self_challenge_and_probe_edge():
     assert result_a.controlled_ai_tree == result_b.controlled_ai_tree
     tree = result_a.controlled_ai_tree
     assert tree is not None
-    assert tree.layers[0].primary_causes
-    assert tree.layers[0].primary_causes[0].self_challenge.supporting_evidence_refs
+    assert tree.layers[0].unknown_causes
+    assert tree.layers[0].unknown_causes[0].self_challenge.supporting_evidence_refs
     assert tree.probe_edges
     assert tree.probe_edges[0].probe_requests == ["off_cpu_wait_profile", "trace_endpoint_profile"]
 

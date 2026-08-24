@@ -43,7 +43,18 @@ class CandidateCause(BaseModel):
 
     candidate_id: str
     description: str
-    generated_by: Literal["analyzer", "ai", "fallback", "history", "system"] = "analyzer"
+    generated_by: Literal[
+        "analyzer",
+        "ai",
+        "ai_candidate",
+        "ai_guarded",
+        "fallback",
+        "fallback_observation",
+        "analyzer_observation",
+        "analyzer_fallback",
+        "history",
+        "system",
+    ] = "analyzer"
     claim_origin: Literal[
         "analyzer_rule",
         "analyzer_diagnostic",
@@ -626,7 +637,18 @@ class RetainedConclusion(BaseModel):
     source_candidate_id: str = ""
     inherited: bool = False
     fallback_mode: Literal["none", "inherit_parent"] = "none"
-    generated_by: Literal["analyzer", "ai", "fallback", "history", "system"] = "system"
+    generated_by: Literal[
+        "analyzer",
+        "ai",
+        "ai_candidate",
+        "ai_guarded",
+        "fallback",
+        "fallback_observation",
+        "analyzer_observation",
+        "analyzer_fallback",
+        "history",
+        "system",
+    ] = "system"
     claim_origin: Literal[
         "analyzer_rule",
         "analyzer_diagnostic",

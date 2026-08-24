@@ -68,6 +68,9 @@ from server.app.rca.models import (
     CandidateCause,
     CausalExplanationStep,
     ControlledAITree,
+    AnalyzerFactContext,
+    CandidateHint,
+    LocalizationBoundary,
     EvidenceInput,
 )
 from server.app.diagnosis.evidence_structurer import rca_inputs_from_structured, structure_artifact_evidence
@@ -1582,12 +1585,13 @@ class DiagnosisOrchestrator:
             previous_tree=previous_tree,
         )
         candidate_review = None
+        fact_context: dict[str, Any] = {}
         if session_controlled_tree is not None:
             model_calls_used = int((current_session.get("budget_used") or {}).get("model_calls", 0) or 0)
             model_calls_limit = int((current_session.get("resource_budget") or {}).get("max_model_calls", 0) or 0)
             remaining_model_calls = max(0, model_calls_limit - model_calls_used)
             if remaining_model_calls > 0:
-                fact_context = {
+                raw_fact_context = {
                     "facts": task_observations,
                     "observations": [
                         {
@@ -1630,6 +1634,26 @@ class DiagnosisOrchestrator:
                         }
                         for item in deduped
                     ],
+                }
+                fact_context_model = AnalyzerFactContext(
+                    facts=raw_fact_context["facts"],
+                    observations=raw_fact_context["observations"],
+                    evidence_refs=raw_fact_context["evidence_refs"],
+                    localization_boundary=LocalizationBoundary.model_validate(
+                        raw_fact_context["localization_boundary"]
+                    ),
+                    missing_evidence=raw_fact_context["missing_evidence"],
+                    available_probes=raw_fact_context["available_probes"],
+                    candidate_hints=[
+                        CandidateHint.model_validate(item)
+                        for item in raw_fact_context["candidate_hints"]
+                    ],
+                )
+                fact_context = {
+                    **fact_context_model.model_dump(mode="json"),
+                    # Source anchors are query context, not a candidate or
+                    # conclusion field, and must remain available to AI.
+                    "source_anchor_catalog": raw_fact_context["source_anchor_catalog"],
                 }
                 candidate_review = generate_session_candidate_review(
                     diagnosis_id=diagnosis_id,
@@ -1946,6 +1970,7 @@ class DiagnosisOrchestrator:
             session_tree_payload,
             base=cluster_assessment,
             retained_conclusion=explanation.get("retained_conclusion"),
+            session_ai_review_status=str(ai_review.get("ai_review_status") or ""),
             attribution_qualification=_session_attribution_qualification(
                 _merge_attribution_graphs(task_observations),
                 session_tree_payload,
@@ -2028,6 +2053,7 @@ class DiagnosisOrchestrator:
             ),
             "investigation_review": _summarize_investigation_review(investigation_review),
             "candidate_review": candidate_review_summary,
+            "analyzer_fact_context": fact_context,
             "candidate_validation_diagnostics": (
                 (candidate_review or {}).get("validation_diagnostics") or []
                 if isinstance(candidate_review, dict)
@@ -6431,7 +6457,10 @@ def _build_session_controlled_ai_tree(
     # boundaries, not fallback conclusions. It is converted to
     # analyzer_fallback only when the complete first AI candidate round fails.
     generated_by = "analyzer_observation"
-    assessment_eligible = bool(cluster_assessment.get("conclusion_eligible"))
+    # The Analyzer may describe a strong observation, but it is never the
+    # source of a formal session candidate.  A later AI review must create
+    # the candidate and the shared qualification gate must promote it.
+    assessment_eligible = False
     evidence_refs = _unique_strings(cluster_assessment.get("evidence_refs", []))
     final_level = _best_supported_level(
         cluster_assessment.get("supported_level"),
@@ -6452,8 +6481,8 @@ def _build_session_controlled_ai_tree(
         if candidate_id in seen_candidate_ids:
             continue
         seen_candidate_ids.add(candidate_id)
-        candidate_eligible = int(item.get("rank") or 999) == 1 and assessment_eligible
-        role = "primary" if candidate_eligible and int(item.get("rank") or 999) == 1 else "secondary" if candidate_eligible else "unknown"
+        candidate_eligible = False
+        role = "unknown"
         target = str(item.get("root_entity") or cluster_assessment.get("claim_target") or "").strip()
         candidate_parent_ids = _unique_strings(item.get("parent_candidate_ids", []))
         candidate_parent_ids = [
@@ -6484,6 +6513,9 @@ def _build_session_controlled_ai_tree(
             and candidate_relation == "alternative"
             and item.get("independent") is True
         ):
+            # Only an explicitly independent alternative may attach to the
+            # emitted coarse root. Other unparented hints remain orphan/data
+            # quality records instead of receiving invented provenance.
             candidate_parent_ids = [coarse_id]
             candidate_origin_parent = coarse_id
         node_evidence_refs = _unique_strings([
@@ -6492,28 +6524,21 @@ def _build_session_controlled_ai_tree(
         ])
         node = AITreeCandidateNode(
             candidate_id=candidate_id,
-            generated_by="analyzer",
-            claim_origin="analyzer_diagnostic" if candidate_eligible else "analyzer_summary",
+            generated_by="analyzer_observation",
+            claim_origin="analyzer_diagnostic",
             lineage_id=candidate_id,
             relation=candidate_relation,
             parent_candidate_ids=candidate_parent_ids,
             origin_parent_candidate_id=candidate_origin_parent or None,
             role=role,
-            claim=str(
-                cluster_assessment.get("diagnostic_claim")
-                if candidate_eligible and int(item.get("rank") or 999) == 1
-                else item.get("description") or cluster_assessment.get("summary") or candidate_id
-            ),
+            claim=str(item.get("description") or cluster_assessment.get("summary") or candidate_id),
             supported_level=str(item.get("max_supported_level") or final_level),
             confidence=_confidence_from_label(item.get("confidence_level"), cluster_assessment.get("confidence")),
             status="supported",
-            claim_type=(
-                str(cluster_assessment.get("claim_type") or "likely_root_cause")
-                if candidate_eligible else "partial_localization"
-            ),
-            causal_status="supported" if candidate_eligible else "unproven",
-            decision="conclude" if candidate_eligible else "continue_probe",
-            mechanism=str(cluster_assessment.get("mechanism") or candidate_id) if candidate_eligible else candidate_id,
+            claim_type="partial_localization",
+            causal_status="unproven",
+            decision="continue_probe",
+            mechanism="",
             target=target,
             evidence_refs=node_evidence_refs,
             self_challenge=AITreeSelfChallenge(
@@ -6546,10 +6571,10 @@ def _build_session_controlled_ai_tree(
         for node in [*secondary_nodes, *rejected_nodes, *unknown_nodes]
     ):
         candidate_id = str(cluster_assessment.get("root_entity") or cluster_assessment.get("classification"))
-        fallback_role = "primary" if assessment_eligible else "unknown"
+        fallback_role = "unknown"
         fallback_node = AITreeCandidateNode(
             candidate_id=candidate_id,
-            generated_by="fallback_observation",
+            generated_by="analyzer_observation",
             lineage_id=candidate_id,
             role=fallback_role,
             relation="alternative",
@@ -6558,11 +6583,11 @@ def _build_session_controlled_ai_tree(
             claim=str(cluster_assessment.get("diagnostic_claim") or cluster_assessment.get("summary") or candidate_id),
             supported_level=final_level,
             confidence=_num(cluster_assessment.get("confidence")),
-            status="supported" if assessment_eligible else "missing_evidence",
-            claim_type=str(cluster_assessment.get("claim_type") or "partial_localization"),
-            causal_status=str(cluster_assessment.get("causal_status") or "unproven"),
-            decision="conclude" if assessment_eligible else "continue_probe",
-            mechanism=str(cluster_assessment.get("mechanism") or ""),
+            status="missing_evidence",
+            claim_type="partial_localization",
+            causal_status="unproven",
+            decision="continue_probe",
+            mechanism="",
             target=str(cluster_assessment.get("claim_target") or cluster_assessment.get("root_entity") or ""),
             primitive_kind=(cluster_assessment.get("primary_anchor") or {}).get("primitive_kind"),
             evidence_refs=evidence_refs,
@@ -6810,7 +6835,7 @@ def _build_session_controlled_ai_tree(
             source_parent_id = resolved_coarse_parent_id
             line_node = AITreeCandidateNode(
                 candidate_id=line_candidate_id,
-                generated_by="analyzer",
+                generated_by="analyzer_observation",
                 claim_origin="analyzer_diagnostic",
                 lineage_id=line_candidate_id,
                 relation="refinement",
@@ -6823,19 +6848,15 @@ def _build_session_controlled_ai_tree(
                 supported_level="line",
                 confidence=_num(cluster_assessment.get("confidence")),
                 status="supported" if assessment_eligible else "missing_evidence",
-                claim_type=str(cluster_assessment.get("claim_type") or "partial_localization"),
-                causal_status="supported" if assessment_eligible else "unproven",
-                decision="conclude" if assessment_eligible else "continue_probe",
-                mechanism=str(cluster_assessment.get("mechanism") or "verified_source_line"),
+                claim_type="partial_localization",
+                causal_status="unproven",
+                decision="continue_probe",
+                mechanism="",
                 target=anchor_label,
                 parent_candidate_ids=[source_parent_id],
                 origin_parent_candidate_id=source_parent_id,
-                conclusion_eligible=assessment_eligible,
-                eligibility_reason=(
-                    "源码行已验证，但尚未完成会话级因果门禁。"
-                    if not assessment_eligible
-                    else "该源码行通过会话级因果门禁。"
-                ),
+                conclusion_eligible=False,
+                eligibility_reason="源码行只提供定位上下文，正式因果资格必须由 AI 候选和统一门禁产生。",
                 evidence_refs=line_refs,
                 self_challenge=AITreeSelfChallenge(
                     why_this_claim=str(cluster_assessment.get("summary") or "已验证源码行是当前基础定位。"),
@@ -8454,7 +8475,7 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
                 candidate_id=str(item["candidate_id"]),
                 **canonical_claim_fields(
                     item["claim"],
-                    generated_by="ai",
+                    generated_by="ai_candidate",
                     claim_origin="ai_proposal",
                     claim_transform="refined" if parent_ids else "original",
                     source_candidate_id=str(item.get("origin_parent_candidate_id") or _single_parent_id(parent_ids) or ""),
@@ -8490,6 +8511,21 @@ def _apply_candidate_review(tree: ControlledAITree, review: dict[str, Any]) -> C
                 else "首轮 AI 已将该方向标记为拒绝，保留为反证分支。"
             ),
             evidence_refs=refs,
+            cost_center_refs=list(dict.fromkeys(
+                str(value) for value in item.get("cost_center_refs", []) if str(value)
+            )),
+            trigger_refs=list(dict.fromkeys(
+                str(value) for value in item.get("trigger_refs", []) if str(value)
+            )),
+            mechanism_refs=list(dict.fromkeys(
+                str(value) for value in item.get("mechanism_refs", []) if str(value)
+            )),
+            impact_refs=list(dict.fromkeys(
+                str(value) for value in item.get("impact_refs", []) if str(value)
+            )),
+            source_relation_refs=list(dict.fromkeys(
+                str(value) for value in item.get("source_relation_refs", []) if str(value)
+            )),
             self_challenge=AITreeSelfChallenge(
                 why_this_claim=str(item["claim"]),
                 supporting_evidence_refs=refs,
@@ -8716,6 +8752,15 @@ def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) 
             "source_event_id",
         ):
             update[field] = lineage[field]
+        if (
+            str(update.get("status") or node.status) == "supported"
+            and str(update.get("causal_status") or node.causal_status) == "supported"
+            and str(update.get("decision") or node.decision) == "conclude"
+            and str(update.get("claim_status") or node.claim_status) not in {"boundary", "duplicate", "rejected"}
+        ):
+            update["generated_by"] = "ai_guarded"
+            update["claim_origin"] = "ai_update"
+            update["claim_transform"] = "refined"
         return node.model_copy(update=update)
 
     updated_layers = []
@@ -8750,7 +8795,7 @@ def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) 
                 candidate_id=item["candidate_id"],
                 **canonical_claim_fields(
                     item["claim"],
-                    generated_by="ai",
+                    generated_by="ai_candidate",
                     claim_origin="ai_proposal",
                     claim_transform="refined",
                     source_candidate_id=str(item["origin_parent_candidate_id"]),
@@ -8778,6 +8823,21 @@ def _apply_investigation_review(tree: ControlledAITree, review: dict[str, Any]) 
                 conclusion_eligible=False,
                 eligibility_reason="AI 提出的机制候选仍需所选探针返回真实证据后才能升级。",
                 evidence_refs=item["evidence_refs"],
+                cost_center_refs=list(dict.fromkeys(
+                    str(value) for value in item.get("cost_center_refs", []) if str(value)
+                )),
+                trigger_refs=list(dict.fromkeys(
+                    str(value) for value in item.get("trigger_refs", []) if str(value)
+                )),
+                mechanism_refs=list(dict.fromkeys(
+                    str(value) for value in item.get("mechanism_refs", []) if str(value)
+                )),
+                impact_refs=list(dict.fromkeys(
+                    str(value) for value in item.get("impact_refs", []) if str(value)
+                )),
+                source_relation_refs=list(dict.fromkeys(
+                    str(value) for value in item.get("source_relation_refs", []) if str(value)
+                )),
                 self_challenge=AITreeSelfChallenge(
                     why_this_claim=item["claim"],
                     supporting_evidence_refs=item["evidence_refs"],

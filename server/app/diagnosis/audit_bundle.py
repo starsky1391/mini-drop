@@ -67,12 +67,46 @@ def build_audit_bundle(diagnosis_id: str, orchestrator, repo) -> dict[str, Any] 
         "evidence_refs": evidence_refs,
         "qualification": latest.get("qualification") or assessment.get("unified_qualification") or {},
         "attribution_graph": latest.get("attribution_graph") or {},
+        "attribution_audit": {
+            "analyzer_fact_context": latest.get("analyzer_fact_context") or {},
+            "candidate_review": latest.get("candidate_review") or {},
+            "investigation_review": latest.get("investigation_review") or {},
+            "candidate_sources": _candidate_sources(latest),
+            "qualification": latest.get("qualification") or assessment.get("unified_qualification") or {},
+            "gate_failures": latest.get("gate_failures") or latest.get("ai_gate_failures") or [],
+            "abstained": bool(latest.get("abstained", True)),
+            "formal_root_cause": latest.get("formal_root_cause"),
+            "causal_chain": latest.get("causal_chain") or [],
+        },
         "conclusion": conclusion,
         "latest_conclusion": latest,
         "safety": _safety_section(detail),
         "rollback": _rollback_section(detail),
         "readiness_gate": readiness,
     })
+
+
+def _candidate_sources(latest: dict[str, Any]) -> list[dict[str, Any]]:
+    tree = latest.get("controlled_ai_tree")
+    if not isinstance(tree, dict):
+        return []
+    result = []
+    for layer in tree.get("layers") or []:
+        if not isinstance(layer, dict):
+            continue
+        for group in ("primary_causes", "secondary_causes", "rejected_causes", "unknown_causes"):
+            for node in layer.get(group) or []:
+                if not isinstance(node, dict):
+                    continue
+                result.append({
+                    "candidate_id": node.get("candidate_id"),
+                    "generated_by": node.get("generated_by"),
+                    "claim_origin": node.get("claim_origin"),
+                    "claim_status": node.get("claim_status"),
+                    "conclusion_eligible": bool(node.get("conclusion_eligible")),
+                    "evidence_refs": node.get("evidence_refs") or [],
+                })
+    return result
 
 
 def _frozen_watch_incident(repo, diagnosis_id: str) -> dict[str, Any] | None:
@@ -515,6 +549,8 @@ def _normalize_conclusion(latest: dict[str, Any]) -> dict[str, Any]:
         "ai_gate_failures": latest.get("ai_gate_failures", []),
         "gate_failures": latest.get("gate_failures", latest.get("ai_gate_failures", [])),
         "candidate_generation_output": latest.get("candidate_generation_output", {}),
+        "analyzer_fact_context": latest.get("analyzer_fact_context", {}),
+        "attribution_audit": latest.get("attribution_audit", {}),
         "observations": latest.get("observations", []),
         "boundaries": latest.get("boundaries", []),
         "retained_parent_conclusions": latest.get("retained_parent_conclusions", []),

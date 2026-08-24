@@ -61,11 +61,15 @@ def canonical_claim_fields(
 def infer_claim_origin(record: Mapping[str, Any]) -> tuple[str, str]:
     generated_by = str(record.get("generated_by") or "")
     if generated_by in {"ai", "ai_candidate"}:
-        return "ai", "ai_proposal"
+        return generated_by, "ai_proposal"
+    if generated_by == "ai_guarded":
+        return generated_by, "ai_update"
     if generated_by == "history" or record.get("claim_transform") == "restored":
         return "history", "history_restore"
     if generated_by in {"fallback", "fallback_observation", "analyzer_fallback"}:
         return "fallback", "fallback_generated"
+    if generated_by == "analyzer_observation":
+        return generated_by, "analyzer_diagnostic"
     if record.get("diagnostic_claim"):
         return "analyzer", "analyzer_diagnostic"
     if record.get("summary") and not record.get("description"):
@@ -80,7 +84,18 @@ def ensure_claim_lineage(record: Mapping[str, Any], *, claim_key: str = "claim")
     if claim is None and claim_key != "description":
         claim = result.get("description") or result.get("diagnostic_claim") or result.get("summary") or ""
     generated_by, origin = infer_claim_origin(result)
-    if result.get("generated_by") not in {"analyzer", "ai", "fallback", "history", "system"}:
+    if result.get("generated_by") not in {
+        "analyzer",
+        "ai",
+        "ai_candidate",
+        "ai_guarded",
+        "fallback",
+        "history",
+        "system",
+        "analyzer_observation",
+        "fallback_observation",
+        "analyzer_fallback",
+    }:
         result["generated_by"] = generated_by
     result.setdefault("claim_origin", origin)
     result.setdefault("claim_transform", "original")

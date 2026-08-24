@@ -372,13 +372,12 @@ def test_fallback_keeps_all_related_formal_branches():
 
     explanation = build_fallback_explanation(clusters, {}, session_tree=tree)
 
-    assert len(explanation["root_cause_clusters"]) == 2
+    assert explanation["root_cause_clusters"] == []
+    assert explanation["abstained"] is True
+    assert len(explanation["possible_root_causes"]) == 2
     assert "worker.py:42" in explanation["headline"]
-    assert "结果回调函数" in explanation["headline"]
-    assert [cluster.role for cluster in explanation["root_cause_clusters"]] == [
-        "primary",
-        "contributing",
-    ]
+    assert "结果回调函数" not in explanation["headline"]
+    assert explanation["causal_chain"] == []
 
 
 def test_candidate_generation_failure_is_exposed_with_initial_evidence():
@@ -1027,7 +1026,9 @@ def test_fallback_explanation_is_explicit_and_keeps_unknowns():
 
     assert explanation["ai_review_status"] == "fallback"
     assert "来源" in " ".join(explanation["residual_unknowns"])
-    assert explanation["root_cause_clusters"][0].cause_level == "direct_root_cause"
+    assert explanation["root_cause_clusters"] == []
+    assert explanation["formal_root_cause"] is None
+    assert explanation["abstained"] is True
 
 
 def test_ineligible_memory_fallback_is_possible_cause_not_confirmed_root():
@@ -1046,14 +1047,15 @@ def test_ineligible_memory_fallback_is_possible_cause_not_confirmed_root():
 
     explanation = build_fallback_explanation(clusters, assessment)
 
-    assert explanation["root_cause_clusters"][0].qualification == "possible_root_cause"
-    assert explanation["root_cause_clusters"][0].role == "independent"
-    assert "未形成正式根因" in explanation["headline"]
+    assert explanation["root_cause_clusters"] == []
+    assert explanation["possible_root_causes"][0]["qualification"] == "possible_root_cause"
+    assert explanation["possible_root_causes"][0]["role"] == "independent"
+    assert "未形成正式源码根因" in explanation["headline"]
     assert explanation["headline"] != assessment["diagnostic_claim"]
     assert explanation["retained_conclusion"]["claim"] == assessment["diagnostic_claim"]
     assert explanation["retained_conclusion"]["qualification"] == "possible_root_cause"
     assert explanation["formal_root_cause"] is None
-    assert explanation["confidence_level"] == "中"
+    assert explanation["confidence_level"] == "低"
     assert explanation["abstained"] is True
 
 
@@ -1116,7 +1118,7 @@ def test_fallback_retains_emitted_tree_candidate_instead_of_diagnostic_claim():
 
     assert explanation["retained_conclusion"]["candidate_id"] == "fallback-memory"
     assert explanation["retained_conclusion"]["claim"] == tree["layers"][0]["unknown_causes"][0]["claim"]
-    assert "未形成正式根因" in explanation["headline"]
+    assert "未形成正式源码根因" in explanation["headline"]
     assert explanation["headline"] != tree["layers"][0]["unknown_causes"][0]["claim"]
     assert explanation["formal_root_cause"] is None
     assert explanation["abstained"] is True

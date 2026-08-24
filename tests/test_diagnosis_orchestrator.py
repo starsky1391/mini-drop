@@ -552,7 +552,7 @@ def test_successful_candidate_generation_keeps_analyzer_observation_distinct_fro
         for node in updated.layers[-1].unknown_causes
         if node.candidate_id == "ai_candidate_runtime_path"
     )
-    assert ai_node.generated_by == "ai"
+    assert ai_node.generated_by == "ai_candidate"
     assert ai_node.claim_origin == "ai_proposal"
 
     guarded = orchestrator_module._promote_ai_nodes_to_guarded(updated)
@@ -564,7 +564,7 @@ def test_successful_candidate_generation_keeps_analyzer_observation_distinct_fro
         for node in layer.unknown_causes
         if node.candidate_id == "ai_candidate_runtime_path"
     )
-    assert guarded_ai_node.generated_by == "ai"
+    assert guarded_ai_node.generated_by == "ai_candidate"
 
 
 def test_initial_ai_candidate_stays_investigation_only_even_if_model_says_conclude():
@@ -3236,7 +3236,7 @@ def test_redis_dependency_session_tree_matches_cluster_conclusion(client: TestCl
 
     assert conclusion["cluster_assessment"]["classification"] == "downstream_dependency"
     assert conclusion["cluster_assessment"]["root_entity"] == "redis-cart"
-    assert detail["status"] == "INSUFFICIENT_EVIDENCE"
+    assert detail["status"] == "PARTIAL_COMPLETED"
     assert tree["final_supported_level"] == "service"
     assert primary_ids == []
     assert tree["layers"][0]["primary_causes"] == []
@@ -5680,7 +5680,9 @@ def test_verified_source_line_is_synthesized_as_base_parent_for_mechanism():
     assert nodes[line_id].parent_candidate_ids == ["coarse_python_memory_retention"]
     assert nodes[line_id].origin_parent_candidate_id == "coarse_python_memory_retention"
     assert "coarse_python_memory_retention" in nodes
-    assert tree.final_primary_causes == [line_id]
+    assert tree.final_primary_causes == []
+    assert nodes[line_id].generated_by == "analyzer_observation"
+    assert nodes[line_id].conclusion_eligible is False
     assert nodes["ai_proposal_trace_cycle"].parent_candidate_ids == [line_id]
 
 
@@ -6299,7 +6301,7 @@ def test_investigation_review_updates_existing_parent_and_appends_rollback_prove
     }
     assert nodes["line_rule_compile"].claim == "源码行父结论继续保留，深探尚未闭合。"
     assert nodes["line_rule_compile"].status == "partial"
-    assert nodes["ai_proposal_followup_mechanism"].generated_by == "ai"
+    assert nodes["ai_proposal_followup_mechanism"].generated_by == "ai_candidate"
     assert nodes["ai_proposal_followup_mechanism"].claim_origin == "ai_proposal"
     assert nodes["ai_proposal_followup_mechanism"].parent_candidate_ids == ["line_rule_compile"]
     rollback = next(edge for edge in updated.probe_edges if edge.edge_id == "rollback-followup-parent")
