@@ -27,6 +27,7 @@ import {
   EyeOutlined,
   FieldTimeOutlined,
   PlayCircleOutlined,
+  PlusOutlined,
   RadarChartOutlined,
   ReloadOutlined,
 } from "@ant-design/icons";
@@ -339,6 +340,7 @@ export default function PersistentWatch() {
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [monitorOpen, setMonitorOpen] = useState(false);
   const [testingWatchId, setTestingWatchId] = useState("");
   const [analyzingIncidentId, setAnalyzingIncidentId] = useState("");
   const [updatingWatchId, setUpdatingWatchId] = useState("");
@@ -439,6 +441,7 @@ export default function PersistentWatch() {
       });
       message.success("监视订阅已创建");
       form.resetFields();
+      setMonitorOpen(false);
       refresh();
     } catch (err) {
       message.error(err.message);
@@ -803,7 +806,12 @@ export default function PersistentWatch() {
             </Typography.Text>
           </div>
         </Space>
-        <Button icon={<ReloadOutlined />} onClick={refresh}>刷新</Button>
+        <Space wrap>
+          <Button icon={<PlusOutlined />} type="primary" onClick={() => setMonitorOpen(true)}>
+            发布监测任务
+          </Button>
+          <Button icon={<ReloadOutlined />} onClick={refresh}>刷新</Button>
+        </Space>
       </div>
 
       <Alert
@@ -833,19 +841,30 @@ export default function PersistentWatch() {
         </Col>
       </Row>
 
-      <Card title="创建监视订阅" size="small">
-        <Form
-          form={form}
-          layout="vertical"
-          initialValues={DEFAULT_FORM}
-          onFinish={handleCreate}
-        >
-          <Row gutter={SPACING.lg}>
-            <Col xs={24} md={8}>
-              <Form.Item name="name" label="订阅名称" rules={[{ required: true, message: "请输入订阅名称" }]}>
-                <Input placeholder="order service watch" />
-              </Form.Item>
-            </Col>
+      <Modal
+        title="发布监测任务"
+        open={monitorOpen}
+        onCancel={() => {
+          if (!submitting) setMonitorOpen(false);
+        }}
+        footer={null}
+        width={960}
+        maskClosable={!submitting}
+        styles={{ body: { maxHeight: "70vh", overflowY: "auto" } }}
+      >
+        <Card title="创建监视订阅" size="small">
+          <Form
+            form={form}
+            layout="vertical"
+            initialValues={DEFAULT_FORM}
+            onFinish={handleCreate}
+          >
+            <Row gutter={SPACING.lg}>
+              <Col xs={24} md={8}>
+                <Form.Item name="name" label="订阅名称" rules={[{ required: true, message: "请输入订阅名称" }]}>
+                  <Input placeholder="order service watch" />
+                </Form.Item>
+              </Col>
             <Col xs={24} md={8}>
               <Form.Item name="agent_id" label="Agent" rules={[{ required: true, message: "请选择 Agent" }]}>
                 <Select placeholder="选择 agent">
@@ -978,6 +997,7 @@ export default function PersistentWatch() {
           </Button>
         </Form>
       </Card>
+      </Modal>
 
       <Card title={<Space>Watch 列表<Tag>{watches.length}</Tag></Space>} size="small">
         <Table
