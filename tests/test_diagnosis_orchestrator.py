@@ -4185,6 +4185,101 @@ def test_source_snapshot_does_not_upgrade_tied_generic_runtime_candidates():
     assert "source_context_hash" not in result
 
 
+def test_best_specific_anchor_merges_runtime_candidates_from_later_profile():
+    observations = [
+        {
+            "specific_anchor": {
+                "supported_level": "call_path",
+                "anchor": "python -> _PyEval_EvalFrameDefault",
+                "function": "_PyEval_EvalFrameDefault",
+                "percent": 32.5,
+                "samples": 300,
+                "runtime_line_candidates": [],
+                "evidence_refs": ["ev-cpu"],
+            },
+        },
+        {
+            "specific_anchor": {
+                "supported_level": "call_path",
+                "anchor": "main -> get -> request",
+                "function": "request",
+                "percent": 0.09,
+                "samples": 1,
+                "runtime_line_candidates": [{
+                    "file": "/opt/project/requests/sessions.py",
+                    "line": 555,
+                    "symbol": "get",
+                    "samples": 42,
+                    "percent": 4.0,
+                }],
+                "evidence_refs": ["ev-runtime"],
+            },
+        },
+    ]
+
+    result = orchestrator_module._best_specific_anchor(observations)
+
+    assert result["anchor"] == "python -> _PyEval_EvalFrameDefault"
+    assert result["runtime_line_candidates"] == [{
+        "file": "/opt/project/requests/sessions.py",
+        "line": 555,
+        "symbol": "get",
+        "samples": 42,
+        "percent": 4.0,
+    }]
+    assert result["evidence_refs"] == ["ev-cpu", "ev-runtime"]
+
+
+def test_later_runtime_profile_can_upgrade_selected_anchor_to_verified_line():
+    observations = [
+        {
+            "specific_anchor": {
+                "supported_level": "call_path",
+                "anchor": "python -> _PyEval_EvalFrameDefault",
+                "function": "_PyEval_EvalFrameDefault",
+                "percent": 32.5,
+                "samples": 300,
+                "runtime_line_candidates": [],
+            },
+        },
+        {
+            "specific_anchor": {
+                "supported_level": "call_path",
+                "anchor": "main -> get -> request",
+                "function": "request",
+                "percent": 0.09,
+                "samples": 1,
+                "runtime_line_candidates": [{
+                    "file": "/opt/project/requests/sessions.py",
+                    "line": 555,
+                    "symbol": "get",
+                    "samples": 42,
+                    "percent": 4.0,
+                }],
+            },
+            "source_snapshot": {
+                "source_context_hash": "sha256:verified",
+                "revision": "abc123",
+                "snippets": [{
+                    "file": "requests/sessions.py",
+                    "focus_line": 555,
+                    "symbol": "get",
+                    "lines": [{"line": 555, "text": "def get(self, url, **kwargs):"}],
+                }],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+        },
+    ]
+
+    selected = orchestrator_module._best_specific_anchor(observations)
+    result = orchestrator_module._verified_source_anchor(selected, observations)
+
+    assert result["supported_level"] == "line"
+    assert result["file"] == "requests/sessions.py"
+    assert result["line"] == 555
+    assert result["function"] == "get"
+
+
 def test_python_call_path_keeps_verified_project_frame_for_source_upgrade():
     values = {
         "depth_evidence_json": {

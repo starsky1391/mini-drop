@@ -4062,7 +4062,7 @@ def _best_specific_anchor(observations: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     if not anchors:
         return {}
-    return sorted(
+    selected = sorted(
         anchors,
         key=lambda item: (
             order.get(str(item.get("supported_level") or "resource"), 99),
@@ -4070,6 +4070,36 @@ def _best_specific_anchor(observations: list[dict[str, Any]]) -> dict[str, Any]:
             -_num(item.get("samples")),
         ),
     )[0]
+    runtime_candidates: list[dict[str, Any]] = []
+    for anchor in anchors:
+        for candidate in anchor.get("runtime_line_candidates", []):
+            if not isinstance(candidate, dict):
+                continue
+            file_name = str(candidate.get("file") or "")
+            line = int(_num(candidate.get("line")))
+            if not file_name or line <= 0:
+                continue
+            normalized = {
+                **candidate,
+                "file": file_name,
+                "line": line,
+            }
+            if normalized not in runtime_candidates:
+                runtime_candidates.append(normalized)
+    if not runtime_candidates:
+        return selected
+    return {
+        **selected,
+        "runtime_line_candidates": _prioritized_line_candidates(runtime_candidates)[:64],
+        "evidence_refs": _unique_strings([
+            *selected.get("evidence_refs", []),
+            *[
+                ref
+                for anchor in anchors
+                for ref in anchor.get("evidence_refs", [])
+            ],
+        ]),
+    }
 
 
 def _verified_source_anchor(anchor: dict[str, Any], observations: list[dict[str, Any]]) -> dict[str, Any]:
