@@ -4,6 +4,7 @@ import subprocess
 from unittest import mock
 
 from agent.mini_drop_agent.collectors.base import CollectorTask
+from agent.mini_drop_agent.collectors.python_source_syntax import PythonSourceSyntaxVerifier
 from agent.mini_drop_agent.collectors.source_snapshot import SourceSnapshotCollector
 
 
@@ -61,6 +62,52 @@ def test_source_snapshot_verifies_revision_and_returns_bounded_context(tmp_path,
     assert payload["snippets"][0]["focus_line"] == 3
     assert payload["snippets"][0]["lines"][0]["line"] == 1
     assert len(payload["snippets"][0]["lines"]) == 5
+    assert payload["source_tools"]["python_ast"] is True
+
+
+def test_source_snapshot_uses_official_ast_when_ctags_is_unavailable(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    source = repo / "app.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "class Worker:\n"
+        "    def process_item(self, value):\n"
+        "        return value + 1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MINI_DROP_SOURCE_ROOTS", str(tmp_path))
+    collector = SourceSnapshotCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+
+    def fake_run(cmd, **_kwargs):
+        if "rev-parse" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="abc123\n", stderr="")
+        if "ls-files" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"app.py\0", stderr=b"")
+        raise AssertionError(cmd)
+
+    with mock.patch("shutil.which", side_effect=lambda name: "/usr/bin/git" if name == "git" else None), mock.patch(
+        "subprocess.run", side_effect=fake_run
+    ):
+        result = collector.collect(
+            _task(repo, revision="abc123").__class__(**{
+                **_task(repo, revision="abc123").__dict__,
+                "options": {
+                    **_task(repo, revision="abc123").options,
+                    "line_candidates": [{
+                        "file": "app.py",
+                        "line": 3,
+                        "symbol": "Worker.process_item",
+                    }],
+                },
+            })
+        )
+
+    assert result.ok is True
+    payload = result.artifacts[0]["metadata"]["data"]
+    assert payload["source_tools"]["ctags"] is False
+    assert payload["source_syntax"][0]["evidence_status"] == "valid"
+    assert payload["verified_source_lines"][0]["source_syntax_valid"] is True
 
 
 def test_source_snapshot_scopes_safe_directory_to_each_git_command(tmp_path, monkeypatch):
@@ -212,7 +259,7 @@ def test_source_snapshot_rejects_revision_mismatch(tmp_path, monkeypatch):
     assert payload["evidence_validity"]["reason"] == "source_revision_mismatch"
 
 
-def test_source_snapshot_keeps_bounded_python_enclosing_class(tmp_path, monkeypatch):
+def test_source_snapshot_reports_innermost_python_method_and_keeps_class_analysis_scope(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     source = repo / "werkzeug" / "routing.py"
     source.parent.mkdir(parents=True)
@@ -246,11 +293,14 @@ def test_source_snapshot_keeps_bounded_python_enclosing_class(tmp_path, monkeypa
         result = collector.collect(task)
 
     context = result.artifacts[0]["metadata"]["data"]["enclosing_contexts"][0]
-    assert context["kind"] == "class"
-    assert context["symbol"] == "BuilderCompiler"
-    assert context["start_line"] == 1
+    assert context["kind"] == "function"
+    assert context["symbol"] == "BuilderCompiler.compile"
+    assert context["analysis_scope_symbol"] == "BuilderCompiler"
+    assert context["innermost_symbol"] == "compile"
+    assert context["qualified_symbol"] == "BuilderCompiler.compile"
+    assert context["start_line"] == 3
     assert context["end_line"] == 5
-    assert any("JOIN_EMPTY" in line["text"] for line in context["lines"])
+    assert all("JOIN_EMPTY" not in line["text"] for line in context["lines"])
 
 
 def test_source_snapshot_extracts_callable_to_code_constant_reference_path(tmp_path, monkeypatch):
@@ -319,3 +369,71 @@ def test_source_snapshot_extracts_callable_to_code_constant_reference_path(tmp_p
     assert operation_path["upstream_candidates"][0]["expression"] == "self.render"
     assert operation_path["upstream_candidates"][0]["source_kind"] == "bound_method_or_attribute"
     assert operation_path["upstream_candidates"][0]["flows_as"] == "operation"
+    payload = result.artifacts[0]["metadata"]["data"]
+    assert payload["source_syntax"][0]["evidence_status"] == "valid"
+    assert any(
+        item["line_origin"] == "runtime_focus"
+        and item["verified_line"] == 17
+        and item["enclosing_symbol"] == "DynamicCompiler.compile"
+        for item in payload["verified_source_lines"]
+    )
+    assert payload["source_reference_hints"][0]["evidence_role"] == "static_hint"
+
+
+def test_python_source_syntax_verifies_ordinary_method_without_symbol_keywords():
+    source = (
+        "class Worker:\n"
+        "    def process_item(self, value):\n"
+        "        result = value + 1\n"
+        "        return result\n"
+    )
+
+    result = PythonSourceSyntaxVerifier.verify(
+        relative_file="worker.py",
+        source=source,
+        revision="abc123",
+        candidates=[{
+            "file": "worker.py",
+            "line": 3,
+            "symbol": "process_item",
+            "line_origin": "runtime_focus",
+        }],
+    )
+
+    assert result["evidence_status"] == "valid"
+    line = result["verified_source_lines"][0]
+    assert line["enclosing_symbol"] == "Worker.process_item"
+    assert line["node_type"] == "Assign"
+    assert line["line_match"] == "exact_statement"
+    assert line["source_syntax_valid"] is True
+    assert line["source_revision"] == "abc123"
+    assert result["source_syntax_status"] == "valid"
+
+
+def test_python_source_syntax_verifies_reference_step_on_multiline_statement():
+    source = (
+        "def process(value):\n"
+        "    result = build(\n"
+        "        value,\n"
+        "    )\n"
+        "    return result\n"
+    )
+
+    result = PythonSourceSyntaxVerifier.verify(
+        relative_file="worker.py",
+        source=source,
+        revision="abc123",
+        candidates=[{
+            "file": "worker.py",
+            "line": 3,
+            "symbol": "process",
+            "line_origin": "reference_step",
+        }],
+    )
+
+    line = result["verified_source_lines"][0]
+    assert line["line_origin"] == "reference_step"
+    assert line["line_localization_status"] == "verified"
+    assert line["node_type"] == "Assign"
+    assert line["source_span"]["start_line"] == 2
+    assert line["source_span"]["end_line"] == 4

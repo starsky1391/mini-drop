@@ -7,7 +7,11 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from server.app.diagnosis.evidence_structurer import rca_inputs_from_structured, structure_artifact_evidence
+from server.app.diagnosis.evidence_structurer import (
+    _line_candidates_match_source,
+    rca_inputs_from_structured,
+    structure_artifact_evidence,
+)
 from server.app.rca.attribution import analyze_evidence
 from server.app.rca.evidence import collect_evidence, evidence_to_json
 from server.app.rca.models import CandidateCause, EvidenceInput
@@ -23,6 +27,22 @@ class _Task:
     sample_rate = 99
     status = "DONE"
     status_reason = ""
+
+
+def test_line_candidates_match_ast_span_from_source_snapshot():
+    assert _line_candidates_match_source(
+        [{"file": "worker.py", "line": 3}],
+        {
+            "status": "valid",
+            "source_context_hash": "sha256:source",
+            "revision": "abc123",
+            "verified_source_lines": [{
+                "file": "worker.py",
+                "verified_line": 2,
+                "source_span": {"start_line": 2, "end_line": 4},
+            }],
+        },
+    ) is True
 
 
 def _candidate(candidate_id: str, refs: list[str]) -> CandidateCause:

@@ -1108,7 +1108,10 @@ class DiagnosisOrchestrator:
                 },
                 "source_root": source_root,
                 "source_revision": str(source_context.get("repo_revision") or ""),
-                "line_candidates": self._session_line_candidates(diagnosis_id) if diagnosis_id else [],
+                # CodeQL is a formal static-mechanism probe. It may only use
+                # source lines that the source snapshot collector verified
+                # against the checked-out revision and Python AST.
+                "line_candidates": self._session_verified_source_lines(diagnosis_id) if diagnosis_id else [],
                 **({"codeql_sarif_path": sarif_path} if sarif_path else {}),
             }
         if probe_id == "process_python_heap_reference":
@@ -1217,7 +1220,14 @@ class DiagnosisOrchestrator:
         session = self.store.get_session(diagnosis_id) or {}
         candidates: list[dict[str, Any]] = []
 
-        def add(file_name: Any, line: Any, symbol: Any = "") -> None:
+        def add(
+            file_name: Any,
+            line: Any,
+            symbol: Any = "",
+            *,
+            line_origin: str = "runtime_focus",
+            parent_candidate_id: str = "",
+        ) -> None:
             try:
                 line_number = int(line or 0)
             except (TypeError, ValueError):
@@ -1228,7 +1238,10 @@ class DiagnosisOrchestrator:
                 "file": str(file_name),
                 "line": line_number,
                 "symbol": str(symbol or ""),
+                "line_origin": line_origin,
             }
+            if parent_candidate_id:
+                normalized["parent_candidate_id"] = parent_candidate_id
             if normalized not in candidates:
                 candidates.append(normalized)
 
@@ -1244,6 +1257,15 @@ class DiagnosisOrchestrator:
                 for snippet in value.get("snippets", []):
                     if isinstance(snippet, dict):
                         add(snippet.get("file"), snippet.get("focus_line"), snippet.get("symbol"))
+                for verified in value.get("verified_source_lines", []):
+                    if isinstance(verified, dict):
+                        add(
+                            verified.get("file"),
+                            verified.get("verified_line") or verified.get("line"),
+                            verified.get("enclosing_symbol") or verified.get("symbol"),
+                            line_origin=str(verified.get("line_origin") or "reference_step"),
+                            parent_candidate_id=str(verified.get("parent_candidate_id") or ""),
+                        )
                 for context in value.get("enclosing_contexts", []):
                     if not isinstance(context, dict):
                         continue
@@ -1254,10 +1276,20 @@ class DiagnosisOrchestrator:
                             continue
                         for upstream in path.get("upstream_candidates", []):
                             if isinstance(upstream, dict):
-                                add(file_name, upstream.get("line"), symbol)
+                                add(
+                                    file_name,
+                                    upstream.get("line"),
+                                    symbol,
+                                    line_origin="reference_origin",
+                                )
                         for source_line in path.get("source_lines", []):
                             if isinstance(source_line, dict):
-                                add(file_name, source_line.get("line"), symbol)
+                                add(
+                                    file_name,
+                                    source_line.get("line"),
+                                    symbol,
+                                    line_origin="reference_step",
+                                )
         for task_id in session.get("child_task_ids", []):
             for artifact in self.repo.artifacts.get(task_id, []):
                 if artifact.get("artifact_type") not in {"python_stack_samples_json", "python_heap_profile_json", "go_heap_profile_json", "depth_evidence_json"}:
@@ -1275,6 +1307,69 @@ class DiagnosisOrchestrator:
                     for candidate in _line_candidates_from_runtime_stack_sample(item):
                         add(candidate["file"], candidate["line"], candidate.get("function"))
         return _prioritized_line_candidates(candidates)[:64]
+
+    def _session_verified_source_lines(self, diagnosis_id: str) -> list[dict[str, Any]]:
+        """Return only AST-verified source lines for formal static probes."""
+        session = self.store.get_session(diagnosis_id) or {}
+        result: list[dict[str, Any]] = []
+        seen: set[tuple[str, int, str, str]] = set()
+
+        for task_id in session.get("child_task_ids", []):
+            for artifact in self.repo.artifacts.get(task_id, []):
+                if artifact.get("artifact_type") != "source_snapshot_json":
+                    continue
+                value = self._read_artifact_json(artifact)
+                if not isinstance(value, dict):
+                    continue
+                validity = value.get("evidence_validity")
+                if isinstance(validity, dict) and str(validity.get("evidence_status") or "") not in {"valid", "partial"}:
+                    continue
+                context_hash = str(value.get("source_context_hash") or "")
+                revision = str(value.get("revision") or "")
+                if not context_hash or not revision:
+                    continue
+                lines = list(value.get("verified_source_lines") or [])
+                for syntax in value.get("source_syntax") or []:
+                    if isinstance(syntax, dict):
+                        lines.extend(syntax.get("verified_source_lines") or [])
+                for item in lines:
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("evidence_role") or "") != "verified_source_line":
+                        continue
+                    file_name = str(item.get("file") or "").replace("\\", "/")
+                    line = int(_num(item.get("verified_line") or item.get("line")))
+                    if not file_name or line <= 0:
+                        continue
+                    key = (
+                        file_name,
+                        line,
+                        str(item.get("line_origin") or "runtime_focus"),
+                        context_hash,
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    result.append({
+                        "file": file_name,
+                        "line": line,
+                        "symbol": str(item.get("enclosing_symbol") or item.get("symbol") or ""),
+                        "line_origin": str(item.get("line_origin") or "runtime_focus"),
+                        "evidence_role": "verified_source_line",
+                        "source_syntax_valid": True,
+                        "source_context_hash": context_hash,
+                        "source_revision": revision,
+                        "source_hash": str(item.get("source_hash") or ""),
+                        "source_span": item.get("source_span") if isinstance(item.get("source_span"), dict) else {},
+                        "candidate_id": str(item.get("candidate_id") or ""),
+                        "parent_candidate_id": str(item.get("parent_candidate_id") or ""),
+                        "evidence_refs": [
+                            str(ref)
+                            for ref in item.get("evidence_refs") or []
+                            if str(ref or "").strip()
+                        ][:8],
+                    })
+        return result[:64]
 
     def _append_child_task(self, diagnosis_id: str, task_id: str, definition) -> None:
         session = self.store.get_session(diagnosis_id)
@@ -4314,6 +4409,32 @@ def _memory_retention_summary(anchor: dict[str, Any]) -> str:
     )
 
 
+def _source_line_localization_verified(anchor: dict[str, Any]) -> bool:
+    if not isinstance(anchor, dict) or not anchor.get("source_context_hash"):
+        return False
+    file_name = str(anchor.get("file") or "").replace("\\", "/").lower()
+    if file_name and not file_name.endswith(".py"):
+        return bool(
+            anchor.get("line_localization_status") == "verified"
+            or (
+                anchor.get("file")
+                and int(_num(anchor.get("line"))) > 0
+            )
+        )
+    syntax = anchor.get("source_syntax")
+    if not isinstance(syntax, dict):
+        return False
+    if anchor.get("source_syntax_valid") is True:
+        return True
+    if syntax.get("source_syntax_valid") is True:
+        return True
+    return bool(
+        str(anchor.get("line_localization_status") or "") == "verified"
+        and int(_num(syntax.get("verified_line") or syntax.get("line"))) > 0
+        and str(syntax.get("evidence_role") or "verified_source_line") == "verified_source_line"
+    )
+
+
 def _best_specific_anchor(observations: list[dict[str, Any]]) -> dict[str, Any]:
     order = {"line": 0, "call_path": 1, "function": 2, "syscall": 3, "thread": 4, "process": 5, "resource": 6}
     anchors = [
@@ -4336,6 +4457,23 @@ def _best_specific_anchor(observations: list[dict[str, Any]]) -> dict[str, Any]:
         anchor.get("runtime_line_candidates", [])
         for anchor in anchors
     ]
+    for anchor in anchors:
+        file_name = str(anchor.get("file") or "").strip()
+        line = int(_num(anchor.get("line")))
+        level = str(anchor.get("supported_level") or "")
+        if file_name and line > 0 and level in {"function", "call_path", "line"}:
+            candidate_groups.append([{
+                "file": file_name,
+                "line": line,
+                "symbol": str(
+                    anchor.get("function")
+                    or anchor.get("symbol")
+                    or anchor.get("anchor")
+                    or ""
+                ),
+                "evidence_ref": anchor.get("evidence_ref"),
+                "runtime_verified": True,
+            }])
     for observation in observations:
         candidate_groups.extend([
             observation.get("runtime_line_candidates", []),
@@ -4436,30 +4574,33 @@ def _verified_source_anchor(anchor: dict[str, Any], observations: list[dict[str,
             direct_symbol = str(
                 anchor.get("function") or anchor.get("symbol") or anchor.get("anchor") or snippet.get("symbol") or ""
             )
-            direct_semantic = _source_symbol_semantic(direct_symbol, snippet_file)
-            if (
-                anchor.get("file")
-                and anchor_line > 0
-                and _source_files_match(anchor_file, snippet_file)
-                and anchor_line in lines
-                and direct_semantic
-            ):
-                return {
-                    **anchor,
-                    "supported_level": "line",
-                    "anchor_type": "verified_source_line",
-                    "anchor": f"{snippet_file}:{anchor_line} {direct_symbol}".strip(),
-                    "source_context_hash": str(snapshot["source_context_hash"]),
-                    "source_revision": str(snapshot.get("revision") or ""),
-                    "source_reference_hints": [
-                        path for path in (snapshot.get("reference_paths") or [])
-                        if isinstance(path, dict)
-                    ][:12],
-                    "source_hint_level": "partial_localization",
-                    "root_claim_allowed": False,
-                    "blocked_upgrade_reason": "源码行已验证，但手写 AST reference_paths 只用于选择机制查询锚点，不能证明跨函数因果或运行时持有链。",
-                }
-            source_matches.append((runtime_match or {}, snippet, snapshot))
+            syntax_line = (
+                focus_line
+                if runtime_match is not None
+                else anchor_line if anchor_file and anchor_line > 0 else focus_line
+            )
+            syntax_match = _source_snapshot_line_match(snapshot, snippet_file, syntax_line)
+            non_python_source_match = bool(
+                snippet_file
+                and not snippet_file.lower().endswith(".py")
+                and focus_line > 0
+                and focus_line in lines
+            )
+            if syntax_match or non_python_source_match:
+                source_matches.append((
+                    {
+                        **(runtime_match or {}),
+                        "file": snippet_file,
+                        "line": focus_line,
+                        "symbol": str(
+                            (runtime_match or {}).get("symbol")
+                            or snippet.get("symbol")
+                            or direct_symbol
+                        ),
+                    },
+                    snippet,
+                    snapshot,
+                ))
 
     if source_matches:
         def source_score(item: tuple[dict[str, Any], dict[str, Any], dict[str, Any]]) -> tuple[int, int, int, int, float]:
@@ -4474,8 +4615,6 @@ def _verified_source_anchor(anchor: dict[str, Any], observations: list[dict[str,
             return semantic, project, -generic_runtime_frame, samples, percent
 
         best_score = max(source_score(item) for item in source_matches)
-        if best_score[0] == 0 and (best_score[1] == 0 or best_score[2] < 0):
-            return anchor
         best = [item for item in source_matches if source_score(item) == best_score]
         if len(best) != 1:
             return anchor
@@ -4492,15 +4631,55 @@ def _verified_source_anchor(anchor: dict[str, Any], observations: list[dict[str,
             **anchor,
             "supported_level": "line",
             "anchor_type": "verified_source_line",
+            "line_localization_status": "verified",
+            "line_origin": str(
+                (runtime or {}).get("line_origin")
+                or "runtime_focus"
+            ),
+            "runtime_line_candidates": (
+                list(anchor.get("runtime_line_candidates") or [])
+                or [{
+                    "file": snippet.get("file"),
+                    "line": focus_line,
+                    "symbol": symbol,
+                    "evidence_ref": anchor.get("evidence_ref"),
+                    "runtime_verified": True,
+                }]
+            ),
+            "runtime_parent_candidate": True,
             "anchor": f"{snippet.get('file')}:{focus_line} {symbol}".strip(),
             "file": snippet.get("file"),
             "line": focus_line,
             "function": symbol,
             "source_context_hash": str(snapshot["source_context_hash"]),
             "source_revision": str(snapshot.get("revision") or ""),
+            "source_syntax": (
+                _source_snapshot_line_match(
+                    snapshot,
+                    str(snippet.get("file") or ""),
+                    focus_line,
+                )
+                or {}
+            ),
+            "source_syntax_valid": bool(
+                _source_snapshot_line_match(
+                    snapshot,
+                    str(snippet.get("file") or ""),
+                    focus_line,
+                )
+            ),
+            "verified_source_lines": [
+                item
+                for item in (snapshot.get("verified_source_lines") or [])
+                if isinstance(item, dict)
+            ][:16],
             "source_evidence_refs": _unique_strings(source_refs),
             "source_reference_hints": [
-                path for path in (snapshot.get("reference_paths") or [])
+                path for path in (
+                    snapshot.get("source_reference_hints")
+                    or snapshot.get("reference_paths")
+                    or []
+                )
                 if isinstance(path, dict)
             ][:12],
             "source_hint_level": "partial_localization",
@@ -4508,6 +4687,41 @@ def _verified_source_anchor(anchor: dict[str, Any], observations: list[dict[str,
             "blocked_upgrade_reason": "源码行已验证，但当前运行时证据只支持 partial_localization，不能把该行直接提升为根因。",
         }
     return anchor
+
+
+def _source_snapshot_line_match(
+    snapshot: dict[str, Any],
+    file_name: str,
+    line: int,
+) -> dict[str, Any] | None:
+    if not isinstance(snapshot, dict) or not file_name or line <= 0:
+        return None
+    for item in snapshot.get("verified_source_lines") or []:
+        if not isinstance(item, dict):
+            continue
+        if not _source_files_match(file_name, str(item.get("file") or "")):
+            continue
+        verified_line = int(_num(item.get("verified_line") or item.get("line")))
+        span = item.get("source_span") if isinstance(item.get("source_span"), dict) else {}
+        start_line = int(_num(span.get("start_line") or verified_line))
+        end_line = int(_num(span.get("end_line") or verified_line))
+        if verified_line == line or start_line <= line <= end_line:
+            return item
+    for result in snapshot.get("source_syntax") or []:
+        if not isinstance(result, dict):
+            continue
+        for item in result.get("verified_source_lines") or []:
+            if not isinstance(item, dict):
+                continue
+            if not _source_files_match(file_name, str(item.get("file") or result.get("file") or "")):
+                continue
+            verified_line = int(_num(item.get("verified_line") or item.get("line")))
+            span = item.get("source_span") if isinstance(item.get("source_span"), dict) else {}
+            start_line = int(_num(span.get("start_line") or verified_line))
+            end_line = int(_num(span.get("end_line") or verified_line))
+            if verified_line == line or start_line <= line <= end_line:
+                return item
+    return None
 
 
 def _source_files_match(left: Any, right: Any) -> bool:
@@ -5237,6 +5451,19 @@ def _summarize_artifact_value(artifact_type: str, value: Any) -> dict[str, Any]:
             "producer": value.get("producer"),
             "revision": value.get("revision"),
             "source_context_hash": value.get("source_context_hash"),
+            "source_syntax": [
+                {
+                    "parser": item.get("parser"),
+                    "parser_version": item.get("parser_version"),
+                    "file": item.get("file"),
+                    "evidence_status": item.get("evidence_status"),
+                    "reason": item.get("reason"),
+                    "verified_source_lines": (item.get("verified_source_lines") or [])[:16],
+                }
+                for item in (value.get("source_syntax") or [])[:8]
+                if isinstance(item, dict)
+            ],
+            "verified_source_lines": (value.get("verified_source_lines") or [])[:32],
             "snippets": snippets,
             "enclosing_contexts": enclosing_contexts,
             "reference_paths": [
@@ -5253,6 +5480,18 @@ def _summarize_artifact_value(artifact_type: str, value: Any) -> dict[str, Any]:
                     "source_lines": (path.get("source_lines") or [])[:8],
                 }
                 for path in (value.get("reference_paths") or [])[:12]
+                if isinstance(path, dict)
+            ],
+            "source_reference_hints": [
+                {
+                    "file": path.get("file"),
+                    "symbol": path.get("symbol"),
+                    "source_expression": path.get("source_expression"),
+                    "evidence_role": path.get("evidence_role") or "static_hint",
+                    "verification_status": path.get("verification_status") or "unverified",
+                    "source_lines": (path.get("source_lines") or [])[:8],
+                }
+                for path in (value.get("source_reference_hints") or [])[:12]
                 if isinstance(path, dict)
             ],
             "evidence_validity": value.get("evidence_validity") or {},
@@ -6154,7 +6393,7 @@ def _assessment_claim_metadata(
     anchor_target = str(anchor.get("anchor") or anchor.get("instance_id") or anchor.get("service_id") or "").strip()
 
     if classification == "python_memory_retention":
-        source_verified = bool(anchor.get("source_context_hash"))
+        source_verified = _source_line_localization_verified(anchor)
         mechanism_paths = [
             item for item in (anchor.get("mechanism_paths") or [])
             if isinstance(item, dict)
@@ -6183,7 +6422,7 @@ def _assessment_claim_metadata(
             "diagnostic_claim": _memory_retention_summary(anchor),
         }
     if classification == "go_heap_growth_candidate":
-        source_verified = bool(anchor.get("source_context_hash"))
+        source_verified = _source_line_localization_verified(anchor)
         return {
             "claim_type": "direct_failure_mechanism",
             "causal_status": "unproven",
@@ -6692,19 +6931,23 @@ def _build_session_controlled_ai_tree(
         primary_anchor.get("origin_parent_candidate_id") or ""
     ).strip()
     has_line_anchor_candidate = bool(
-        final_level == "line"
-        and primary_anchor.get("source_context_hash")
+        primary_anchor.get("source_context_hash")
         and primary_anchor.get("source_revision")
         and primary_anchor.get("file")
         and int(primary_anchor.get("line") or 0) > 0
     )
     has_verified_line_anchor = bool(
         has_line_anchor_candidate
-        and (
-            primary_anchor.get("runtime_line_candidates")
-            or cluster_assessment.get("conclusion_eligible")
+        and _source_line_localization_verified(primary_anchor)
+        and any(
+            isinstance(item, dict)
+            and item.get("file")
+            and int(_num(item.get("line"))) > 0
+            for item in primary_anchor.get("runtime_line_candidates", [])
         )
     )
+    if has_verified_line_anchor:
+        final_level = "line"
     line_anchor_eligibility = _line_anchor_eligibility_summary(
         primary_anchor,
         has_verified_line_anchor=has_verified_line_anchor,
@@ -6724,7 +6967,7 @@ def _build_session_controlled_ai_tree(
             and node.candidate_id not in OBSERVATION_CANDIDATE_IDS
         )
     }
-    if has_line_anchor_candidate:
+    if has_verified_line_anchor:
         line_candidate_id = _verified_line_candidate_id(
             primary_anchor,
             str(cluster_assessment.get("classification") or "source"),
@@ -6840,6 +7083,100 @@ def _build_session_controlled_ai_tree(
             )
             line_refinement_nodes.append(line_node)
             base_line_nodes[line_candidate_id] = line_node
+            line_parent_id = line_candidate_id
+
+        # A source snapshot may verify additional mechanism lines from
+        # reference_paths. They are valid line-localization refinements only
+        # when they hang below the already verified runtime line. They never
+        # become a second root or replace the runtime parent.
+        reference_lines = [
+            item
+            for item in primary_anchor.get("verified_source_lines", [])
+            if isinstance(item, dict)
+            and str(item.get("evidence_role") or "") == "verified_source_line"
+            and str(item.get("line_origin") or "") == "reference_step"
+        ]
+        seen_reference_lines: set[tuple[str, int]] = set()
+        for verified in reference_lines:
+            reference_file = str(verified.get("file") or "").replace("\\", "/")
+            reference_line = int(_num(verified.get("verified_line") or verified.get("line")))
+            if not reference_file or reference_line <= 0:
+                continue
+            if (
+                _source_files_match(reference_file, anchor_file)
+                and reference_line == int(_num(primary_anchor.get("line")))
+            ):
+                continue
+            key = (reference_file, reference_line)
+            if key in seen_reference_lines:
+                continue
+            seen_reference_lines.add(key)
+            if not line_parent_id or line_parent_id not in base_line_nodes:
+                continue
+            reference_anchor = {
+                **primary_anchor,
+                "file": reference_file,
+                "line": reference_line,
+                "function": str(
+                    verified.get("enclosing_symbol")
+                    or verified.get("symbol")
+                    or primary_anchor.get("function")
+                    or ""
+                ),
+            }
+            reference_id = _verified_line_candidate_id(reference_anchor, "reference_step")
+            if reference_id in existing_node_ids:
+                continue
+            reference_refs = _unique_strings([
+                *verified.get("evidence_refs", []),
+                *primary_anchor.get("source_evidence_refs", []),
+                *primary_anchor.get("evidence_refs", []),
+            ])
+            reference_node = AITreeCandidateNode(
+                candidate_id=reference_id,
+                generated_by="analyzer_observation",
+                claim_origin="analyzer_diagnostic",
+                claim_transform="refined",
+                lineage_id=reference_id,
+                relation="refinement",
+                role="unknown",
+                claim=(
+                    f"源码静态关联行 {reference_file}:{reference_line} 已通过 Python AST 验证，"
+                    f"并回连到运行时源码行 {anchor_file}:{int(_num(primary_anchor.get('line')))}。"
+                ),
+                supported_level="line",
+                confidence=_num(cluster_assessment.get("confidence")),
+                status="missing_evidence",
+                claim_type="partial_localization",
+                causal_status="unproven",
+                decision="continue_probe",
+                mechanism="",
+                target=f"{reference_file}:{reference_line}",
+                line_origin="reference_step",
+                depth_kind="base",
+                parent_candidate_ids=[line_parent_id],
+                origin_parent_candidate_id=line_parent_id,
+                conclusion_eligible=False,
+                eligibility_reason=(
+                    "reference_step 只能细化已验证运行时源码行；"
+                    "它不能单独证明静态机制或正式根因。"
+                ),
+                evidence_refs=reference_refs,
+                self_challenge=AITreeSelfChallenge(
+                    why_this_claim="该行来自 source_snapshot 的 reference_step，并通过 Python AST 验证。",
+                    supporting_evidence_refs=reference_refs,
+                    missing_evidence=_unique_strings([
+                        *followup_requests,
+                        "source_mechanism_query",
+                    ]),
+                    what_would_change_my_mind=(
+                        "CodeQL 证明该 reference_step 与运行时分配/调用路径存在完整支持关系。"
+                    ),
+                ),
+            )
+            line_refinement_nodes.append(reference_node)
+            base_line_nodes[reference_id] = reference_node
+            existing_node_ids.add(reference_id)
 
     deep_origins = _deep_probe_provenance(probes)
     mechanism_paths = (
@@ -9337,9 +9674,11 @@ def _blocked_upgrade_node(
     if not parent_candidate_id:
         return None
     current_level = str(anchor.get("supported_level") or final_level)
-    if current_level == "line":
+    if current_level == "line" and _source_line_localization_verified(anchor):
         return None
     missing = ["source_context", "line_level_profile"]
+    if current_level == "line":
+        missing = ["source_syntax_verification", "runtime_parent_candidate"]
     if "锁持有者" in reason:
         missing.append("lock_owner_thread")
     if "符号" in reason:
@@ -9384,19 +9723,24 @@ def _line_anchor_eligibility_summary(
         "source_revision": bool(anchor.get("source_revision")),
         "source_context_hash": bool(anchor.get("source_context_hash") or source_snapshot_hashes),
         "source_context_valid": bool(anchor.get("source_context_hash") or source_snapshot_hashes),
+        "source_syntax_valid": _source_line_localization_verified(anchor),
         "file": bool(file_name),
         "positive_line": line_number > 0,
         "runtime_line_candidate": bool(runtime_candidates),
         "runtime_source_match": has_verified_line_anchor,
+        "runtime_parent_candidate": bool(runtime_candidates),
+        "source_reference_link": bool(anchor.get("source_reference_hints")),
         "parent_provenance": bool(origin_parent_candidate_id),
     }
     failure_reasons: list[str] = []
-    if not runtime_candidates:
+    if not runtime_candidates and not checks["source_syntax_valid"]:
         failure_reasons.append("runtime_anchor_missing")
         if anchor.get("source_context_hash") or source_snapshot_hashes:
             failure_reasons.append("source_snapshot_valid_but_no_runtime_line")
     if runtime_candidates and not has_verified_line_anchor:
         failure_reasons.append("runtime_source_match_failed")
+    if not runtime_candidates and checks["source_syntax_valid"]:
+        failure_reasons.append("runtime_parent_candidate_missing")
     if not (anchor.get("source_context_hash") or source_snapshot_hashes):
         failure_reasons.append("source_context_invalid")
     if not origin_parent_candidate_id:
@@ -9411,17 +9755,19 @@ def _line_anchor_eligibility_summary(
             "line": line_number,
             "reason": "运行时行候选、源码 revision、文件和正行号已形成可验证锚点。",
         }
-    if not runtime_candidates:
+    if not runtime_candidates and not checks["source_syntax_valid"]:
         reason = "没有运行时 file:line 候选，source_snapshot 不能单独制造 line 锚点。"
     elif not source_snapshot_hashes and not anchor.get("source_context_hash"):
         reason = "没有有效 source_snapshot revision/hash，不能验证运行时行对应的真实源码。"
     elif not file_name or line_number <= 0:
         reason = "当前运行时定位只有函数/调用路径，缺少真实 file:line。"
-    else:
+    elif not checks["source_syntax_valid"]:
         reason = (
             "运行时 file:line 与 source_snapshot 的源码片段未匹配；"
             "source_snapshot 只证明源码存在，不能替运行时证据选择主因行。"
         )
+    else:
+        reason = "源码行已通过 AST 验证，但缺少可回连的运行时父候选。"
     return {
         "status": "blocked",
         "eligibility_status": "not_verified",

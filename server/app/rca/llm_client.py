@@ -1526,7 +1526,7 @@ def _source_anchor_catalog(evidence_catalog: list[dict]) -> list[dict]:
             return
         if not isinstance(value, dict):
             return
-        if value.get("producer") == "git+universal-ctags":
+        if value.get("producer") in {"git+universal-ctags", "git+python.ast"}:
             for snippet in value.get("snippets", []):
                 if isinstance(snippet, dict):
                     add(
@@ -2294,7 +2294,7 @@ def _compact_evidence_item(item: dict) -> dict:
     if not isinstance(item, dict):
         return {}
     observed = item.get("observed_value")
-    if isinstance(observed, dict) and observed.get("producer") == "git+universal-ctags":
+    if isinstance(observed, dict) and observed.get("producer") in {"git+universal-ctags", "git+python.ast"}:
         observed = _compact_source_snapshot(observed)
     elif isinstance(observed, dict) and observed.get("producer") == "memray":
         observed = {
@@ -2332,9 +2332,38 @@ def _compact_source_snapshot(observed: dict) -> dict:
         "producer": observed.get("producer"),
         "revision": observed.get("revision"),
         "source_context_hash": observed.get("source_context_hash"),
+        "source_syntax": [
+            {
+                "parser": item.get("parser"),
+                "parser_version": item.get("parser_version"),
+                "file": item.get("file"),
+                "source_syntax_status": item.get("source_syntax_status"),
+                "evidence_status": item.get("evidence_status"),
+                "reason": item.get("reason"),
+                "verified_source_lines": (item.get("verified_source_lines") or [])[:16],
+            }
+            for item in (observed.get("source_syntax") or [])[:8]
+            if isinstance(item, dict)
+        ],
+        "verified_source_lines": [
+            {
+                "file": item.get("file"),
+                "verified_line": item.get("verified_line") or item.get("line"),
+                "line_origin": item.get("line_origin"),
+                "line_localization_status": item.get("line_localization_status"),
+                "evidence_role": item.get("evidence_role"),
+                "node_type": item.get("node_type"),
+                "enclosing_symbol": item.get("enclosing_symbol"),
+                "source_span": item.get("source_span"),
+            }
+            for item in (observed.get("verified_source_lines") or [])[:32]
+            if isinstance(item, dict)
+        ],
         "enclosing_contexts": contexts,
         "reference_paths": [
             {
+                "file": path.get("file"),
+                "symbol": path.get("symbol"),
                 "source_expression": path.get("source_expression"),
                 "source_kind": path.get("source_kind"),
                 "upstream_candidates": (path.get("upstream_candidates") or [])[:8],
@@ -2347,6 +2376,18 @@ def _compact_source_snapshot(observed: dict) -> dict:
                 "source_lines": (path.get("source_lines") or [])[:8],
             }
             for path in (observed.get("reference_paths") or [])[:12]
+            if isinstance(path, dict)
+        ],
+        "source_reference_hints": [
+            {
+                "file": path.get("file"),
+                "symbol": path.get("symbol"),
+                "source_expression": path.get("source_expression"),
+                "evidence_role": path.get("evidence_role") or "static_hint",
+                "verification_status": path.get("verification_status") or "unverified",
+                "source_lines": (path.get("source_lines") or [])[:8],
+            }
+            for path in (observed.get("source_reference_hints") or [])[:12]
             if isinstance(path, dict)
         ],
         "snippets": [

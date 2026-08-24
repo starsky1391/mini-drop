@@ -147,12 +147,17 @@ def _source_snapshot_profile() -> dict[str, Any]:
     ctags_path = shutil.which("ctags")
     roots = [item.strip() for item in os.getenv("MINI_DROP_SOURCE_ROOTS", "/host/home,/usr/src").split(",") if item.strip()]
     available_roots = [item for item in roots if Path(item).is_dir()]
-    available = bool(git_path and ctags_path and available_roots)
+    available = bool(git_path and available_roots)
     return {
         "collector_type": "source_snapshot",
-        "status": "available" if available else "degraded" if git_path and ctags_path else "unavailable",
-        "source": "Git revision verification and universal-ctags",
-        "reason": "source tools and read-only roots found" if available else "Git, universal-ctags, or source roots are unavailable",
+        "status": "available" if available else "unavailable",
+        "source": "Git revision verification and Python official AST",
+        "reason": (
+            "Git, Python AST, and read-only source roots found"
+            + ("; universal-ctags unavailable, symbol index disabled" if not ctags_path else "")
+            if available
+            else "Git or configured source roots are unavailable"
+        ),
         "default_options": {"source_roots": roots, "available_source_roots": available_roots},
     }
 

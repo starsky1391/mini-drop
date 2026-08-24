@@ -394,6 +394,7 @@ class AITreeCandidateNode(BaseModel):
     decision: Literal["continue_probe", "reject_candidate", "conclude", "abstain", "backtrack"] = "continue_probe"
     mechanism: str = ""
     target: str = ""
+    line_origin: str = ""
     primitive_kind: Optional[Literal[
         "wait_primitive",
         "scheduler_primitive",

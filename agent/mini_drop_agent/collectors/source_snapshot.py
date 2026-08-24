@@ -8,10 +8,12 @@ import json
 import os
 import shutil
 import subprocess
+import tokenize
 from pathlib import Path
 from typing import Any
 
 from agent.mini_drop_agent.collectors.base import CollectorResult, CollectorTask
+from agent.mini_drop_agent.collectors.python_source_syntax import PythonSourceSyntaxVerifier
 
 
 class SourceSnapshotCollector:
@@ -30,8 +32,8 @@ class SourceSnapshotCollector:
             return self._result(output_dir, False, "source_root_missing", "源码根目录不存在", {})
         git = shutil.which("git")
         ctags = shutil.which("ctags")
-        if not git or not ctags:
-            return self._result(output_dir, False, "source_tools_missing", "Git 或 universal-ctags 命令不可用", {})
+        if not git:
+            return self._result(output_dir, False, "source_tools_missing", "Git 命令不可用", {})
 
         git_command = [git, "-c", f"safe.directory={source_root}", "-C", str(source_root)]
         revision_result = subprocess.run(
@@ -62,6 +64,8 @@ class SourceSnapshotCollector:
         snippets = []
         enclosing_contexts = []
         reference_paths = []
+        source_texts: dict[str, str] = {}
+        syntax_candidates: dict[str, list[dict[str, Any]]] = {}
         candidates = list(task.options.get("line_candidates") or [])
         candidates.sort(key=lambda candidate: self._candidate_sort_key(candidate, tracked_files))
         for candidate in candidates[: self.MAX_CANDIDATES]:
@@ -75,7 +79,9 @@ class SourceSnapshotCollector:
             if not self._inside(source_file, source_root) or not source_file.is_file():
                 continue
             line = max(1, int(candidate.get("line") or 1))
-            lines = source_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            source_text = self._read_source(source_file)
+            source_texts[relative.as_posix()] = source_text
+            lines = source_text.splitlines()
             start = max(1, line - self.CONTEXT_LINES)
             end = min(len(lines), line + self.CONTEXT_LINES)
             snippets.append({
@@ -83,6 +89,14 @@ class SourceSnapshotCollector:
                 "focus_line": line,
                 "symbol": str(candidate.get("symbol") or ""),
                 "lines": [{"line": number, "text": lines[number - 1]} for number in range(start, end + 1)],
+            })
+            syntax_candidates.setdefault(relative.as_posix(), []).append({
+                "line": line,
+                "symbol": str(candidate.get("symbol") or ""),
+                "line_origin": str(candidate.get("line_origin") or "runtime_focus"),
+                "candidate_id": str(candidate.get("candidate_id") or ""),
+                "parent_candidate_id": str(candidate.get("parent_candidate_id") or ""),
+                "evidence_refs": [candidate.get("evidence_ref")] if candidate.get("evidence_ref") else [],
             })
             enclosing = self._python_enclosing_context(relative, lines, line)
             if enclosing and not any(
@@ -92,11 +106,95 @@ class SourceSnapshotCollector:
                 for item in enclosing_contexts
             ):
                 enclosing_contexts.append(enclosing)
-                reference_paths.extend(enclosing.get("reference_paths") or [])
+                reference_paths.extend(
+                    {
+                        "file": enclosing["file"],
+                        "symbol": enclosing.get("symbol") or "",
+                        **path,
+                    }
+                    for path in (enclosing.get("reference_paths") or [])
+                    if isinstance(path, dict)
+                )
+
+        for path in reference_paths:
+            file_name = self._tracked_file(str(path.get("file") or ""), tracked_files)
+            if not file_name:
+                continue
+            symbol = str(path.get("symbol") or "")
+            for upstream in path.get("upstream_candidates") or []:
+                if isinstance(upstream, dict) and int(upstream.get("line") or 0) > 0:
+                    syntax_candidates.setdefault(file_name, []).append({
+                        "line": upstream["line"],
+                        "symbol": symbol,
+                        "line_origin": "reference_origin",
+                        "candidate_id": str(path.get("candidate_id") or ""),
+                        "parent_candidate_id": str(
+                            path.get("parent_candidate_id")
+                            or path.get("runtime_parent_candidate_id")
+                            or ""
+                        ),
+                    })
+            for source_line in path.get("source_lines") or []:
+                if isinstance(source_line, dict) and int(source_line.get("line") or 0) > 0:
+                    syntax_candidates.setdefault(file_name, []).append({
+                        "line": source_line["line"],
+                        "symbol": symbol,
+                        "line_origin": "reference_step",
+                        "candidate_id": str(path.get("candidate_id") or ""),
+                        "parent_candidate_id": str(
+                            source_line.get("parent_candidate_id")
+                            or path.get("parent_candidate_id")
+                            or path.get("runtime_parent_candidate_id")
+                            or ""
+                        ),
+                    })
+
+        # Reference paths can point at a different tracked file than the
+        # original runtime frame. Load those files before AST verification so
+        # a valid mechanism line is not reduced to an unverified hint.
+        for file_name in list(syntax_candidates):
+            tracked_name = self._tracked_file(file_name, tracked_files)
+            if not tracked_name:
+                continue
+            if tracked_name != file_name:
+                syntax_candidates[tracked_name].extend(syntax_candidates.pop(file_name))
+                file_name = tracked_name
+            if file_name in source_texts:
+                continue
+            source_file = (source_root / Path(file_name)).resolve()
+            if self._inside(source_file, source_root) and source_file.is_file():
+                source_texts[file_name] = self._read_source(source_file)
+
+        source_syntax = []
+        verified_source_lines = []
+        for file_name, file_candidates in syntax_candidates.items():
+            if Path(file_name).suffix.lower() != ".py":
+                continue
+            source_text = source_texts.get(file_name)
+            if source_text is None:
+                continue
+            syntax_result = PythonSourceSyntaxVerifier.verify(
+                relative_file=file_name,
+                source=source_text,
+                candidates=file_candidates,
+                revision=revision,
+            )
+            source_syntax.append(syntax_result)
+            verified_source_lines.extend(syntax_result.get("verified_source_lines") or [])
+
+        source_reference_hints = [
+            {
+                **path,
+                "evidence_role": "static_hint",
+                "verification_status": "unverified",
+            }
+            for path in reference_paths[:12]
+            if isinstance(path, dict)
+        ]
 
         symbols = ""
         files = [str(source_root / item["file"]) for item in snippets]
-        if files:
+        if files and ctags:
             symbol_result = subprocess.run(
                 [ctags, "-x", "--_xformat=%N\\t%F\\t%n\\t%K", *files],
                 capture_output=True,
@@ -111,6 +209,13 @@ class SourceSnapshotCollector:
                 "snippets": snippets,
                 "enclosing_contexts": enclosing_contexts,
                 "reference_paths": reference_paths,
+                "source_syntax": source_syntax,
+                "verified_source_lines": verified_source_lines,
+                "source_tools": {
+                    "git": True,
+                    "python_ast": True,
+                    "ctags": bool(ctags),
+                },
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -127,14 +232,22 @@ class SourceSnapshotCollector:
                 "snippets": snippets,
                 "enclosing_contexts": enclosing_contexts[:4],
                 "reference_paths": reference_paths[:12],
+                "source_reference_hints": source_reference_hints,
+                "source_syntax": source_syntax[:12],
+                "verified_source_lines": verified_source_lines[:64],
                 "ctags_index": symbols,
+                "source_tools": {
+                    "git": True,
+                    "python_ast": True,
+                    "ctags": bool(ctags),
+                },
             },
         )
 
     def _result(self, output_dir: Path, ok: bool, reason: str, detail: str, extra: dict[str, Any]) -> CollectorResult:
         payload = {
             "schema_version": "1.0",
-            "producer": "git+universal-ctags",
+            "producer": "git+python.ast",
             **extra,
             "evidence_validity": {
                 "execution_status": "completed" if ok else "failed",
@@ -180,21 +293,60 @@ class SourceSnapshotCollector:
         ]
         if not matches:
             return None
-        classes = [node for node in matches if isinstance(node, ast.ClassDef)]
-        node = min(classes or matches, key=lambda item: int(item.end_lineno) - int(item.lineno))
-        start = int(node.lineno)
-        end = int(node.end_lineno)
+        node = min(matches, key=lambda item: int(item.end_lineno) - int(item.lineno))
+        outer_class = next(
+            (
+                item for item in matches
+                if isinstance(item, ast.ClassDef)
+                and int(item.lineno) <= int(node.lineno)
+                and int(item.end_lineno) >= int(node.end_lineno)
+            ),
+            None,
+        )
+        # Report the innermost callable as the source context. Static
+        # reference analysis still uses the enclosing class when helper
+        # methods (for example an append/store method) are required.
+        context_node = node
+        analysis_scope = outer_class or node
+        start = int(context_node.lineno)
+        end = int(context_node.end_lineno)
         if end - start + 1 > cls.MAX_ENCLOSING_LINES:
             return None
         return {
             "file": relative.as_posix(),
-            "symbol": str(node.name),
-            "kind": "class" if isinstance(node, ast.ClassDef) else "function",
+            "symbol": cls._qualified_symbol(matches, node) or str(context_node.name),
+            "kind": "class" if isinstance(context_node, ast.ClassDef) else "function",
+            "analysis_scope_symbol": (
+                cls._qualified_symbol(matches, outer_class)
+                if outer_class is not None
+                else cls._qualified_symbol(matches, node)
+            ),
+            "innermost_symbol": str(node.name),
+            "innermost_kind": "class" if isinstance(node, ast.ClassDef) else "function",
+            "qualified_symbol": cls._qualified_symbol(matches, node),
             "start_line": start,
             "end_line": end,
             "lines": [{"line": number, "text": lines[number - 1]} for number in range(start, end + 1)],
-            "reference_paths": cls._python_reference_paths(node, lines),
+            "reference_paths": cls._python_reference_paths(analysis_scope, lines),
         }
+
+    @staticmethod
+    def _qualified_symbol(matches: list[ast.AST], node: ast.AST) -> str:
+        scopes = [
+            item for item in matches
+            if int(getattr(item, "lineno", 0) or 0) <= int(getattr(node, "lineno", 0) or 0)
+            and int(getattr(item, "end_lineno", 0) or 0) >= int(getattr(node, "end_lineno", 0) or 0)
+        ]
+        scopes.sort(key=lambda item: int(getattr(item, "lineno", 0) or 0))
+        return ".".join(str(getattr(item, "name", "")) for item in scopes if getattr(item, "name", ""))
+
+    @staticmethod
+    def _read_source(source_file: Path) -> str:
+        try:
+            with tokenize.open(str(source_file)) as handle:
+                return handle.read()
+        except (OSError, SyntaxError, UnicodeError):
+            return source_file.read_text(encoding="utf-8", errors="replace")
 
     @classmethod
     def _python_reference_paths(cls, scope: ast.AST, lines: list[str]) -> list[dict[str, Any]]:

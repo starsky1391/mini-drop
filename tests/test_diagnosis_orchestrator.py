@@ -49,6 +49,25 @@ def client_fixture():
     return TestClient(app)
 
 
+def _verified_line_evidence(file_name, line):
+    return {
+        "source_syntax": {
+            "file": file_name,
+            "verified_line": line,
+            "source_syntax_valid": True,
+            "evidence_role": "verified_source_line",
+        },
+        "source_syntax_valid": True,
+        "line_localization_status": "verified",
+        "runtime_line_candidates": [{
+            "file": file_name,
+            "line": line,
+            "symbol": "",
+            "evidence_ref": "ev-runtime",
+        }],
+    }
+
+
 def test_audit_bundle_json_safe_replaces_non_finite_floats():
     assert json_safe({"ok": 1.0, "bad": float("nan"), "items": [float("inf")]}) == {
         "ok": 1.0,
@@ -840,6 +859,7 @@ def test_verified_line_rewrites_emitted_parent_and_attaches_runtime_observations
                 "line": 651,
                 "supported_level": "line",
                 "evidence_refs": ["ev-source"],
+                **_verified_line_evidence("/opt/celery-src/celery/app/trace.py", 651),
             },
         },
         candidates=[
@@ -935,11 +955,7 @@ def test_unbound_runtime_observations_use_only_the_unique_verified_line_cohort()
                 "line": 651,
                 "supported_level": "line",
                 "evidence_refs": ["ev-stack"],
-                "runtime_line_candidates": [{
-                    "file": "/opt/celery-src/celery/app/trace.py",
-                    "line": 651,
-                    "evidence_ref": "ev-stack",
-                }],
+                **_verified_line_evidence("/opt/celery-src/celery/app/trace.py", 651),
             },
         },
         candidates=[
@@ -1007,6 +1023,7 @@ def test_unbound_runtime_observation_without_verified_cohort_remains_orphan():
                 "line": 651,
                 "supported_level": "line",
                 "evidence_refs": ["ev-source"],
+                **_verified_line_evidence("/opt/celery-src/celery/app/trace.py", 651),
             },
         },
         candidates=[{
@@ -1052,6 +1069,7 @@ def test_ai_candidate_uses_real_parent_depth_when_observation_layer_already_exis
                 "line": 651,
                 "supported_level": "line",
                 "evidence_refs": ["ev-source"],
+                **_verified_line_evidence("/opt/celery-src/celery/app/trace.py", 651),
             },
         },
         candidates=[
@@ -4308,6 +4326,12 @@ def test_source_snapshot_upgrades_matching_call_path_anchor_to_line_only():
                 "focus_line": 768,
                 "lines": [{"line": 768, "text": "def compile(self):"}],
             }],
+            "verified_source_lines": [{
+                "file": "werkzeug/routing.py",
+                "verified_line": 768,
+                "source_syntax_valid": True,
+                "evidence_role": "verified_source_line",
+            }],
         },
     }]
 
@@ -4316,7 +4340,155 @@ def test_source_snapshot_upgrades_matching_call_path_anchor_to_line_only():
 
     assert upgraded["supported_level"] == "line"
     assert upgraded["source_context_hash"] == "sha256:verified"
+    assert upgraded["runtime_parent_candidate"] is True
+    assert upgraded["runtime_line_candidates"][0]["line"] == 768
     assert mismatched["supported_level"] == "call_path"
+
+
+def test_source_snapshot_ast_verification_allows_ordinary_business_symbol_to_line():
+    anchor = {
+        "supported_level": "function",
+        "anchor": "Worker.process_item",
+        "function": "process_item",
+        "file": "worker.py",
+        "line": 3,
+    }
+    observations = [{
+        "source_snapshot": {
+            "source_context_hash": "sha256:verified",
+            "revision": "abc123",
+            "snippets": [{
+                "file": "worker.py",
+                "focus_line": 3,
+                "symbol": "process_item",
+                "lines": [{"line": 3, "text": "result = value + 1"}],
+            }],
+            "source_syntax": [{
+                "parser": "python.ast",
+                "evidence_status": "valid",
+                "verified_source_lines": [{
+                    "file": "worker.py",
+                    "verified_line": 3,
+                    "enclosing_symbol": "Worker.process_item",
+                    "node_type": "Assign",
+                }],
+            }],
+            "verified_source_lines": [{
+                "file": "worker.py",
+                "verified_line": 3,
+                "enclosing_symbol": "Worker.process_item",
+                "node_type": "Assign",
+            }],
+            "evidence_validity": {"evidence_status": "valid"},
+        },
+    }]
+
+    result = orchestrator_module._verified_source_anchor(anchor, observations)
+
+    assert result["supported_level"] == "line"
+    assert result["line_localization_status"] == "verified"
+    assert result["source_syntax"]["node_type"] == "Assign"
+    assert result["root_claim_allowed"] is False
+
+
+def test_source_snapshot_without_ast_verification_does_not_promote_line():
+    anchor = {
+        "supported_level": "function",
+        "function": "Worker.process_item",
+        "file": "worker.py",
+        "line": 3,
+        "runtime_line_candidates": [{
+            "file": "worker.py",
+            "line": 3,
+            "symbol": "process_item",
+        }],
+    }
+    observations = [{
+        "source_snapshot": {
+            "source_context_hash": "sha256:source",
+            "revision": "abc123",
+            "snippets": [{
+                "file": "worker.py",
+                "focus_line": 3,
+                "symbol": "process_item",
+                "lines": [{"line": 3, "text": "return value + 1"}],
+            }],
+            "evidence_validity": {"evidence_status": "valid"},
+        },
+    }]
+
+    result = orchestrator_module._verified_source_anchor(anchor, observations)
+
+    assert result["supported_level"] == "function"
+    assert result.get("line_localization_status") != "verified"
+
+
+def test_source_snapshot_ast_span_matches_line_inside_multiline_statement():
+    snapshot = {
+        "verified_source_lines": [{
+            "file": "worker.py",
+            "verified_line": 2,
+            "source_syntax_valid": True,
+            "evidence_role": "verified_source_line",
+            "source_span": {"start_line": 2, "end_line": 4},
+        }],
+    }
+
+    matched = orchestrator_module._source_snapshot_line_match(snapshot, "worker.py", 3)
+
+    assert matched["verified_line"] == 2
+
+
+def test_session_tree_promotes_verified_source_anchor_to_line_before_causal_qualification():
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-source-line-localization",
+        cluster_assessment={
+            "classification": "self_code_or_process_pressure",
+            "summary": "运行时热点已通过 AST 回连到源码行，但机制仍待补证。",
+            "supported_level": "function",
+            "max_supported_level": "function",
+            "confidence": 0.6,
+            "evidence_refs": ["ev-runtime", "ev-source"],
+            "primary_anchor": {
+                "supported_level": "line",
+                "file": "worker.py",
+                "line": 3,
+                "function": "process_item",
+                "source_context_hash": "sha256:source",
+                "source_revision": "abc123",
+                "line_localization_status": "verified",
+                "source_syntax": {
+                    "file": "worker.py",
+                    "verified_line": 3,
+                    "node_type": "Assign",
+                },
+                "runtime_line_candidates": [{
+                    "file": "worker.py",
+                    "line": 3,
+                    "symbol": "process_item",
+                    "evidence_ref": "ev-runtime",
+                }],
+                "evidence_refs": ["ev-runtime", "ev-source"],
+            },
+            "conclusion_eligible": False,
+        },
+        candidates=[],
+        followup_requests=["source_mechanism_query"],
+        probes=[],
+        child_trees=[],
+        source_snapshot_hashes=["sha256:source"],
+    )
+
+    assert tree.final_supported_level == "line"
+    assert tree.line_anchor_eligibility["status"] == "verified"
+    line_nodes = [
+        node
+        for layer in tree.layers
+        for node in layer.unknown_causes
+        if node.supported_level == "line"
+    ]
+    assert line_nodes
+    assert line_nodes[0].conclusion_eligible is False
 
 
 def test_source_snapshot_upgrades_unique_runtime_candidate_with_container_prefix():
@@ -4338,17 +4510,23 @@ def test_source_snapshot_upgrades_unique_runtime_candidate_with_container_prefix
     }
     observations = [{
         "evidence_refs": ["ev-source"],
-        "source_snapshot": {
-            "source_context_hash": "sha256:verified",
-            "revision": "abc123",
-            "snippets": [{
-                "file": "requests/sessions.py",
-                "focus_line": 70,
-                "symbol": "merge_setting",
-                "lines": [{"line": 70, "text": "def merge_setting(request_setting, session_setting):"}],
-            }],
-            "evidence_validity": {"evidence_status": "valid"},
-        },
+            "source_snapshot": {
+                "source_context_hash": "sha256:verified",
+                "revision": "abc123",
+                "snippets": [{
+                    "file": "requests/sessions.py",
+                    "focus_line": 70,
+                    "symbol": "merge_setting",
+                    "lines": [{"line": 70, "text": "def merge_setting(request_setting, session_setting):"}],
+                }],
+                "verified_source_lines": [{
+                    "file": "requests/sessions.py",
+                    "verified_line": 70,
+                    "source_syntax_valid": True,
+                    "evidence_role": "verified_source_line",
+                }],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
     }]
 
     result = orchestrator_module._verified_source_anchor(anchor, observations)
@@ -4525,6 +4703,12 @@ def test_later_runtime_profile_can_upgrade_selected_anchor_to_verified_line():
                     "symbol": "get",
                     "lines": [{"line": 555, "text": "def get(self, url, **kwargs):"}],
                 }],
+                "verified_source_lines": [{
+                    "file": "requests/sessions.py",
+                    "verified_line": 555,
+                    "source_syntax_valid": True,
+                    "evidence_role": "verified_source_line",
+                }],
                 "evidence_validity": {"evidence_status": "valid"},
             },
         },
@@ -4555,6 +4739,7 @@ def test_verified_line_is_not_re_emitted_from_previous_line_refinement():
             "function": "get",
             "source_context_hash": "sha256:requests",
             "source_revision": "rev-requests",
+            **_verified_line_evidence("requests/sessions.py", 555),
             "runtime_line_candidates": [{
                 "file": "/opt/project/requests/sessions.py",
                 "line": 555,
@@ -4704,6 +4889,20 @@ def test_verified_source_fallback_chooses_unique_failure_handling_line():
                 {"file": "celery/app/task.py", "focus_line": 27, "symbol": "unhandled_failure", "lines": [{"line": 27}]},
                 {"file": "celery/app/trace.py", "focus_line": 255, "symbol": "_log_error", "lines": [{"line": 255}]},
             ],
+            "verified_source_lines": [
+                {
+                    "file": "celery/app/task.py",
+                    "verified_line": 27,
+                    "source_syntax_valid": True,
+                    "evidence_role": "verified_source_line",
+                },
+                {
+                    "file": "celery/app/trace.py",
+                    "verified_line": 255,
+                    "source_syntax_valid": True,
+                    "evidence_role": "verified_source_line",
+                },
+            ],
             "evidence_validity": {"evidence_status": "valid"},
         },
     }]
@@ -4780,6 +4979,20 @@ def test_source_snapshot_prefers_celery_trace_failure_frame_over_exception_helpe
                     "lines": [{"line": 647}],
                 },
             ],
+            "verified_source_lines": [
+                {
+                    "file": "celery/utils/serialization.py",
+                    "verified_line": 164,
+                    "source_syntax_valid": True,
+                    "evidence_role": "verified_source_line",
+                },
+                {
+                    "file": "celery/app/trace.py",
+                    "verified_line": 647,
+                    "source_syntax_valid": True,
+                    "evidence_role": "verified_source_line",
+                },
+            ],
             "evidence_validity": {"evidence_status": "valid"},
         },
     }]
@@ -4810,6 +5023,20 @@ def test_generic_direct_source_match_does_not_bypass_failure_line_selection():
             "snippets": [
                 {"file": "celery/bootsteps.py", "focus_line": 116, "symbol": "start", "lines": [{"line": 116}]},
                 {"file": "celery/app/trace.py", "focus_line": 255, "symbol": "_log_error", "lines": [{"line": 255}]},
+            ],
+            "verified_source_lines": [
+                {
+                    "file": "celery/bootsteps.py",
+                    "verified_line": 116,
+                    "source_syntax_valid": True,
+                    "evidence_role": "verified_source_line",
+                },
+                {
+                    "file": "celery/app/trace.py",
+                    "verified_line": 255,
+                    "source_syntax_valid": True,
+                    "evidence_role": "verified_source_line",
+                },
             ],
             "evidence_validity": {"evidence_status": "valid"},
         },
@@ -5051,6 +5278,125 @@ def test_go_heap_line_candidates_feed_source_snapshot(client: TestClient):
     assert candidates[0]["line"] == 42
 
 
+def test_formal_source_mechanism_probe_uses_only_ast_verified_lines(client: TestClient):
+    data = client.post("/api/v1/diagnoses", json=_payload("服务 service-a 内存持续增长")).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    task_id = data["child_task_ids"][0]
+    repo.add_artifacts(task_id, [{
+        "artifact_type": "source_snapshot_json",
+        "object_key": f"tasks/{task_id}/source_snapshot.json",
+        "metadata": {
+            "data": {
+                "revision": "rev-1",
+                "source_context_hash": "sha256:source",
+                "verified_source_lines": [{
+                    "file": "src/compiler.py",
+                    "verified_line": 42,
+                    "enclosing_symbol": "Compiler.compile",
+                    "line_origin": "runtime_focus",
+                    "evidence_role": "verified_source_line",
+                }],
+                "reference_paths": [{
+                    "file": "src/compiler.py",
+                    "source_lines": [{"line": 99, "text": "self.remember(operation)"}],
+                }],
+                "evidence_validity": {"evidence_status": "valid"},
+            },
+        },
+    }])
+
+    verified = diagnosis_orchestrator._session_verified_source_lines(diagnosis_id)
+
+    assert [(item["file"], item["line"]) for item in verified] == [
+        ("src/compiler.py", 42),
+    ]
+    assert verified[0]["evidence_role"] == "verified_source_line"
+
+
+def test_reference_step_line_refinement_hangs_below_verified_runtime_line():
+    assessment = {
+        "classification": "python_memory_retention",
+        "summary": "运行时分配行和静态关联行都已通过 AST 验证。",
+        "supported_level": "line",
+        "confidence": 0.7,
+        "evidence_refs": ["ev-runtime", "ev-source"],
+        "conclusion_eligible": False,
+        "primary_anchor": {
+            "supported_level": "line",
+            "source_context_hash": "sha256:source",
+            "source_revision": "rev-1",
+            "file": "src/compiler.py",
+            "line": 42,
+            "function": "Compiler.compile",
+            "line_localization_status": "verified",
+            "source_syntax": {
+                "file": "src/compiler.py",
+                "verified_line": 42,
+                "source_syntax_valid": True,
+                "evidence_role": "verified_source_line",
+            },
+            "source_syntax_valid": True,
+            "runtime_line_candidates": [{
+                "file": "src/compiler.py",
+                "line": 42,
+                "symbol": "Compiler.compile",
+                "evidence_ref": "ev-runtime",
+            }],
+            "verified_source_lines": [
+                {
+                    "file": "src/compiler.py",
+                    "verified_line": 42,
+                    "enclosing_symbol": "Compiler.compile",
+                    "line_origin": "runtime_focus",
+                    "evidence_role": "verified_source_line",
+                    "evidence_refs": ["ev-runtime"],
+                },
+                {
+                    "file": "src/compiler.py",
+                    "verified_line": 99,
+                    "enclosing_symbol": "Compiler.compile",
+                    "line_origin": "reference_step",
+                    "evidence_role": "verified_source_line",
+                    "evidence_refs": ["ev-source"],
+                },
+            ],
+        },
+    }
+
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-reference-step-line",
+        cluster_assessment=assessment,
+        candidates=[],
+        followup_requests=["source_mechanism_query"],
+        probes=[],
+        child_trees=[],
+        source_snapshot_hashes=["sha256:source"],
+    )
+
+    nodes = {
+        node.candidate_id: node
+        for layer in tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    }
+    reference_nodes = [
+        node for node in nodes.values()
+        if node.line_origin == "reference_step"
+    ]
+    assert len(reference_nodes) == 1
+    reference = reference_nodes[0]
+    assert reference.supported_level == "line"
+    assert reference.conclusion_eligible is False
+    assert reference.parent_candidate_ids
+    parent = nodes[reference.origin_parent_candidate_id]
+    assert parent.supported_level == "line"
+    assert parent.line_origin != "reference_step"
+
+
 def test_go_heap_anchor_is_not_full_leak_root_cause_eligible():
     observations = [
         {
@@ -5138,6 +5484,12 @@ def test_memory_retention_anchor_prefers_memray_bytes_and_verified_source():
                     "focus_line": 1120,
                     "lines": [{"line": 1120, "text": "co = types.CodeType(*code_args)"}],
                 }],
+                "verified_source_lines": [{
+                    "file": "src/werkzeug/routing.py",
+                    "verified_line": 1120,
+                    "source_syntax_valid": True,
+                    "evidence_role": "verified_source_line",
+                }],
             },
         },
     ]
@@ -5189,9 +5541,16 @@ def test_memory_retention_allocation_line_alone_is_not_root_cause_eligible():
             "anchor": "src/werkzeug/routing.py:844 __init__",
             "source_context_hash": "sha256:verified",
             "file": "src/werkzeug/routing.py",
-            "line": 844,
-            "function": "__init__",
-            "size_bytes": 1024,
+                "line": 844,
+                "function": "__init__",
+                "source_syntax": {
+                    "file": "src/werkzeug/routing.py",
+                    "verified_line": 844,
+                    "source_syntax_valid": True,
+                    "evidence_role": "verified_source_line",
+                },
+                "source_syntax_valid": True,
+                "size_bytes": 1024,
             "allocation_count": 8,
         },
         evidence_refs=["ev-heap", "ev-source"],
@@ -5216,6 +5575,13 @@ def test_source_snapshot_ast_reference_hint_is_not_root_cause_eligible():
             "file": "src/werkzeug/routing.py",
             "line": 844,
             "function": "__init__",
+            "source_syntax": {
+                "file": "src/werkzeug/routing.py",
+                "verified_line": 844,
+                "source_syntax_valid": True,
+                "evidence_role": "verified_source_line",
+            },
+            "source_syntax_valid": True,
             "size_bytes": 1024,
             "allocation_count": 8,
             "reference_paths": [{
@@ -5249,6 +5615,13 @@ def test_codeql_and_pyheap_reference_chain_is_root_cause_eligible():
             "file": "src/werkzeug/routing.py",
             "line": 844,
             "function": "__init__",
+            "source_syntax": {
+                "file": "src/werkzeug/routing.py",
+                "verified_line": 844,
+                "source_syntax_valid": True,
+                "evidence_role": "verified_source_line",
+            },
+            "source_syntax_valid": True,
             "size_bytes": 1024,
             "allocation_count": 8,
             "mechanism_paths": [{
@@ -5634,6 +6007,7 @@ def test_source_mechanism_is_attached_only_after_verified_line_base_node():
             "source_revision": "a83070e5ec748c32325332db422756cfdd709aae",
             "file": "celery/app/trace.py",
             "line": 1120,
+            **_verified_line_evidence("celery/app/trace.py", 1120),
             "mechanism_paths": [{
                 "candidate_id": "ai_proposal_trace_cycle",
                 "candidate_relation": "supports",
@@ -5741,6 +6115,7 @@ def test_duplicate_verified_line_hotspots_collapse_and_failed_deep_probe_returns
             "file": "celery/app/trace.py",
             "line": 258,
             "function": "_log_error",
+            **_verified_line_evidence("celery/app/trace.py", 258),
         },
     }
     candidates = [
@@ -5813,6 +6188,7 @@ def test_verified_source_line_is_synthesized_as_base_parent_for_mechanism():
             "file": "celery/app/trace.py",
             "line": 1120,
             "function": "handle_failure",
+            **_verified_line_evidence("celery/app/trace.py", 1120),
             "mechanism_paths": [{
                 "candidate_id": "ai_proposal_trace_cycle",
                 "candidate_relation": "supports",
@@ -5891,6 +6267,7 @@ def test_ai_candidate_is_refined_to_verified_line_without_formal_promotion():
             "file": "requests/structures.py",
             "line": 83,
             "function": "CaseInsensitiveDict.__setitem__",
+            **_verified_line_evidence("requests/structures.py", 83),
             "runtime_line_candidates": [{
                 "file": "/opt/project/requests/structures.py",
                 "line": 83,
@@ -6160,9 +6537,21 @@ def test_werkzeug_1521_fixture_closes_bound_method_branch_and_greys_defaults():
         {
             "anchor": "src/werkzeug/routing.py:844 BuilderCompiler.__init__",
             "file": "src/werkzeug/routing.py",
-            "line": 844,
-            "function": "BuilderCompiler.__init__",
-            "source_context_hash": "sha256:werkzeug-1521",
+                "line": 844,
+                "function": "BuilderCompiler.__init__",
+                "source_syntax": {
+                    "file": "src/werkzeug/routing.py",
+                    "verified_line": 844,
+                    "source_syntax_valid": True,
+                    "evidence_role": "verified_source_line",
+                },
+                "source_syntax_valid": True,
+                "source_context_hash": "sha256:werkzeug-1521",
+                "runtime_line_candidates": [{
+                    "file": "src/werkzeug/routing.py",
+                    "line": 844,
+                    "symbol": "BuilderCompiler.__init__",
+                }],
             "source_revision": "a220671d66755a94630a212378754bb432811158",
             "size_bytes": 8_574_832,
             "allocation_count": 63_992,
@@ -6381,6 +6770,7 @@ def _origin_backtrack_tree(*, probe_status="BLOCKED", evidence_status="blocked",
             "source_revision": "a220671d",
             "file": "src/werkzeug/routing.py",
             "line": 844,
+            **_verified_line_evidence("src/werkzeug/routing.py", 844),
             "mechanism_paths": [path],
         },
         "evidence_refs": ["ev-source"],

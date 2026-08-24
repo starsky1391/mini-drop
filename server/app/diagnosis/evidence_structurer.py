@@ -1542,13 +1542,26 @@ def _python_scenario_has_industrial_source(payload: dict[str, Any]) -> bool:
 
 def _source_snapshot_state(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
-        return {"status": "missing", "source_context_hash": "", "revision": "", "snippets": []}
+        return {
+            "status": "missing",
+            "source_context_hash": "",
+            "revision": "",
+            "snippets": [],
+            "verified_source_lines": [],
+            "source_syntax": [],
+        }
     validity = value.get("evidence_validity") if isinstance(value.get("evidence_validity"), dict) else {}
     return {
         "status": str(validity.get("evidence_status") or ""),
         "source_context_hash": str(value.get("source_context_hash") or ""),
         "revision": str(value.get("revision") or ""),
         "snippets": [item for item in (value.get("snippets") or []) if isinstance(item, dict)],
+        "verified_source_lines": [
+            item for item in (value.get("verified_source_lines") or []) if isinstance(item, dict)
+        ],
+        "source_syntax": [
+            item for item in (value.get("source_syntax") or []) if isinstance(item, dict)
+        ],
     }
 
 
@@ -1626,11 +1639,43 @@ def _line_candidates_match_source(candidates: list[dict[str, Any]], source_state
     ):
         return False
     snippets = source_state.get("snippets") or []
+    verified_lines = source_state.get("verified_source_lines") or []
     for candidate in candidates:
         candidate_file = str(candidate.get("file") or "").replace("\\", "/")
         candidate_line = _safe_int(candidate.get("line"))
         if not candidate_file or candidate_line <= 0:
             continue
+        verified_items = list(verified_lines)
+        for syntax_result in source_state.get("source_syntax") or []:
+            if isinstance(syntax_result, dict):
+                verified_items.extend(syntax_result.get("verified_source_lines") or [])
+        if any(
+            isinstance(item, dict)
+            and _source_file_matches(candidate_file, str(item.get("file") or ""))
+            and (
+                _safe_int(item.get("verified_line") or item.get("line")) == candidate_line
+                or (
+                    _safe_int(
+                        (item.get("source_span") or {}).get("start_line")
+                        if isinstance(item.get("source_span"), dict)
+                        else 0
+                    )
+                    <= candidate_line
+                    <= _safe_int(
+                        (item.get("source_span") or {}).get("end_line")
+                        if isinstance(item.get("source_span"), dict)
+                        else 0
+                    )
+                    and _safe_int(
+                        (item.get("source_span") or {}).get("start_line")
+                        if isinstance(item.get("source_span"), dict)
+                        else 0
+                    ) > 0
+                )
+            )
+            for item in verified_items
+        ):
+            return True
         for snippet in snippets:
             snippet_file = str(snippet.get("file") or "").replace("\\", "/")
             snippet_line = _safe_int(snippet.get("focus_line"))
@@ -1641,6 +1686,16 @@ def _line_candidates_match_source(candidates: list[dict[str, Any]], source_state
             ):
                 return True
     return False
+
+
+def _source_file_matches(left: str, right: str) -> bool:
+    left = str(left or "").replace("\\", "/").lstrip("/")
+    right = str(right or "").replace("\\", "/").lstrip("/")
+    return bool(left and right) and (
+        left == right
+        or left.endswith(f"/{right}")
+        or right.endswith(f"/{left}")
+    )
 
 
 def _line_candidates_from_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

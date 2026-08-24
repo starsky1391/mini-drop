@@ -25,7 +25,15 @@ def _task(repo, sarif, **options):
         options={
             "source_root": str(repo),
             "source_revision": "abc123",
-            "line_candidates": [{"file": "src/routing.py", "line": 20, "symbol": "compile"}],
+            "line_candidates": [{
+                "file": "src/routing.py",
+                "line": 20,
+                "symbol": "compile",
+                "evidence_role": "verified_source_line",
+                "source_syntax_valid": True,
+                "source_context_hash": "sha256:source",
+                "source_revision": "abc123",
+            }],
             "codeql_sarif_path": str(sarif),
             **options,
         },
@@ -45,7 +53,7 @@ def test_source_mechanism_total_timeout_fits_server_stale_window(tmp_path):
     assert _total_timeout_seconds(task) == 120
 
 
-def _sarif(path, location_count=3):
+def _sarif(path, location_count=3, candidate_id=""):
     locations = []
     for index in range(location_count):
         locations.append({
@@ -61,7 +69,10 @@ def _sarif(path, location_count=3):
         "runs": [{"results": [{
             "ruleId": "mini-drop/python-retention",
             "message": {"text": "bound method reaches generated code constants"},
-            "properties": {"candidate_relation": "supports"},
+            "properties": {
+                "candidate_relation": "supports",
+                **({"candidate_id": candidate_id} if candidate_id else {}),
+            },
             "codeFlows": [{"threadFlows": [{"locations": locations}]}],
         }]}],
     }), encoding="utf-8")
@@ -109,6 +120,60 @@ def test_codeql_revision_mismatch_is_structured_blocked(tmp_path, monkeypatch):
     assert result.ok is False
     assert payload["evidence_validity"]["evidence_status"] == "blocked"
     assert payload["evidence_validity"]["reason"] == "source_revision_mismatch"
+
+
+def test_codeql_rejects_unverified_line_candidates_before_running_query(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    sarif = tmp_path / "result.sarif"
+    _sarif(sarif)
+    monkeypatch.setenv("MINI_DROP_SOURCE_ROOTS", str(tmp_path))
+    monkeypatch.setenv("MINI_DROP_CODEQL_ARTIFACT_ROOTS", str(tmp_path))
+    collector = SourceMechanismCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    task = _task(
+        repo,
+        sarif,
+        line_candidates=[{"file": "src/routing.py", "line": 20, "symbol": "compile"}],
+    )
+
+    with mock.patch.object(collector, "_git", side_effect=["abc123", "abc123", "origin/repo"]):
+        result = collector.collect(task)
+
+    payload = result.artifacts[0]["metadata"]["data"]
+    assert result.ok is False
+    assert payload["evidence_validity"]["reason"] == "verified_source_line_missing"
+
+
+def test_codeql_rejects_verified_anchor_from_different_revision(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    sarif = tmp_path / "result.sarif"
+    _sarif(sarif)
+    monkeypatch.setenv("MINI_DROP_SOURCE_ROOTS", str(tmp_path))
+    monkeypatch.setenv("MINI_DROP_CODEQL_ARTIFACT_ROOTS", str(tmp_path))
+    collector = SourceMechanismCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    task = _task(
+        repo,
+        sarif,
+        line_candidates=[{
+            "file": "src/routing.py",
+            "line": 20,
+            "symbol": "compile",
+            "evidence_role": "verified_source_line",
+            "source_syntax_valid": True,
+            "source_context_hash": "sha256:source",
+            "source_revision": "old-revision",
+        }],
+    )
+
+    with mock.patch.object(collector, "_git", side_effect=["abc123", "abc123", "origin/repo"]):
+        result = collector.collect(task)
+
+    payload = result.artifacts[0]["metadata"]["data"]
+    assert result.ok is False
+    assert payload["evidence_validity"]["reason"] == "source_anchor_revision_mismatch"
 
 
 def test_codeql_maps_host_source_root_before_policy_check(tmp_path, monkeypatch):
@@ -210,8 +275,24 @@ select sink.getNode(), source, sink, "same node"
                     "query": query,
                 },
                 "line_candidates": [
-                    {"file": "src/routing.py", "line": 20, "symbol": "compile"},
-                    {"file": "src/routing.py", "line": 21, "symbol": "compile"},
+                    {
+                        "file": "src/routing.py",
+                        "line": 20,
+                        "symbol": "compile",
+                        "evidence_role": "verified_source_line",
+                        "source_syntax_valid": True,
+                        "source_context_hash": "sha256:source",
+                        "source_revision": "abc123",
+                    },
+                    {
+                        "file": "src/routing.py",
+                        "line": 21,
+                        "symbol": "compile",
+                        "evidence_role": "verified_source_line",
+                        "source_syntax_valid": True,
+                        "source_context_hash": "sha256:source",
+                        "source_revision": "abc123",
+                    },
                 ],
             },
         })
@@ -221,7 +302,7 @@ select sink.getNode(), source, sink, "same node"
             Path(command[command.index("create") + 1]).mkdir(parents=True)
         if "analyze" in command:
             output = next(item.split("=", 1)[1] for item in command if item.startswith("--output="))
-            _sarif(Path(output))
+            _sarif(Path(output), candidate_id="ai_proposal_bound_method")
         return mock.MagicMock(returncode=0, stdout=b"", stderr=b"")
 
     with mock.patch.object(
@@ -249,6 +330,51 @@ select sink.getNode(), source, sink, "same node"
     assert "where source = sink" not in executed_query
     qlpack = Path(query_artifact["local_path"]).parent / "qlpack.yml"
     assert "codeql/python-all: '*'" in qlpack.read_text(encoding="utf-8")
+
+
+def test_codeql_rejects_missing_sarif_candidate_id_when_query_is_bound(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    sarif = tmp_path / "result.sarif"
+    _sarif(sarif)
+    monkeypatch.setenv("MINI_DROP_SOURCE_ROOTS", str(tmp_path))
+    monkeypatch.setenv("MINI_DROP_CODEQL_ARTIFACT_ROOTS", str(tmp_path))
+    collector = SourceMechanismCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    task = _task(
+        repo,
+        sarif,
+        candidate_id="candidate-bound",
+    )
+
+    with mock.patch.object(collector, "_git", side_effect=["abc123", "abc123", "origin/repo"]):
+        result = collector.collect(task)
+
+    payload = result.artifacts[0]["metadata"]["data"]
+    assert result.ok is False
+    assert payload["evidence_validity"]["reason"] == "candidate_id_missing"
+
+
+def test_codeql_exposes_candidate_id_alignment_status(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    sarif = tmp_path / "result.sarif"
+    _sarif(sarif, candidate_id="candidate-bound")
+    monkeypatch.setenv("MINI_DROP_SOURCE_ROOTS", str(tmp_path))
+    monkeypatch.setenv("MINI_DROP_CODEQL_ARTIFACT_ROOTS", str(tmp_path))
+    collector = SourceMechanismCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+
+    with mock.patch.object(collector, "_git", side_effect=["abc123", "abc123", "origin/repo"]):
+        result = collector.collect(_task(repo, sarif, candidate_id="candidate-bound"))
+
+    payload = next(
+        item["metadata"]["data"]
+        for item in result.artifacts
+        if item["artifact_type"] == "source_mechanism_json"
+    )
+    assert result.ok is True
+    assert payload["mechanism_paths"][0]["candidate_id_status"] == "matched"
 
 
 def test_codeql_guard_rejects_out_of_range_duplicate_and_unverified_anchors():

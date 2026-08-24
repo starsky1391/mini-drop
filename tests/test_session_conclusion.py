@@ -509,6 +509,30 @@ def test_compact_source_evidence_keeps_enclosing_source_text():
     assert "types.CodeType" in source
 
 
+def test_compact_python_ast_source_evidence_keeps_verified_lines():
+    compact = _compact_evidence_item({
+        "evidence_id": "ev-source-ast",
+        "source_type": "derived_artifact",
+        "observed_value": {
+            "producer": "git+python.ast",
+            "revision": "a220671d",
+            "source_context_hash": "sha256:verified",
+            "verified_source_lines": [{
+                "file": "src/app.py",
+                "verified_line": 42,
+                "line_localization_status": "verified",
+                "evidence_role": "verified_source_line",
+                "enclosing_symbol": "Worker.process",
+            }],
+        },
+    })
+
+    observed = compact["observed_value"]
+    assert observed["producer"] == "git+python.ast"
+    assert observed["verified_source_lines"][0]["verified_line"] == 42
+    assert observed["verified_source_lines"][0]["enclosing_symbol"] == "Worker.process"
+
+
 def test_compact_source_evidence_keeps_reference_paths():
     compact = _compact_evidence_item({
         "evidence_id": "ev-source",

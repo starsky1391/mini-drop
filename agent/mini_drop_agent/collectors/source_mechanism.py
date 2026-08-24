@@ -40,9 +40,6 @@ class SourceMechanismCollector:
             return self._blocked(output_dir, "source_repository_missing", "源码目录不是可用的 Git 仓库")
         if not revision:
             return self._blocked(output_dir, "source_revision_missing", "缺少准确的源码 revision")
-        if not anchors:
-            return self._blocked(output_dir, "line_anchor_missing", "缺少已验证的 file:line 锚点")
-
         actual = self._git(source_root, ["rev-parse", "HEAD"])
         expected = self._git(source_root, ["rev-parse", revision])
         if not actual or not expected or actual != expected:
@@ -51,6 +48,26 @@ class SourceMechanismCollector:
                 "source_revision_mismatch",
                 f"源码 revision 不匹配: expected={expected or revision}, actual={actual or 'unknown'}",
                 revision=actual or revision,
+            )
+        if not anchors:
+            return self._blocked(
+                output_dir,
+                "verified_source_line_missing",
+                "缺少经过 source_snapshot + Python AST 验证的 file:line 锚点",
+                revision=actual,
+            )
+        anchor_revision_mismatch = [
+            anchor
+            for anchor in anchors
+            if anchor.get("source_revision")
+            and not _revision_matches(str(anchor.get("source_revision")), actual)
+        ]
+        if anchor_revision_mismatch:
+            return self._blocked(
+                output_dir,
+                "source_anchor_revision_mismatch",
+                "verified source line 的 revision 与当前 CodeQL checkout 不一致",
+                revision=actual,
             )
 
         pack_version = os.getenv(
@@ -91,7 +108,7 @@ class SourceMechanismCollector:
                 if not anchors:
                     return self._blocked(
                         output_dir,
-                        "line_anchor_missing",
+                        "verified_source_line_missing",
                         "已验证行锚点无法映射到当前 revision",
                         revision=actual,
                     )
@@ -171,6 +188,46 @@ class SourceMechanismCollector:
         except (OSError, json.JSONDecodeError) as exc:
             return self._blocked(output_dir, "codeql_sarif_unparseable", str(exc), revision=actual)
         paths = self._mechanism_paths(sarif, anchors, query_metadata=query_metadata)
+        expected_candidate_id = str(
+            task.options.get("candidate_id")
+            or (query_metadata or {}).get("candidate_id")
+            or ""
+        ).strip()
+        for path in paths:
+            sarif_candidate_id = str(path.get("sarif_candidate_id") or "").strip()
+            if expected_candidate_id and sarif_candidate_id:
+                path["candidate_id_status"] = (
+                    "matched" if sarif_candidate_id == expected_candidate_id else "mismatch"
+                )
+        candidate_missing = [
+            path
+            for path in paths
+            if path.get("candidate_id_mismatch")
+            or (
+                expected_candidate_id
+                and not str(path.get("sarif_candidate_id") or "").strip()
+            )
+        ]
+        if candidate_missing:
+            return self._blocked(
+                output_dir,
+                "candidate_id_missing",
+                "CodeQL 结果没有返回当前受控深探候选的 candidate_id",
+                revision=actual,
+            )
+        candidate_mismatch = [
+            path
+            for path in paths
+            if expected_candidate_id
+            and str(path.get("sarif_candidate_id") or "").strip() != expected_candidate_id
+        ]
+        if candidate_mismatch:
+            return self._blocked(
+                output_dir,
+                "candidate_id_mismatch",
+                "CodeQL 结果的 candidate_id 与当前受控深探候选不一致",
+                revision=actual,
+            )
         source_hash = hashlib.sha256(f"{identity}\0{actual}".encode("utf-8")).hexdigest()
         anchored_paths = [path for path in paths if path.get("anchor_matches")]
         segment_coverage = self._segment_coverage(paths, query_metadata, anchors)
@@ -190,6 +247,7 @@ class SourceMechanismCollector:
             "cache": {"hit": cache_hit, "cache_key": cache_key},
             "database_ref": f"codeql-cache:{cache_key}",
             "line_anchors": anchors,
+            "verified_line_anchors": anchors,
             "mechanism_paths": paths,
             "segment_coverage": segment_coverage,
             "raw_artifact_refs": [
@@ -251,6 +309,14 @@ class SourceMechanismCollector:
                         if not nodes:
                             continue
                         path_index = len(output)
+                        properties = result.get("properties") if isinstance(result.get("properties"), dict) else {}
+                        query_candidate_id = str((query_metadata or {}).get("candidate_id") or "").strip()
+                        sarif_candidate_id = str(properties.get("candidate_id") or "").strip()
+                        candidate_id_mismatch = bool(
+                            query_candidate_id
+                            and sarif_candidate_id
+                            and query_candidate_id != sarif_candidate_id
+                        )
                         edges = [
                             {
                                 "from": nodes[index]["node_id"],
@@ -267,14 +333,22 @@ class SourceMechanismCollector:
                             "edges": edges,
                             "candidate_relation": relation,
                             "candidate_id": str(
-                                (query_metadata or {}).get("candidate_id")
-                                or (
-                                    result.get("properties", {}).get("candidate_id")
-                                    if isinstance(result.get("properties"), dict)
-                                    else ""
-                                )
+                                query_candidate_id
+                                or sarif_candidate_id
                                 or ""
                             ),
+                            "query_candidate_id": query_candidate_id,
+                            "sarif_candidate_id": sarif_candidate_id,
+                            "candidate_id_status": (
+                                "matched"
+                                if query_candidate_id and sarif_candidate_id and query_candidate_id == sarif_candidate_id
+                                else "missing"
+                                if query_candidate_id and not sarif_candidate_id
+                                else "mismatch"
+                                if query_candidate_id and sarif_candidate_id
+                                else "unbound"
+                            ),
+                            "candidate_id_mismatch": candidate_id_mismatch,
                             "anchor_matches": cls._anchor_matches(nodes, anchors),
                             "evidence_ref": f"source_mechanism.mechanism_paths[{path_index}]",
                         })
@@ -393,13 +467,29 @@ class SourceMechanismCollector:
         for item in value if isinstance(value, list) else []:
             if not isinstance(item, dict):
                 continue
+            if str(item.get("evidence_role") or "") != "verified_source_line":
+                continue
+            if item.get("source_syntax_valid") is not True:
+                continue
             file_name = str(item.get("file") or "").strip()
             try:
                 line = int(item.get("line") or 0)
             except (TypeError, ValueError):
                 line = 0
             if file_name and line > 0:
-                result.append({"file": file_name[:500], "line": line, "symbol": str(item.get("symbol") or "")[:300]})
+                result.append({
+                    "file": file_name[:500],
+                    "line": line,
+                    "symbol": str(item.get("symbol") or "")[:300],
+                    "evidence_role": "verified_source_line",
+                    "source_syntax_valid": True,
+                    "source_context_hash": str(item.get("source_context_hash") or ""),
+                    "source_revision": str(item.get("source_revision") or ""),
+                    "line_origin": str(item.get("line_origin") or "runtime_focus"),
+                    "candidate_id": str(item.get("candidate_id") or ""),
+                    "parent_candidate_id": str(item.get("parent_candidate_id") or ""),
+                    "source_span": item.get("source_span") if isinstance(item.get("source_span"), dict) else {},
+                })
         return result[: cls.MAX_ANCHORS]
 
     @classmethod
@@ -522,3 +612,9 @@ def _total_timeout_seconds(task: CollectorTask) -> int:
 
 def _remaining_timeout_seconds(deadline: float) -> int:
     return max(1, int(deadline - time.monotonic()))
+
+
+def _revision_matches(expected: str, actual: str) -> bool:
+    expected = str(expected or "").strip()
+    actual = str(actual or "").strip()
+    return bool(expected and actual and (actual.startswith(expected) or expected.startswith(actual)))
