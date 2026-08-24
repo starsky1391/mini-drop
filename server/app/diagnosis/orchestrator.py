@@ -7711,6 +7711,7 @@ def _unresolved_prior_ai_candidates(tree: dict[str, Any] | None) -> list[AITreeC
                     or candidate_id in seen
                     or candidate_id.startswith(("coarse_", "gap_", "blocked_", "unknown_"))
                     or raw.get("depth_kind", "base") != "base"
+                    or raw.get("node_type") == "line_anchor"
                     or raw.get("conclusion_eligible")
                     or raw.get("status") in {"contradicted", "rejected", "forbidden"}
                 ):

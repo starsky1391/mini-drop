@@ -4280,6 +4280,100 @@ def test_later_runtime_profile_can_upgrade_selected_anchor_to_verified_line():
     assert result["function"] == "get"
 
 
+def test_verified_line_is_not_re_emitted_from_previous_line_refinement():
+    assessment = {
+        "classification": "self_code_or_process_pressure",
+        "summary": "运行时 file:line 已通过源码快照验证。",
+        "supported_level": "line",
+        "confidence": 0.62,
+        "evidence_refs": ["ev-runtime", "ev-source"],
+        "conclusion_eligible": False,
+        "primary_anchor": {
+            "supported_level": "line",
+            "anchor_type": "verified_source_line",
+            "file": "requests/sessions.py",
+            "line": 555,
+            "function": "get",
+            "source_context_hash": "sha256:requests",
+            "source_revision": "rev-requests",
+            "runtime_line_candidates": [{
+                "file": "/opt/project/requests/sessions.py",
+                "line": 555,
+                "symbol": "get",
+            }],
+        },
+    }
+    line_id = orchestrator_module._verified_line_candidate_id(
+        assessment["primary_anchor"],
+        assessment["classification"],
+    )
+    previous_tree = {
+        "layers": [{
+            "layer_id": "previous_line",
+            "depth": 2,
+            "unknown_causes": [{
+                "candidate_id": line_id,
+                "lineage_id": line_id,
+                "node_type": "line_anchor",
+                "depth_kind": "base",
+                "supported_level": "line",
+                "role": "unknown",
+                "status": "missing_evidence",
+                "claim": "previous verified line",
+                "relation": "refinement",
+                "parent_candidate_ids": ["coarse_self_code_or_process_pressure"],
+                "origin_parent_candidate_id": "coarse_self_code_or_process_pressure",
+            }],
+        }],
+    }
+
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-previous-line",
+        cluster_assessment=assessment,
+        candidates=[],
+        followup_requests=[],
+        probes=[],
+        child_trees=[],
+        previous_tree=previous_tree,
+    )
+
+    emitted = [
+        node.candidate_id
+        for layer in tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    ]
+    line_nodes = [
+        node
+        for layer in tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+        if node.supported_level == "line"
+    ]
+    assert len(line_nodes) == 1
+    assert line_id not in emitted
+    assert line_nodes[0].node_type == "line_anchor"
+    assert line_nodes[0].candidate_id != line_id
+    assert any(
+        node.node_type == "line_anchor"
+        for layer in tree.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    )
+
+
 def test_python_call_path_keeps_verified_project_frame_for_source_upgrade():
     values = {
         "depth_evidence_json": {
