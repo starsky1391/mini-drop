@@ -622,10 +622,10 @@ def generate_session_candidate_review(
                 "你是 Mini-Drop 首轮候选生成器，只输出 JSON。Analyzer 只提供事实、观察、定位边界和未证实提示；"
                 "你必须生成可证伪的 AI 候选，不能把 Analyzer hint 直接当成根因。"
                 "候选字段为 candidate_id、claim、mechanism、target、supported_level、decision、causal_status、"
-                "evidence_refs、trigger_refs、mechanism_refs、impact_refs、source_relation_refs、"
+                "evidence_refs、cost_center_refs、trigger_refs、mechanism_refs、impact_refs、source_relation_refs、"
                 "missing_evidence、parent_candidate_ids、origin_parent_candidate_id、probe_requests、role。"
                 "candidate_id 必须以 ai_candidate_ 开头；evidence_refs 只能使用 valid_evidence_refs；"
-                "trigger_refs、mechanism_refs、impact_refs、source_relation_refs 只能使用 fact_context 中已暴露的真实关系或节点 ID；"
+                "cost_center_refs、trigger_refs、mechanism_refs、impact_refs、source_relation_refs 只能使用 fact_context 中已暴露的真实关系或节点 ID；"
                 "这些字段描述因果链引用，不是自由文本，缺失时只能停在机制假设而不能进入正式根因。"
                 "parent_candidate_ids 只能逐字选择 allowed_parent_candidate_ids 中的 canonical 基础节点；"
                 "orphan、observation、mechanism、boundary 节点不能作为首轮候选父节点；"
@@ -672,6 +672,7 @@ def generate_session_candidate_review(
                             if str(ref)
                         ]
                         for field in (
+                            "cost_center_refs",
                             "trigger_refs",
                             "mechanism_refs",
                             "impact_refs",
@@ -761,6 +762,11 @@ def generate_session_candidate_review(
                         "decision": decision,
                         "causal_status": causal_status,
                         "evidence_refs": refs,
+                        "cost_center_refs": [
+                            str(ref)
+                            for ref in item.get("cost_center_refs", [])
+                            if str(ref)
+                        ],
                         **relation_fields,
                         "missing_evidence": [str(value) for value in item.get("missing_evidence", []) if str(value)],
                         "parent_candidate_ids": parent_ids,

@@ -67,6 +67,8 @@ PRODUCER_INTERVAL_SEC = env_float("CELERY_L4_PRODUCER_INTERVAL_SEC", 0.0)
 WORKER_POOL = os.environ.get("CELERY_L4_WORKER_POOL", "prefork")
 WORKER_CONCURRENCY = env_int("CELERY_L4_WORKER_CONCURRENCY", 1)
 BARRIER_GC_COLLECT = env_int("CELERY_L4_BARRIER_GC_COLLECT", 0)
+DEFAULT_CASE_DURATION_SEC = 400
+DEFAULT_DIAGNOSIS_TIMEOUT_SEC = 400
 
 
 def progress(message: str) -> None:
@@ -457,8 +459,8 @@ def run_stage(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--remote-root", default="/home/worker1/mini-drop-cases/python_worker_failure_case")
-    parser.add_argument("--duration-sec", type=int, default=600)
-    parser.add_argument("--diagnosis-timeout-sec", type=int, default=600)
+    parser.add_argument("--duration-sec", type=int, default=DEFAULT_CASE_DURATION_SEC)
+    parser.add_argument("--diagnosis-timeout-sec", type=int, default=DEFAULT_DIAGNOSIS_TIMEOUT_SEC)
     parser.add_argument(
         "--skip-diagnosis",
         action="store_true",

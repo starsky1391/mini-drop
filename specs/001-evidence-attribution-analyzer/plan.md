@@ -654,7 +654,7 @@ tests, frontend production build, `compileall`, and `git diff --check`.
 After commit/push, Control and Worker1 pull and rebuild. Worker1 then runs a
 non-preloaded managed-Memray smoke against a long-lived target.
 
-The final real case is vulnerable-only Celery for 600 seconds with a full
+The final real case is vulnerable-only Celery for 400 seconds with a full
 Celery checkout, real Redis, real worker and native `apply_async()` producer.
 It does not run fixed replay, Oracle or `evaluate_case.py`. The report must
 include tree kind, parent validation, candidate diagnostics, line eligibility,
@@ -818,7 +818,7 @@ the original report.
 After commit/push, Control and Worker1 pull the exact commit and rebuild.
 Worker1 first runs a long-lived, non-preloaded Memray smoke and saves either
 official artifacts or a structured capability boundary. Only then does the
-ordinary runner execute one vulnerable-only Celery case for 600 seconds using
+ordinary runner execute one vulnerable-only Celery case for 400 seconds using
 the complete checkout, real Redis, real worker and native `apply_async()`.
 Fixed replay, Oracle and `evaluate_case.py` are not run in this ordinary case.
 
@@ -842,7 +842,7 @@ runtime idle samples cannot become root causes
 live heap attach does not require preload
 heap failure is structured and does not stop later probes
 formal conclusion and abstention fields are consistent
-normal Celery validation is vulnerable-only 600s
+normal Celery validation is vulnerable-only 400s
 ```
 
 ## Final Integrated Closure Plan (Authoritative)
@@ -856,7 +856,7 @@ Celery 跑测”闭环的唯一执行口径。前文 CE/CF 保留为历史设计
 本次闭环只修复 Analyzer/诊断输出/前端展示/Agent 采集和真实跑测流程。
 不从 issue、PR、修复 commit、Oracle 或测试答案向 Analyzer 回流答案。
 不把 fixed replay、Oracle 或 `evaluate_case.py` 放入普通真实 case 的
-跑测路径。普通 Celery 跑测固定为 vulnerable-only，默认持续 600 秒；
+跑测路径。普通 Celery 跑测固定为 vulnerable-only，默认持续 400 秒；
 runner 不要求每次手工重新设置 fixed/Oracle 参数。
 
 不新增 Celery 特供证据，不由 runner 生成深层源码、heap 或调用链结论。
@@ -1157,7 +1157,7 @@ headline 文本或数组顺序推断资格。
 真实 Redis broker
 真实 Celery worker
 Celery 原生 apply_async() producer
-持续 600 秒的异常 workload
+持续 400 秒的异常 workload
 唯一 vulnerable diagnosis
 ```
 
@@ -1189,7 +1189,7 @@ CG001 契约与 canonical index
   -> CG009 commit/push
   -> CG010 Control/Worker1 git pull + rebuild
   -> CG011 Worker1 未预加载 Memray smoke
-  -> CG012 vulnerable-only Celery 600 秒真实 case
+  -> CG012 vulnerable-only Celery 400 秒真实 case
 ```
 
 部署前不把本地测试结果称为 VM 验收。Heap smoke 先于 Celery case；
@@ -1212,7 +1212,7 @@ AI 部分失败保留合法候选，全部失败才 fallback
 AI 实际输出和初始证据可解释每个门禁失败
 主树、历史子树、probe edge、orphan 不互相污染
 正式结论字段来自同一资格结果
-普通真实 case 只运行 vulnerable-only 600 秒
+普通真实 case 只运行 vulnerable-only 400 秒
 ```
 
 ## Complexity Tracking

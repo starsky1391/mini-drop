@@ -383,6 +383,7 @@ class AITreeCandidateNode(BaseModel):
     boundary_message: str = ""
     blocked_probe: str = ""
     evidence_refs: list[str] = Field(default_factory=list)
+    cost_center_refs: list[str] = Field(default_factory=list)
     trigger_refs: list[str] = Field(default_factory=list)
     mechanism_refs: list[str] = Field(default_factory=list)
     impact_refs: list[str] = Field(default_factory=list)
@@ -593,6 +594,11 @@ class RootCauseCluster(BaseModel):
     explained_symptoms: list[str] = Field(default_factory=list)
     causal_chain: list[CausalExplanationStep] = Field(default_factory=list)
     relation_to_primary: str = ""
+    cost_center_refs: list[str] = Field(default_factory=list)
+    trigger_refs: list[str] = Field(default_factory=list)
+    mechanism_refs: list[str] = Field(default_factory=list)
+    impact_refs: list[str] = Field(default_factory=list)
+    source_relation_refs: list[str] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     residual_unknowns: list[str] = Field(default_factory=list)

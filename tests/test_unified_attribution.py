@@ -12,6 +12,76 @@ from server.app.rca.models import RootCauseCluster
 from server.app.diagnosis.probe_registry import build_probe_manifest
 
 
+def _closed_graph(project: str = "app"):
+    source_file = f"{project}/worker.py"
+    return build_attribution_graph(
+        evidence={
+            "evidence_window": {
+                "timing_relation": "same_window",
+                "evidence_cohort_id": f"{project}-cohort",
+            },
+            "evidence_refs": ["ev:runtime", "ev:source", "ev:impact"],
+            "top_functions": [{
+                "name": "worker",
+                "file": source_file,
+                "line": 42,
+                "percent": 80.0,
+                "samples": 80,
+                "evidence_ref": "ev:runtime",
+            }],
+            "input": {"cardinality": 4096},
+            "configuration": {"mode": "custom"},
+            "latency": {"p95_ms": 900},
+            "sys_metrics": {"summary": {"avg_cpu_user_pct": 80.0}},
+            "evidence_index": {
+                "evidence_validity_by_family": {
+                    "python_runtime_profile": "valid",
+                    "source_snapshot": "valid",
+                    "source_mechanism_query": "valid",
+                },
+            },
+            "source_snapshot_json": {
+                "revision": f"{project}-rev",
+                "source_context_hash": f"sha256:{project}",
+                "verified_line_candidates": [{
+                    "file": source_file,
+                    "line": 42,
+                    "symbol": "worker",
+                    "evidence_ref": "ev:source",
+                    "eligibility_status": "verified",
+                }],
+            },
+        },
+        target={"service_id": project, "pid": 123},
+        source_mechanism={
+            "revision": f"{project}-rev",
+            "query": {"query_id": f"query:{project}"},
+            "mechanism_paths": [
+                {
+                    "status": "supported",
+                    "statement": "primary propagation path",
+                    "relations": ["propagates_to"],
+                    "evidence_ref": "ev:source",
+                    "nodes": [
+                        {"file": source_file, "line": 42, "symbol": "worker"},
+                        {"file": source_file, "line": 43, "symbol": "compute"},
+                    ],
+                },
+                {
+                    "status": "supported",
+                    "statement": "alternative mechanism path",
+                    "relations": ["explains"],
+                    "evidence_ref": "ev:source",
+                    "nodes": [
+                        {"file": source_file, "line": 42, "symbol": "worker"},
+                        {"file": source_file, "line": 44, "symbol": "fallback"},
+                    ],
+                },
+            ],
+        },
+    )
+
+
 def test_manifest_entries_expose_capability_boundaries():
     manifest = build_probe_manifest()
     assert manifest["schema_version"] == "2.0"
@@ -157,6 +227,111 @@ def test_codeql_path_is_source_relation_not_runtime_proof():
     qualification = qualify_attribution(graph)
     assert qualification.level == "L2"
     assert qualification.causal_status == "unproven"
+
+
+def test_source_relations_keep_query_revision_and_explicit_anchors():
+    graph = _closed_graph("pandas")
+
+    line_relation = next(
+        item for item in graph.source_relations
+        if item.relation_id == "source:calls:pandas/worker.py:42"
+    )
+    mechanism_relation = next(
+        item for item in graph.source_relations
+        if item.relation_id == "source:mechanism:0:0"
+    )
+
+    assert line_relation.relation_type == "calls"
+    assert line_relation.query_id == "source_snapshot.runtime_line_mapping"
+    assert line_relation.source_revision == "pandas-rev"
+    assert line_relation.target_anchor["file"] == "pandas/worker.py"
+    assert line_relation.target_anchor["line"] == 42
+    assert mechanism_relation.query_id == "query:pandas"
+    assert mechanism_relation.source_revision == "pandas-rev"
+    assert mechanism_relation.source_anchor["line"] == 42
+    assert mechanism_relation.target_anchor["line"] == 43
+
+
+def test_one_cost_center_can_keep_multiple_open_mechanisms():
+    graph = _closed_graph("pandas")
+    candidates = [
+        {
+            "candidate_id": "ai_candidate_cardinality",
+            "generated_by": "ai_guarded",
+            "claim": "高基数输入沿第一条源码路径放大计算成本。",
+            "mechanism": "input_cardinality_amplification",
+            "target": "worker",
+            "supported_level": "line",
+            "evidence_refs": ["ev:runtime", "ev:source", "ev:impact"],
+            "causal_status": "supported",
+            "decision": "conclude",
+            "parent_candidate_ids": ["cost:line:0"],
+            "cost_center_refs": ["cost:line:0"],
+            "trigger_refs": ["trigger:input"],
+            "mechanism_refs": ["source:mechanism:0:0"],
+            "impact_refs": ["impact:latency"],
+            "source_relation_refs": ["source:mechanism:0:0"],
+        },
+        {
+            "candidate_id": "ai_candidate_fallback",
+            "generated_by": "ai_guarded",
+            "claim": "配置分支沿第二条源码路径解释同一热点。",
+            "mechanism": "configuration_branch_amplification",
+            "target": "worker",
+            "supported_level": "line",
+            "evidence_refs": ["ev:runtime", "ev:source", "ev:impact"],
+            "causal_status": "supported",
+            "decision": "conclude",
+            "parent_candidate_ids": ["cost:line:0"],
+            "cost_center_refs": ["cost:line:0"],
+            "trigger_refs": ["trigger:configuration"],
+            "mechanism_refs": ["source:mechanism:1:0"],
+            "impact_refs": ["impact:latency"],
+            "source_relation_refs": ["source:mechanism:1:0"],
+        },
+    ]
+
+    qualification = qualify_attribution(
+        graph,
+        ai_candidate_ids=[item["candidate_id"] for item in candidates],
+        ai_candidates=candidates,
+    )
+
+    assert qualification.qualification == "formal_root_cause"
+    assert qualification.eligible_candidate_ids == [
+        "ai_candidate_cardinality",
+        "ai_candidate_fallback",
+    ]
+
+
+def test_same_mechanism_name_is_not_bound_to_a_project():
+    for project in ("requests", "urllib3", "aiohttp"):
+        graph = _closed_graph(project)
+        candidate_id = f"ai_candidate_{project}_retry"
+        qualification = qualify_attribution(
+            graph,
+            ai_candidate_ids=[candidate_id],
+            ai_candidates=[{
+                "candidate_id": candidate_id,
+                "generated_by": "ai_guarded",
+                "claim": f"{project} 的重试路径需要同窗源码关系验证。",
+                "mechanism": "retry_backoff_amplification",
+                "target": "worker",
+                "supported_level": "line",
+                "evidence_refs": ["ev:runtime", "ev:source", "ev:impact"],
+                "causal_status": "supported",
+                "decision": "conclude",
+                "parent_candidate_ids": ["cost:line:0"],
+                "cost_center_refs": ["cost:line:0"],
+                "trigger_refs": ["trigger:input"],
+                "mechanism_refs": ["source:mechanism:0:0"],
+                "impact_refs": ["impact:latency"],
+                "source_relation_refs": ["source:mechanism:0:0"],
+            }],
+        )
+
+        assert qualification.qualification == "formal_root_cause"
+        assert qualification.eligible_candidate_ids == [candidate_id]
 
 
 def test_complete_graph_without_ai_candidate_stays_a_mechanism_hypothesis():

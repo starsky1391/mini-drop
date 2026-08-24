@@ -3516,6 +3516,7 @@ def _session_attribution_qualification(
             "decision": node.get("decision"),
             "parent_candidate_ids": node.get("parent_candidate_ids") or [],
             "origin_parent_candidate_id": node.get("origin_parent_candidate_id"),
+            "cost_center_refs": node.get("cost_center_refs") or [],
             "trigger_refs": node.get("trigger_refs") or [],
             "mechanism_refs": node.get("mechanism_refs") or [],
             "impact_refs": node.get("impact_refs") or [],

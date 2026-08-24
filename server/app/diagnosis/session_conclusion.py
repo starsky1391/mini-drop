@@ -538,6 +538,11 @@ def derive_root_cause_clusters_from_ai_tree(
             target=str(node.get("target") or ""),
             claim=str(node.get("claim") or ""),
             why_it_happened=str((node.get("self_challenge") or {}).get("why_this_claim") or ""),
+            cost_center_refs=_unique(node.get("cost_center_refs") or []),
+            trigger_refs=_unique(node.get("trigger_refs") or []),
+            mechanism_refs=_unique(node.get("mechanism_refs") or []),
+            impact_refs=_unique(node.get("impact_refs") or []),
+            source_relation_refs=_unique(node.get("source_relation_refs") or []),
             causal_chain=[CausalExplanationStep(
                 step_id=f"{cluster_id}_step_1",
                 candidate_id=str(node["candidate_id"]),

@@ -17,6 +17,13 @@ def load_module(name: str, filename: str):
     return module
 
 
+def test_celery_runner_defaults_use_400_second_windows():
+    runner = load_module("celery_case_defaults", "run_case_vm.py")
+
+    assert runner.DEFAULT_CASE_DURATION_SEC == 400
+    assert runner.DEFAULT_DIAGNOSIS_TIMEOUT_SEC == 400
+
+
 class FakeRemote:
     def __init__(self):
         self.commands: list[str] = []

@@ -141,8 +141,13 @@ class ScenarioFacts(BaseModel):
 class SourceRelation(BaseModel):
     relation_id: str
     relation: RelationKind
+    relation_type: RelationKind | None = None
     source_ref: str
     target_ref: str
+    source_anchor: dict[str, Any] = Field(default_factory=dict)
+    target_anchor: dict[str, Any] = Field(default_factory=dict)
+    query_id: str = ""
+    source_revision: str = ""
     evidence_refs: list[str] = Field(default_factory=list)
     file_path: str = ""
     line_number: int | None = Field(default=None, ge=1)

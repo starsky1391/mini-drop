@@ -1317,7 +1317,7 @@ VM runtime 和首轮输入不含 Oracle，Oracle 仅离线评估
 - [x] CC010 补齐后端、前端、heap、AI 门禁和 sample-quality 回归；完成前端 production build。
 - [ ] CC011 在 VM 部署后执行 Worker1 heap collector smoke，保存 helper/preflight/structured evidence 产物。
 - [x] CC012 使用最新 Celery 原始证据离线回放，确认 AI 候选失败原因和 gate failure 与初始证据一致。
-- [ ] CC013 仅运行 vulnerable-only Celery 600s 真实 case，确认 heap 失败可继续探测、主树无历史快照污染、无正式根因时 abstained 正确。
+- [ ] CC013 仅运行 vulnerable-only Celery 400s 真实 case，确认 heap 失败可继续探测、主树无历史快照污染、无正式根因时 abstained 正确。
 
 **CC012 离线回放记录（2026-08-22）**：
 使用 `docs/real_cases/celery_8882/replay_original_evidence.py` 只读回放
@@ -1544,10 +1544,10 @@ runner。
 - [x] Heap smoke 失败时只记录具体 capability/namespace/permission 原因，不能
   把失败写成 heap retention 成功。
 
-### CE012 Vulnerable-only Celery 600s 真实验收
+### CE012 Vulnerable-only Celery 400s 真实验收
 
 - [x] VM 内使用完整 Celery checkout、真实 Redis、Celery worker 和原生
-  `apply_async()` producer；runner 只运行 vulnerable workload，持续 600 秒覆盖
+  `apply_async()` producer；runner 只运行 vulnerable workload，持续 400 秒覆盖
   诊断窗口。
 - [x] 不运行 fixed replay、Oracle 或 `evaluate_case.py`；普通跑测不重复设置这三
   个阶段。
@@ -1606,7 +1606,7 @@ line 只有通过真实 file:line eligibility 才生成
 深探失败只生成 boundary 并继承来源父结论
 AI 失败/门禁失败能用初始证据解释
 heap live attach 不要求预加载，失败结构化降级并继续诊断
-普通真实 case 只跑 vulnerable-only 600s
+普通真实 case 只跑 vulnerable-only 400s
 未形成正式根因时 abstention 字段一致
 ```
 
@@ -1693,7 +1693,7 @@ heap live attach 不要求预加载，失败结构化降级并继续诊断
 - [ ] Control 和 Worker1 拉取同一 commit 并 rebuild 对应 mini-drop/Agent 容器。
 - [ ] Worker1 完成长寿命、未预加载 Memray 的 heap smoke，并保存真实产物或结构化边界。
 - [ ] 用最新 Celery `run.json` 做只读离线回放，不读取 issue、PR、fixed、Oracle 或答案。
-- [ ] 只运行 vulnerable-only Celery 600 秒真实 case；不运行 fixed、Oracle 或
+- [ ] 只运行 vulnerable-only Celery 400 秒真实 case；不运行 fixed、Oracle 或
   `evaluate_case.py`。
 - [ ] 检查 producer barrier、诊断终态、主树父血缘、候选失败输出、line eligibility、
   heap outcome、fallback retained parent 和 abstention 一致性。
@@ -1796,7 +1796,7 @@ CG 是当前执行任务的唯一来源，覆盖前端树渲染、实时 Heap、
 - [ ] CG047 Review the repository diff at the repository root and commit only source, tests and required plan artifacts; exclude `reports/`, temporary replay files, credentials and VM-private configuration.
 - [ ] CG048 Push one commit, then have Control and Worker1 pull the exact commit and rebuild the corresponding mini-drop/Agent containers using the VM deployment scripts under `deploy/`.
 - [ ] CG049 Run Worker1's long-lived non-preloaded Python target Heap smoke using the real Worker1 Agent container and the deployment configuration; record official Memray artifacts or a structured capability boundary before the case run.
-- [ ] CG050 Run the ordinary Celery case through `docs/real_cases/celery_8882/run_case_vm.py` for vulnerable-only 600 seconds with real Redis, worker and native `apply_async()` producer; do not run fixed, Oracle or `evaluate_case.py`.
+- [ ] CG050 Run the ordinary Celery case through `docs/real_cases/celery_8882/run_case_vm.py` for vulnerable-only 400 seconds with real Redis, worker and native `apply_async()` producer; do not run fixed, Oracle or `evaluate_case.py`.
 - [ ] CG051 Verify the saved report under `reports/eval/real-open-source/` contains producer barrier, diagnosis terminal state, main-tree lineage, candidate diagnostics, line eligibility, Heap outcome, retained parent, history/data-quality records and consistent abstention fields.
 
 ### CG Completion Criteria
@@ -1815,7 +1815,7 @@ Memray live attach does not require target preload
 Heap failure is structured and does not stop runtime/source follow-up
 main tree, history, probe edges and data quality do not contaminate each other
 formal conclusion fields share one eligibility result
-ordinary real-case validation is vulnerable-only 600 seconds
+ordinary real-case validation is vulnerable-only 400 seconds
 ```
 
 ## Task Group CH - Frozen Evidence Gap Closure (Reuse Existing Implementation)

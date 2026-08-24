@@ -213,16 +213,34 @@ def build_source_relations(
     source_mechanism: dict[str, Any] | None = None,
 ) -> list[SourceRelation]:
     result: list[SourceRelation] = []
-    for item in _line_candidates({**evidence, "source_snapshot_json": source_snapshot or evidence.get("source_snapshot_json")}):
+    snapshot_payload = source_snapshot or evidence.get("source_snapshot_json")
+    snapshot_revision = _source_revision(snapshot_payload)
+    for item in _line_candidates({**evidence, "source_snapshot_json": snapshot_payload}):
         file_path = str(item.get("file") or "")
         line = _positive_int(item.get("line"))
         if not file_path or not line:
             continue
+        relation = "calls"
+        source_ref = str(item.get("runtime_ref") or item.get("symbol") or "runtime")
+        target_ref = f"{file_path}:{line}"
         result.append(SourceRelation(
             relation_id=f"source:calls:{file_path}:{line}",
-            relation="calls",
-            source_ref=str(item.get("runtime_ref") or item.get("symbol") or "runtime"),
-            target_ref=f"{file_path}:{line}",
+            relation=relation,
+            relation_type=relation,
+            source_ref=source_ref,
+            target_ref=target_ref,
+            source_anchor=_anchor_payload(
+                source_ref,
+                symbol=str(item.get("runtime_symbol") or item.get("symbol") or ""),
+            ),
+            target_anchor=_anchor_payload(
+                target_ref,
+                file=file_path,
+                line=line,
+                symbol=str(item.get("symbol") or ""),
+            ),
+            query_id=str(item.get("query_id") or "source_snapshot.runtime_line_mapping"),
+            source_revision=str(item.get("source_revision") or snapshot_revision),
             evidence_refs=[str(item.get("evidence_ref") or "source_snapshot")],
             file_path=file_path,
             line_number=line,
@@ -232,21 +250,38 @@ def build_source_relations(
 
     mechanism = source_mechanism or evidence.get("source_mechanism_json")
     paths = mechanism.get("mechanism_paths", []) if isinstance(mechanism, dict) else []
+    mechanism_revision = _source_revision(mechanism) or snapshot_revision
+    query_metadata = mechanism.get("query") if isinstance(mechanism, dict) else {}
+    if not isinstance(query_metadata, dict):
+        query_metadata = {}
     for path_index, path in enumerate(paths if isinstance(paths, list) else []):
         if not isinstance(path, dict):
             continue
         path_ref = str(path.get("evidence_ref") or f"source_mechanism.mechanism_paths[{path_index}]")
+        query_id = str(
+            path.get("query_id")
+            or query_metadata.get("query_id")
+            or query_metadata.get("query_spec_hash")
+            or path.get("rule_id")
+            or f"source_mechanism.path:{path_index}"
+        )
         nodes = path.get("nodes") if isinstance(path.get("nodes"), list) else []
         for index in range(len(nodes) - 1):
             left = _node_ref(nodes[index])
             right = _node_ref(nodes[index + 1])
             if not left or not right:
                 continue
+            relation = _relation_from_path(path, index)
             result.append(SourceRelation(
                 relation_id=f"source:mechanism:{path_index}:{index}",
-                relation=_relation_from_path(path, index),
+                relation=relation,
+                relation_type=relation,
                 source_ref=left,
                 target_ref=right,
+                source_anchor=_anchor_payload(left, node=nodes[index]),
+                target_anchor=_anchor_payload(right, node=nodes[index + 1]),
+                query_id=query_id,
+                source_revision=str(path.get("source_revision") or mechanism_revision),
                 evidence_refs=[path_ref],
                 file_path=str(nodes[index].get("file") or ""),
                 line_number=_positive_int(nodes[index].get("line")),
@@ -254,6 +289,39 @@ def build_source_relations(
                 statement=str(path.get("statement") or path.get("mechanism") or "源码查询返回跨函数关系路径。"),
             ))
     return _dedupe_relations(result)
+
+
+def _source_revision(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    return str(
+        value.get("revision")
+        or value.get("source_revision")
+        or value.get("repo_revision")
+        or ""
+    ).strip()
+
+
+def _anchor_payload(
+    reference: str,
+    *,
+    file: str = "",
+    line: int | None = None,
+    symbol: str = "",
+    node: Any = None,
+) -> dict[str, Any]:
+    source = node if isinstance(node, dict) else {}
+    payload = {
+        "ref": str(reference or ""),
+        "file": str(file or source.get("file") or source.get("file_path") or ""),
+        "line": line or _positive_int(source.get("line") or source.get("line_number")),
+        "symbol": str(symbol or source.get("symbol") or source.get("function") or source.get("name") or ""),
+    }
+    return {
+        key: value
+        for key, value in payload.items()
+        if value not in ("", None)
+    }
 
 
 def qualify_attribution(
@@ -462,6 +530,7 @@ def _validate_ai_candidates(
 ) -> list[dict[str, Any]]:
     """Require an actual guarded AI record before allowing L3 promotion."""
     facts = graph.facts
+    cost_refs = [item.candidate_id for item in facts.cost_centers]
     records = [
         item
         for item in ai_candidates
@@ -543,18 +612,24 @@ def _validate_ai_candidates(
             if observed_targets and candidate_target not in observed_targets:
                 reasons.append("target_not_observed")
             relation_refs = {
+                "cost_center": record.get("cost_center_refs") or [],
                 "trigger": record.get("trigger_refs") or [],
                 "mechanism": record.get("mechanism_refs") or [],
                 "impact": record.get("impact_refs") or [],
                 "source_relation": record.get("source_relation_refs") or [],
             }
             available_relations = {
+                "cost_center": set(cost_refs),
                 "trigger": set(trigger_refs),
                 "mechanism": set(mechanism_refs),
                 "impact": set(impact_refs),
                 "source_relation": set(source_relation_refs),
             }
             relation_evidence: dict[str, dict[str, set[str]]] = {
+                "cost_center": {
+                    item.candidate_id: set(item.evidence_refs)
+                    for item in facts.cost_centers
+                },
                 "trigger": {
                     item.candidate_id: set(item.evidence_refs)
                     for item in facts.trigger_candidates
@@ -577,11 +652,12 @@ def _validate_ai_candidates(
             candidate_evidence_refs = set(refs)
             for relation_name, refs_for_candidate in relation_refs.items():
                 if not refs_for_candidate:
-                    reasons.append(
-                        "source_relation_refs_missing"
-                        if relation_name == "source_relation"
-                        else f"{relation_name}_refs_missing"
-                    )
+                    if relation_name != "cost_center":
+                        reasons.append(
+                            "source_relation_refs_missing"
+                            if relation_name == "source_relation"
+                            else f"{relation_name}_refs_missing"
+                        )
                 elif not set(refs_for_candidate).intersection(available_relations[relation_name]):
                     reasons.append(f"{relation_name}_relation_missing")
                 elif not any(
