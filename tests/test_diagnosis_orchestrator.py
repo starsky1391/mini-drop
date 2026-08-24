@@ -114,6 +114,40 @@ def test_runtime_file_line_deterministically_requests_source_snapshot():
     assert orchestrator_module._assessment_followup_requests(assessment, session) == ["source_snapshot"]
 
 
+def test_runner_release_waits_for_outstanding_followups():
+    control = orchestrator_module._runner_control_state(
+        "INSUFFICIENT_EVIDENCE",
+        [{
+            "step_id": "step-runtime",
+            "probe_id": "process_python_runtime_profile",
+            "status": "RUNNING",
+            "task_id": "task-runtime",
+        }],
+        active_task_ids={"task-runtime"},
+    )
+
+    assert control["release_requested"] is False
+    assert control["reason"] == "outstanding_probes"
+    assert control["outstanding_probes"][0]["step_id"] == "step-runtime"
+
+
+def test_runner_release_is_requested_after_terminal_probes_settle():
+    control = orchestrator_module._runner_control_state(
+        "PARTIAL_COMPLETED",
+        [{
+            "step_id": "step-source",
+            "probe_id": "process_source_snapshot",
+            "status": "FAILED",
+            "task_id": "task-source",
+        }],
+    )
+
+    assert control["release_requested"] is True
+    assert control["reason"] == "diagnosis_settled"
+    assert control["outstanding_probes"] == []
+    assert control["released_at"]
+
+
 def test_python_stack_artifact_fills_empty_depth_evidence_without_overwriting_existing_values():
     normalized = orchestrator_module._normalize_structured_artifact_values({
         "depth_evidence_json": {},

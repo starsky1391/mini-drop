@@ -428,6 +428,7 @@ class DiagnosisSessionModel(Base):
     hypothesis_graph_json = Column(JSON, default=dict)
     child_task_ids_json = Column(JSON, default=list)
     conclusion_versions_json = Column(JSON, default=list)
+    runner_control_json = Column(JSON, default=dict)
     model_version = Column(String(128), nullable=False)
     planner_version = Column(String(64), nullable=False)
     lease_owner = Column(String(128), nullable=True)
@@ -460,6 +461,7 @@ class DiagnosisSessionModel(Base):
             "hypothesis_graph": self.hypothesis_graph_json or {},
             "child_task_ids": self.child_task_ids_json or [],
             "conclusion_versions": self.conclusion_versions_json or [],
+            "runner_control": self.runner_control_json or {},
             "model_version": self.model_version,
             "planner_version": self.planner_version,
             "lease_owner": self.lease_owner,

@@ -78,6 +78,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_artifact_columns(engine)
     _ensure_probe_evidence_columns(engine)
+    _ensure_diagnosis_runner_control_column(engine)
     _ensure_watch_episode_columns(engine)
 
 
@@ -113,6 +114,19 @@ def _ensure_probe_evidence_columns(engine: Engine) -> None:
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(text(statement))
+
+
+def _ensure_diagnosis_runner_control_column(engine: Engine) -> None:
+    inspector = inspect(engine)
+    table = "diagnosis_sessions"
+    if table not in inspector.get_table_names():
+        return
+    columns = {item["name"] for item in inspector.get_columns(table)}
+    if "runner_control_json" not in columns:
+        with engine.begin() as connection:
+            connection.execute(text(
+                f"ALTER TABLE {table} ADD COLUMN runner_control_json JSON"
+            ))
 
 
 def _ensure_watch_episode_columns(engine: Engine) -> None:

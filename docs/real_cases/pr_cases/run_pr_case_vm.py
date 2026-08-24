@@ -32,6 +32,7 @@ TERMINAL_STATUSES = {
     "COMPLETED", "INSUFFICIENT_EVIDENCE", "PARTIAL_COMPLETED",
     "BUDGET_EXHAUSTED", "TOPOLOGY_UNAVAILABLE", "FAILED",
 }
+RUNNER_RELEASE_TIMEOUT_REASON = "diagnosis_timeout"
 
 
 def progress(message: str) -> None:
@@ -161,20 +162,57 @@ def diagnosis(api: ControlAPI, manifest: dict, duration_sec: int, timeout_sec: i
                 "approver_id": "pr_case_vm_runner",
             }, timeout=60)
             approved.add(step_id)
-        if latest.get("status") in TERMINAL_STATUSES:
-            return {"diagnosis_id": diagnosis_id, "detail": latest, "terminal": True}
+        control = latest.get("runner_control") if isinstance(latest.get("runner_control"), dict) else {}
+        if control.get("release_requested"):
+            return {
+                "diagnosis_id": diagnosis_id,
+                "detail": latest,
+                "terminal": latest.get("status") in TERMINAL_STATUSES,
+                "runner_release": control,
+                "runner_release_reason": control.get("reason") or "diagnosis_settled",
+            }
         time.sleep(3)
     try:
         latest = api.call(f"/api/v1/diagnoses/{diagnosis_id}")
-        if latest.get("status") in TERMINAL_STATUSES:
-            return {"diagnosis_id": diagnosis_id, "detail": latest, "terminal": True}
     except (TimeoutError, urllib.error.URLError):
-        pass
+        latest = {}
+    control = latest.get("runner_control") if isinstance(latest.get("runner_control"), dict) else {}
+    if control.get("release_requested"):
+        return {
+            "diagnosis_id": diagnosis_id,
+            "detail": latest,
+            "terminal": latest.get("status") in TERMINAL_STATUSES,
+            "runner_release": control,
+            "runner_release_reason": control.get("reason") or "diagnosis_settled",
+        }
+    if not control and latest.get("status") in TERMINAL_STATUSES:
+        legacy_control = {
+            "release_requested": True,
+            "reason": "legacy_terminal_status",
+            "released_at": None,
+            "outstanding_probes": [],
+        }
+        return {
+            "diagnosis_id": diagnosis_id,
+            "detail": latest,
+            "terminal": True,
+            "runner_release": legacy_control,
+            "runner_release_reason": legacy_control["reason"],
+        }
     return {
         "diagnosis_id": diagnosis_id,
         "detail": latest,
         "terminal": False,
-        "runner_status": "diagnosis_timeout",
+        "runner_status": RUNNER_RELEASE_TIMEOUT_REASON,
+        "runner_release_reason": RUNNER_RELEASE_TIMEOUT_REASON,
+        "runner_release": {
+            "release_requested": False,
+            "reason": RUNNER_RELEASE_TIMEOUT_REASON,
+            "released_at": None,
+            "outstanding_probes": (
+                latest.get("probes", []) if isinstance(latest.get("probes"), list) else []
+            ),
+        },
         "timeout_sec": timeout_sec,
     }
 
@@ -307,15 +345,42 @@ def run_stage(remote: Remote, case: dict, *, revision: str, stage: str, mode: st
         if mode == "vulnerable":
             progress(f"{case_id}: starting Analyzer diagnosis")
             result["diagnosis"] = diagnosis(ControlAPI(api_key or ""), manifest, duration_sec, diagnosis_timeout_sec)
-        completion = max(120, duration_sec + 120)
-        try:
-            remote.run(
-                f"for i in $(seq 1 {completion}); do test -f {shlex.quote(evidence_root)}/complete && exit 0; sleep 1; done; exit 1",
-                timeout=completion + 30,
-            )
-            result["workload_completed"] = True
-        except RuntimeError:
+        diagnosis_result = result.get("diagnosis") if isinstance(result.get("diagnosis"), dict) else {}
+        release = (
+            diagnosis_result.get("runner_release")
+            if isinstance(diagnosis_result.get("runner_release"), dict)
+            else {}
+        )
+        release_requested = bool(release.get("release_requested"))
+        timeout_release = diagnosis_result.get("runner_release_reason") == RUNNER_RELEASE_TIMEOUT_REASON
+        result["runner_control"] = {
+            "release_requested": release_requested,
+            "reason": (
+                release.get("reason")
+                or diagnosis_result.get("runner_release_reason")
+                or ("workload_complete" if mode != "vulnerable" else "diagnosis_unavailable")
+            ),
+            "released_at": release.get("released_at"),
+            "outstanding_probes": release.get("outstanding_probes") or [],
+            "diagnosis_terminal_status": (
+                (diagnosis_result.get("detail") or {}).get("status")
+                if isinstance(diagnosis_result.get("detail"), dict)
+                else None
+            ),
+        }
+        if not (mode == "vulnerable" and (release_requested or timeout_release)):
+            completion = max(120, duration_sec + 120)
+            try:
+                remote.run(
+                    f"for i in $(seq 1 {completion}); do test -f {shlex.quote(evidence_root)}/complete && exit 0; sleep 1; done; exit 1",
+                    timeout=completion + 30,
+                )
+                result["workload_completed"] = True
+            except RuntimeError:
+                result["workload_completed"] = False
+        else:
             result["workload_completed"] = False
+            result["workload_stopped_by_runner_release"] = True
         return result
     finally:
         progress(f"{case_id}: collecting evidence and cleaning containers")

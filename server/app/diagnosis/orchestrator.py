@@ -97,6 +97,7 @@ MAX_FOLLOWUP_REQUESTS_PER_ROUND = 3
 MAX_SOURCE_MECHANISM_ATTEMPTS = 3
 ACTIVE_TASK_STATUSES = {"PENDING", "RUNNING", "UPLOADING", "ANALYZING"}
 TERMINAL_TASK_STATUSES = {"DONE", "FAILED"}
+RUNNER_OPEN_PROBE_STATUSES = {"PLANNED", "WAITING_APPROVAL", "APPROVED", "SCHEDULED", "RUNNING"}
 STRUCTURED_ARTIFACT_TYPES = {
     "top_json",
     "flamegraph_json",
@@ -222,6 +223,12 @@ class DiagnosisOrchestrator:
             "hypothesis_graph": {"hypotheses": hypotheses, "edges": []},
             "child_task_ids": [],
             "conclusion_versions": [],
+            "runner_control": {
+                "release_requested": False,
+                "reason": "diagnosis_in_progress",
+                "released_at": None,
+                "outstanding_probes": [],
+            },
             "model_version": get_ai_settings().model,
             "planner_version": PLANNER_VERSION,
         })
@@ -304,6 +311,7 @@ class DiagnosisOrchestrator:
             return None
         if advance and item["status"] not in TERMINAL_DIAGNOSIS_STATUSES:
             self.advance(diagnosis_id)
+        self._refresh_runner_control(diagnosis_id)
         return self.store.get_detail(diagnosis_id)
 
     def list(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
@@ -337,6 +345,26 @@ class DiagnosisOrchestrator:
             renewal_thread.join(timeout=5)
             self.store.release_lease(diagnosis_id, self.owner)
         return self.store.get_detail(diagnosis_id)
+
+    def _refresh_runner_control(self, diagnosis_id: str) -> dict[str, Any] | None:
+        session = self.store.get_session(diagnosis_id)
+        if session is None:
+            return None
+        probes = self.store.list_probes(diagnosis_id)
+        active_task_ids = {
+            task.id
+            for task in self.repo.tasks.values()
+            if status_value(task.status) in ACTIVE_TASK_STATUSES
+        }
+        control = _runner_control_state(
+            session.get("status"),
+            probes,
+            active_task_ids=active_task_ids,
+            previous=session.get("runner_control"),
+        )
+        if control != (session.get("runner_control") or {}):
+            self.store.update_session(diagnosis_id, runner_control=control)
+        return control
 
     def advance_active(self, limit: int = 100) -> None:
         """由后台扫描器调用，使恢复不依赖用户 GET 请求。"""
@@ -9880,6 +9908,56 @@ def _diagnosis_terminal_status(
         )
     )
     return DiagnosisStatus.PARTIAL_COMPLETED if has_partial else DiagnosisStatus.INSUFFICIENT_EVIDENCE
+
+
+def _runner_control_state(
+    status: str | None,
+    probes: list[dict[str, Any]],
+    *,
+    active_task_ids: set[str] | None = None,
+    previous: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return the persisted runner release signal for the current session."""
+    active_task_ids = active_task_ids or set()
+    outstanding: list[dict[str, Any]] = []
+    for probe in probes:
+        probe_status = str(probe.get("status") or "")
+        task_id = str(probe.get("task_id") or "")
+        if probe_status not in RUNNER_OPEN_PROBE_STATUSES and task_id not in active_task_ids:
+            continue
+        outstanding.append({
+            "step_id": str(probe.get("step_id") or ""),
+            "probe_id": str(probe.get("probe_id") or ""),
+            "status": probe_status,
+            "task_id": task_id or None,
+        })
+
+    previous = previous if isinstance(previous, dict) else {}
+    terminal = str(status or "") in TERMINAL_DIAGNOSIS_STATUSES
+    if not terminal:
+        return {
+            "release_requested": False,
+            "reason": "diagnosis_in_progress",
+            "released_at": None,
+            "outstanding_probes": outstanding,
+        }
+    if outstanding:
+        return {
+            "release_requested": False,
+            "reason": "outstanding_probes",
+            "released_at": None,
+            "outstanding_probes": outstanding,
+        }
+    if previous.get("release_requested") and previous.get("released_at"):
+        released_at = previous["released_at"]
+    else:
+        released_at = utcnow().isoformat()
+    return {
+        "release_requested": True,
+        "reason": "diagnosis_settled",
+        "released_at": released_at,
+        "outstanding_probes": [],
+    }
 
 
 def _max_followup_rounds(session: dict[str, Any]) -> int:
