@@ -381,6 +381,10 @@ def _normalize_probe_requests(value: Any) -> tuple[list[str], list[dict[str, Any
             spec = {
                 "evidence_family": family,
                 "_structured": True,
+                "candidate_id": str(item.get("candidate_id") or "").strip(),
+                "origin_parent_candidate_id": str(
+                    item.get("origin_parent_candidate_id") or ""
+                ).strip(),
                 "question": str(item.get("question") or "").strip()[:500],
                 "why_needed": str(item.get("why_needed") or "").strip()[:500],
                 "input_refs": [
@@ -1143,6 +1147,9 @@ def generate_session_investigation_review(
             "content": (
                 "你是 Mini-Drop 会话级调查树裁决器，只输出 JSON。选择最小必要补证并形成可证伪机制候选。"
                 "probe_requests 可以是结构化对象，必须包含 evidence_family、question、why_needed、input_refs、expected_observation、disconfirming_observation；"
+                "source_snapshot、python_runtime_profile、cpu_profile、off_cpu_wait_profile、trace_endpoint_profile、python_heap_profile、"
+                "source_mechanism_query、python_heap_reference 等深探请求还必须包含 candidate_id 和 origin_parent_candidate_id；"
+                "candidate_id 必须逐字选择 current_tree 或本轮 candidate_proposals，origin_parent_candidate_id 必须是该候选显式 parent_candidate_ids 中的真实父节点；"
                 "系统会从合法 probe_requests 推导 selected_evidence_families。旧 selected_evidence_families 字符串仅作兼容输入。"
                 "不能输出命令、修复动作或未注册工具。"
                 "当选择 source_mechanism_query 时，必须输出 probe_inputs.source_mechanism_query.ai_generated_query，"
@@ -1256,6 +1263,33 @@ def generate_session_investigation_review(
                 }
                 | {
                     str(item.get("candidate_id")): set(str(parent) for parent in item.get("parent_candidate_ids", []))
+                    for item in proposals
+                },
+            )
+            _validate_investigation_probe_request_provenance(
+                probe_request_specs,
+                selected=selected,
+                allowed_candidate_ids=(
+                    (candidate_ids - rejected_candidate_ids)
+                    | {
+                        str(item.get("candidate_id") or "")
+                        for item in proposals
+                    }
+                ),
+                candidate_parent_ids={
+                    node.candidate_id: set(node.parent_candidate_ids)
+                    for layer in session_tree.layers
+                    for node in [
+                        *layer.primary_causes,
+                        *layer.secondary_causes,
+                        *layer.rejected_causes,
+                        *layer.unknown_causes,
+                    ]
+                }
+                | {
+                    str(item.get("candidate_id")): set(
+                        str(parent) for parent in item.get("parent_candidate_ids", [])
+                    )
                     for item in proposals
                 },
             )
@@ -1391,6 +1425,11 @@ def _derive_probe_inputs_from_specs(
             continue
         result[family] = {
             "evidence_family": family,
+            **{
+                key: str(spec.get(key) or "").strip()
+                for key in ("candidate_id", "origin_parent_candidate_id")
+                if spec.get(key)
+            },
             "question": str(spec.get("question") or "").strip()[:500],
             "why_needed": str(spec.get("why_needed") or "").strip()[:500],
             "input_refs": [
@@ -1408,6 +1447,49 @@ def _derive_probe_inputs_from_specs(
         if isinstance(special.get(family), dict):
             result[family].update(special[family])
     return result
+
+
+_PROVENANCE_REQUIRED_PROBE_FAMILIES = {
+    "source_snapshot",
+    "python_runtime_profile",
+    "cpu_profile",
+    "off_cpu_wait_profile",
+    "trace_endpoint_profile",
+    "python_heap_profile",
+    "source_mechanism_query",
+    "python_heap_reference",
+}
+
+
+def _validate_investigation_probe_request_provenance(
+    specs: list[dict[str, Any]],
+    *,
+    selected: list[str],
+    allowed_candidate_ids: set[str],
+    candidate_parent_ids: dict[str, set[str]],
+) -> None:
+    """Require explicit candidate lineage for deep investigation probes."""
+    for spec in specs:
+        if not isinstance(spec, dict):
+            continue
+        family = str(spec.get("evidence_family") or "").strip()
+        if family not in selected or family not in _PROVENANCE_REQUIRED_PROBE_FAMILIES:
+            continue
+        if not spec.get("_structured"):
+            continue
+        candidate_id = str(spec.get("candidate_id") or "").strip()
+        origin_parent = str(spec.get("origin_parent_candidate_id") or "").strip()
+        if not candidate_id or not origin_parent:
+            raise ValueError(
+                f"{family} 缺少 candidate_id 或 origin_parent_candidate_id"
+            )
+        if candidate_id not in allowed_candidate_ids:
+            raise ValueError(f"{family} 的 candidate_id 不属于当前候选树")
+        parents = candidate_parent_ids.get(candidate_id, set())
+        if origin_parent not in parents:
+            raise ValueError(
+                f"{family} 的 origin_parent_candidate_id 不属于候选的 parent_candidate_ids"
+            )
 
 
 def _source_anchor_catalog(evidence_catalog: list[dict]) -> list[dict]:

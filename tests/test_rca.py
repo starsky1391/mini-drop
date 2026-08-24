@@ -21,6 +21,7 @@ from server.app.rca.llm_client import (
     _extract_json,
     _filter_probe_request_specs,
     _normalize_probe_requests,
+    _validate_investigation_probe_request_provenance,
     _call_deepseek,
     _ref_exists,
     _validate_and_parse,
@@ -92,6 +93,49 @@ def test_structured_probe_request_keeps_valid_request_and_normalizes_observation
     assert accepted_specs[0]["expected_observation"] == ["同一对象类型在保留快照中持续增长"]
     assert accepted_specs[0]["disconfirming_observation"] == ["保留链不经过规则编译路径"]
     assert rejected == []
+
+
+def test_structured_deep_probe_keeps_candidate_provenance():
+    families, specs = _normalize_probe_requests([{
+        "evidence_family": "source_snapshot",
+        "candidate_id": "ai_candidate_hotspot",
+        "origin_parent_candidate_id": "coarse_cpu",
+        "question": "验证运行时行是否属于目标 revision。",
+        "why_needed": "没有源码上下文不能形成 line anchor。",
+        "input_refs": ["ev-runtime"],
+        "expected_observation": ["返回匹配的源码上下文"],
+        "disconfirming_observation": ["revision 或 file:line 不匹配"],
+    }])
+
+    assert families == ["source_snapshot"]
+    assert specs[0]["candidate_id"] == "ai_candidate_hotspot"
+    assert specs[0]["origin_parent_candidate_id"] == "coarse_cpu"
+
+    _validate_investigation_probe_request_provenance(
+        specs,
+        selected=families,
+        allowed_candidate_ids={"ai_candidate_hotspot"},
+        candidate_parent_ids={"ai_candidate_hotspot": {"coarse_cpu"}},
+    )
+
+
+def test_structured_deep_probe_without_candidate_provenance_is_rejected():
+    families, specs = _normalize_probe_requests([{
+        "evidence_family": "source_snapshot",
+        "question": "验证运行时行是否属于目标 revision。",
+        "why_needed": "没有源码上下文不能形成 line anchor。",
+        "input_refs": ["ev-runtime"],
+        "expected_observation": ["返回匹配的源码上下文"],
+        "disconfirming_observation": ["revision 或 file:line 不匹配"],
+    }])
+
+    with pytest.raises(ValueError, match="candidate_id 或 origin_parent_candidate_id"):
+        _validate_investigation_probe_request_provenance(
+            specs,
+            selected=families,
+            allowed_candidate_ids={"ai_candidate_hotspot"},
+            candidate_parent_ids={"ai_candidate_hotspot": {"coarse_cpu"}},
+        )
 
 
 def test_structured_probe_request_rejects_missing_fields_and_unknown_refs():
