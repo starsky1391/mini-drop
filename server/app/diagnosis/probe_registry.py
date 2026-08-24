@@ -444,6 +444,9 @@ def build_probe_manifest() -> dict:
     probes = []
     for definition in sorted(_PROBES.values(), key=lambda item: item.probe_id):
         evidence_family = probe_id_to_evidence_gap(definition.probe_id)
+        role, cannot_establish, produces, quality_gate, next_probe_hints = _manifest_semantics(
+            definition.probe_id
+        )
         probes.append({
             "probe_id": definition.probe_id,
             "evidence_family": evidence_family,
@@ -456,9 +459,18 @@ def build_probe_manifest() -> dict:
             "auto_executable_when_policy_all_registered": definition.risk_level in {"R0", "R1", "R2"},
             "max_duration_seconds": definition.max_duration_seconds,
             "output_contract": _output_contract(definition.runner_task_kind),
+            "capability_role": role,
+            "cannot_establish": cannot_establish,
+            "produces": produces,
+            "input_requirements": _required_target_fields(definition.probe_id),
+            "quality_gate": quality_gate,
+            "next_probe_hints": next_probe_hints,
+            "may_help_distinguish": definition.applicable_hypotheses,
+            # Keep the old field for clients that still parse schema 1.0.
+            "applicable_hypotheses": definition.applicable_hypotheses,
         })
     return {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "selection_field": "evidence_family",
         "available_probes": probes,
         "hard_forbidden": [
@@ -469,6 +481,70 @@ def build_probe_manifest() -> dict:
             "remediation_action_execution",
         ],
     }
+
+
+def _manifest_semantics(probe_id: str) -> tuple[str, list[str], list[str], list[str], list[str]]:
+    """Describe probe boundaries without turning them into cause rules."""
+    if probe_id in {"host_process_metrics", "process_memory_map", "process_log_scan", "process_dependency_check", "process_redis_check"}:
+        return (
+            "symptom",
+            ["具体源码机制", "正式根因"],
+            ["symptom_signal", "resource_metrics"],
+            ["同窗窗口", "结构化输出", "目标范围匹配"],
+            ["cpu_profile", "off_cpu_wait_profile", "source_snapshot"],
+        )
+    if probe_id in {
+        "process_cpu_profile",
+        "process_python_runtime_profile",
+        "process_off_cpu_profile",
+        "process_io_latency",
+        "process_python_lock_wait_profile",
+        "process_python_exception_profile",
+        "process_python_queue_profile",
+        "process_python_pool_profile",
+        "process_python_retry_timeout_profile",
+        "process_python_cache_profile",
+        "process_python_input_profile",
+        "process_baseline_window",
+    }:
+        return (
+            "localization",
+            ["完整触发链", "源码机制", "正式根因"],
+            ["runtime_observation", "cost_center_candidate", "wait_or_task_context"],
+            ["有效采样或结构化状态", "目标范围匹配", "同窗窗口"],
+            ["trace_endpoint_profile", "source_snapshot", "source_mechanism_query"],
+        )
+    if probe_id == "process_source_snapshot":
+        return (
+            "source_relation",
+            ["触发关系", "机制因果", "正式根因"],
+            ["verified_source_context", "source_line_candidate", "source_relation_candidate"],
+            ["revision verified", "candidate uniquely matched"],
+            ["source_mechanism_query"],
+        )
+    if probe_id in {"process_source_mechanism_query", "process_python_heap_reference"}:
+        return (
+            "mechanism",
+            ["运行时实际发生过该路径", "正式根因"],
+            ["source_relation", "mechanism_path", "reference_path"],
+            ["input provenance valid", "guarded query or bounded dump", "explicit path status"],
+            ["runtime_profile", "source_snapshot"],
+        )
+    if probe_id == "process_trace_endpoint_profile":
+        return (
+            "context",
+            ["源码机制", "正式根因"],
+            ["endpoint_context", "call_path_context", "dependency_context"],
+            ["trace/span target match", "same-window"],
+            ["source_snapshot", "dependency_check"],
+        )
+    return (
+        "context",
+        ["具体源码机制", "正式根因"],
+        ["structured_observation"],
+        ["collector status valid"],
+        ["source_snapshot"],
+    )
 
 
 def choose_probe_ids(symptom: str) -> list[str]:

@@ -29,6 +29,7 @@ from server.app.rca.models import (
     GuardedAttribution,
 )
 from server.app.rca.controlled_tree import enforce_conclusion_eligibility
+from server.app.diagnosis.attribution_engine import build_attribution_graph, qualify_attribution
 
 
 _LEVEL_ORDER = {
@@ -52,6 +53,14 @@ def analyze_evidence(
 ) -> EvidenceAttributionResult:
     """Build reportable attribution boundaries from existing RCA evidence."""
     default_window = _evidence_window(evidence)
+    unified_evidence = _unified_evidence_payload(evidence)
+    unified_graph = build_attribution_graph(
+        evidence=unified_evidence,
+        target=evidence.task_metadata,
+        source_snapshot=unified_evidence.get("source_snapshot_json"),
+        source_mechanism=unified_evidence.get("source_mechanism_json"),
+    )
+    unified_qualification = qualify_attribution(unified_graph)
     facts = _derive_facts(evidence)
     facts.extend(_derive_depth_facts(evidence))
     facts.extend(_derive_timed_window_facts(evidence))
@@ -168,7 +177,34 @@ def analyze_evidence(
         stability_score=stability_score,
         primary_cause_reason=primary_reason,
         conclusion_boundary=boundary,
+        attribution_graph=unified_graph.model_dump(mode="json"),
+        qualification=unified_qualification.model_dump(mode="json"),
     )
+
+
+def _unified_evidence_payload(evidence: EvidenceInput) -> dict:
+    """Expose only already-structured collector values to the shared engine."""
+    payload = evidence.model_dump(mode="json")
+    structured_values = payload.get("structured_values")
+    if isinstance(structured_values, dict):
+        payload.update({
+            key: value
+            for key, value in structured_values.items()
+            if key not in {"raw_payload", "local_path"}
+        })
+    index = payload.get("evidence_index")
+    if not isinstance(index, dict):
+        index = {}
+    payload["evidence_window"] = index.get("evidence_window") or {}
+    for key in (
+        "source_snapshot_json",
+        "source_mechanism_json",
+        "python_heap_reference_json",
+    ):
+        value = payload.get(key) or index.get(key)
+        if isinstance(value, dict):
+            payload[key] = value
+    return payload
 
 
 def _derive_facts(evidence: EvidenceInput) -> list[AnalysisFact]:

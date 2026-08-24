@@ -191,6 +191,21 @@ class ProbeDefinition(StrictModel):
     max_duration_seconds: int
     default_sample_rate: int = 99
     estimated_overhead: dict[str, str] = Field(default_factory=dict)
+    capability_role: Literal[
+        "symptom",
+        "localization",
+        "mechanism",
+        "source_relation",
+        "impact",
+        "context",
+    ] = "context"
+    cannot_establish: list[str] = Field(default_factory=list)
+    produces: list[str] = Field(default_factory=list)
+    input_requirements: list[str] = Field(default_factory=list)
+    quality_gate: list[str] = Field(default_factory=list)
+    next_probe_hints: list[str] = Field(default_factory=list)
+    may_help_distinguish: list[str] = Field(default_factory=list)
+    # Deprecated compatibility field; it is not a root-cause whitelist.
     applicable_hypotheses: list[str] = Field(default_factory=list)
 
 

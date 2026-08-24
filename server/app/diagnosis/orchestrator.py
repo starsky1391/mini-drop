@@ -1351,9 +1351,6 @@ class DiagnosisOrchestrator:
             values["stack_summary"] = structured_evidence.stack_summary
             values["call_path_hotspots"] = structured_evidence.call_path_hotspots
             values["confidence_inputs"] = structured_evidence.confidence_inputs
-            task_observations.append(
-                self._build_task_observation(diagnosis_id, task, values, evidence_ids)
-            )
             task_events = [self.repo.as_dict(event) for event in self.repo.events if event.task_id == task.id]
             session_for_evidence = self.store.get_session(diagnosis_id) or {}
             evidence = collect_evidence(
@@ -1371,8 +1368,25 @@ class DiagnosisOrchestrator:
                     session_for_evidence.get("target_scope", {}),
                 ),
             )
+            evidence = evidence.model_copy(update={
+                "source_snapshot_json": values.get("source_snapshot_json")
+                if isinstance(values.get("source_snapshot_json"), dict)
+                else None,
+                "source_mechanism_json": values.get("source_mechanism_json")
+                if isinstance(values.get("source_mechanism_json"), dict)
+                else None,
+                "python_heap_reference_json": values.get("python_heap_reference_json")
+                if isinstance(values.get("python_heap_reference_json"), dict)
+                else None,
+                "structured_values": values,
+            })
             candidates = generate_candidates(evidence, self.repo.get_feedback_priors())
             analysis_result = analyze_evidence(evidence, candidates)
+            values["attribution_graph"] = analysis_result.attribution_graph
+            values["qualification"] = analysis_result.qualification
+            task_observations.append(
+                self._build_task_observation(diagnosis_id, task, values, evidence_ids)
+            )
             probe_manifest = build_probe_manifest()
             analysis_payload = analysis_result.model_dump(mode="json")
             analysis_payload["probe_registry_manifest"] = probe_manifest
@@ -1618,7 +1632,10 @@ class DiagnosisOrchestrator:
                     self.store.update_session(diagnosis_id, budget_used=usage)
                     current_session = self.store.get_session(diagnosis_id) or current_session
                 if candidate_review.get("ai_review_status") == "succeeded":
-                    selected = list(candidate_review.get("selected_evidence_families") or [])
+                    selected = _registered_probe_families(
+                        candidate_review,
+                        build_probe_manifest(),
+                    )
                     followup_requests = _unique_strings([*followup_requests, *selected])
                     session_controlled_tree = _apply_candidate_review(session_controlled_tree, candidate_review)
                 else:
@@ -1716,7 +1733,10 @@ class DiagnosisOrchestrator:
                 if investigation_review.get("ai_review_status") == "succeeded":
                     followup_requests = union_probe_families(
                         followup_requests,
-                        investigation_review.get("selected_evidence_families"),
+                        _registered_probe_families(
+                            investigation_review,
+                            build_probe_manifest(),
+                        ),
                     )
                     session_controlled_tree = _apply_investigation_review(session_controlled_tree, investigation_review)
         # Plan the selected follow-up before composing the persisted conclusion.
@@ -1985,6 +2005,7 @@ class DiagnosisOrchestrator:
                 else "不可判断"
             ),
             "cluster_assessment": cluster_assessment,
+            "qualification": cluster_assessment.get("unified_qualification") or {},
             "root_cause_candidates": cluster_candidates,
             "possible_root_causes": [item.model_dump(mode="json") for item in possible_clusters],
             "abstained": not bool(cluster_candidates),
@@ -2532,6 +2553,8 @@ class DiagnosisOrchestrator:
             "source_mechanism": values.get("source_mechanism_json") if isinstance(values.get("source_mechanism_json"), dict) else {},
             "python_heap_reference": values.get("python_heap_reference_json") if isinstance(values.get("python_heap_reference_json"), dict) else {},
             "confidence_inputs": values.get("confidence_inputs") if isinstance(values.get("confidence_inputs"), dict) else {},
+            "attribution_graph": values.get("attribution_graph") if isinstance(values.get("attribution_graph"), dict) else {},
+            "qualification": values.get("qualification") if isinstance(values.get("qualification"), dict) else {},
             "evidence_refs": evidence_refs,
         }
 
@@ -2721,6 +2744,13 @@ class DiagnosisOrchestrator:
         if claim_metadata.get("diagnostic_claim"):
             summary = str(claim_metadata["diagnostic_claim"])
 
+        unified_qualifications = [
+            obs.get("qualification")
+            for obs in observations
+            if isinstance(obs.get("qualification"), dict)
+        ]
+        unified_qualification = _merge_unified_qualifications(unified_qualifications)
+
         return {
             "classification": classification,
             "confidence": round(confidence, 2),
@@ -2732,6 +2762,7 @@ class DiagnosisOrchestrator:
             "primary_anchor": target_anchor,
             "ruled_out": ruled_out,
             "alternative_hypotheses": alternative_hypotheses,
+            "unified_qualification": unified_qualification,
             **claim_metadata,
         }
 
@@ -2795,7 +2826,6 @@ class DiagnosisOrchestrator:
                     confidence=0.68,
                 ))
         return commands
-
     def _append_scope_help_conclusion(
         self,
         diagnosis_id: str,
@@ -3301,6 +3331,75 @@ class DiagnosisOrchestrator:
         allowed = {item.strip() for item in os.getenv("MINI_DROP_ALLOWED_SERVICES", "").split(",") if item.strip()}
         if allowed and service_id not in allowed:
             raise PermissionError(f"当前身份无权诊断服务 {service_id}")
+
+
+def _merge_unified_qualifications(values: list[dict[str, Any]]) -> dict[str, Any]:
+    """Merge per-task qualification conservatively for the session boundary."""
+    items = [item for item in values if isinstance(item, dict)]
+    if not items:
+        return {}
+    order = {"L0": 0, "L1": 1, "L2": 2, "L3": 3}
+    common = min(
+        items,
+        key=lambda item: order.get(str(item.get("level") or "L0"), 0),
+    )
+    result = dict(common)
+    result["source_task_count"] = len(items)
+    result["per_task_levels"] = [
+        str(item.get("level") or "L0")
+        for item in items
+    ]
+    result["per_task_decisions"] = [
+        str(item.get("decision") or "abstain")
+        for item in items
+    ]
+    if len(set(result["per_task_levels"])) > 1:
+        result["missing_evidence"] = _unique_strings([
+            *(result.get("missing_evidence") or []),
+            "统一目标/窗口下的最小共同资格层级",
+        ])
+        result["reason"] = (
+            "不同采集任务的资格层级不一致，会话结论按最保守的共同层级输出。"
+        )
+    return result
+
+
+def _registered_probe_families(review: dict[str, Any], manifest: dict[str, Any]) -> list[str]:
+    """Derive executable evidence families from validated request objects."""
+    registered = {
+        str(item.get("evidence_family") or "")
+        for item in manifest.get("available_probes", [])
+        if isinstance(item, dict) and item.get("evidence_family")
+    }
+    requested: list[str] = []
+    raw_specs = review.get("probe_requests")
+    if isinstance(raw_specs, list):
+        for item in raw_specs:
+            family = (
+                str(item.get("evidence_family") or "").strip()
+                if isinstance(item, dict)
+                else str(item or "").strip()
+            )
+            if family in registered and family not in requested:
+                requested.append(family)
+    if not requested:
+        for item in review.get("candidate_proposals", []) or []:
+            if not isinstance(item, dict):
+                continue
+            for spec in item.get("probe_request_specs", []) or []:
+                family = str(spec.get("evidence_family") or "").strip() if isinstance(spec, dict) else ""
+                if family in registered and family not in requested:
+                    requested.append(family)
+            for family in item.get("probe_requests", []) or []:
+                family = str(family or "").strip()
+                if family in registered and family not in requested:
+                    requested.append(family)
+    if not requested:
+        for family in review.get("selected_evidence_families", []) or []:
+            family = str(family or "").strip()
+            if family in registered and family not in requested:
+                requested.append(family)
+    return requested[:3]
 
 
 def _quality(value: float) -> str:

@@ -28,6 +28,7 @@ def build_audit_bundle(diagnosis_id: str, orchestrator, repo) -> dict[str, Any] 
 
     evidence = detail.get("evidence", [])
     latest = detail.get("latest_conclusion") or {}
+    assessment = latest.get("cluster_assessment") if isinstance(latest.get("cluster_assessment"), dict) else {}
     probes = detail.get("probes", [])
     trace = _runtime_trace(detail)
     conclusion = _normalize_conclusion(latest)
@@ -64,6 +65,8 @@ def build_audit_bundle(diagnosis_id: str, orchestrator, repo) -> dict[str, Any] 
         "evidence": evidence,
         "structured_evidence": structured_evidence,
         "evidence_refs": evidence_refs,
+        "qualification": latest.get("qualification") or assessment.get("unified_qualification") or {},
+        "attribution_graph": latest.get("attribution_graph") or {},
         "conclusion": conclusion,
         "latest_conclusion": latest,
         "safety": _safety_section(detail),
@@ -515,9 +518,13 @@ def _normalize_conclusion(latest: dict[str, Any]) -> dict[str, Any]:
         "observations": latest.get("observations", []),
         "boundaries": latest.get("boundaries", []),
         "retained_parent_conclusions": latest.get("retained_parent_conclusions", []),
+        "qualification": latest.get("qualification") or assessment.get("unified_qualification") or {},
+        "attribution_graph": latest.get("attribution_graph") or {},
         "canonical_candidate_state": (latest.get("controlled_ai_tree") or {}).get("data_quality", {}),
         "canonical_probe_plan": (latest.get("controlled_ai_tree") or {}).get("canonical_probe_plan", []),
         "probe_conflicts": (latest.get("controlled_ai_tree") or {}).get("probe_conflicts", []),
+        "qualification": latest.get("qualification") or assessment.get("unified_qualification") or {},
+        "attribution_graph": latest.get("attribution_graph") or {},
         "candidate_sources": sorted({
             str(node.get("generated_by"))
             for layer in (latest.get("controlled_ai_tree") or {}).get("layers", [])

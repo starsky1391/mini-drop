@@ -32,6 +32,10 @@ class EvidenceInput(BaseModel):
     failure_events: list[str] = Field(default_factory=list)
     analysis_result: Optional[dict] = None
     source_context: Optional[dict[str, Any]] = None
+    source_snapshot_json: Optional[dict[str, Any]] = None
+    source_mechanism_json: Optional[dict[str, Any]] = None
+    python_heap_reference_json: Optional[dict[str, Any]] = None
+    structured_values: dict[str, Any] = Field(default_factory=dict)
 
 
 class CandidateCause(BaseModel):
@@ -688,6 +692,9 @@ class EvidenceAttributionResult(BaseModel):
     stability_score: float = 0.0
     primary_cause_reason: str = ""
     conclusion_boundary: ConclusionBoundary
+    # 统一归因契约；旧字段保留以兼容历史报告和前端。
+    attribution_graph: dict[str, Any] = Field(default_factory=dict)
+    qualification: dict[str, Any] = Field(default_factory=dict)
 
 
 class FeedbackPrior(BaseModel):

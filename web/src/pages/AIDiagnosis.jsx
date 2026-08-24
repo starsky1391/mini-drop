@@ -5,6 +5,7 @@ import {
   Button,
   Card,
   Col,
+  Collapse,
   Descriptions,
   Empty,
   Form,
@@ -65,6 +66,16 @@ const STATUS_COLORS = {
   NEEDS_SCOPE_CONFIRMATION: "orange",
 };
 
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function confidencePercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(100, Math.round(number <= 1 ? number * 100 : number)));
+}
+
 function Status({ value }) {
   return <Tag color={STATUS_COLORS[value] || "default"}>{value || "UNKNOWN"}</Tag>;
 }
@@ -98,7 +109,7 @@ export default function AIDiagnosis() {
   const [validationRunning, setValidationRunning] = useState(false);
   const [error, setError] = useState("");
   const requestSerial = useRef(0);
-  const watchedInstances = Form.useWatch("instances", form) || [];
+  const watchedInstances = asArray(Form.useWatch("instances", form));
 
   async function refreshSessions() {
     try {
@@ -115,11 +126,12 @@ export default function AIDiagnosis() {
         setSessions(sessionItems);
         const first = agentItems.find((item) => item.status === "ONLINE") || agentItems[0];
         if (first) {
-          const instances = form.getFieldValue("instances") || [{}];
-          if (!instances[0]?.agent_id) {
+          const instances = asArray(form.getFieldValue("instances"));
+          const firstInstance = instances[0] || {};
+          if (!firstInstance.agent_id) {
             form.setFieldsValue({
               instances: [{
-                ...instances[0],
+                ...firstInstance,
                 agent_id: first.id,
                 host_id: first.hostname || first.id,
               }, ...instances.slice(1)],
@@ -158,9 +170,9 @@ export default function AIDiagnosis() {
     setLoading(true);
     setError("");
     try {
-      const instances = values.instances.map((item, index) => ({
+      const instances = asArray(values.instances).map((item = {}, index) => ({
         service_id: item.service_id,
-        instance_id: item.instance_id || `${item.service_id}-${index + 1}`,
+        instance_id: item.instance_id || `${item.service_id || values.target_service}-${index + 1}`,
         host_id: item.host_id,
         agent_id: item.agent_id,
         pid: item.pid,
@@ -498,13 +510,13 @@ export default function AIDiagnosis() {
           <Card
             title="最近会话"
             extra={<Button size="small" icon={<ReloadOutlined />} onClick={refreshSessions}>刷新</Button>}
-            bodyStyle={{ maxHeight: 470, overflow: "auto" }}
+            styles={{ body: { maxHeight: 470, overflow: "auto" } }}
           >
             <List
               dataSource={sessions}
               locale={{ emptyText: "暂无 AI 诊断会话" }}
               renderItem={(item) => (
-                <List.Item actions={[<Button key="open" type="link" onClick={() => openSession(item.diagnosis_id)}>查看</Button>]}>
+                <List.Item key={item.diagnosis_id} actions={[<Button key="open" type="link" onClick={() => openSession(item.diagnosis_id)}>查看</Button>]}>
                   <List.Item.Meta
                     title={<Space><Typography.Text>{item.target_scope?.target_service || "未绑定服务"}</Typography.Text><Status value={item.status} /></Space>}
                     description={<Typography.Text type="secondary" ellipsis>{item.raw_query}</Typography.Text>}
@@ -525,9 +537,9 @@ export default function AIDiagnosis() {
 
 function DiagnosisDetail({ detail }) {
   const conclusion = detail.latest_conclusion;
-  const candidates = conclusion?.root_cause_candidates || [];
-  const possibleCauses = conclusion?.possible_root_causes || [];
-  const rootCauseClusters = conclusion?.root_cause_clusters || [];
+  const candidates = asArray(conclusion?.root_cause_candidates);
+  const possibleCauses = asArray(conclusion?.possible_root_causes);
+  const rootCauseClusters = asArray(conclusion?.root_cause_clusters);
   const sessionMainTree = useMemo(
     () => selectSessionMainTree(conclusion || {}),
     [conclusion],
@@ -546,10 +558,13 @@ function DiagnosisDetail({ detail }) {
       ? "低（可能根因待验证）"
       : "不可判断";
   const assessment = conclusion?.cluster_assessment;
-  const commands = conclusion?.diagnostic_commands || [];
-  const hypotheses = detail.hypothesis_graph?.hypotheses || [];
-  const probes = detail.probes || [];
-  const evidence = detail.evidence || [];
+  const unifiedQualification = conclusion?.qualification
+    || assessment?.unified_qualification
+    || {};
+  const commands = asArray(conclusion?.diagnostic_commands);
+  const hypotheses = asArray(detail.hypothesis_graph?.hypotheses);
+  const probes = asArray(detail.probes);
+  const evidence = asArray(detail.evidence);
   const [highlightedTreeCandidates, setHighlightedTreeCandidates] = useState([]);
   const evidenceMap = useMemo(() => new Map(evidence.map((item) => [item.evidence_id, item])), [evidence]);
   const traceProfiles = useMemo(
@@ -620,16 +635,18 @@ function DiagnosisDetail({ detail }) {
   const qualificationBoundary = conclusion?.qualification_boundary || {};
   const candidateReview = conclusion?.candidate_review || {};
   const candidateGenerationOutput = conclusion?.candidate_generation_output || {};
-  const candidateGenerationAttempts = candidateGenerationOutput.attempts
-    || candidateReview.candidate_generation_attempts
-    || [];
-  const gateFailures = conclusion?.gate_failures || conclusion?.ai_gate_failures || [];
-  const retainedParentConclusions = conclusion?.retained_parent_conclusions || [];
-  const conclusionBoundaries = conclusion?.boundaries || [];
+  const candidateGenerationAttempts = asArray(candidateGenerationOutput.attempts).length
+    ? asArray(candidateGenerationOutput.attempts)
+    : asArray(candidateReview.candidate_generation_attempts);
+  const gateFailures = asArray(conclusion?.gate_failures).length
+    ? asArray(conclusion?.gate_failures)
+    : asArray(conclusion?.ai_gate_failures);
+  const retainedParentConclusions = asArray(conclusion?.retained_parent_conclusions);
+  const conclusionBoundaries = asArray(conclusion?.boundaries);
   const controlledTree = sessionMainTree || {};
   const lineAnchorEligibility = controlledTree.line_anchor_eligibility || {};
   const heapProbeOutcome = controlledTree.heap_probe_outcome || {};
-  const probeConflicts = controlledTree.probe_conflicts || [];
+  const probeConflicts = asArray(controlledTree.probe_conflicts);
   const displayedConclusion = aiReviewStatus === "succeeded" && conclusion?.headline
     ? conclusion.headline
     : conclusion?.headline || retainedConclusion.claim || formalRootCause?.claim || conclusion?.summary;
@@ -641,7 +658,7 @@ function DiagnosisDetail({ detail }) {
   const displayedQualification = aiReviewStatus === "succeeded" && formalRootCause
     ? "formal_root_cause"
     : retainedConclusion.qualification || (formalRootCause ? "formal_root_cause" : "partial_localization");
-  const integratedBranchDetails = (conclusion?.causal_chain || [])
+  const integratedBranchDetails = asArray(conclusion?.causal_chain)
     .map((item) => item.statement)
     .filter((statement) => statement && !String(conclusion?.why_it_happened || "").includes(statement));
 
@@ -684,9 +701,9 @@ function DiagnosisDetail({ detail }) {
                     {integratedBranchDetails.join("；")}
                   </Typography.Text>
                 )}
-                {conclusion.localization_chain?.length > 0 && (
+                {asArray(conclusion.localization_chain).length > 0 && (
                   <Typography.Text type="secondary">
-                    同时定位到：{conclusion.localization_chain.map((item) => item.statement).join("；")}
+                    同时定位到：{asArray(conclusion.localization_chain).map((item) => item.statement).join("；")}
                   </Typography.Text>
                 )}
                 <Space wrap>
@@ -733,9 +750,9 @@ function DiagnosisDetail({ detail }) {
               message="AI 候选未通过结构化门禁"
               description={(
                 <Space direction="vertical" size={4}>
-                  {(conclusion.candidate_validation_diagnostics
-                    || conclusion.candidate_review?.validation_diagnostics
-                    || []).map((item, index) => (
+                  {(asArray(conclusion.candidate_validation_diagnostics).length > 0
+                    ? asArray(conclusion.candidate_validation_diagnostics)
+                    : asArray(conclusion.candidate_review?.validation_diagnostics)).map((item, index) => (
                     <Typography.Text key={`${item.attempt || index}-${item.failure_code || "validation"}`}>
                       第 {item.attempt || index + 1} 次：{item.failure_path || "响应结构"}；
                       实际值：{item.actual_value || item.failure_code || "未提供"}；
@@ -765,7 +782,7 @@ function DiagnosisDetail({ detail }) {
                       输出摘要：{item.response_excerpt || "无可展示输出"}。
                     </Typography.Text>
                   ))}
-                  {candidateGenerationOutput.validation_diagnostics?.map((item, index) => (
+                  {asArray(candidateGenerationOutput.validation_diagnostics).map((item, index) => (
                     <Space
                       key={`candidate-diagnostic-${item.attempt || index}-${item.candidate_id || "response"}`}
                       direction="vertical"
@@ -779,10 +796,10 @@ function DiagnosisDetail({ detail }) {
                         原因：{item.reason || item.actual_value || "未提供"}。
                       </Typography.Text>
                       <Typography.Text type="secondary">
-                        实际证据引用：{item.candidate_evidence_refs?.join("、") || "无"}；
-                        缺失初始证据：{item.missing_initial_evidence_refs?.join("、") || "无"}；
-                        父节点：{item.candidate_parent_candidate_ids?.join("、") || "无"}；
-                        缺失父节点：{item.missing_parent_candidate_ids?.join("、") || "无"}。
+                        实际证据引用：{asArray(item.candidate_evidence_refs).join("、") || "无"}；
+                        缺失初始证据：{asArray(item.missing_initial_evidence_refs).join("、") || "无"}；
+                        父节点：{asArray(item.candidate_parent_candidate_ids).join("、") || "无"}；
+                        缺失父节点：{asArray(item.missing_parent_candidate_ids).join("、") || "无"}。
                       </Typography.Text>
                       {item.raw_response_excerpt && (
                         <Typography.Paragraph
@@ -817,19 +834,19 @@ function DiagnosisDetail({ detail }) {
               description={(
                 <Space direction="vertical" size={4}>
                   <Typography.Text>
-                    有效候选：{candidateGenerationOutput.accepted_candidate_ids?.length || 0} 个；
-                    active 深探：{candidateGenerationOutput.active_candidate_ids?.length || 0} 个；
-                    延后调查：{candidateGenerationOutput.deferred_candidate_ids?.length || 0} 个；
-                    校验失败：{candidateGenerationOutput.rejected_candidate_ids?.length || 0} 个。
+                    有效候选：{asArray(candidateGenerationOutput.accepted_candidate_ids).length} 个；
+                    active 深探：{asArray(candidateGenerationOutput.active_candidate_ids).length} 个；
+                    延后调查：{asArray(candidateGenerationOutput.deferred_candidate_ids).length} 个；
+                    校验失败：{asArray(candidateGenerationOutput.rejected_candidate_ids).length} 个。
                   </Typography.Text>
-                  {candidateGenerationOutput.accepted_candidate_ids?.length > 0 && (
+                  {asArray(candidateGenerationOutput.accepted_candidate_ids).length > 0 && (
                     <Typography.Text type="secondary">
-                      AI 候选：{candidateGenerationOutput.accepted_candidate_ids.join("、")}
+                      AI 候选：{asArray(candidateGenerationOutput.accepted_candidate_ids).join("、")}
                     </Typography.Text>
                   )}
-                  {candidateGenerationOutput.accepted_candidates?.length > 0 && (
+                  {asArray(candidateGenerationOutput.accepted_candidates).length > 0 && (
                     <Space direction="vertical" size={2} style={{ width: "100%" }}>
-                      {candidateGenerationOutput.accepted_candidates.map((item) => (
+                      {asArray(candidateGenerationOutput.accepted_candidates).map((item) => (
                         <Typography.Text key={`accepted-candidate-${item.candidate_id}`}>
                           {item.candidate_id}：{item.claim || "未提供候选说明"}
                           {"；"}父节点：{item.origin_parent_candidate_id || item.parent_candidate_ids?.join("、") || "无"}
@@ -838,30 +855,30 @@ function DiagnosisDetail({ detail }) {
                       ))}
                     </Space>
                   )}
-                  {candidateGenerationOutput.active_candidate_ids?.length > 0 && (
+                  {asArray(candidateGenerationOutput.active_candidate_ids).length > 0 && (
                     <Typography.Text type="secondary">
-                      本轮进入深探：{candidateGenerationOutput.active_candidate_ids.join("、")}
+                      本轮进入深探：{asArray(candidateGenerationOutput.active_candidate_ids).join("、")}
                     </Typography.Text>
                   )}
-                  {candidateGenerationOutput.rejected_candidate_ids?.length > 0 && (
+                  {asArray(candidateGenerationOutput.rejected_candidate_ids).length > 0 && (
                     <Typography.Text type="secondary">
-                      未通过结构校验：{candidateGenerationOutput.rejected_candidate_ids.join("、")}
+                      未通过结构校验：{asArray(candidateGenerationOutput.rejected_candidate_ids).join("、")}
                     </Typography.Text>
                   )}
-                  {candidateGenerationOutput.selection_diagnostics?.map((item) => (
-                    <Typography.Text key={`selection-${item.candidate_id}`}>
+                  {asArray(candidateGenerationOutput.selection_diagnostics).map((item) => (
+                    <Typography.Text key={`selection-${item.candidate_id || item.selection}`}>
                       {item.candidate_id}：{item.selection}；{item.reason}
                     </Typography.Text>
                   ))}
-                  {candidateGenerationOutput.tree_ingestion_diagnostics?.map((item, index) => (
-                    <Typography.Text type="warning" key={`tree-ingestion-${item.candidate_id}-${index}`}>
+                  {asArray(candidateGenerationOutput.tree_ingestion_diagnostics).map((item, index) => (
+                    <Typography.Text type="warning" key={`tree-ingestion-${item.candidate_id || "candidate"}-${index}`}>
                       主树接入：{item.candidate_id || "未命名候选"}；
                       {item.reason || item.failure_code || "未进入 session_main"}；
-                      父节点：{item.parent_candidate_ids?.join("、") || "无"}；
-                      缺失父节点：{item.missing_parent_candidate_ids?.join("、") || "无"}。
+                      父节点：{asArray(item.parent_candidate_ids).join("、") || "无"}；
+                      缺失父节点：{asArray(item.missing_parent_candidate_ids).join("、") || "无"}。
                     </Typography.Text>
                   ))}
-                  {candidateGenerationOutput.gate_failures?.map((item, index) => (
+                  {asArray(candidateGenerationOutput.gate_failures).map((item, index) => (
                     <Space
                       key={`candidate-gate-${item.candidate_id || "round"}-${item.failure_code || "gate"}-${index}`}
                       direction="vertical"
@@ -870,14 +887,14 @@ function DiagnosisDetail({ detail }) {
                     >
                       <Typography.Text type="warning">
                         正式门禁：{item.candidate_id || "整轮候选"}；
-                        失败字段：{item.failed_gates?.join("、") || item.failure_code || "未提供"}；
+                        失败字段：{asArray(item.failed_gates).join("、") || item.failure_code || "未提供"}；
                         {item.reason || "当前证据不足以升级正式结论"}。
                       </Typography.Text>
                       <Typography.Text type="secondary">
-                        初始证据：{item.initial_evidence_refs?.length || 0} 条；
-                        候选证据：{item.evidence_refs?.length || item.candidate_evidence_refs?.length || 0} 条；
+                        初始证据：{asArray(item.initial_evidence_refs).length} 条；
+                        候选证据：{asArray(item.evidence_refs).length || asArray(item.candidate_evidence_refs).length} 条；
                         保留父节点：{item.retained_parent_candidate_id || item.origin_parent_candidate_id || "无"}；
-                        缺失证据：{item.required_probe?.join("、") || "无"}。
+                        缺失证据：{asArray(item.required_probe).join("、") || "无"}。
                       </Typography.Text>
                     </Space>
                   ))}
@@ -1147,6 +1164,18 @@ function DiagnosisDetail({ detail }) {
               <Descriptions.Item label="跨节点判断">{assessment.classification}</Descriptions.Item>
               <Descriptions.Item label="判断置信度">{assessment.confidence}</Descriptions.Item>
               <Descriptions.Item label="对比目标">{assessment.compared_targets?.length || 0}</Descriptions.Item>
+              {unifiedQualification.level && (
+                <Descriptions.Item label="统一资格层级">
+                  <Tag color={unifiedQualification.level === "L3" ? "green" : "gold"}>
+                    {unifiedQualification.level}
+                  </Tag>
+                </Descriptions.Item>
+              )}
+              {unifiedQualification.decision && (
+                <Descriptions.Item label="统一资格决策">
+                  {unifiedQualification.decision}
+                </Descriptions.Item>
+              )}
               {assessment.supported_level && (
                 <Descriptions.Item label="定位层级">{assessment.supported_level}</Descriptions.Item>
               )}
@@ -1167,6 +1196,11 @@ function DiagnosisDetail({ detail }) {
                   ))}
                 </Space>
               </Descriptions.Item>
+              {(unifiedQualification.missing_evidence || []).length > 0 && (
+                <Descriptions.Item label="统一证据缺口" span={3}>
+                  {unifiedQualification.missing_evidence.join("；")}
+                </Descriptions.Item>
+              )}
             </Descriptions>
           )}
           {candidates.length > 0 && (

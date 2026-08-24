@@ -1,0 +1,478 @@
+"""从工业采集器结构化结果构造统一事实、关系和资格结果。"""
+
+from __future__ import annotations
+
+import hashlib
+from typing import Any
+
+from server.app.diagnosis.attribution_models import (
+    AttributionGraph,
+    AttributionLevel,
+    CostCenterCandidate,
+    EvidenceQualityEntry,
+    EvidenceSignal,
+    ImpactCandidate,
+    ObservedRelation,
+    QualificationResult,
+    ScenarioFacts,
+    SourceRelation,
+    TriggerCandidate,
+)
+
+
+_LEVEL_ORDER = {
+    "resource": 0,
+    "host": 1,
+    "process": 2,
+    "thread": 3,
+    "syscall": 4,
+    "dependency": 5,
+    "service": 6,
+    "endpoint": 7,
+    "function": 8,
+    "call_path": 9,
+    "line": 10,
+}
+
+_PRIMITIVE_NAMES = {
+    "poll",
+    "select",
+    "epoll_wait",
+    "futex",
+    "pthread_cond_wait",
+    "clock_nanosleep",
+    "sleep",
+    "sched_yield",
+}
+
+
+def build_attribution_graph(
+    *,
+    evidence: dict[str, Any],
+    target: dict[str, Any] | None = None,
+    source_snapshot: dict[str, Any] | None = None,
+    source_mechanism: dict[str, Any] | None = None,
+) -> AttributionGraph:
+    facts = build_scenario_facts(evidence)
+    source_relations = build_source_relations(
+        evidence=evidence,
+        source_snapshot=source_snapshot,
+        source_mechanism=source_mechanism,
+    )
+    graph_id = "attribution:" + hashlib.sha256(
+        str(sorted((target or {}).items())).encode("utf-8")
+        + str(facts.model_dump(mode="json")).encode("utf-8")
+    ).hexdigest()[:16]
+    entities = [
+        {
+            "entity_id": item.candidate_id,
+            "entity_type": item.level,
+            "label": item.target,
+            "evidence_refs": item.evidence_refs,
+        }
+        for item in facts.cost_centers
+    ]
+    return AttributionGraph(
+        graph_id=graph_id,
+        target=target or {},
+        facts=facts,
+        source_relations=source_relations,
+        entities=entities,
+        graph_relations=facts.observed_relations,
+    )
+
+
+def build_scenario_facts(evidence: dict[str, Any]) -> ScenarioFacts:
+    evidence = evidence if isinstance(evidence, dict) else {}
+    window = _evidence_window(evidence)
+    refs = _collect_refs(evidence)
+    signals: list[EvidenceSignal] = []
+    costs: list[CostCenterCandidate] = []
+    impacts: list[ImpactCandidate] = []
+    triggers: list[TriggerCandidate] = []
+    relations: list[ObservedRelation] = []
+    missing: list[str] = []
+    quality = _quality_entries(evidence, window)
+
+    sys_metrics = evidence.get("sys_metrics")
+    summary = sys_metrics.get("summary", {}) if isinstance(sys_metrics, dict) else {}
+    for key, signal_type in (
+        ("avg_cpu_user_pct", "cpu_pressure"),
+        ("avg_cpu_iowait_pct", "io_wait"),
+        ("vmrss_mb", "memory_pressure"),
+        ("fd_count", "fd_pressure"),
+        ("thread_count", "thread_pressure"),
+    ):
+        value = _number(summary.get(key))
+        if value is None:
+            continue
+        signal_id = f"signal:{signal_type}"
+        signals.append(EvidenceSignal(
+            signal_id=signal_id,
+            signal_type=signal_type,
+            value=value,
+            evidence_refs=["sys_metrics.summary"],
+            window=window,
+            status="observed",
+        ))
+        impacts.append(ImpactCandidate(
+            candidate_id=f"impact:{signal_type}",
+            statement=f"采集窗口观测到 {signal_type} 指标值 {value:g}",
+            evidence_refs=["sys_metrics.summary"],
+            status="observed",
+        ))
+
+    top_functions = evidence.get("top_functions")
+    if isinstance(top_functions, list):
+        for index, item in enumerate(top_functions[:10]):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or item.get("function") or "").strip()
+            if not name:
+                continue
+            ref = str(item.get("evidence_ref") or f"top_functions[{index}]")
+            file_path = str(item.get("file") or "")
+            line = _positive_int(item.get("line"))
+            level: AttributionLevel = "line" if file_path and line else "function"
+            candidate_id = f"cost:{level}:{index}"
+            costs.append(CostCenterCandidate(
+                candidate_id=candidate_id,
+                level=level,
+                target=f"{file_path}:{line}" if level == "line" else name,
+                evidence_refs=[ref],
+                source=str(item.get("source") or "industrial_profile"),
+                primitive=name.rsplit(":", 1)[-1] in _PRIMITIVE_NAMES,
+                confidence=min(1.0, max(0.0, _number(item.get("percent")) or 0.0) / 100.0),
+            ))
+            if index == 0:
+                signals.append(EvidenceSignal(
+                    signal_id="signal:top_cost_center",
+                    signal_type="cost_center_observed",
+                    value={"name": name, "percent": item.get("percent")},
+                    evidence_refs=[ref],
+                    window=window,
+                    status="observed",
+                ))
+
+    for item in _line_candidates(evidence):
+        relation_id = f"relation:runtime-calls:{item['file']}:{item['line']}"
+        relations.append(ObservedRelation(
+            relation_id=relation_id,
+            relation="calls",
+            source_ref=str(item.get("runtime_ref") or item.get("symbol") or "runtime"),
+            target_ref=f"{item['file']}:{item['line']}",
+            evidence_refs=[str(item.get("evidence_ref") or "source_snapshot")],
+            status="observed",
+            statement="工业运行时栈与已验证源码位置建立调用映射。",
+        ))
+
+    if not signals:
+        missing.append("symptom_signal")
+    if not costs:
+        missing.append("cost_center")
+    if not window:
+        missing.append("evidence_window")
+    if not any(item.status in {"valid", "partial"} for item in quality):
+        missing.append("valid_evidence_quality")
+
+    return ScenarioFacts(
+        symptom_signals=signals,
+        cost_centers=costs,
+        trigger_candidates=triggers,
+        impact_candidates=impacts,
+        observed_relations=relations,
+        missing_evidence=_unique(missing),
+        evidence_quality=quality,
+        evidence_refs=refs,
+        evidence_window=window,
+    )
+
+
+def build_source_relations(
+    *,
+    evidence: dict[str, Any],
+    source_snapshot: dict[str, Any] | None = None,
+    source_mechanism: dict[str, Any] | None = None,
+) -> list[SourceRelation]:
+    result: list[SourceRelation] = []
+    for item in _line_candidates({**evidence, "source_snapshot_json": source_snapshot or evidence.get("source_snapshot_json")}):
+        file_path = str(item.get("file") or "")
+        line = _positive_int(item.get("line"))
+        if not file_path or not line:
+            continue
+        result.append(SourceRelation(
+            relation_id=f"source:calls:{file_path}:{line}",
+            relation="calls",
+            source_ref=str(item.get("runtime_ref") or item.get("symbol") or "runtime"),
+            target_ref=f"{file_path}:{line}",
+            evidence_refs=[str(item.get("evidence_ref") or "source_snapshot")],
+            file_path=file_path,
+            line_number=line,
+            status="verified" if item.get("verified", True) else "unproven",
+            statement="运行时调用栈已通过 source snapshot 映射到指定 revision 的源码位置。",
+        ))
+
+    mechanism = source_mechanism or evidence.get("source_mechanism_json")
+    paths = mechanism.get("mechanism_paths", []) if isinstance(mechanism, dict) else []
+    for path_index, path in enumerate(paths if isinstance(paths, list) else []):
+        if not isinstance(path, dict):
+            continue
+        path_ref = str(path.get("evidence_ref") or f"source_mechanism.mechanism_paths[{path_index}]")
+        nodes = path.get("nodes") if isinstance(path.get("nodes"), list) else []
+        for index in range(len(nodes) - 1):
+            left = _node_ref(nodes[index])
+            right = _node_ref(nodes[index + 1])
+            if not left or not right:
+                continue
+            result.append(SourceRelation(
+                relation_id=f"source:mechanism:{path_index}:{index}",
+                relation=_relation_from_path(path, index),
+                source_ref=left,
+                target_ref=right,
+                evidence_refs=[path_ref],
+                file_path=str(nodes[index].get("file") or ""),
+                line_number=_positive_int(nodes[index].get("line")),
+                status="supported" if path.get("status") in {"supported", "verified"} else "unproven",
+                statement=str(path.get("statement") or path.get("mechanism") or "源码查询返回跨函数关系路径。"),
+            ))
+    return _dedupe_relations(result)
+
+
+def qualify_attribution(
+    graph: AttributionGraph,
+    *,
+    trigger_refs: list[str] | None = None,
+    mechanism_refs: list[str] | None = None,
+    impact_refs: list[str] | None = None,
+    disconfirming_evidence_refs: list[str] | None = None,
+) -> QualificationResult:
+    facts = graph.facts
+    cost_refs = [item.candidate_id for item in facts.cost_centers]
+    evidence_refs = _unique([
+        *facts.evidence_refs,
+        *(ref for item in graph.source_relations for ref in item.evidence_refs),
+    ])
+    triggers = _unique(trigger_refs or [item.candidate_id for item in facts.trigger_candidates if item.status == "observed"])
+    mechanisms = _unique(mechanism_refs or [
+        item.relation_id
+        for item in graph.source_relations
+        if item.relation in {"retains", "explains", "acquires", "holds", "releases", "amplifies", "propagates_to"}
+        and item.status in {"verified", "supported"}
+    ])
+    impacts = _unique(impact_refs or [item.candidate_id for item in facts.impact_candidates if item.status == "observed"])
+    source_refs = [
+        item.relation_id
+        for item in graph.source_relations
+        if item.status in {"verified", "supported"}
+    ]
+    if not facts.symptom_signals:
+        return QualificationResult(
+            level="L0",
+            qualification="observation",
+            decision="abstain",
+            target=graph.target,
+            window=facts.evidence_window,
+            evidence_refs=evidence_refs,
+            missing_evidence=_unique([*facts.missing_evidence, "symptom_signal"]),
+            reason="没有有效的同窗症状信号，不能进行归因。",
+        )
+    if not facts.cost_centers:
+        return QualificationResult(
+            level="L0",
+            qualification="observation",
+            decision="continue_probe",
+            target=graph.target,
+            window=facts.evidence_window,
+            symptom_refs=[item.signal_id for item in facts.symptom_signals],
+            evidence_refs=evidence_refs,
+            missing_evidence=_unique([*facts.missing_evidence, "cost_center"]),
+            reason="只能确认症状，尚未定位到运行时成本中心。",
+        )
+    if not triggers or not mechanisms or not impacts or not source_refs:
+        missing = []
+        if not triggers:
+            missing.append("trigger")
+        if not mechanisms:
+            missing.append("mechanism")
+        if not impacts:
+            missing.append("impact")
+        if not source_refs:
+            missing.append("verified_source_relation")
+        level = "L1" if not mechanisms else "L2"
+        return QualificationResult(
+            level=level,
+            qualification="partial_localization" if level == "L1" else "mechanism_hypothesis",
+            decision="continue_probe",
+            causal_status="unproven",
+            target=graph.target,
+            window=facts.evidence_window,
+            symptom_refs=[item.signal_id for item in facts.symptom_signals],
+            cost_center_refs=cost_refs,
+            trigger_refs=triggers,
+            mechanism_refs=mechanisms,
+            impact_refs=impacts,
+            source_relation_refs=source_refs,
+            evidence_refs=evidence_refs,
+            missing_evidence=missing,
+            disconfirming_evidence_refs=_unique(disconfirming_evidence_refs or []),
+            reason="已定位到成本中心或源码关系，但触发、机制、影响和证据闭环尚未全部满足。",
+        )
+    if disconfirming_evidence_refs:
+        return QualificationResult(
+            level="L2",
+            qualification="mechanism_hypothesis",
+            decision="abstain",
+            causal_status="contradicted",
+            target=graph.target,
+            window=facts.evidence_window,
+            symptom_refs=[item.signal_id for item in facts.symptom_signals],
+            cost_center_refs=cost_refs,
+            trigger_refs=triggers,
+            mechanism_refs=mechanisms,
+            impact_refs=impacts,
+            source_relation_refs=source_refs,
+            evidence_refs=evidence_refs,
+            disconfirming_evidence_refs=_unique(disconfirming_evidence_refs),
+            reason="存在同窗反证，不能宣布正式根因。",
+        )
+    return QualificationResult(
+        level="L3",
+        qualification="formal_root_cause",
+        decision="conclude",
+        causal_status="supported",
+        target=graph.target,
+        window=facts.evidence_window,
+        symptom_refs=[item.signal_id for item in facts.symptom_signals],
+        cost_center_refs=cost_refs,
+        trigger_refs=triggers,
+        mechanism_refs=mechanisms,
+        impact_refs=impacts,
+        source_relation_refs=source_refs,
+        evidence_refs=evidence_refs,
+        reason="同窗症状、成本中心、触发、机制、影响和已验证源码关系均有真实证据引用。",
+    )
+
+
+def _evidence_window(evidence: dict[str, Any]) -> dict[str, Any]:
+    for value in (
+        evidence.get("evidence_window"),
+        evidence.get("confidence_inputs", {}).get("evidence_window")
+        if isinstance(evidence.get("confidence_inputs"), dict)
+        else None,
+    ):
+        if isinstance(value, dict):
+            return dict(value)
+    return {}
+
+
+def _quality_entries(evidence: dict[str, Any], window: dict[str, Any]) -> list[EvidenceQualityEntry]:
+    result = []
+    index = evidence.get("evidence_index")
+    values = index.get("evidence_validity_by_family", {}) if isinstance(index, dict) else {}
+    if isinstance(values, dict):
+        for family, status in values.items():
+            normalized = str(status or "unknown")
+            if normalized not in {"valid", "partial", "empty", "blocked", "stale", "unknown"}:
+                normalized = "unknown"
+            result.append(EvidenceQualityEntry(
+                evidence_ref=f"evidence_family:{family}",
+                family=str(family),
+                status=normalized,
+                reason="结构化采集器质量摘要",
+                window=window,
+            ))
+    if not result and evidence:
+        result.append(EvidenceQualityEntry(
+            evidence_ref="structured_evidence",
+            status="valid" if evidence.get("top_functions") or evidence.get("sys_metrics") else "partial",
+            reason="存在结构化工业采集输出" if evidence.get("top_functions") or evidence.get("sys_metrics") else "结构化输出为空或不足",
+            window=window,
+        ))
+    return result
+
+
+def _line_candidates(evidence: dict[str, Any]) -> list[dict[str, Any]]:
+    result = []
+    source = evidence.get("source_snapshot_json")
+    if isinstance(source, dict):
+        for key in ("verified_line_candidates", "line_candidates", "candidates"):
+            values = source.get(key)
+            if not isinstance(values, list):
+                continue
+            for item in values:
+                if isinstance(item, dict):
+                    result.append({
+                        **item,
+                        "verified": item.get("eligibility_status") in {None, "", "verified"} or item.get("verified") is True,
+                        "evidence_ref": item.get("evidence_ref") or f"source_snapshot.{key}",
+                    })
+            if result:
+                break
+    index = evidence.get("evidence_index")
+    if isinstance(index, dict) and isinstance(index.get("line_candidates"), list):
+        result.extend(item for item in index["line_candidates"] if isinstance(item, dict))
+    return result
+
+
+def _node_ref(node: Any) -> str:
+    if not isinstance(node, dict):
+        return ""
+    file_path = str(node.get("file") or node.get("file_path") or "")
+    line = _positive_int(node.get("line") or node.get("line_number"))
+    symbol = str(node.get("symbol") or node.get("function") or node.get("name") or "")
+    if file_path and line:
+        return f"{file_path}:{line}"
+    return symbol
+
+
+def _relation_from_path(path: dict[str, Any], index: int) -> str:
+    relations = path.get("relations")
+    if isinstance(relations, list) and index < len(relations):
+        value = str(relations[index])
+        if value in {"calls", "triggers", "activates", "propagates_to", "amplifies", "waits_on", "retains", "explains", "acquires", "holds", "releases"}:
+            return value
+    return "propagates_to"
+
+
+def _collect_refs(evidence: dict[str, Any]) -> list[str]:
+    refs = []
+    for key in ("evidence_refs", "artifact_refs"):
+        value = evidence.get(key)
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str):
+                    refs.append(item)
+                elif isinstance(item, dict):
+                    refs.extend(str(item.get(key2) or "") for key2 in ("evidence_ref", "evidence_id", "object_key"))
+    return _unique(refs)
+
+
+def _number(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result > 0 else None
+
+
+def _unique(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(str(value) for value in values if str(value)))
+
+
+def _dedupe_relations(values: list[SourceRelation]) -> list[SourceRelation]:
+    result = []
+    seen = set()
+    for value in values:
+        key = (value.relation, value.source_ref, value.target_ref, tuple(value.evidence_refs))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result

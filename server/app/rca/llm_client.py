@@ -331,14 +331,70 @@ def _candidate_probe_inputs(
             origin = _single_explicit_parent(parents)
         if not origin:
             continue
+        specs = {
+            str(spec.get("evidence_family") or ""): spec
+            for spec in item.get("probe_request_specs", [])
+            if isinstance(spec, dict) and spec.get("evidence_family")
+        }
         for family in item.get("probe_requests", []):
             family = str(family or "").strip()
             if family and family not in by_family:
+                spec = specs.get(family, {})
                 by_family[family] = {
                     "candidate_id": candidate_id,
                     "origin_parent_candidate_id": origin,
+                    **{
+                        key: spec[key]
+                        for key in (
+                            "question",
+                            "why_needed",
+                            "input_refs",
+                            "expected_observation",
+                            "disconfirming_observation",
+                        )
+                        if spec.get(key)
+                    },
                 }
     return by_family
+
+
+def _normalize_probe_requests(value: Any) -> tuple[list[str], list[dict[str, Any]]]:
+    """Normalize legacy strings and the new structured probe request contract."""
+    if not isinstance(value, list):
+        return [], []
+    families: list[str] = []
+    specs: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, str):
+            family = item.strip()
+            spec = {
+                "evidence_family": family,
+                "question": "",
+                "why_needed": "",
+                "input_refs": [],
+                "expected_observation": "",
+                "disconfirming_observation": "",
+            }
+        elif isinstance(item, dict):
+            family = str(item.get("evidence_family") or "").strip()
+            spec = {
+                "evidence_family": family,
+                "question": str(item.get("question") or "").strip()[:500],
+                "why_needed": str(item.get("why_needed") or "").strip()[:500],
+                "input_refs": [
+                    str(ref) for ref in item.get("input_refs", [])
+                    if str(ref)
+                ][:32],
+                "expected_observation": str(item.get("expected_observation") or "").strip()[:500],
+                "disconfirming_observation": str(item.get("disconfirming_observation") or "").strip()[:500],
+            }
+        else:
+            continue
+        if not family or family in families:
+            continue
+        families.append(family)
+        specs.append(spec)
+    return families, specs
 
 
 def _normalize_initial_candidate_decision(value: Any) -> str:
@@ -467,7 +523,8 @@ def generate_session_candidate_review(
                 "origin_parent_candidate_id 必须是其中唯一来源父节点（只有一个父节点时可直接使用该节点）；"
                 "首轮候选 supported_level 不得超过 Analyzer 当前 localization_boundary.level；"
                 "首轮候选不得直接生成 line，line 必须由 runtime file:line 和 source_snapshot 验证后产生；"
-                "probe_requests 只能使用 probe_manifest 中注册的 evidence_family；role 只能是 primary、secondary、unknown 或 rejected。"
+                "probe_requests 可以是旧字符串或结构化对象；结构化对象必须包含 evidence_family、question、why_needed、input_refs、expected_observation、disconfirming_observation。"
+                "evidence_family 只能使用 probe_manifest 中注册的 evidence_family；role 只能是 primary、secondary、unknown 或 rejected。"
             ),
         },
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)},
@@ -543,7 +600,7 @@ def generate_session_candidate_review(
                     for field in ("claim", "mechanism", "target"):
                         if not str(item.get(field) or "").strip():
                             raise ValueError(f"candidate 缺少 {field}")
-                    probe_requests = [str(value) for value in item.get("probe_requests", []) if str(value)]
+                    probe_requests, probe_request_specs = _normalize_probe_requests(item.get("probe_requests"))
                     normalized.append({
                         "candidate_id": candidate_id,
                         "claim": str(item["claim"]).strip(),
@@ -559,6 +616,7 @@ def generate_session_candidate_review(
                         "parent_candidate_ids": parent_ids,
                         "origin_parent_candidate_id": origin_parent or None,
                         "probe_requests": probe_requests,
+                        "probe_request_specs": probe_request_specs,
                     })
                     seen.add(candidate_id)
                 except Exception as exc:
@@ -659,6 +717,11 @@ def generate_session_candidate_review(
                                 value
                                 for value in item["probe_requests"]
                                 if value not in invalid_candidate_probes
+                            ],
+                            "probe_request_specs": [
+                                spec
+                                for spec in item.get("probe_request_specs", [])
+                                if str(spec.get("evidence_family") or "") not in invalid_candidate_probes
                             ],
                         }
                     kept.append(item)
@@ -895,7 +958,9 @@ def generate_session_investigation_review(
             "role": "system",
             "content": (
                 "你是 Mini-Drop 会话级调查树裁决器，只输出 JSON。选择最小必要补证并形成可证伪机制候选。"
-                "selected_evidence_families 只能来自 eligible_this_round；不能输出命令、修复动作或未注册工具。"
+                "probe_requests 可以是结构化对象，必须包含 evidence_family、question、why_needed、input_refs、expected_observation、disconfirming_observation；"
+                "系统会从合法 probe_requests 推导 selected_evidence_families。旧 selected_evidence_families 字符串仅作兼容输入。"
+                "不能输出命令、修复动作或未注册工具。"
                 "当选择 source_mechanism_query 时，必须输出 probe_inputs.source_mechanism_query.ai_generated_query，"
                 "其中包含 investigation_question、candidate_id、origin_parent_candidate_id、expected_relation(supports|refutes) 和 2-6 个有序 path_anchors；"
                 "锚点必须逐字选择 source_anchor_catalog 中不同的 file/line，并按预期机制传播顺序排列；"
@@ -929,9 +994,24 @@ def generate_session_investigation_review(
         try:
             raw = _call_deepseek(messages, model_name)
             data = json.loads(_extract_json(raw) or "{}")
-            selected = [str(item) for item in data.get("selected_evidence_families", []) if str(item)]
-            if not selected or any(item not in allowed for item in selected) or len(selected) > 3:
-                raise ValueError("selected_evidence_families 越界或为空")
+            raw_probe_requests = data.get("probe_requests")
+            if raw_probe_requests is None:
+                raw_probe_requests = data.get("selected_evidence_families", [])
+            requested_families, probe_request_specs = _normalize_probe_requests(raw_probe_requests)
+            selected = [item for item in requested_families if item in allowed]
+            if not selected or len(selected) > 3:
+                raise ValueError("probe_requests 越界或为空")
+            invalid_probe_requests = [
+                item for item in requested_families if item not in allowed
+            ]
+            if invalid_probe_requests:
+                validation_diagnostics.append({
+                    "stage": "investigation_round",
+                    "attempt": attempt,
+                    "failure_code": "invalid_probe_request",
+                    "invalid_evidence_families": invalid_probe_requests[:16],
+                    "reason": "AI 请求的 evidence_family 不在本轮编排器允许集合中。",
+                })
             proposals = _validate_investigation_proposals(
                 data.get("candidate_proposals"),
                 candidate_ids,
@@ -970,6 +1050,14 @@ def generate_session_investigation_review(
                     for item in proposals
                 },
             )
+            for spec in probe_request_specs:
+                family = str(spec.get("evidence_family") or "")
+                if family not in selected or family in probe_inputs:
+                    continue
+                probe_inputs[family] = {
+                    **spec,
+                    "evidence_family": family,
+                }
             return {
                 "ai_review_status": "succeeded",
                 "ai_review_scope": "investigation_round",
@@ -977,6 +1065,10 @@ def generate_session_investigation_review(
                 "ai_review_model": model_name,
                 "ai_review_error": "",
                 "selected_evidence_families": list(dict.fromkeys(selected)),
+                "probe_requests": [
+                    spec for spec in probe_request_specs
+                    if str(spec.get("evidence_family") or "") in selected
+                ],
                 "candidate_proposals": proposals,
                 "candidate_updates": candidate_updates,
                 "rollback_edges": rollback_edges,
