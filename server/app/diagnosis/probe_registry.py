@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from server.app.diagnosis.schemas import ProbeDefinition
 
 
@@ -19,7 +21,7 @@ _PROBES = {
         max_duration_seconds=30,
         default_sample_rate=11,
         estimated_overhead={"cpu_percent": "<2", "disk_mb": "<10"},
-        applicable_hypotheses=[
+        may_help_distinguish=[
             "CPU_SATURATION", "HOST_MEMORY_PRESSURE", "HOST_DISK_CONTENTION",
             "SAME_HOST_NOISY_NEIGHBOR", "NETWORK_DEGRADATION",
         ],
@@ -37,7 +39,7 @@ _PROBES = {
         max_duration_seconds=60,
         default_sample_rate=49,
         estimated_overhead={"cpu_percent": "2-8", "disk_mb": "20-200"},
-        applicable_hypotheses=["SELF_CODE_REGRESSION", "CPU_SATURATION"],
+        may_help_distinguish=["SELF_CODE_REGRESSION", "CPU_SATURATION"],
     ),
     "process_python_runtime_profile": ProbeDefinition(
         probe_id="process_python_runtime_profile",
@@ -52,7 +54,7 @@ _PROBES = {
         max_duration_seconds=60,
         default_sample_rate=49,
         estimated_overhead={"cpu_percent": "1-5", "disk_mb": "10-100"},
-        applicable_hypotheses=["LOCK_CONTENTION", "SELF_CODE_REGRESSION"],
+        may_help_distinguish=["LOCK_CONTENTION", "SELF_CODE_REGRESSION"],
     ),
     "process_python_heap_profile": ProbeDefinition(
         probe_id="process_python_heap_profile",
@@ -67,7 +69,7 @@ _PROBES = {
         max_duration_seconds=180,
         default_sample_rate=1,
         estimated_overhead={"cpu_percent": "2-10", "disk_mb": "20-500"},
-        applicable_hypotheses=["MEMORY_LEAK", "HOST_MEMORY_PRESSURE", "SELF_CODE_REGRESSION"],
+        may_help_distinguish=["MEMORY_LEAK", "HOST_MEMORY_PRESSURE", "SELF_CODE_REGRESSION"],
     ),
     "process_go_heap_profile": ProbeDefinition(
         probe_id="process_go_heap_profile",
@@ -82,7 +84,7 @@ _PROBES = {
         max_duration_seconds=60,
         default_sample_rate=1,
         estimated_overhead={"cpu_percent": "1-5", "disk_mb": "10-200"},
-        applicable_hypotheses=["MEMORY_LEAK", "HOST_MEMORY_PRESSURE", "SELF_CODE_REGRESSION"],
+        may_help_distinguish=["MEMORY_LEAK", "HOST_MEMORY_PRESSURE", "SELF_CODE_REGRESSION"],
     ),
     "process_source_snapshot": ProbeDefinition(
         probe_id="process_source_snapshot",
@@ -97,7 +99,7 @@ _PROBES = {
         max_duration_seconds=30,
         default_sample_rate=1,
         estimated_overhead={"cpu_percent": "<2", "disk_mb": "<10"},
-        applicable_hypotheses=["MEMORY_LEAK", "SELF_CODE_REGRESSION", "LOCK_CONTENTION"],
+        may_help_distinguish=["MEMORY_LEAK", "SELF_CODE_REGRESSION", "LOCK_CONTENTION"],
     ),
     "process_source_mechanism_query": ProbeDefinition(
         probe_id="process_source_mechanism_query",
@@ -112,7 +114,7 @@ _PROBES = {
         max_duration_seconds=180,
         default_sample_rate=1,
         estimated_overhead={"cpu_percent": "5-40", "disk_mb": "100-5000"},
-        applicable_hypotheses=["MEMORY_LEAK", "SELF_CODE_REGRESSION", "LOCK_CONTENTION"],
+        may_help_distinguish=["MEMORY_LEAK", "SELF_CODE_REGRESSION", "LOCK_CONTENTION"],
     ),
     "process_python_heap_reference": ProbeDefinition(
         probe_id="process_python_heap_reference",
@@ -127,7 +129,7 @@ _PROBES = {
         max_duration_seconds=180,
         default_sample_rate=1,
         estimated_overhead={"cpu_percent": "5-30", "disk_mb": "100-4096"},
-        applicable_hypotheses=["MEMORY_LEAK"],
+        may_help_distinguish=["MEMORY_LEAK"],
     ),
     "process_python_lock_wait_profile": ProbeDefinition(
         probe_id="process_python_lock_wait_profile",
@@ -142,7 +144,7 @@ _PROBES = {
         max_duration_seconds=60,
         default_sample_rate=1,
         estimated_overhead={"cpu_percent": "<2", "disk_mb": "<20"},
-        applicable_hypotheses=["LOCK_CONTENTION"],
+        may_help_distinguish=["LOCK_CONTENTION"],
     ),
     "process_python_exception_profile": ProbeDefinition(
         probe_id="process_python_exception_profile",
@@ -157,7 +159,7 @@ _PROBES = {
         max_duration_seconds=60,
         default_sample_rate=1,
         estimated_overhead={"cpu_percent": "<2", "disk_mb": "<20"},
-        applicable_hypotheses=["SELF_CODE_REGRESSION", "DOWNSTREAM_LATENCY"],
+        may_help_distinguish=["SELF_CODE_REGRESSION", "DOWNSTREAM_LATENCY"],
     ),
     "process_python_queue_profile": ProbeDefinition(
         probe_id="process_python_queue_profile",
@@ -172,7 +174,7 @@ _PROBES = {
         max_duration_seconds=60,
         default_sample_rate=1,
         estimated_overhead={"cpu_percent": "<2", "disk_mb": "<20"},
-        applicable_hypotheses=["DOWNSTREAM_LATENCY", "SELF_CODE_REGRESSION"],
+        may_help_distinguish=["DOWNSTREAM_LATENCY", "SELF_CODE_REGRESSION"],
     ),
     "process_python_pool_profile": ProbeDefinition(
         probe_id="process_python_pool_profile",
@@ -187,7 +189,7 @@ _PROBES = {
         max_duration_seconds=60,
         default_sample_rate=1,
         estimated_overhead={"cpu_percent": "<2", "disk_mb": "<20"},
-        applicable_hypotheses=["LOCK_CONTENTION", "DOWNSTREAM_LATENCY"],
+        may_help_distinguish=["LOCK_CONTENTION", "DOWNSTREAM_LATENCY"],
     ),
     "process_python_retry_timeout_profile": ProbeDefinition(
         probe_id="process_python_retry_timeout_profile",
@@ -202,7 +204,7 @@ _PROBES = {
         max_duration_seconds=60,
         default_sample_rate=1,
         estimated_overhead={"cpu_percent": "<2", "disk_mb": "<20"},
-        applicable_hypotheses=["DOWNSTREAM_LATENCY", "NETWORK_DEGRADATION"],
+        may_help_distinguish=["DOWNSTREAM_LATENCY", "NETWORK_DEGRADATION"],
     ),
     "process_python_cache_profile": ProbeDefinition(
         probe_id="process_python_cache_profile",
@@ -217,7 +219,7 @@ _PROBES = {
         max_duration_seconds=60,
         default_sample_rate=1,
         estimated_overhead={"cpu_percent": "<2", "disk_mb": "<20"},
-        applicable_hypotheses=["SELF_CODE_REGRESSION", "MEMORY_LEAK"],
+        may_help_distinguish=["SELF_CODE_REGRESSION", "MEMORY_LEAK"],
     ),
     "process_python_input_profile": ProbeDefinition(
         probe_id="process_python_input_profile",
@@ -232,7 +234,7 @@ _PROBES = {
         max_duration_seconds=60,
         default_sample_rate=1,
         estimated_overhead={"cpu_percent": "<2", "disk_mb": "<20"},
-        applicable_hypotheses=["SELF_CODE_REGRESSION", "CPU_SATURATION"],
+        may_help_distinguish=["SELF_CODE_REGRESSION", "CPU_SATURATION"],
     ),
     "process_off_cpu_profile": ProbeDefinition(
         probe_id="process_off_cpu_profile",
@@ -247,7 +249,7 @@ _PROBES = {
         max_duration_seconds=60,
         default_sample_rate=49,
         estimated_overhead={"cpu_percent": "2-8", "disk_mb": "10-100"},
-        applicable_hypotheses=["LOCK_CONTENTION", "HOST_DISK_CONTENTION", "SELF_CODE_REGRESSION"],
+        may_help_distinguish=["LOCK_CONTENTION", "HOST_DISK_CONTENTION", "SELF_CODE_REGRESSION"],
     ),
     "process_trace_endpoint_profile": ProbeDefinition(
         probe_id="process_trace_endpoint_profile",
@@ -262,7 +264,7 @@ _PROBES = {
         max_duration_seconds=60,
         default_sample_rate=11,
         estimated_overhead={"cpu_percent": "1-5", "disk_mb": "<100"},
-        applicable_hypotheses=["SELF_CODE_REGRESSION", "DOWNSTREAM_LATENCY", "CPU_SATURATION"],
+        may_help_distinguish=["SELF_CODE_REGRESSION", "DOWNSTREAM_LATENCY", "CPU_SATURATION"],
     ),
     "process_baseline_window": ProbeDefinition(
         probe_id="process_baseline_window",
@@ -277,7 +279,7 @@ _PROBES = {
         max_duration_seconds=60,
         default_sample_rate=11,
         estimated_overhead={"cpu_percent": "1-5", "disk_mb": "<100"},
-        applicable_hypotheses=["CPU_SATURATION", "SELF_CODE_REGRESSION", "MEMORY_LEAK"],
+        may_help_distinguish=["CPU_SATURATION", "SELF_CODE_REGRESSION", "MEMORY_LEAK"],
     ),
     "process_log_scan": ProbeDefinition(
         probe_id="process_log_scan",
@@ -292,7 +294,7 @@ _PROBES = {
         max_duration_seconds=60,
         default_sample_rate=1,
         estimated_overhead={"cpu_percent": "<2", "disk_mb": "<50"},
-        applicable_hypotheses=["DOWNSTREAM_LATENCY", "NETWORK_DEGRADATION", "MEMORY_LEAK", "LOCK_CONTENTION"],
+        may_help_distinguish=["DOWNSTREAM_LATENCY", "NETWORK_DEGRADATION", "MEMORY_LEAK", "LOCK_CONTENTION"],
     ),
     "process_dependency_check": ProbeDefinition(
         probe_id="process_dependency_check",
@@ -307,7 +309,7 @@ _PROBES = {
         max_duration_seconds=30,
         default_sample_rate=1,
         estimated_overhead={"cpu_percent": "<2", "disk_mb": "<10"},
-        applicable_hypotheses=["DOWNSTREAM_LATENCY", "NETWORK_DEGRADATION"],
+        may_help_distinguish=["DOWNSTREAM_LATENCY", "NETWORK_DEGRADATION"],
     ),
     "process_redis_check": ProbeDefinition(
         probe_id="process_redis_check",
@@ -322,7 +324,7 @@ _PROBES = {
         max_duration_seconds=30,
         default_sample_rate=1,
         estimated_overhead={"cpu_percent": "<2", "disk_mb": "<10"},
-        applicable_hypotheses=["DOWNSTREAM_LATENCY", "MEMORY_LEAK", "NETWORK_DEGRADATION"],
+        may_help_distinguish=["DOWNSTREAM_LATENCY", "MEMORY_LEAK", "NETWORK_DEGRADATION"],
     ),
     "process_io_latency": ProbeDefinition(
         probe_id="process_io_latency",
@@ -337,7 +339,7 @@ _PROBES = {
         max_duration_seconds=60,
         default_sample_rate=11,
         estimated_overhead={"cpu_percent": "1-5", "disk_mb": "<50"},
-        applicable_hypotheses=["HOST_DISK_CONTENTION", "SAME_HOST_NOISY_NEIGHBOR"],
+        may_help_distinguish=["HOST_DISK_CONTENTION", "SAME_HOST_NOISY_NEIGHBOR"],
     ),
     "process_memory_map": ProbeDefinition(
         probe_id="process_memory_map",
@@ -352,7 +354,7 @@ _PROBES = {
         max_duration_seconds=30,
         default_sample_rate=11,
         estimated_overhead={"cpu_percent": "<2", "disk_mb": "<20"},
-        applicable_hypotheses=["HOST_MEMORY_PRESSURE", "MEMORY_LEAK"],
+        may_help_distinguish=["HOST_MEMORY_PRESSURE", "MEMORY_LEAK"],
     ),
     "process_runtime_control_history": ProbeDefinition(
         probe_id="process_runtime_control_history",
@@ -367,7 +369,7 @@ _PROBES = {
         max_duration_seconds=30,
         default_sample_rate=1,
         estimated_overhead={"cpu_percent": "<1", "disk_mb": "<10"},
-        applicable_hypotheses=["LOCK_CONTENTION", "SELF_CODE_REGRESSION"],
+        may_help_distinguish=["LOCK_CONTENTION", "SELF_CODE_REGRESSION"],
     ),
 }
 
@@ -385,6 +387,7 @@ def list_probes() -> list[ProbeDefinition]:
 
 def evidence_gap_to_probe_id(evidence_gap: str) -> str | None:
     return {
+        "host_process_metrics": "host_process_metrics",
         "cpu_profile": "process_cpu_profile",
         "off_cpu_wait_profile": "process_off_cpu_profile",
         "trace_endpoint_profile": "process_trace_endpoint_profile",
@@ -413,6 +416,7 @@ def evidence_gap_to_probe_id(evidence_gap: str) -> str | None:
 
 def probe_id_to_evidence_gap(probe_id: str) -> str:
     return {
+        "host_process_metrics": "host_process_metrics",
         "process_cpu_profile": "cpu_profile",
         "process_off_cpu_profile": "off_cpu_wait_profile",
         "process_trace_endpoint_profile": "trace_endpoint_profile",
@@ -459,15 +463,17 @@ def build_probe_manifest() -> dict:
             "auto_executable_when_policy_all_registered": definition.risk_level in {"R0", "R1", "R2"},
             "max_duration_seconds": definition.max_duration_seconds,
             "output_contract": _output_contract(definition.runner_task_kind),
-            "capability_role": role,
+            "capability_role": _manifest_capability_roles(definition.probe_id, role),
             "cannot_establish": cannot_establish,
             "produces": produces,
             "input_requirements": _required_target_fields(definition.probe_id),
-            "quality_gate": quality_gate,
+            "quality_gate": _manifest_quality_gate(
+                definition.probe_id,
+                role,
+                quality_gate,
+            ),
             "next_probe_hints": next_probe_hints,
-            "may_help_distinguish": definition.applicable_hypotheses,
-            # Keep the old field for clients that still parse schema 1.0.
-            "applicable_hypotheses": definition.applicable_hypotheses,
+            "may_help_distinguish": definition.may_help_distinguish,
         })
     return {
         "schema_version": "2.0",
@@ -480,6 +486,47 @@ def build_probe_manifest() -> dict:
             "configuration_mutation",
             "remediation_action_execution",
         ],
+    }
+
+
+def _manifest_capability_roles(probe_id: str, role: str) -> list[str]:
+    """Expose capability roles, never a list of root-cause hypotheses."""
+    if probe_id in {
+        "process_python_input_profile",
+        "process_python_queue_profile",
+        "process_python_pool_profile",
+        "process_python_retry_timeout_profile",
+        "process_python_cache_profile",
+    }:
+        return ["observe", "trigger_analysis"]
+    mapping = {
+        "symptom": ["observe"],
+        "localization": ["observe", "localization"],
+        "mechanism": ["observe", "mechanism"],
+        "source_relation": ["observe", "source_relation"],
+        "impact": ["observe", "impact"],
+        "context": ["observe"],
+    }
+    return mapping.get(role, ["observe"])
+
+
+def _manifest_quality_gate(
+    probe_id: str,
+    role: str,
+    checks: list[str],
+) -> dict[str, Any]:
+    """Turn human-readable checks into machine-checkable evidence boundaries."""
+    source_only = probe_id in {
+        "process_source_snapshot",
+        "process_source_mechanism_query",
+    }
+    return {
+        "same_target_required": True,
+        "same_window_required": True,
+        "empty_window_is_invalid": True,
+        "source_line_not_required": not source_only,
+        "checks": list(checks),
+        "role": role,
     }
 
 

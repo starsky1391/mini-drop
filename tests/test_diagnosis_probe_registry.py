@@ -6,6 +6,11 @@ from server.app.diagnosis.probe_registry import build_probe_manifest, choose_pro
 def test_probe_registry_exposes_depth_probes():
     probes = {probe.probe_id: probe for probe in list_probes()}
 
+    assert build_probe_manifest()["available_probes"][0]["evidence_family"]
+    assert any(
+        item["evidence_family"] == "host_process_metrics"
+        for item in build_probe_manifest()["available_probes"]
+    )
     assert "process_off_cpu_profile" in probes
     assert "process_trace_endpoint_profile" in probes
     assert "process_baseline_window" in probes

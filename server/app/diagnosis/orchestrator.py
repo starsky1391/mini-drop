@@ -46,6 +46,7 @@ from server.app.rca.candidates import generate_candidates
 from server.app.rca.evidence import collect_evidence
 from server.app.rca.attribution import analyze_evidence
 from server.app.rca.llm_client import (
+    _source_anchor_catalog,
     generate_session_candidate_review,
     generate_session_conclusion_review,
     generate_session_investigation_review,
@@ -1610,6 +1611,9 @@ class DiagnosisOrchestrator:
                         "evidence_refs": _unique_strings(cluster_assessment.get("evidence_refs", [])),
                     },
                     "missing_evidence": followup_requests,
+                    "source_anchor_catalog": _source_anchor_catalog(
+                        self.store.list_evidence(diagnosis_id)
+                    ),
                     "available_probes": [
                         str(item.get("evidence_family") or "")
                         for item in build_probe_manifest().get("available_probes", [])

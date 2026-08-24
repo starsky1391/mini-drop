@@ -490,7 +490,7 @@ def _initial_entry_boundary(
 
 
 def _attribution_relation_refs(fact_context: dict) -> set[str]:
-    """Collect relation/node IDs exposed by the structured attribution graph."""
+    """Collect only IDs exposed by the structured attribution graph."""
     result: set[str] = set()
     facts = fact_context.get("facts") if isinstance(fact_context, dict) else []
     if not isinstance(facts, list):
@@ -503,10 +503,16 @@ def _attribution_relation_refs(fact_context: dict) -> set[str]:
             continue
         graph_facts = graph.get("facts") if isinstance(graph.get("facts"), dict) else {}
         for container, identifier in (
+            (graph_facts.get("symptom_signals"), "signal_id"),
+            (graph_facts.get("cost_centers"), "candidate_id"),
             (graph_facts.get("trigger_candidates"), "candidate_id"),
             (graph_facts.get("impact_candidates"), "candidate_id"),
             (graph_facts.get("observed_relations"), "relation_id"),
+            (graph.get("nodes"), "node_id"),
+            (graph.get("runtime_relations"), "edge_id"),
             (graph.get("source_relations"), "relation_id"),
+            (graph.get("causal_edges"), "edge_id"),
+            (graph.get("graph_relations"), "relation_id"),
         ):
             if not isinstance(container, list):
                 continue
@@ -515,7 +521,22 @@ def _attribution_relation_refs(fact_context: dict) -> set[str]:
                 for item in container
                 if isinstance(item, dict) and item.get(identifier)
             )
+    for anchor in fact_context.get("source_anchor_catalog", []) if isinstance(fact_context, dict) else []:
+        if not isinstance(anchor, dict):
+            continue
+        anchor_id = str(anchor.get("anchor_id") or "").strip()
+        file_name = str(anchor.get("file") or "").replace("\\", "/").strip()
+        line = str(anchor.get("line") or "").strip()
+        if anchor_id:
+            result.add(anchor_id)
+        if file_name and line:
+            result.add(f"{file_name}:{line}")
     return result
+
+
+def _probe_input_refs(valid_evidence_refs: set[str], fact_context: dict) -> set[str]:
+    """Return evidence and explicitly exposed graph/anchor IDs for request binding."""
+    return set(valid_evidence_refs) | _attribution_relation_refs(fact_context)
 
 
 def generate_session_candidate_review(
@@ -549,6 +570,7 @@ def generate_session_candidate_review(
     }
     initial_evidence_context = _initial_evidence_context(evidence_catalog, valid_refs)
     relation_refs = _attribution_relation_refs(fact_context)
+    probe_input_refs = _probe_input_refs(valid_refs, fact_context)
     base["initial_evidence_context"] = initial_evidence_context
     if not is_feature_enabled("rca"):
         return {
@@ -710,7 +732,7 @@ def generate_session_candidate_review(
                     probe_requests, probe_request_specs, rejected_probe_specs = _filter_probe_request_specs(
                         probe_requests,
                         probe_request_specs,
-                        valid_refs,
+                        probe_input_refs,
                     )
                     for rejected_spec in rejected_probe_specs:
                         validation_diagnostics.append(_validation_diagnostic(
@@ -788,7 +810,29 @@ def generate_session_candidate_review(
                 for item in probe_manifest.get("available_probes", [])
                 if isinstance(item, dict)
             }
-            selected = [str(value) for value in data.get("probe_requests", []) if str(value)]
+            raw_selected = data.get("probe_requests")
+            if raw_selected is None:
+                raw_selected = data.get("selected_evidence_families", [])
+            selected, selected_specs = _normalize_probe_requests(raw_selected)
+            selected, selected_specs, rejected_selected_specs = _filter_probe_request_specs(
+                selected,
+                selected_specs,
+                probe_input_refs,
+            )
+            for rejected_spec in rejected_selected_specs:
+                validation_diagnostics.append(_validation_diagnostic(
+                    stage="candidate_generation",
+                    attempt=attempt,
+                    error=str(rejected_spec.get("reason") or "probe request evidence ref 无效"),
+                    raw=raw,
+                    candidate_id="",
+                    candidate_count=len(candidates),
+                    valid_evidence_ref_count=len(valid_refs),
+                    known_candidate_ids=known_candidate_ids,
+                    initial_evidence_refs=valid_refs,
+                    initial_evidence_families=initial_evidence_context["evidence_families"],
+                    initial_evidence_statuses=initial_evidence_context["evidence_statuses"],
+                ))
             invalid_selected = [value for value in selected if value not in registered]
             if invalid_selected:
                 validation_diagnostics.append(_validation_diagnostic(
@@ -909,6 +953,12 @@ def generate_session_candidate_review(
                 "ai_review_error": "",
                 "candidate_proposals": normalized,
                 "selected_evidence_families": selected,
+                "probe_requests": [
+                    spec
+                    for item in normalized
+                    if item["candidate_id"] in active_set
+                    for spec in item.get("probe_request_specs", [])
+                ],
                 "probe_inputs": probe_inputs,
                 "active_candidate_ids": active_ids,
                 "deferred_candidate_ids": deferred_ids,
@@ -1126,10 +1176,21 @@ def generate_session_investigation_review(
             if raw_probe_requests is None:
                 raw_probe_requests = data.get("selected_evidence_families", [])
             requested_families, probe_request_specs = _normalize_probe_requests(raw_probe_requests)
+            probe_input_refs = set(valid_refs) | set(candidate_ids)
+            for anchor in source_anchor_catalog:
+                if not isinstance(anchor, dict):
+                    continue
+                anchor_id = str(anchor.get("anchor_id") or "").strip()
+                file_name = str(anchor.get("file") or "").replace("\\", "/").strip()
+                line = str(anchor.get("line") or "").strip()
+                if anchor_id:
+                    probe_input_refs.add(anchor_id)
+                if file_name and line:
+                    probe_input_refs.add(f"{file_name}:{line}")
             requested_families, probe_request_specs, rejected_probe_specs = _filter_probe_request_specs(
                 requested_families,
                 probe_request_specs,
-                valid_refs,
+                probe_input_refs,
             )
             for rejected_spec in rejected_probe_specs:
                 validation_diagnostics.append({
@@ -1176,7 +1237,7 @@ def generate_session_investigation_review(
                 candidate_ids=all_candidate_ids,
                 valid_refs=valid_refs,
             )
-            probe_inputs = _validate_investigation_probe_inputs(
+            validated_special_inputs = _validate_investigation_probe_inputs(
                 data.get("probe_inputs"),
                 selected,
                 (candidate_ids - rejected_candidate_ids)
@@ -1192,14 +1253,11 @@ def generate_session_investigation_review(
                     for item in proposals
                 },
             )
-            for spec in probe_request_specs:
-                family = str(spec.get("evidence_family") or "")
-                if family not in selected or family in probe_inputs:
-                    continue
-                probe_inputs[family] = {
-                    **spec,
-                    "evidence_family": family,
-                }
+            probe_inputs = _derive_probe_inputs_from_specs(
+                probe_request_specs,
+                selected,
+                validated_special_inputs,
+            )
             return {
                 "ai_review_status": "succeeded",
                 "ai_review_scope": "investigation_round",
@@ -1215,6 +1273,7 @@ def generate_session_investigation_review(
                 "candidate_updates": candidate_updates,
                 "rollback_edges": rollback_edges,
                 "probe_inputs": probe_inputs,
+                "probe_inputs_source": "orchestrator_derived",
             }
         except Exception as exc:
             last_error = str(exc)
@@ -1310,6 +1369,41 @@ def _validate_investigation_probe_inputs(
     return result
 
 
+def _derive_probe_inputs_from_specs(
+    specs: list[dict[str, Any]],
+    selected: list[str],
+    validated_special_inputs: dict[str, dict],
+) -> dict[str, dict[str, Any]]:
+    """Build scheduler inputs from validated request specs, not AI summary fields."""
+    special = validated_special_inputs if isinstance(validated_special_inputs, dict) else {}
+    result: dict[str, dict[str, Any]] = {}
+    for spec in specs:
+        if not isinstance(spec, dict):
+            continue
+        family = str(spec.get("evidence_family") or "").strip()
+        if not family or family not in selected or family in result:
+            continue
+        result[family] = {
+            "evidence_family": family,
+            "question": str(spec.get("question") or "").strip()[:500],
+            "why_needed": str(spec.get("why_needed") or "").strip()[:500],
+            "input_refs": [
+                str(ref)
+                for ref in spec.get("input_refs", [])
+                if str(ref)
+            ][:32],
+            "expected_observation": _normalize_probe_observations(
+                spec.get("expected_observation")
+            ),
+            "disconfirming_observation": _normalize_probe_observations(
+                spec.get("disconfirming_observation")
+            ),
+        }
+        if isinstance(special.get(family), dict):
+            result[family].update(special[family])
+    return result
+
+
 def _source_anchor_catalog(evidence_catalog: list[dict]) -> list[dict]:
     """Build a compact, evidence-backed anchor menu for the investigation model."""
     result: list[dict] = []
@@ -1327,7 +1421,9 @@ def _source_anchor_catalog(evidence_catalog: list[dict]) -> list[dict]:
         if key in seen:
             return
         seen.add(key)
+        anchor_id = f"anchor:{key[0]}:{line_number}"
         result.append({
+            "anchor_id": anchor_id,
             "file": file_text,
             "line": line_number,
             "symbol": str(symbol or "")[:160],

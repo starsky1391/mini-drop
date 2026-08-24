@@ -20,9 +20,29 @@ def test_manifest_entries_expose_capability_boundaries():
         for item in manifest["available_probes"]
     ]
     source = next(item for item in entries if item.probe_id == "process_source_snapshot")
-    assert source.capability_role == "source_relation"
+    assert source.capability_role == ["observe", "source_relation"]
     assert "正式根因" in source.cannot_establish
     assert "source_line_candidate" in source.produces
+    assert source.quality_gate["same_target_required"] is True
+    assert source.quality_gate["source_line_not_required"] is False
+    assert all("applicable_hypotheses" not in item for item in manifest["available_probes"])
+
+    input_profile = next(
+        item for item in entries if item.probe_id == "process_python_input_profile"
+    )
+    assert input_profile.capability_role == ["observe", "trigger_analysis"]
+    assert input_profile.quality_gate == {
+        "same_target_required": True,
+        "same_window_required": True,
+        "empty_window_is_invalid": True,
+        "source_line_not_required": True,
+        "checks": [
+            "有效采样或结构化状态",
+            "目标范围匹配",
+            "同窗窗口",
+        ],
+        "role": "localization",
+    }
 
 
 def test_runtime_primitive_is_cost_center_not_root_cause():
@@ -316,6 +336,76 @@ def test_candidate_id_without_ai_record_cannot_promote_a_closed_graph():
         "candidate_id": "ai_candidate_worker",
         "reasons": ["candidate_record_missing"],
     }]
+
+
+def test_ai_candidate_must_reference_each_causal_chain_segment():
+    graph = build_attribution_graph(
+        evidence={
+            "evidence_window": {"timing_relation": "same_window"},
+            "evidence_refs": ["ev:runtime", "ev:source", "ev:impact"],
+            "top_functions": [{
+                "name": "worker",
+                "file": "app.py",
+                "line": 42,
+                "percent": 80.0,
+                "samples": 80,
+                "evidence_ref": "ev:runtime",
+            }],
+            "input": {"cardinality": 4096},
+            "latency": {"p95_ms": 900},
+            "sys_metrics": {"summary": {"avg_cpu_user_pct": 80.0}},
+            "evidence_index": {
+                "evidence_validity_by_family": {
+                    "python_runtime_profile": "valid",
+                    "source_snapshot": "valid",
+                    "source_mechanism_query": "valid",
+                },
+            },
+            "source_snapshot_json": {
+                "verified_line_candidates": [{
+                    "file": "app.py",
+                    "line": 42,
+                    "symbol": "worker",
+                    "evidence_ref": "ev:source",
+                    "eligibility_status": "verified",
+                }],
+            },
+        },
+        source_mechanism={
+            "mechanism_paths": [{
+                "status": "supported",
+                "relations": ["propagates_to"],
+                "evidence_ref": "ev:source",
+                "nodes": [
+                    {"file": "app.py", "line": 42, "symbol": "worker"},
+                    {"file": "app.py", "line": 43, "symbol": "hot_path"},
+                ],
+            }],
+        },
+    )
+
+    qualification = qualify_attribution(
+        graph,
+        ai_candidates=[{
+            "candidate_id": "ai_candidate_incomplete_chain",
+            "generated_by": "ai_guarded",
+            "claim": "候选声称机制已闭合。",
+            "mechanism": "open_mechanism",
+            "target": "worker",
+            "supported_level": "line",
+            "evidence_refs": ["ev:runtime", "ev:source", "ev:impact"],
+            "causal_status": "supported",
+            "decision": "conclude",
+            "parent_candidate_ids": ["cost:line:0"],
+            "trigger_refs": ["trigger:input"],
+            "mechanism_refs": ["source:mechanism:0:0"],
+        }],
+    )
+
+    assert qualification.qualification == "mechanism_hypothesis"
+    reasons = qualification.candidate_gate_failures[0]["reasons"]
+    assert "impact_refs_missing" in reasons
+    assert "source_relation_refs_missing" in reasons
 
 
 def test_source_snapshot_line_without_runtime_location_is_not_a_source_relation():

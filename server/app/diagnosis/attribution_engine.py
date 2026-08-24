@@ -461,6 +461,7 @@ def _validate_ai_candidates(
     source_relation_refs: list[str],
 ) -> list[dict[str, Any]]:
     """Require an actual guarded AI record before allowing L3 promotion."""
+    facts = graph.facts
     records = [
         item
         for item in ai_candidates
@@ -518,22 +519,76 @@ def _validate_ai_candidates(
                 or record.get("parent_candidate_ids")
             ):
                 reasons.append("parent_provenance_missing")
+            timing_relation = str(
+                graph.facts.evidence_window.get("timing_relation") or ""
+            ).strip()
+            if timing_relation not in {"same_window", "same_window_confirmed", "same_window_observed"}:
+                reasons.append("same_window_missing")
+            observed_targets = {
+                str(item.target).strip()
+                for item in facts.cost_centers
+                if str(item.target).strip()
+            }
+            observed_targets.update(
+                str(item.label or item.symbol).strip()
+                for item in graph.nodes
+                if str(item.label or item.symbol).strip()
+            )
+            observed_targets.update(
+                str(value).strip()
+                for value in graph.target.values()
+                if isinstance(value, (str, int, float)) and str(value).strip()
+            )
+            candidate_target = str(record.get("target") or "").strip()
+            if observed_targets and candidate_target not in observed_targets:
+                reasons.append("target_not_observed")
             relation_refs = {
                 "trigger": record.get("trigger_refs") or [],
                 "mechanism": record.get("mechanism_refs") or [],
                 "impact": record.get("impact_refs") or [],
                 "source_relation": record.get("source_relation_refs") or [],
             }
-            if not any(relation_refs.values()):
-                reasons.append("causal_chain_refs_missing")
-            if relation_refs["trigger"] and not set(relation_refs["trigger"]).intersection(trigger_refs):
-                reasons.append("trigger_relation_missing")
-            if relation_refs["mechanism"] and not set(relation_refs["mechanism"]).intersection(mechanism_refs):
-                reasons.append("mechanism_relation_missing")
-            if relation_refs["impact"] and not set(relation_refs["impact"]).intersection(impact_refs):
-                reasons.append("impact_relation_missing")
-            if relation_refs["source_relation"] and not set(relation_refs["source_relation"]).intersection(source_relation_refs):
-                reasons.append("source_relation_missing")
+            available_relations = {
+                "trigger": set(trigger_refs),
+                "mechanism": set(mechanism_refs),
+                "impact": set(impact_refs),
+                "source_relation": set(source_relation_refs),
+            }
+            relation_evidence: dict[str, dict[str, set[str]]] = {
+                "trigger": {
+                    item.candidate_id: set(item.evidence_refs)
+                    for item in facts.trigger_candidates
+                },
+                "impact": {
+                    item.candidate_id: set(item.evidence_refs)
+                    for item in facts.impact_candidates
+                },
+                "mechanism": {
+                    item.relation_id: set(item.evidence_refs)
+                    for item in graph.source_relations
+                    if item.relation_id in available_relations["mechanism"]
+                },
+                "source_relation": {
+                    item.relation_id: set(item.evidence_refs)
+                    for item in graph.source_relations
+                    if item.relation_id in available_relations["source_relation"]
+                },
+            }
+            candidate_evidence_refs = set(refs)
+            for relation_name, refs_for_candidate in relation_refs.items():
+                if not refs_for_candidate:
+                    reasons.append(
+                        "source_relation_refs_missing"
+                        if relation_name == "source_relation"
+                        else f"{relation_name}_refs_missing"
+                    )
+                elif not set(refs_for_candidate).intersection(available_relations[relation_name]):
+                    reasons.append(f"{relation_name}_relation_missing")
+                elif not any(
+                    relation_evidence[relation_name].get(str(ref), set()).intersection(candidate_evidence_refs)
+                    for ref in refs_for_candidate
+                ):
+                    reasons.append(f"{relation_name}_evidence_mismatch")
         if reasons:
             failed.append({
                 "candidate_id": candidate_id,

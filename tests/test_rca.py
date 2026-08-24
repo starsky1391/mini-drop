@@ -162,6 +162,63 @@ def test_structured_probe_request_rejection_does_not_drop_valid_sibling():
     assert [item["evidence_family"] for item in rejected] == ["python_heap_profile"]
 
 
+def test_structured_probe_request_accepts_exposed_anchor_ref():
+    families, specs = _normalize_probe_requests([{
+        "evidence_family": "source_mechanism_query",
+        "question": "调用者和热点之间是否存在源码传播关系？",
+        "why_needed": "验证运行时锚点对应的机制路径。",
+        "input_refs": ["anchor:app.py:42"],
+        "expected_observation": ["存在从调用者到热点的源码关系"],
+        "disconfirming_observation": ["不存在调用或数据流关系"],
+    }])
+
+    accepted_families, accepted_specs, rejected = _filter_probe_request_specs(
+        families,
+        specs,
+        {"anchor:app.py:42"},
+    )
+
+    assert accepted_families == ["source_mechanism_query"]
+    assert accepted_specs[0]["input_refs"] == ["anchor:app.py:42"]
+    assert rejected == []
+
+
+def test_investigation_probe_fields_are_derived_from_structured_requests():
+    evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
+    analysis = analyze_evidence(evidence, [])
+    response = {
+        "probe_requests": [{
+            "evidence_family": "python_input_profile",
+            "question": "输入规模是否触发了慢路径？",
+            "why_needed": "区分输入触发与自身热点。",
+            "input_refs": ["ev-input"],
+            "expected_observation": ["输入基数与异常窗口同时升高"],
+            "disconfirming_observation": ["输入规模稳定且无慢路径"],
+        }],
+        "selected_evidence_families": ["arbitrary_shell"],
+        "candidate_proposals": [],
+    }
+    with mock.patch.dict(
+        "os.environ",
+        {"MINI_DROP_AI_API_KEY": "test-key", "MINI_DROP_AI_ENABLED": "1"},
+    ), mock.patch(
+        "server.app.rca.llm_client._call_deepseek",
+        return_value=json.dumps(response),
+    ):
+        result = generate_session_investigation_review(
+            diagnosis_id="diag-structured-request",
+            session_tree=analysis.controlled_ai_tree,
+            evidence_catalog=[{"evidence_id": "ev-input"}],
+            probe_manifest=build_probe_manifest(),
+            allowed_evidence_families=["python_input_profile"],
+        )
+
+    assert result["ai_review_status"] == "succeeded"
+    assert result["selected_evidence_families"] == ["python_input_profile"]
+    assert result["probe_inputs_source"] == "orchestrator_derived"
+    assert result["probe_inputs"]["python_input_profile"]["question"] == "输入规模是否触发了慢路径？"
+
+
 def test_session_candidate_review_accepts_only_real_refs_and_canonical_parents():
     evidence = EvidenceInput(top_functions=[{"name": "Rule.compile", "percent": 70.0}])
     analysis = analyze_evidence(evidence, [])

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 AttributionLevel = Literal[
@@ -201,22 +201,17 @@ class QualificationResult(BaseModel):
 class ProbeManifestEntry(BaseModel):
     """AI 可见的探针能力声明，不是根因白名单。"""
 
+    model_config = ConfigDict(extra="forbid")
+
     probe_id: str
     evidence_family: str
     name: str
-    capability_role: Literal[
-        "symptom",
-        "localization",
-        "mechanism",
-        "source_relation",
-        "impact",
-        "context",
-    ] = "context"
+    capability_role: list[str] = Field(default_factory=list)
     purpose: str
     cannot_establish: list[str] = Field(default_factory=list)
     produces: list[str] = Field(default_factory=list)
     input_requirements: list[str] = Field(default_factory=list)
-    quality_gate: list[str] = Field(default_factory=list)
+    quality_gate: dict[str, Any] = Field(default_factory=dict)
     next_probe_hints: list[str] = Field(default_factory=list)
     can_answer: list[str] = Field(default_factory=list)
     required_capabilities: list[str] = Field(default_factory=list)
@@ -228,3 +223,21 @@ class ProbeManifestEntry(BaseModel):
     may_help_distinguish: list[str] = Field(default_factory=list)
     # 兼容旧客户端和旧提示词；不再作为根因白名单使用。
     applicable_hypotheses: list[str] = Field(default_factory=list)
+    legacy_capability_role: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_shape(cls, value):
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        role = data.get("capability_role")
+        if isinstance(role, str):
+            data["legacy_capability_role"] = role
+            data["capability_role"] = [role]
+        quality_gate = data.get("quality_gate")
+        if isinstance(quality_gate, list):
+            data["quality_gate"] = {
+                "checks": list(quality_gate),
+            }
+        return data

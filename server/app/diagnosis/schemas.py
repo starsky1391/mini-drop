@@ -212,6 +212,8 @@ class ProbeDefinition(StrictModel):
     def normalize_distinguishing_hints(self):
         if not self.may_help_distinguish and self.applicable_hypotheses:
             self.may_help_distinguish = list(self.applicable_hypotheses)
+        elif self.may_help_distinguish and not self.applicable_hypotheses:
+            self.applicable_hypotheses = list(self.may_help_distinguish)
         return self
 
 
