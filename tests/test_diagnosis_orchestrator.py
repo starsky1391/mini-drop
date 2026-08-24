@@ -57,7 +57,7 @@ def test_audit_bundle_json_safe_replaces_non_finite_floats():
     }
 
 
-def test_runtime_stack_sample_line_candidates_skip_runtime_frames():
+def test_runtime_stack_sample_line_candidates_keep_real_runtime_frames():
     candidates = orchestrator_module._line_candidates_from_runtime_stack_sample({
         "hot_frame": "_PyEval_EvalFrameDefault",
         "stack": [
@@ -67,11 +67,51 @@ def test_runtime_stack_sample_line_candidates_skip_runtime_frames():
         ],
     })
 
-    assert candidates == [{
-        "file": "/srv/app/orders.py",
-        "line": 42,
-        "function": "calculate_total",
-    }]
+    assert candidates == [
+        {
+            "file": "/usr/local/lib/python3.11/site-packages/framework/router.py",
+            "line": 21,
+            "function": "dispatch",
+        },
+        {
+            "file": "/srv/app/orders.py",
+            "line": 42,
+            "function": "calculate_total",
+        },
+        {
+            "file": "/usr/local/lib/python3.11/threading.py",
+            "line": 982,
+            "function": "run",
+        },
+    ]
+
+
+def test_runtime_file_line_deterministically_requests_source_snapshot():
+    assessment = {
+        "classification": "self_code_or_process_pressure",
+        "supported_level": "function",
+        "primary_anchor": {
+            "supported_level": "function",
+            "function": "requests.Session.get",
+            "runtime_line_candidates": [{
+                "file": "/usr/local/lib/python3.11/site-packages/requests/sessions.py",
+                "line": 602,
+                "symbol": "get",
+            }],
+        },
+    }
+    session = {
+        "target_scope": {
+            "source_context": {
+                "source_paths": ["/host/case/source"],
+                "repo_revision": "aae78010e987a414c176bddbf474cd554505219c",
+            },
+        },
+        "completed_depth_evidence_gaps": [],
+        "probe_evidence_status": {},
+    }
+
+    assert orchestrator_module._assessment_followup_requests(assessment, session) == ["source_snapshot"]
 
 
 def test_python_stack_artifact_fills_empty_depth_evidence_without_overwriting_existing_values():
@@ -4381,6 +4421,38 @@ def test_best_specific_anchor_merges_runtime_candidates_from_later_profile():
         "percent": 4.0,
     }]
     assert result["evidence_refs"] == ["ev-cpu", "ev-runtime"]
+
+
+def test_best_specific_anchor_merges_runtime_candidates_from_observation_confidence_inputs():
+    observations = [
+        {
+            "specific_anchor": {
+                "supported_level": "call_path",
+                "anchor": "python -> [unknown] -> _PyEval_EvalFrameDefault",
+                "function": "_PyEval_EvalFrameDefault",
+                "evidence_refs": ["ev-cpu"],
+            },
+            "confidence_inputs": {
+                "runtime_line_candidates": [{
+                    "file": "/opt/project/requests/sessions.py",
+                    "line": 659,
+                    "symbol": "send",
+                    "samples": 1,
+                    "percent": 0.1,
+                }],
+            },
+        },
+    ]
+
+    result = orchestrator_module._best_specific_anchor(observations)
+
+    assert result["runtime_line_candidates"] == [{
+        "file": "/opt/project/requests/sessions.py",
+        "line": 659,
+        "symbol": "send",
+        "samples": 1,
+        "percent": 0.1,
+    }]
 
 
 def test_later_runtime_profile_can_upgrade_selected_anchor_to_verified_line():

@@ -2500,6 +2500,12 @@ class DiagnosisOrchestrator:
         top_name = str((top_items[0] or {}).get("name", "")) if top_items else ""
         top_percent = float((top_items[0] or {}).get("percent", 0.0) or 0.0) if top_items else 0.0
         pressure = _pressure_flags(summary, values)
+        confidence_inputs = values.get("confidence_inputs") if isinstance(values.get("confidence_inputs"), dict) else {}
+        runtime_line_candidates = (
+            confidence_inputs.get("runtime_line_candidates")
+            if isinstance(confidence_inputs.get("runtime_line_candidates"), list)
+            else []
+        )
         return {
             "task_id": task.id,
             "collector_type": task.collector_type,
@@ -2517,7 +2523,13 @@ class DiagnosisOrchestrator:
             "source_snapshot": values.get("source_snapshot_json") if isinstance(values.get("source_snapshot_json"), dict) else {},
             "source_mechanism": values.get("source_mechanism_json") if isinstance(values.get("source_mechanism_json"), dict) else {},
             "python_heap_reference": values.get("python_heap_reference_json") if isinstance(values.get("python_heap_reference_json"), dict) else {},
-            "confidence_inputs": values.get("confidence_inputs") if isinstance(values.get("confidence_inputs"), dict) else {},
+            "confidence_inputs": confidence_inputs,
+            "runtime_line_candidates": [
+                item for item in runtime_line_candidates
+                if isinstance(item, dict)
+                and str(item.get("file") or "").strip()
+                and int(_num(item.get("line"))) > 0
+            ],
             "attribution_graph": values.get("attribution_graph") if isinstance(values.get("attribution_graph"), dict) else {},
             "qualification": values.get("qualification") if isinstance(values.get("qualification"), dict) else {},
             "evidence_refs": evidence_refs,
@@ -4292,8 +4304,23 @@ def _best_specific_anchor(observations: list[dict[str, Any]]) -> dict[str, Any]:
         ),
     )[0]
     runtime_candidates: list[dict[str, Any]] = []
-    for anchor in anchors:
-        for candidate in anchor.get("runtime_line_candidates", []):
+    candidate_groups = [
+        anchor.get("runtime_line_candidates", [])
+        for anchor in anchors
+    ]
+    for observation in observations:
+        candidate_groups.extend([
+            observation.get("runtime_line_candidates", []),
+            (
+                observation.get("confidence_inputs", {}).get("runtime_line_candidates", [])
+                if isinstance(observation.get("confidence_inputs"), dict)
+                else []
+            ),
+        ])
+    for group in candidate_groups:
+        if not isinstance(group, list):
+            continue
+        for candidate in group:
             if not isinstance(candidate, dict):
                 continue
             file_name = str(candidate.get("file") or "")
@@ -4959,8 +4986,6 @@ def _line_candidates_from_runtime_stack_sample(item: dict[str, Any]) -> list[dic
         file_text = str(file_name or "")
         function_text = str(function or "")
         if not file_text or line_number <= 0:
-            return
-        if _is_low_value_runtime_file(file_text, function_text):
             return
         candidate = {
             "file": file_text,
@@ -5776,6 +5801,42 @@ def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str,
         ):
             return ["python_heap_reference"]
         return []
+    anchor = assessment.get("primary_anchor") if isinstance(assessment.get("primary_anchor"), dict) else {}
+    runtime_line_candidates = [
+        item
+        for item in anchor.get("runtime_line_candidates", [])
+        if isinstance(item, dict)
+        and str(item.get("file") or "").strip()
+        and int(_num(item.get("line"))) > 0
+    ]
+    source_status = str(
+        (
+            session.get("probe_evidence_status")
+            if isinstance(session.get("probe_evidence_status"), dict)
+            else {}
+        ).get("source_snapshot")
+        or ""
+    ).lower()
+    if (
+        runtime_line_candidates
+        and _source_context_available(target_scope)
+        and "source_snapshot" not in set(session.get("completed_depth_evidence_gaps") or [])
+        and source_status not in {
+            "valid",
+            "partial",
+            "blocked",
+            "failed",
+            "unavailable",
+            "invalid",
+            "empty_window",
+            "unparseable",
+            "target_exit",
+        }
+    ):
+        # A real runtime file:line is the deterministic hand-off into source
+        # verification. AI may refine the question, but cannot suppress this
+        # evidence bridge.
+        return ["source_snapshot"]
     scenario_requests = _python_scenario_followup_requests(assessment, session)
     if scenario_requests is not None:
         return scenario_requests
