@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -238,6 +239,48 @@ def test_raw_parser_rejects_unknown_addresses_and_invalid_samples(collector):
     assert payload["top_functions"][0]["samples"] == 5
     assert payload["top_functions"][0]["percent"] == 100.0
     assert payload["top_functions"][0]["call_path"] == ["thread", "work"]
+
+
+def test_raw_parser_keeps_python_line_below_unknown_native_leaf(collector):
+    payload = collector._parse_raw_text(
+        "thread;request (app.py:9);retry (urllib3/util/retry.py:337);0x7ffee 12\n"
+    )
+
+    assert payload["total_samples"] == 12
+    assert payload["top_functions"][0]["name"] == "retry"
+    assert payload["top_functions"][0]["file"] == "urllib3/util/retry.py"
+    assert payload["top_functions"][0]["line"] == 337
+    assert payload["stack_samples"][0]["leaf_frame"] == "0x7ffee"
+    assert payload["collection_quality"]["parsed_python_line_sample_count"] == 12
+
+
+def test_native_profile_without_python_line_retries_python_only(collector, task, tmp_path):
+    collector.OUTPUT_BASE = str(tmp_path)
+    completed = mock.MagicMock(returncode=0, stdout=b"", stderr=b"")
+
+    def fake_run(cmd, **_kwargs):
+        output = Path(cmd[cmd.index("-o") + 1])
+        if "--native" in cmd:
+            output.write_text("thread;0x7ffee 10\n", encoding="utf-8")
+        else:
+            output.write_text("thread;retry (urllib3/util/retry.py:337) 10\n", encoding="utf-8")
+        return completed
+
+    with mock.patch("shutil.which", return_value="/usr/bin/py-spy"), mock.patch.object(
+        collector, "_pid_exists", return_value=True
+    ), mock.patch("subprocess.run", side_effect=fake_run) as run_mock:
+        result = collector.collect(task)
+
+    structured = next(
+        item["metadata"]["data"]
+        for item in result.artifacts
+        if item["artifact_type"] == "python_stack_samples_json"
+    )
+    assert result.ok is True
+    assert run_mock.call_count == 2
+    assert structured["line_candidates"][0]["line"] == 337
+    assert structured["collection_attempts"][-1]["mode"] == "python_only_after_no_python_line"
+    assert any(item["artifact_type"] == "pyspy_python_raw" for item in result.artifacts)
 
 
 def test_pid_exists(collector):

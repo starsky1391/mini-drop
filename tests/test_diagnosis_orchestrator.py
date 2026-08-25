@@ -6855,6 +6855,17 @@ def test_previous_unrefuted_candidate_survives_blocked_deep_probe_as_checkpoint(
         ),
         (
             {
+                "abstained": False,
+                "controlled_ai_tree": {
+                    "final_primary_causes": ["line-1"],
+                    "semi_closed_root_cause_candidate_ids": ["line-1"],
+                },
+                "root_cause_clusters": [],
+            },
+            "COMPLETED",
+        ),
+        (
+            {
                 "abstained": True,
                 "controlled_ai_tree": {"final_primary_causes": []},
                 "root_cause_clusters": [{"qualification": "possible_root_cause", "conclusion_eligible": False}],

@@ -109,6 +109,8 @@ class PySpyCollector:
         cmd = base_cmd + ["--native"]  # 同时显示 C 扩展调用帧
 
         timeout = task.duration_sec + 30
+        collection_attempts = []
+        active_mode = "native"
 
         try:
             proc = subprocess.run(
@@ -116,6 +118,11 @@ class PySpyCollector:
                 capture_output=True,
                 timeout=timeout,
             )
+            collection_attempts.append({
+                "mode": "native",
+                "returncode": proc.returncode,
+                "output": os.path.basename(raw_path),
+            })
         except subprocess.TimeoutExpired:
             return CollectorResult(
                 ok=False,
@@ -134,6 +141,12 @@ class PySpyCollector:
                     capture_output=True,
                     timeout=timeout,
                 )
+                active_mode = "python_only_after_native_error"
+                collection_attempts.append({
+                    "mode": active_mode,
+                    "returncode": proc.returncode,
+                    "output": os.path.basename(raw_path),
+                })
             except subprocess.TimeoutExpired:
                 return CollectorResult(
                     ok=False,
@@ -160,6 +173,51 @@ class PySpyCollector:
 
         with open(raw_path, "r", encoding="utf-8", errors="replace") as fh:
             structured = self._parse_raw_text(fh.read())
+        python_raw_path = os.path.join(output_dir, "pyspy.python.raw")
+        if active_mode == "native" and not structured["line_candidates"]:
+            python_cmd = [*base_cmd[:-1], python_raw_path]
+            try:
+                python_proc = subprocess.run(
+                    python_cmd,
+                    capture_output=True,
+                    timeout=timeout,
+                )
+                collection_attempts.append({
+                    "mode": "python_only_after_no_python_line",
+                    "returncode": python_proc.returncode,
+                    "output": os.path.basename(python_raw_path),
+                })
+            except subprocess.TimeoutExpired:
+                python_proc = None
+                collection_attempts.append({
+                    "mode": "python_only_after_no_python_line",
+                    "returncode": None,
+                    "output": os.path.basename(python_raw_path),
+                    "reason": "timeout",
+                })
+            except Exception as exc:
+                python_proc = None
+                collection_attempts.append({
+                    "mode": "python_only_after_no_python_line",
+                    "returncode": None,
+                    "output": os.path.basename(python_raw_path),
+                    "reason": str(exc)[:200],
+                })
+            if (
+                python_proc is not None
+                and python_proc.returncode == 0
+                and os.path.isfile(python_raw_path)
+                and os.path.getsize(python_raw_path) > 0
+            ):
+                with open(python_raw_path, "r", encoding="utf-8", errors="replace") as fh:
+                    python_structured = self._parse_raw_text(fh.read())
+                if python_structured["top_functions"]:
+                    structured = python_structured
+            elif python_proc is not None and python_proc.returncode != 0:
+                collection_attempts[-1]["reason"] = (
+                    python_proc.stderr.decode("utf-8", errors="replace").strip()[:200]
+                )
+        structured["collection_attempts"] = collection_attempts
         top_functions = structured["top_functions"]
         if not top_functions:
             return CollectorResult(ok=False, reason="py-spy raw 产物没有有效 Python 栈")
@@ -179,6 +237,13 @@ class PySpyCollector:
                     "content_type": "text/plain",
                     "size_bytes": os.path.getsize(raw_path),
                 },
+                *([{
+                    "artifact_type": "pyspy_python_raw",
+                    "filename": "pyspy.python.raw",
+                    "local_path": python_raw_path,
+                    "content_type": "text/plain",
+                    "size_bytes": os.path.getsize(python_raw_path),
+                }] if os.path.isfile(python_raw_path) and os.path.getsize(python_raw_path) > 0 else []),
                 {
                     "artifact_type": "top_json",
                     "filename": "top.json",
@@ -234,6 +299,8 @@ class PySpyCollector:
         frame_depths: dict[tuple[str, str, int], dict[int, int]] = {}
         state_counts: dict[str, int] = {}
         total_samples = 0
+        raw_sample_count = 0
+        discarded_non_python_samples = 0
         for raw_line in text.splitlines():
             match = re.match(r"^(.*)\s+(-?\d+)\s*$", raw_line.strip())
             if not match:
@@ -241,24 +308,28 @@ class PySpyCollector:
             count = int(match.group(2))
             if count <= 0:
                 continue
+            raw_sample_count += count
             frames = [PySpyCollector._parse_frame(item) for item in match.group(1).split(";")]
             frames = [frame for frame in frames if frame is not None]
             if not frames:
+                discarded_non_python_samples += count
                 continue
             leaf = frames[-1]
-            if PySpyCollector._invalid_anchor(leaf["name"]):
+            anchor = PySpyCollector._deepest_python_source_frame(frames)
+            if anchor is None:
+                discarded_non_python_samples += count
                 continue
             sample_state = PySpyCollector._classify_state(frames)
             state_counts[sample_state] = state_counts.get(sample_state, 0) + count
             total_samples += count
             names = [frame["name"] for frame in frames]
-            key = (leaf["name"], leaf["file"], leaf["line"])
+            key = (anchor["name"], anchor["file"], anchor["line"])
             leaf_counts[key] = leaf_counts.get(key, 0) + count
             leaf_paths.setdefault(key, names)
             state_bucket = leaf_state_counts.setdefault(key, {})
             state_bucket[sample_state] = state_bucket.get(sample_state, 0) + count
             for frame_index, frame in enumerate(frames):
-                if PySpyCollector._invalid_anchor(frame["name"]):
+                if not PySpyCollector._is_python_source_frame(frame):
                     continue
                 frame_key = (frame["name"], frame["file"], frame["line"])
                 frame_counts[frame_key] = frame_counts.get(frame_key, 0) + count
@@ -271,9 +342,10 @@ class PySpyCollector:
             stacks.append({
                 "frames": frames,
                 "call_path": names,
-                "hot_frame": leaf["name"],
-                "file": leaf["file"],
-                "line": leaf["line"],
+                "hot_frame": anchor["name"],
+                "file": anchor["file"],
+                "line": anchor["line"],
+                "leaf_frame": leaf["name"],
                 "sample_count": count,
                 "sample_state": sample_state,
             })
@@ -347,6 +419,12 @@ class PySpyCollector:
             "producer": "py-spy",
             "format": "raw_collapsed",
             "total_samples": total_samples,
+            "collection_quality": {
+                "raw_sample_count": raw_sample_count,
+                "parsed_python_line_sample_count": total_samples,
+                "discarded_non_python_sample_count": discarded_non_python_samples,
+                "python_line_candidate_count": len(source_line_candidates),
+            },
             "stack_samples": stacks,
             "top_functions": top_functions,
             "candidate_frames": candidate_frames[:limit],
@@ -377,6 +455,26 @@ class PySpyCollector:
         normalized = name.strip().lower()
         return not normalized or normalized in {"[unknown]", "unknown", "all", "root"} or bool(
             re.fullmatch(r"(?:0x)?[0-9a-f]+", normalized)
+        )
+
+    @classmethod
+    def _deepest_python_source_frame(cls, frames: list[dict]) -> dict | None:
+        for frame in reversed(frames):
+            if cls._is_python_source_frame(frame):
+                return frame
+        return None
+
+    @classmethod
+    def _is_python_source_frame(cls, frame: dict) -> bool:
+        if cls._invalid_anchor(str(frame.get("name") or "")):
+            return False
+        file_name = str(frame.get("file") or "").replace("\\", "/").lower()
+        return bool(
+            int(frame.get("line") or 0) > 0
+            and (
+                file_name.endswith(".py")
+                or file_name.endswith(".pyw")
+            )
         )
 
     @classmethod
