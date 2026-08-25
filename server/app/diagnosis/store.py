@@ -92,7 +92,7 @@ class DiagnosisStore:
         finally:
             session.close()
 
-    def list_sessions(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+    def list_sessions(self, limit: int = 100, offset: int = 0, summary: bool = False) -> list[dict[str, Any]]:
         session = new_session()
         try:
             rows = (
@@ -102,6 +102,8 @@ class DiagnosisStore:
                 .limit(limit)
                 .all()
             )
+            if summary:
+                return [row.to_summary_dict() for row in rows]
             return [row.to_dict() for row in rows]
         finally:
             session.close()

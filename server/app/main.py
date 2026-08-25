@@ -1738,10 +1738,10 @@ def create_diagnosis_session(payload: CreateDiagnosisRequest) -> APIResponse:
 
 
 @app.get("/api/v1/diagnoses")
-def list_diagnosis_sessions(limit: int = 100, offset: int = 0) -> APIResponse:
+def list_diagnosis_sessions(limit: int = 100, offset: int = 0, summary: bool = False) -> APIResponse:
     limit = min(max(limit, 1), 1000)
     offset = max(offset, 0)
-    items = diagnosis_orchestrator.list(limit=limit, offset=offset)
+    items = diagnosis_orchestrator.list(limit=limit, offset=offset, summary=summary)
     return APIResponse(data=json_safe({
         "items": items,
         "total": diagnosis_orchestrator.store.count_sessions(),

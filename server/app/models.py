@@ -16,6 +16,69 @@ class Base(DeclarativeBase):
     pass
 
 
+def _summarize_latest_conclusion(value: dict | None) -> dict:
+    if not isinstance(value, dict):
+        return {}
+
+    retained = value.get("retained_conclusion")
+    retained = retained if isinstance(retained, dict) else {}
+    qualification = value.get("qualification")
+    qualification = qualification if isinstance(qualification, dict) else {}
+    boundary = value.get("qualification_boundary")
+    boundary = boundary if isinstance(boundary, dict) else {}
+    line_probe = value.get("line_probe_diagnostic")
+    line_probe = line_probe if isinstance(line_probe, dict) else {}
+
+    return {
+        "version": value.get("version"),
+        "generated_at": value.get("generated_at"),
+        "summary": value.get("summary", ""),
+        "headline": value.get("headline", ""),
+        "classification": value.get("classification", ""),
+        "why_it_happened": value.get("why_it_happened", ""),
+        "ai_review_status": value.get("ai_review_status", ""),
+        "retained_conclusion": {
+            "candidate_id": retained.get("candidate_id"),
+            "claim": retained.get("claim"),
+            "supported_level": retained.get("supported_level"),
+            "status": retained.get("status"),
+            "confidence": retained.get("confidence"),
+            "causal_status": retained.get("causal_status"),
+            "evidence_refs": retained.get("evidence_refs", []),
+        },
+        "formal_root_cause": value.get("formal_root_cause"),
+        "qualification_boundary": {
+            "status": boundary.get("status"),
+            "message": boundary.get("message"),
+            "boundary_message": boundary.get("boundary_message"),
+            "missing_evidence": boundary.get("missing_evidence", []),
+        },
+        "active_retained_candidate_id": value.get("active_retained_candidate_id"),
+        "confidence_level": value.get("confidence_level", ""),
+        "qualification": {
+            "level": qualification.get("level"),
+            "decision": qualification.get("decision"),
+            "causal_status": qualification.get("causal_status"),
+            "confidence": qualification.get("confidence"),
+            "confidence_level": qualification.get("confidence_level"),
+            "supported_level": qualification.get("supported_level"),
+            "reason": qualification.get("reason"),
+            "missing_evidence": qualification.get("missing_evidence", []),
+        },
+        "line_probe_diagnostic": {
+            "status": line_probe.get("status"),
+            "supported_level": line_probe.get("supported_level"),
+            "source_snapshot_status": line_probe.get("source_snapshot_status"),
+            "source_snapshot_completed": line_probe.get("source_snapshot_completed"),
+            "runtime_line_candidate_count": line_probe.get("runtime_line_candidate_count"),
+            "line_localization_status": line_probe.get("line_localization_status"),
+            "source_verification_status": line_probe.get("source_verification_status"),
+        },
+        "coverage": value.get("coverage", {}),
+        "abstained": bool(value.get("abstained")),
+    }
+
+
 # ── Agent ────────────────────────────────────────────────────────
 
 
@@ -466,6 +529,33 @@ class DiagnosisSessionModel(Base):
             "planner_version": self.planner_version,
             "lease_owner": self.lease_owner,
             "lease_until": self.lease_until,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    def to_summary_dict(self) -> dict:
+        target_scope = self.target_scope_json or {}
+        child_task_ids = self.child_task_ids_json or []
+        conclusion_versions = self.conclusion_versions_json or []
+        latest_conclusion = _summarize_latest_conclusion(
+            conclusion_versions[-1] if conclusion_versions else None
+        )
+        return {
+            "diagnosis_id": self.id,
+            "creator_id": self.creator_id,
+            "raw_query": self.raw_query,
+            "normalized_intent": self.normalized_intent_json or {},
+            "target_scope": target_scope,
+            "diagnosis_mode": target_scope.get("diagnosis_mode", "live_collection"),
+            "evidence_package_id": target_scope.get("evidence_package_id"),
+            "evidence_cohort_id": target_scope.get("evidence_cohort_id"),
+            "source_evidence_cohort_id": target_scope.get("source_evidence_cohort_id"),
+            "source_incident_id": target_scope.get("source_incident_id"),
+            "status": self.status,
+            "policy_profile": self.policy_profile,
+            "budget_used": self.budget_used_json or {},
+            "child_task_count": len(child_task_ids),
+            "latest_conclusion": latest_conclusion,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }

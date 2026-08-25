@@ -329,8 +329,8 @@ class DiagnosisOrchestrator:
         self._refresh_runner_control(diagnosis_id)
         return self.store.get_detail(diagnosis_id)
 
-    def list(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
-        return self.store.list_sessions(limit=limit, offset=offset)
+    def list(self, limit: int = 100, offset: int = 0, summary: bool = False) -> list[dict[str, Any]]:
+        return self.store.list_sessions(limit=limit, offset=offset, summary=summary)
 
     def advance(self, diagnosis_id: str) -> dict[str, Any] | None:
         lease_ttl = max(30, int(os.getenv("MINI_DROP_DIAGNOSIS_LEASE_TTL_SEC", "90")))
