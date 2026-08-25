@@ -140,6 +140,18 @@ export default function Dashboard() {
   const [searchText, setSearchText] = useState("");
   const [sortBy, setSortBy] = useState("created_at");
   const [sortOrder, setSortOrder] = useState("desc");
+  const refreshTimerRef = useRef(null);
+  const refreshRef = useRef(null);
+
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current) {
+      window.clearTimeout(refreshTimerRef.current);
+    }
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      refreshRef.current?.();
+    }, 500);
+  }, []);
 
   // ── 数据加载 ──────────────────────────────────────────
 
@@ -148,7 +160,7 @@ export default function Dashboard() {
     try {
       const [healthRes, diagnosisRes, agentRes] = await Promise.allSettled([
         healthz(),
-        listDiagnosisSessions({ limit: 100 }),
+        listDiagnosisSessions({ limit: 20, summary: true }),
         listAgents(),
       ]);
       if (healthRes.status === "fulfilled") setService(healthRes.value);
@@ -167,6 +179,16 @@ export default function Dashboard() {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshRef.current = refresh;
+  }, [refresh]);
+
+  useEffect(() => () => {
+    if (refreshTimerRef.current) {
+      window.clearTimeout(refreshTimerRef.current);
     }
   }, []);
 
@@ -192,15 +214,15 @@ export default function Dashboard() {
   useSSE({
     onTaskChanged(data) {
       showEventNotification("task_changed", data);
-      refresh(); // 事件到达后刷新数据
+      scheduleRefresh();
     },
     onAgentStatus(data) {
       showEventNotification("agent_status", data);
-      refresh();
+      scheduleRefresh();
     },
     onDiagnosisComplete(data) {
       showEventNotification("diagnosis_complete", data);
-      refresh();
+      scheduleRefresh();
     },
   });
 
@@ -263,7 +285,7 @@ export default function Dashboard() {
   }, [sessions, searchText, sortBy, sortOrder]);
 
   const totalChildTasks = useMemo(
-    () => sessions.reduce((sum, item) => sum + (item.child_task_ids?.length || 0), 0),
+    () => sessions.reduce((sum, item) => sum + (item.child_task_count ?? (item.child_task_ids?.length || 0)), 0),
     [sessions],
   );
 
@@ -303,7 +325,7 @@ export default function Dashboard() {
       {
         title: "采集子任务",
         width: 110,
-        render: (_, record) => <Tag color="geekblue">{record.child_task_ids?.length || 0}</Tag>,
+        render: (_, record) => <Tag color="geekblue">{record.child_task_count ?? (record.child_task_ids?.length || 0)}</Tag>,
       },
       {
         title: "创建时间",

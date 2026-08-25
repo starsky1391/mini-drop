@@ -81,7 +81,7 @@ export default function DiagnosisHistory() {
     setError("");
     setLoading(true);
     try {
-      setDiagnoses(await listDiagnosisSessions({ limit: 300 }));
+      setDiagnoses(await listDiagnosisSessions({ limit: 300, summary: true }));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -190,7 +190,7 @@ export default function DiagnosisHistory() {
       {
         title: "采集子任务",
         width: 110,
-        render: (_, record) => <Tag color="geekblue">{record.child_task_ids?.length || 0}</Tag>,
+        render: (_, record) => <Tag color="geekblue">{record.child_task_count ?? (record.child_task_ids?.length || 0)}</Tag>,
       },
       {
         title: "更新时间",

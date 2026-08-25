@@ -112,14 +112,14 @@ export default function AIDiagnosis() {
 
   async function refreshSessions() {
     try {
-      setSessions(await listDiagnosisSessions({ limit: 50 }));
+      setSessions(await listDiagnosisSessions({ limit: 50, summary: true }));
     } catch (err) {
       setError(err.message);
     }
   }
 
   useEffect(() => {
-    Promise.all([listAgents(), listDiagnosisSessions({ limit: 50 })])
+    Promise.all([listAgents(), listDiagnosisSessions({ limit: 50, summary: true })])
       .then(([agentItems, sessionItems]) => {
         setAgents(agentItems);
         setSessions(sessionItems);
