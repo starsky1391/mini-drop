@@ -558,6 +558,8 @@ class ControlledAITree(BaseModel):
     coarse_aliases: dict[str, str] = Field(default_factory=dict)
     source_context_hash: Optional[str] = None
     line_anchor_eligibility: dict[str, Any] = Field(default_factory=dict)
+    semi_closed_root_cause_candidate_ids: list[str] = Field(default_factory=list)
+    semi_closed_root_cause_reason: str = ""
     heap_probe_outcome: dict[str, Any] = Field(default_factory=dict)
     data_quality: dict[str, Any] = Field(default_factory=dict)
     canonical_probe_plan: list[dict[str, Any]] = Field(default_factory=list)

@@ -5881,23 +5881,14 @@ def test_memory_followup_requests_optional_mechanism_then_runtime_reference():
         "probe_evidence_status": {**base["probe_evidence_status"], "source_mechanism_query": "blocked"},
         "probe_attempt_counts": {"source_mechanism_query": 1},
     }
-    assert orchestrator_module._assessment_followup_requests(assessment, blocked) == ["source_mechanism_query"]
+    assert orchestrator_module._assessment_followup_requests(assessment, blocked) == []
     partial = {
         **base,
         "probe_evidence_status": {**base["probe_evidence_status"], "source_mechanism_query": "partial"},
         "probe_attempt_counts": {"source_mechanism_query": 1},
     }
-    assert orchestrator_module._assessment_followup_requests(assessment, partial) == ["source_mechanism_query"]
-    exhausted = {
-        **partial,
-        "probe_attempt_counts": {
-            "source_mechanism_query": orchestrator_module.MAX_SOURCE_MECHANISM_ATTEMPTS,
-        },
-    }
-    assert orchestrator_module._assessment_followup_requests(assessment, exhausted) == ["python_heap_reference"]
-
-
-def test_source_mechanism_partial_allows_new_query_but_not_same_query(client: TestClient):
+    assert orchestrator_module._assessment_followup_requests(assessment, partial) == []
+def test_source_mechanism_failure_never_dispatches_a_second_query(client: TestClient):
     repo.register_agent(
         "a1", "host-1", "10.0.0.1",
         capabilities=[*repo.agents["a1"].capabilities, "source_mechanism_query"],
@@ -5954,15 +5945,126 @@ def test_source_mechanism_partial_allows_new_query_but_not_same_query(client: Te
     )
 
     assert duplicate == 0
-    assert fresh == 1
+    assert fresh == 0
     mechanism_probes = [
         probe for probe in diagnosis_orchestrator.store.list_probes(diagnosis_id)
         if (probe.get("parameters") or {}).get("evidence_gap") == "source_mechanism_query"
     ]
-    assert len(mechanism_probes) == 2
-    assert mechanism_probes[-1]["parameters"]["ai_generated_query"]["query_spec_hash"] == "sha256:second"
-    invocation = mechanism_probes[-1]["parameters"]["collector_invocation"]
-    assert invocation["target_config"]["ai_generated_query"]["query_spec_hash"] == "sha256:second"
+    assert len(mechanism_probes) == 1
+
+
+def test_failed_source_mechanism_promotes_verified_line_to_semiclosed_root():
+    line = AITreeCandidateNode(
+        candidate_id="ai_candidate_line",
+        lineage_id="ai_candidate_line",
+        parent_candidate_ids=["coarse"],
+        origin_parent_candidate_id="coarse",
+        relation="refinement",
+        node_type="line_anchor",
+        generated_by="ai_candidate",
+        role="unknown",
+        claim="Celery failure handling is the verified CPU hotspot.",
+        supported_level="line",
+        confidence=0.72,
+        status="missing_evidence",
+        claim_type="likely_root_cause",
+        causal_status="unproven",
+        decision="continue_probe",
+        mechanism="python_failure_handling_cpu",
+        target="celery/app/trace.py:651",
+        depth_kind="base",
+        evidence_refs=["ev-runtime", "ev-source"],
+    )
+    tree = ControlledAITree(
+        tree_id="tree-semiculosed",
+        line_anchor_eligibility={
+            "status": "verified",
+            "file": "celery/app/trace.py",
+            "line": 651,
+        },
+        retained_candidate_id=line.candidate_id,
+        layers=[
+            AITreeLayer(
+                layer_id="line-layer",
+                depth=1,
+                unknown_causes=[
+                    AITreeCandidateNode(
+                        candidate_id="coarse",
+                        lineage_id="coarse",
+                        relation="root",
+                        node_type="cluster_root",
+                        role="unknown",
+                        claim="Celery worker CPU pressure",
+                        supported_level="process",
+                        status="missing_evidence",
+                        claim_type="partial_localization",
+                        causal_status="unproven",
+                        decision="continue_probe",
+                        depth_kind="base",
+                    ),
+                    line,
+                ],
+            ),
+        ],
+    )
+    failed_probe = [{
+        "status": "FAILED",
+        "evidence_status": "empty_window",
+        "parameters": {
+            "evidence_gap": "source_mechanism_query",
+            "candidate_id": "ai_candidate_line",
+            "origin_parent_candidate_id": "ai_candidate_line",
+        },
+    }]
+
+    updated = orchestrator_module._promote_semiclosed_line_root(tree, failed_probe)
+    nodes = {
+        node.candidate_id: node
+        for layer in updated.layers
+        for node in [
+            *layer.primary_causes,
+            *layer.secondary_causes,
+            *layer.rejected_causes,
+            *layer.unknown_causes,
+        ]
+    }
+
+    assert updated.final_primary_causes == ["ai_candidate_line"]
+    assert updated.semi_closed_root_cause_candidate_ids == ["ai_candidate_line"]
+    assert nodes["ai_candidate_line"].conclusion_eligible is True
+    assert nodes["ai_candidate_line"].decision == "conclude"
+    assert nodes["ai_candidate_line"].blocked_probe == "source_mechanism_query"
+    boundary = nodes["boundary_source_mechanism_query_ai_candidate_line"]
+    assert boundary.parent_candidate_ids == ["ai_candidate_line"]
+    assert boundary.conclusion_eligible is False
+    assert boundary.blocked_probe == "source_mechanism_query"
+
+
+def test_failed_source_mechanism_task_without_evidence_status_does_not_retry():
+    assessment = {
+        "classification": "python_memory_retention",
+        "mechanism": "python_memory_retention",
+        "primary_anchor": {
+            "supported_level": "line",
+            "file": "src/werkzeug/routing.py",
+            "line": 844,
+            "source_context_hash": "sha256:verified",
+            "source_revision": "a220671d",
+        },
+    }
+    session = {
+        "normalized_intent": {"symptom": "memory_pressure"},
+        "completed_depth_evidence_gaps": [
+            "python_heap_profile",
+            "python_runtime_profile",
+            "source_snapshot",
+        ],
+        "probe_evidence_status": {},
+        "probe_task_statuses": {"source_mechanism_query": "FAILED"},
+        "probe_attempt_counts": {"source_mechanism_query": 1},
+    }
+
+    assert orchestrator_module._assessment_followup_requests(assessment, session) == []
 
 
 def test_source_mechanism_without_guarded_input_is_not_dispatched(client: TestClient):

@@ -18,7 +18,7 @@ from server.app.diagnosis.session_conclusion import (
     classify_cluster_set,
     validate_session_review,
 )
-from server.app.rca.models import SessionConclusionReview
+from server.app.rca.models import RootCauseCluster, SessionConclusionReview
 from server.app.rca.llm_client import generate_session_conclusion_review
 from server.app.rca.llm_client import _build_session_review_payload
 from server.app.rca.llm_client import _compact_evidence_item
@@ -1202,6 +1202,59 @@ def test_ineligible_memory_fallback_is_possible_cause_not_confirmed_root():
     assert explanation["formal_root_cause"] is None
     assert explanation["confidence_level"] == "低"
     assert explanation["abstained"] is True
+
+
+def test_semiclosed_verified_line_is_formal_root_with_mechanism_boundary():
+    cluster = RootCauseCluster(
+        cluster_id="rc_cluster_ai_line",
+        candidate_ids=["ai_candidate_line"],
+        source_tree_candidate_ids=["ai_candidate_line"],
+        role="primary",
+        causal_status="primary",
+        cause_level="direct_root_cause",
+        supported_level="line",
+        mechanism="python_failure_handling_cpu",
+        target="celery/app/trace.py:651",
+        claim="Celery failure handling is the verified CPU hotspot.",
+        evidence_refs=["ev-runtime", "ev-source"],
+        confidence=0.72,
+        conclusion_eligible=True,
+        qualification="confirmed_root_cause",
+    )
+    tree = {
+        "semi_closed_root_cause_candidate_ids": ["ai_candidate_line"],
+        "layers": [{
+            "unknown_causes": [{
+                "candidate_id": "ai_candidate_line",
+                "generated_by": "ai_candidate",
+                "node_type": "line_anchor",
+                "depth_kind": "base",
+                "role": "primary",
+                "claim": "Celery failure handling is the verified CPU hotspot.",
+                "supported_level": "line",
+                "status": "supported",
+                "claim_type": "direct_failure_mechanism",
+                "causal_status": "supported",
+                "decision": "conclude",
+                "mechanism": "python_failure_handling_cpu",
+                "target": "celery/app/trace.py:651",
+                "evidence_refs": ["ev-runtime", "ev-source"],
+            }],
+        }],
+    }
+
+    qualification = build_session_qualification(
+        [cluster],
+        tree,
+        base={"evidence_refs": ["ev-runtime", "ev-source"]},
+        session_ai_review_status="budget_exhausted",
+    )
+
+    assert qualification["qualification"] == "formal_root_cause"
+    assert qualification["decision"] == "conclude"
+    assert qualification["eligible_candidate_ids"] == ["ai_candidate_line"]
+    assert qualification["supported_level"] == "line"
+    assert "source_mechanism_query" in qualification["missing_evidence"]
 
 
 def test_fallback_retains_emitted_tree_candidate_instead_of_diagnostic_claim():

@@ -40,6 +40,15 @@ def build_session_qualification(
     """Derive one session qualification from the emitted AI tree and its clusters."""
     base = base if isinstance(base, dict) else {}
     nodes = _all_tree_nodes(session_tree)
+    semi_closed_ids = {
+        str(candidate_id)
+        for candidate_id in (
+            session_tree.get("semi_closed_root_cause_candidate_ids", [])
+            if isinstance(session_tree, dict)
+            else []
+        )
+        if str(candidate_id)
+    }
     candidate_ids = _unique(
         str(node.get("candidate_id") or "")
         for node in nodes
@@ -61,13 +70,19 @@ def build_session_qualification(
     )
     eligible_ids = [
         candidate_id for candidate_id in eligible_ids
-        if candidate_id in ai_candidate_ids
+        if candidate_id in (ai_candidate_ids | semi_closed_ids)
     ]
     if session_ai_review_status is not None and session_ai_review_status != "succeeded":
         # A candidate can be technically guardable while the session-level
         # adjudication is unavailable. Keep it as investigation state, never
         # let the qualification reducer turn it into a formal conclusion.
-        eligible_ids = []
+        # A verified line with a terminal source-mechanism failure is the
+        # explicit semi-closed exception: the line is already a formal stage
+        # result and the mechanism query remains a boundary.
+        eligible_ids = [
+            candidate_id for candidate_id in eligible_ids
+            if candidate_id in semi_closed_ids
+        ]
     graph_result = None
     if attribution_qualification is not None:
         try:
@@ -82,8 +97,23 @@ def build_session_qualification(
         graph_eligible_ids = set(graph_result.eligible_candidate_ids)
         eligible_ids = [
             candidate_id for candidate_id in eligible_ids
-            if candidate_id in graph_eligible_ids
+            if candidate_id in graph_eligible_ids or candidate_id in semi_closed_ids
         ]
+        if any(candidate_id in semi_closed_ids for candidate_id in eligible_ids):
+            graph_result.level = "L3"
+            graph_result.qualification = "formal_root_cause"
+            graph_result.decision = "conclude"
+            graph_result.causal_status = "supported"
+            graph_result.confidence = max(0.6, min(graph_result.confidence or 0.0, 0.82))
+            graph_result.confidence_level = "高" if graph_result.confidence >= 0.75 else "中"
+            graph_result.missing_evidence = _unique([
+                *graph_result.missing_evidence,
+                "source_mechanism_query",
+            ])
+            graph_result.reason = (
+                "verified source line 已形成阶段性正式根因；"
+                "source_mechanism_query 作为后续源码机制补齐方向。"
+            )
     evidence_refs = _unique([
         *(base.get("evidence_refs") or []),
         *(ref for cluster in clusters for ref in cluster.evidence_refs),
@@ -93,6 +123,8 @@ def build_session_qualification(
         *(base.get("missing_evidence") or []),
         *(item for cluster in clusters for item in cluster.residual_unknowns),
     ])
+    if semi_closed_ids:
+        missing = _unique([*missing, "source_mechanism_query"])
     line_eligibility = (
         session_tree.get("line_anchor_eligibility")
         if isinstance(session_tree, dict)
@@ -160,6 +192,7 @@ def build_session_qualification(
             target=base.get("target") if isinstance(base.get("target"), dict) else {},
             window=base.get("window") if isinstance(base.get("window"), dict) else {},
             evidence_refs=evidence_refs,
+            missing_evidence=missing,
             candidate_ids=candidate_ids,
             eligible_candidate_ids=eligible_ids,
             supported_level=supported_level,
@@ -1293,6 +1326,46 @@ def build_qualification_boundary(
         for probe in probes
         if isinstance(probe, dict)
     }
+    source_mechanism_failed = any(
+        str((probe.get("parameters") or {}).get("evidence_gap") or "") == "source_mechanism_query"
+        and (
+            str(probe.get("status") or "").upper() in {
+                "FAILED",
+                "BLOCKED",
+                "TIMED_OUT",
+                "TIMEOUT",
+                "UNAVAILABLE",
+                "INVALID",
+                "REJECTED",
+                "REJECTED_POLICY",
+                "SKIPPED",
+            }
+            or str(probe.get("evidence_status") or "").lower() in {
+                "partial",
+                "blocked",
+                "failed",
+                "empty_window",
+                "unparseable",
+                "target_exit",
+                "timeout",
+                "timed_out",
+            }
+        )
+        for probe in probes
+        if isinstance(probe, dict)
+    )
+    if source_mechanism_failed and str(
+        (anchor or {}).get("supported_level") or assessment.get("supported_level") or ""
+    ) == "line":
+        return QualificationBoundary(
+            status="partial",
+            message=(
+                "verified source line 已形成当前阶段正式根因；"
+                "source_mechanism_query 未形成有效调用关系，保留为后续源码机制补齐方向。"
+            ),
+            missing_evidence=_unique([*missing, "source_mechanism_query"]),
+            origin_parent_candidate_id=origin_parent_candidate_id,
+        ).model_dump(mode="json")
     if statuses & {"blocked", "failed", "unavailable", "memray_attach_failed", "target_exit"}:
         status = "blocked"
         message = "深探未能完成，当前保留来源父结论；暂不能升级到更细定位。"

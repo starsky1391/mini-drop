@@ -94,7 +94,6 @@ from server.app.state_machine import Actor, TaskStatus
 PLANNER_VERSION = "diagnosis-orchestrator-v1"
 MAX_FOLLOWUP_ROUNDS = 5
 MAX_FOLLOWUP_REQUESTS_PER_ROUND = 3
-MAX_SOURCE_MECHANISM_ATTEMPTS = 3
 ACTIVE_TASK_STATUSES = {"PENDING", "RUNNING", "UPLOADING", "ANALYZING"}
 TERMINAL_TASK_STATUSES = {"DONE", "FAILED"}
 RUNNER_OPEN_PROBE_STATUSES = {"PLANNED", "WAITING_APPROVAL", "APPROVED", "SCHEDULED", "RUNNING"}
@@ -1535,6 +1534,11 @@ class DiagnosisOrchestrator:
             str((probe.get("parameters") or {}).get("evidence_gap") or ""): str(probe.get("evidence_status") or "")
             for probe in self.store.list_probes(diagnosis_id)
         }
+        followup_session["probe_task_statuses"] = {
+            str((probe.get("parameters") or {}).get("evidence_gap") or ""): str(probe.get("status") or "")
+            for probe in self.store.list_probes(diagnosis_id)
+            if (probe.get("parameters") or {}).get("evidence_gap")
+        }
         followup_session["probe_attempt_counts"] = {
             gap: sum(
                 1
@@ -1792,6 +1796,11 @@ class DiagnosisOrchestrator:
                         ),
                     )
                     session_controlled_tree = _apply_investigation_review(session_controlled_tree, investigation_review)
+        if session_controlled_tree is not None:
+            session_controlled_tree = _promote_semiclosed_line_root(
+                session_controlled_tree,
+                self.store.list_probes(diagnosis_id),
+            )
         # Plan the selected follow-up before composing the persisted conclusion.
         # This makes blocked input/provenance and collector failures part of the
         # same conclusion instead of appearing only in a later event stream.
@@ -1884,11 +1893,21 @@ class DiagnosisOrchestrator:
         )
         qualification_boundary = build_qualification_boundary(
             cluster_assessment,
-            followup_requests=followup_requests,
+            followup_requests=_boundary_followup_requests(
+                followup_requests,
+                session_controlled_tree,
+                self.store.list_probes(diagnosis_id),
+            ),
             probes=[
                 probe
                 for probe in self.store.list_probes(diagnosis_id)
-                if str((probe.get("parameters") or {}).get("evidence_gap") or "") in set(followup_requests)
+                if str((probe.get("parameters") or {}).get("evidence_gap") or "") in set(
+                    _boundary_followup_requests(
+                        followup_requests,
+                        session_controlled_tree,
+                        self.store.list_probes(diagnosis_id),
+                    )
+                )
             ],
             origin_parent_candidate_id=(retained_conclusion or {}).get("candidate_id"),
         )
@@ -2022,6 +2041,12 @@ class DiagnosisOrchestrator:
             controlled_tree_payload,
             session_qualification,
         )
+        deferred_evidence_requests = (
+            ["source_mechanism_query"]
+            if isinstance(controlled_tree_payload, dict)
+            and controlled_tree_payload.get("semi_closed_root_cause_candidate_ids")
+            else []
+        )
         gate_failures = ai_gate_failures
         candidate_generation_output = _candidate_generation_output(candidate_review_summary)
         candidate_generation_output["line_probe_diagnostic"] = (
@@ -2105,6 +2130,7 @@ class DiagnosisOrchestrator:
             ],
             "limitations": sorted(set(missing + (["部分目标采集失败"] if failed_targets and not nonblocking_failed_depth else []))),
             "next_evidence_requests": followup_requests,
+            "deferred_evidence_requests": deferred_evidence_requests,
             # Child task trees are audit/replay snapshots only. They must never
             # be promoted to the session's canonical tree when the session
             # tree is absent.
@@ -3630,6 +3656,254 @@ def _apply_session_tree_qualification(
         if str(item) in eligible
     ]
     return result
+
+
+_SOURCE_MECHANISM_TERMINAL_FAILURE_STATUSES = {
+    "FAILED",
+    "BLOCKED",
+    "TIMED_OUT",
+    "TIMEOUT",
+    "UNAVAILABLE",
+    "INVALID",
+    "REJECTED",
+    "REJECTED_POLICY",
+    "SKIPPED",
+}
+_SOURCE_MECHANISM_TERMINAL_FAILURE_EVIDENCE = {
+    "partial",
+    "blocked",
+    "failed",
+    "empty_window",
+    "unparseable",
+    "target_exit",
+    "timeout",
+    "timed_out",
+}
+
+
+def _source_mechanism_query_failed(probes: list[dict[str, Any]]) -> bool:
+    return any(
+        (
+            str(probe.get("status") or "").upper()
+            in _SOURCE_MECHANISM_TERMINAL_FAILURE_STATUSES
+            or str(probe.get("evidence_status") or "").lower()
+            in _SOURCE_MECHANISM_TERMINAL_FAILURE_EVIDENCE
+        )
+        for probe in probes
+        if isinstance(probe, dict)
+        and str((probe.get("parameters") or {}).get("evidence_gap") or "")
+        == "source_mechanism_query"
+    )
+
+
+def _boundary_followup_requests(
+    followup_requests: list[str],
+    tree: ControlledAITree | None,
+    probes: list[dict[str, Any]],
+) -> list[str]:
+    requests = list(followup_requests)
+    if (
+        tree is not None
+        and str((tree.line_anchor_eligibility or {}).get("status") or "") == "verified"
+        and _source_mechanism_query_failed(probes)
+        and "source_mechanism_query" not in requests
+    ):
+        requests.append("source_mechanism_query")
+    return _unique_strings(requests)
+
+
+def _promote_semiclosed_line_root(
+    tree: ControlledAITree,
+    probes: list[dict[str, Any]],
+) -> ControlledAITree:
+    """Close a verified source line while retaining mechanism follow-up as a boundary."""
+    if (
+        str((tree.line_anchor_eligibility or {}).get("status") or "") != "verified"
+        or not _source_mechanism_query_failed(probes)
+    ):
+        return tree
+
+    nodes = [
+        node
+        for layer in tree.layers
+        for node in _layer_nodes_for_validation(layer)
+        if (
+            node.node_type == "line_anchor"
+            and node.depth_kind == "base"
+            and node.generated_by in {"ai", "ai_candidate", "ai_guarded"}
+            and node.supported_level == "line"
+            and node.status not in {"rejected", "contradicted", "forbidden"}
+            and node.mechanism.strip()
+            and node.target.strip()
+            and node.evidence_refs
+        )
+    ]
+    if not nodes:
+        return tree
+
+    retained_id = str(tree.retained_candidate_id or "").strip()
+    retained_children = [
+        node
+        for node in nodes
+        if node.origin_parent_candidate_id == retained_id
+        or node.candidate_id == f"{retained_id}#line"
+    ] if retained_id else []
+    preferred = retained_children or [node for node in nodes if node.role == "primary"] or nodes
+    selected = sorted(
+        preferred,
+        key=lambda node: (-float(node.confidence), node.candidate_id),
+    )[0]
+    missing = _unique_strings([*selected.self_challenge.missing_evidence, "source_mechanism_query"])
+    claim = selected.claim
+    if "当前阶段正式根因闭合到 verified source line" not in claim:
+        claim = (
+            f"{claim} 当前阶段正式根因闭合到 verified source line；"
+            "source_mechanism_query 作为后续机制补齐方向。"
+        )
+    challenge = selected.self_challenge.model_copy(update={
+        "missing_evidence": missing,
+        "what_would_change_my_mind": (
+            "source_mechanism_query 产生有效源码调用/机制路径后，可将当前 line 根因细化为完整源码机制根因。"
+        ),
+        "why_this_claim": claim,
+    })
+    promoted = selected.model_copy(update={
+        "role": "primary",
+        "claim": claim,
+        "status": "supported",
+        "claim_type": "direct_root_cause",
+        "causal_status": "supported",
+        "decision": "conclude",
+        "conclusion_eligible": True,
+        "blocked_probe": "source_mechanism_query",
+        "eligibility_reason": (
+            "运行时 file:line 与 source_snapshot 已 verified；"
+            "source_mechanism_query 已终态失败，因此本阶段正式根因闭合到源码行，"
+            "机制关系保留为后续补证方向。"
+        ),
+        "self_challenge": challenge,
+    })
+    updated_layers: list[AITreeLayer] = []
+    selected_layer_id = ""
+    for layer in tree.layers:
+        updated_nodes = [
+            promoted if node.candidate_id == selected.candidate_id else node
+            for node in _layer_nodes_for_validation(layer)
+        ]
+        if any(node.candidate_id == selected.candidate_id for node in updated_nodes):
+            selected_layer_id = layer.layer_id
+        grouped = {"primary": [], "secondary": [], "rejected": [], "unknown": []}
+        for node in updated_nodes:
+            grouped[node.role].append(node)
+        updated_layers.append(layer.model_copy(update={
+            "primary_causes": grouped["primary"],
+            "secondary_causes": grouped["secondary"],
+            "rejected_causes": grouped["rejected"],
+            "unknown_causes": grouped["unknown"],
+        }))
+    boundary_id = f"boundary_source_mechanism_query_{selected.candidate_id}"
+    emitted_ids = {
+        node.candidate_id
+        for layer in updated_layers
+        for node in _layer_nodes_for_validation(layer)
+    }
+    existing_boundary = next(
+        (
+            node
+            for layer in updated_layers
+            for node in _layer_nodes_for_validation(layer)
+            if (
+                node.depth_kind == "boundary"
+                and node.origin_parent_candidate_id == selected.candidate_id
+                and node.blocked_probe == "source_mechanism_query"
+            )
+        ),
+        None,
+    )
+    if boundary_id not in emitted_ids and existing_boundary is None:
+        boundary_node = AITreeCandidateNode(
+            candidate_id=boundary_id,
+            lineage_id=boundary_id,
+            parent_candidate_ids=[selected.candidate_id],
+            origin_parent_candidate_id=selected.candidate_id,
+            relation="boundary",
+            node_type="stop_boundary",
+            role="unknown",
+            claim="",
+            supported_level="line",
+            status="blocked",
+            claim_type="partial_localization",
+            causal_status="inconclusive",
+            decision="backtrack",
+            depth_kind="boundary",
+            conclusion_eligible=False,
+            stop_reason=(
+                "source_mechanism_query 未形成有效源码调用关系；"
+                "保留为后续机制补齐方向。"
+            ),
+            boundary_message=(
+                "后续补齐 source_mechanism_query，可将当前 verified line "
+                "细化为完整源码机制根因。"
+            ),
+            blocked_probe="source_mechanism_query",
+            self_challenge=AITreeSelfChallenge(
+                missing_evidence=["source_mechanism_query"],
+                what_would_change_my_mind=(
+                    "source_mechanism_query 返回与当前 line 同 revision 的有效调用/机制路径。"
+                ),
+            ),
+        )
+        boundary_layer = AITreeLayer(
+            layer_id=f"session_semiclosed_boundary_{len(updated_layers)}",
+            depth=max((layer.depth for layer in updated_layers), default=0) + 1,
+            generated_by="analyzer_observation",
+            summary=(
+                "源码机制查询失败不否定 verified line；"
+                "该节点只记录后续机制补齐方向。"
+            ),
+            unknown_causes=[boundary_node],
+        )
+        updated_layers.append(boundary_layer)
+        edges = list(tree.probe_edges)
+        edges.append(AITreeProbeEdge(
+            edge_id=f"session_semiclosed_boundary_edge_{selected.candidate_id}",
+            from_layer_id=selected_layer_id or updated_layers[0].layer_id,
+            to_layer_id=boundary_layer.layer_id,
+            from_candidate_ids=[selected.candidate_id],
+            to_candidate_ids=[boundary_id],
+            probe_requests=["source_mechanism_query"],
+            probe_results=_probe_results_for_requests(["source_mechanism_query"], probes),
+            status="failed",
+            evidence_refs=selected.evidence_refs,
+            reuse_status="not_checked",
+            effect="no_change",
+            transition_type="boundary",
+            reason=(
+                "source_mechanism_query 失败；当前 verified line 仍保留为阶段性正式根因。"
+            ),
+        ))
+    else:
+        edges = list(tree.probe_edges)
+    return tree.model_copy(update={
+        "layers": updated_layers,
+        "probe_edges": edges,
+        "semi_closed_root_cause_candidate_ids": [selected.candidate_id],
+        "semi_closed_root_cause_reason": (
+            "verified line 已形成阶段性正式根因；source_mechanism_query 失败，"
+            "后续仅用于补齐源码机制关系。"
+        ),
+        "final_primary_causes": [selected.candidate_id],
+        "final_secondary_causes": [
+            candidate_id
+            for candidate_id in tree.final_secondary_causes
+            if candidate_id != selected.candidate_id
+        ],
+        "stop_reason": (
+            "当前正式根因闭合到 verified source line；"
+            "source_mechanism_query 失败，保留为后续机制补齐方向。"
+        ),
+        "retained_candidate_id": selected.candidate_id,
+    })
 
 
 def _registered_probe_families(review: dict[str, Any], manifest: dict[str, Any]) -> list[str]:
@@ -6274,7 +6548,6 @@ def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str,
     if is_memory:
         completed = set(session.get("completed_depth_evidence_gaps") or [])
         probe_status = session.get("probe_evidence_status") if isinstance(session.get("probe_evidence_status"), dict) else {}
-        attempt_counts = session.get("probe_attempt_counts") if isinstance(session.get("probe_attempt_counts"), dict) else {}
         terminal_depth_statuses = {
             "valid", "partial", "blocked", "failed", "unavailable",
             "invalid", "empty_window", "unparseable", "target_exit",
@@ -6304,20 +6577,48 @@ def _assessment_followup_requests(assessment: dict[str, Any], session: dict[str,
             and int(anchor.get("line") or 0) > 0
         )
         mechanism_status = str(probe_status.get("source_mechanism_query") or "").lower()
-        mechanism_attempts = int(attempt_counts.get("source_mechanism_query") or 0)
+        probe_task_statuses = (
+            session.get("probe_task_statuses")
+            if isinstance(session.get("probe_task_statuses"), dict)
+            else {}
+        )
+        mechanism_task_status = str(
+            probe_task_statuses.get("source_mechanism_query") or ""
+        ).upper()
+        mechanism_failed = (
+            mechanism_task_status in {
+                "FAILED",
+                "BLOCKED",
+                "UNAVAILABLE",
+                "INVALID",
+                "REJECTED",
+                "REJECTED_POLICY",
+                "SKIPPED",
+            }
+            or mechanism_status in {
+                "partial",
+                "blocked",
+                "failed",
+                "unavailable",
+                "invalid",
+                "empty_window",
+                "unparseable",
+                "target_exit",
+                "timeout",
+                "timed_out",
+            }
+        )
         if (
             source_ready
             and "source_mechanism_query" not in completed
-            and mechanism_status not in {"unavailable", "invalid"}
-            and mechanism_attempts < MAX_SOURCE_MECHANISM_ATTEMPTS
+            and not mechanism_failed
+            and not mechanism_task_status
+            and not mechanism_status
         ):
             return ["source_mechanism_query"]
         if (
             source_ready
-            and (
-                probe_status.get("source_mechanism_query") == "valid"
-                or mechanism_attempts >= MAX_SOURCE_MECHANISM_ATTEMPTS
-            )
+            and mechanism_status == "valid"
             and "python_heap_reference" not in completed
             and not probe_status.get("python_heap_reference")
         ):
@@ -10743,16 +11044,11 @@ def _max_followup_rounds(session: dict[str, Any]) -> int:
 def _can_schedule_evidence_attempt(evidence_gap: str, matching_probes: list[dict[str, Any]]) -> bool:
     if not matching_probes:
         return True
-    if evidence_gap != "source_mechanism_query" or len(matching_probes) >= MAX_SOURCE_MECHANISM_ATTEMPTS:
-        return False
-    terminal_statuses = {"COMPLETED", "FAILED", "UNAVAILABLE", "INVALID", "SKIPPED"}
-    if any(str(probe.get("status") or "") not in terminal_statuses for probe in matching_probes):
-        return False
-    return not any(
-        str(probe.get("status") or "") == "COMPLETED"
-        and str(probe.get("evidence_status") or "") == "valid"
-        for probe in matching_probes
-    )
+    # Follow-up tasks are evidence attempts, not retryable jobs. A failed,
+    # partial, blocked or empty result becomes a persisted boundary and the
+    # diagnosis retains the verified parent line instead of dispatching another
+    # query with a different prompt.
+    return False
 
 
 def _guarded_query_spec_hash(probe_input: dict[str, Any]) -> str:
@@ -10818,6 +11114,30 @@ def _filter_pending_evidence_requests(
         elif request in depth_completed:
             continue
         if statuses and all(status in terminal_skip for status in statuses):
+            continue
+        if request == "source_mechanism_query" and (
+            any(status in {
+                "FAILED",
+                "BLOCKED",
+                "TIMED_OUT",
+                "TIMEOUT",
+                "UNAVAILABLE",
+                "INVALID",
+                "REJECTED",
+                "REJECTED_POLICY",
+                "SKIPPED",
+            } for status in statuses)
+            or any(evidence in {
+                "partial",
+                "blocked",
+                "failed",
+                "empty_window",
+                "unparseable",
+                "target_exit",
+                "timeout",
+                "timed_out",
+            } for _, evidence in status_items)
+        ):
             continue
         if request not in result:
             result.append(request)
