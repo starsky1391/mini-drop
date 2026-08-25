@@ -3381,6 +3381,7 @@ class DiagnosisOrchestrator:
                 max_parallel_probes=5,
                 max_medium_risk_probes=5,
                 max_model_calls=30,
+                max_total_probe_cpu_seconds=600,
             )
         if profile == "staging":
             return DiagnosisBudget(max_hosts=8, max_service_instances=15, max_parallel_probes=4, max_medium_risk_probes=2)
@@ -3394,7 +3395,10 @@ class DiagnosisOrchestrator:
         requested_values = requested.model_dump()
         cap_values = policy_cap.model_dump()
         return DiagnosisBudget(**{
-            key: min(int(requested_values[key]), int(cap_values[key]))
+            key: min(
+                int(requested_values[key]) if key in requested.model_fields_set else int(cap_values[key]),
+                int(cap_values[key]),
+            )
             for key in cap_values
         })
 

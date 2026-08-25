@@ -5344,6 +5344,13 @@ def test_development_budget_accepts_requested_model_calls():
     budget = diagnosis_orchestrator._effective_budget("development", requested)
 
     assert budget.max_model_calls == 12
+    assert budget.max_total_probe_cpu_seconds == 600
+
+    capped = diagnosis_orchestrator._effective_budget(
+        "development",
+        orchestrator_module.DiagnosisBudget(max_total_probe_cpu_seconds=180),
+    )
+    assert capped.max_total_probe_cpu_seconds == 180
 
 
 def test_memray_backed_python_memory_scope_starts_with_metrics_only():
