@@ -17,11 +17,11 @@ def load_module(name: str, filename: str):
     return module
 
 
-def test_celery_runner_defaults_use_400_second_workload_and_600_second_fallback():
+def test_celery_runner_defaults_use_400_second_workload_and_1200_second_fallback():
     runner = load_module("celery_case_defaults", "run_case_vm.py")
 
     assert runner.DEFAULT_CASE_DURATION_SEC == 400
-    assert runner.DEFAULT_DIAGNOSIS_TIMEOUT_SEC == 600
+    assert runner.DEFAULT_DIAGNOSIS_TIMEOUT_SEC == 1200
 
 
 class FakeRemote:

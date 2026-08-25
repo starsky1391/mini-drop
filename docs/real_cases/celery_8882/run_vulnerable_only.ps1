@@ -1,6 +1,6 @@
 param(
     [int]$DurationSec = 400,
-    [int]$DiagnosisTimeoutSec = 600,
+    [int]$DiagnosisTimeoutSec = 1200,
     [string]$OutputRoot = "reports/eval/real-open-source"
 )
 

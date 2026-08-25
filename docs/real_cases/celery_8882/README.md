@@ -2,7 +2,7 @@
 
 The normal run executes the real Celery project at the pre-fix revision for a
 400 second vulnerable-only workload window. The runner waits for the diagnosis
-release signal and uses a 600 second diagnosis timeout only as a fallback. The fixed revision is an explicit
+release signal and uses a 1200 second diagnosis timeout only as a fallback. The fixed revision is an explicit
 offline control replay and is not part of routine real-case runs.
 The diagnosis input must not contain the issue number, pull request number, or
 the hidden oracle. The oracle is only for offline evaluation.
@@ -48,7 +48,7 @@ worker host's `/home` mount. The image also installs from that exact checkout.
 ## Run
 
 For normal repeated vulnerable-only VM runs, use the one-shot entrypoint. It
-uses the standard 400 second workload window, with a 600 second diagnosis
+uses the standard 400 second workload window, with a 1200 second diagnosis
 fallback, and creates a timestamped report directory:
 
 ```powershell
