@@ -97,6 +97,14 @@ MAX_FOLLOWUP_REQUESTS_PER_ROUND = 3
 ACTIVE_TASK_STATUSES = {"PENDING", "RUNNING", "UPLOADING", "ANALYZING"}
 TERMINAL_TASK_STATUSES = {"DONE", "FAILED"}
 RUNNER_OPEN_PROBE_STATUSES = {"PLANNED", "WAITING_APPROVAL", "APPROVED", "SCHEDULED", "RUNNING"}
+FOLLOWUP_SLOT_CONSUMING_STATUSES = {
+    "PLANNED",
+    "WAITING_APPROVAL",
+    "APPROVED",
+    "SCHEDULED",
+    "RUNNING",
+    "COMPLETED",
+}
 STRUCTURED_ARTIFACT_TYPES = {
     "top_json",
     "flamegraph_json",
@@ -2293,6 +2301,7 @@ class DiagnosisOrchestrator:
             for probe in self.store.list_probes(diagnosis_id)
             if (probe.get("parameters") or {}).get("budget_phase") == "followup"
             and int((probe.get("parameters") or {}).get("followup_round") or 0) == followup_round
+            and str(probe.get("status") or "").upper() in FOLLOWUP_SLOT_CONSUMING_STATUSES
         )
         remaining_slots = max(0, MAX_FOLLOWUP_REQUESTS_PER_ROUND - round_created)
         created = 0
@@ -2355,6 +2364,21 @@ class DiagnosisOrchestrator:
                 target,
                 diagnosis_id,
             )
+            if evidence_gap == "dependency_check" and collector_parameters.get(
+                "missing_dependency_targets"
+            ):
+                self.store.record_event(
+                    diagnosis_id,
+                    "followup_probe_skipped",
+                    {
+                        "evidence_gap": evidence_gap,
+                        "probe_id": probe_id,
+                        "target_instance_id": target_key,
+                        "reason": "missing_dependency_targets",
+                        "slot_consumed": False,
+                    },
+                )
+                continue
             guarded_probe_input = (
                 (probe_inputs or {}).get(evidence_gap)
                 if isinstance((probe_inputs or {}).get(evidence_gap), dict)
@@ -2607,6 +2631,13 @@ class DiagnosisOrchestrator:
             if definition is None:
                 continue
             target = self._select_followup_target(session, request, parent_target)
+            if request == "dependency_check" and self._collector_probe_parameters(
+                probe_id,
+                session.get("target_scope", {}),
+                target,
+                diagnosis_id,
+            ).get("missing_dependency_targets"):
+                continue
             agent = self.repo.agents.get(target.get("agent_id"))
             if agent and status_value(agent.status) == "ONLINE" and definition.runner_task_kind in set(agent.capabilities or []):
                 return True

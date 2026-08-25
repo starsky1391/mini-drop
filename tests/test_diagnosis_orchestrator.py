@@ -2947,7 +2947,11 @@ class TestDiagnosisSessionAPI:
 
         detail = client.get(f"/api/v1/diagnoses/{data['diagnosis_id']}").json()["data"]
         assessment = detail["latest_conclusion"]["cluster_assessment"]
-        assert detail["status"] in {"COLLECTING", "WAITING_APPROVAL"}
+        assert detail["status"] in {
+            "COLLECTING",
+            "WAITING_APPROVAL",
+            "INSUFFICIENT_EVIDENCE",
+        }
         assert assessment["classification"] == "downstream_dependency"
         assert "service-b" in detail["target_scope"]["downstream_service_ids"]
         assert any(
@@ -3001,6 +3005,148 @@ def test_ai_tree_evidence_request_maps_to_followup_probe_once(client: TestClient
     ]
     assert created + second_created <= 3
     assert len(followups) <= 3
+
+
+def test_failed_followup_does_not_consume_next_slot(client: TestClient):
+    repo.register_agent(
+        "a1",
+        "host-1",
+        "10.0.0.1",
+        capabilities=[
+            *repo.agents["a1"].capabilities,
+            "runtime_control_history",
+            "pyspy",
+        ],
+    )
+    payload = _payload()
+    payload["budget_profile"] = "development"
+    payload["auto_execute_policy"] = "all_registered"
+    data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    parent_task = repo.tasks[data["child_task_ids"][0]]
+    target = data["target_scope"]["instances"][0]
+    for index, (evidence_gap, status) in enumerate([
+        ("baseline_window_profile", "COMPLETED"),
+        ("off_cpu_wait_profile", "RUNNING"),
+        ("log_scan", "FAILED"),
+    ]):
+        definition = orchestrator_module.get_probe(
+            orchestrator_module.evidence_gap_to_probe_id(evidence_gap)
+        )
+        diagnosis_orchestrator.store.add_probe({
+            "step_id": f"step-existing-{index}",
+            "diagnosis_id": diagnosis_id,
+            "probe_id": definition.probe_id,
+            "target": target,
+            "parameters": {
+                "evidence_gap": evidence_gap,
+                "budget_phase": "followup",
+                "followup_round": 0,
+            },
+            "reason": "existing follow-up",
+            "risk_level": definition.risk_level,
+            "requires_approval": False,
+            "status": status,
+        })
+
+    assert diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["log_scan"],
+        parent_task,
+    ) == 0
+    created_after_failure = diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["python_runtime_profile"],
+        parent_task,
+    )
+
+    assert created_after_failure == 1
+    assert any(
+        (probe.get("parameters") or {}).get("evidence_gap") == "python_runtime_profile"
+        and probe["status"] != "FAILED"
+        for probe in diagnosis_orchestrator.store.list_probes(diagnosis_id)
+    )
+
+
+@pytest.mark.parametrize("evidence_status", ["empty_window", "unparseable"])
+def test_followup_empty_or_unparseable_result_consumes_slot(
+    client: TestClient,
+    evidence_status: str,
+):
+    data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    parent_task = repo.tasks[data["child_task_ids"][0]]
+    target = data["target_scope"]["instances"][0]
+    for index in range(3):
+        definition = orchestrator_module.get_probe("process_baseline_window")
+        diagnosis_orchestrator.store.add_probe({
+            "step_id": f"step-empty-{index}",
+            "diagnosis_id": diagnosis_id,
+            "probe_id": definition.probe_id,
+            "target": target,
+            "parameters": {
+                "evidence_gap": "baseline_window_profile",
+                "budget_phase": "followup",
+                "followup_round": 0,
+            },
+            "reason": "existing follow-up",
+            "risk_level": definition.risk_level,
+            "requires_approval": False,
+            "status": "COMPLETED",
+            "evidence_status": evidence_status,
+        })
+
+    assert diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["python_runtime_profile"],
+        parent_task,
+    ) == 0
+
+
+def test_dependency_check_without_targets_is_skipped_without_probe_or_slot(client: TestClient):
+    repo.register_agent(
+        "a1",
+        "host-1",
+        "10.0.0.1",
+        capabilities=[
+            *repo.agents["a1"].capabilities,
+            "dependency_check",
+            "log_scan",
+        ],
+    )
+    data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    parent_task = repo.tasks[data["child_task_ids"][0]]
+
+    created = diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["dependency_check", "log_scan"],
+        parent_task,
+    )
+
+    probes = diagnosis_orchestrator.store.list_probes(diagnosis_id)
+    followups = [
+        probe
+        for probe in probes
+        if (probe.get("parameters") or {}).get("budget_phase") == "followup"
+    ]
+    assert created == 1
+    assert all(
+        (probe.get("parameters") or {}).get("evidence_gap") != "dependency_check"
+        for probe in followups
+    )
+    assert any(
+        event["event_type"] == "followup_probe_skipped"
+        and event["payload"]["reason"] == "missing_dependency_targets"
+        and event["payload"]["slot_consumed"] is False
+        for event in diagnosis_orchestrator.store.get_detail(diagnosis_id)["events"]
+    )
+    assert diagnosis_orchestrator._has_schedulable_followup_work(
+        diagnosis_id,
+        ["dependency_check"],
+        probes,
+        parent_task,
+    ) is False
 
 
 def test_ai_tree_stops_creating_followups_after_five_rounds(client: TestClient):
@@ -3133,7 +3279,7 @@ def test_source_snapshot_uses_bridge_slot_after_followup_capacity_is_full(client
             "source_snapshot",
             "baseline_window_profile",
             "off_cpu_wait_profile",
-            "dependency_check",
+            "pyspy",
         ],
     )
     payload = _payload("service-a 请求变慢，检查 Python 源码行")
@@ -3156,7 +3302,7 @@ def test_source_snapshot_uses_bridge_slot_after_followup_capacity_is_full(client
 
     created = diagnosis_orchestrator._plan_followup_requests(
         diagnosis_id,
-        ["baseline_window_profile", "off_cpu_wait_profile", "dependency_check"],
+        ["baseline_window_profile", "off_cpu_wait_profile", "python_runtime_profile"],
         parent_task,
     )
     assert created == 3
