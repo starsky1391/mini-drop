@@ -3803,12 +3803,20 @@ def test_python_scenario_router_sequences_adapter_then_source_snapshot():
         "completed_depth_evidence_gaps": ["python_exception_profile"],
         "probe_evidence_status": {"python_exception_profile": "valid"},
     }
-    assert orchestrator_module._assessment_followup_requests(assessment, with_exception) == ["source_snapshot"]
+    assert orchestrator_module._assessment_followup_requests(assessment, with_exception) == ["python_runtime_profile"]
 
     terminal = {
         **with_exception,
-        "completed_depth_evidence_gaps": ["python_exception_profile", "source_snapshot"],
-        "probe_evidence_status": {"python_exception_profile": "valid", "source_snapshot": "blocked"},
+        "completed_depth_evidence_gaps": [
+            "python_exception_profile",
+            "python_runtime_profile",
+            "source_snapshot",
+        ],
+        "probe_evidence_status": {
+            "python_exception_profile": "valid",
+            "python_runtime_profile": "empty_window",
+            "source_snapshot": "blocked",
+        },
     }
     assert orchestrator_module._assessment_followup_requests(assessment, terminal) == []
 
@@ -3893,11 +3901,69 @@ def test_python_scenario_router_covers_cpu_endpoint_and_io_orders():
     assert orchestrator_module._assessment_followup_requests(
         {"classification": "python_endpoint_latency", "supported_level": "call_path"},
         endpoint_after_trace,
-    ) == ["source_snapshot"]
+    ) == ["python_runtime_profile"]
 
     dependency_assessment = {"classification": "downstream_dependency", "supported_level": "service"}
     dependency_session = {"normalized_intent": {"symptom": "latency_increase"}, **source_session}
     assert "dependency_check" in orchestrator_module._assessment_followup_requests(dependency_assessment, dependency_session)
+
+
+@pytest.mark.parametrize(
+    ("token_text", "scenario_probe"),
+    [
+        ("python_endpoint_latency", "trace_endpoint_profile"),
+        ("python_io_blocking", "off_cpu_wait_profile"),
+        ("exception_storm", "python_exception_profile"),
+        ("queue_backlog", "python_queue_profile"),
+        ("pool_exhaustion", "python_pool_profile"),
+        ("retry_timeout", "python_retry_timeout_profile"),
+        ("cache_growth", "python_cache_profile"),
+        ("input_slow_path", "python_input_profile"),
+        ("lock_contention", "off_cpu_wait_profile"),
+    ],
+)
+def test_python_scenario_plans_put_runtime_line_before_source_snapshot(
+    token_text,
+    scenario_probe,
+):
+    plan = orchestrator_module._python_scenario_plan(token_text)
+
+    assert plan is not None
+    assert scenario_probe in plan
+    assert plan.index("python_runtime_profile") < plan.index("source_snapshot")
+
+
+def test_python_scenario_followup_requires_runtime_line_before_source_snapshot():
+    source_context = {
+        "source_paths": ["/srv/app"],
+        "repo_revision": "rev-1",
+    }
+    assessment = {"classification": "python_retry_timeout", "supported_level": "call_path"}
+    session = {
+        "normalized_intent": {"symptom": "retry_timeout"},
+        "target_scope": {"source_context": source_context},
+        "completed_depth_evidence_gaps": ["python_retry_timeout_profile"],
+        "probe_evidence_status": {"python_retry_timeout_profile": "valid"},
+    }
+
+    assert orchestrator_module._assessment_followup_requests(assessment, session) == [
+        "python_runtime_profile"
+    ]
+
+    with_runtime = {
+        **session,
+        "completed_depth_evidence_gaps": [
+            "python_retry_timeout_profile",
+            "python_runtime_profile",
+        ],
+        "probe_evidence_status": {
+            "python_retry_timeout_profile": "valid",
+            "python_runtime_profile": "empty_window",
+        },
+    }
+    assert orchestrator_module._assessment_followup_requests(assessment, with_runtime) == [
+        "source_snapshot"
+    ]
 
 
 def test_followup_uses_active_ai_candidate_level_for_source_snapshot():

@@ -6928,23 +6928,23 @@ def _python_scenario_plan(token_text: str) -> list[str] | None:
     if any(token in token_text for token in ("python_cpu_hotspot", "self_code_regression", "cpu_saturation", "cpu hotspot")):
         return ["python_runtime_profile", "source_snapshot", "baseline_window_profile"]
     if any(token in token_text for token in ("python_endpoint_latency", "endpoint latency", "latency_increase", "request latency")):
-        return ["trace_endpoint_profile", "dependency_check", "log_scan", "source_snapshot"]
+        return ["trace_endpoint_profile", "dependency_check", "log_scan", "python_runtime_profile", "source_snapshot"]
     if any(token in token_text for token in ("python_io_blocking", "io_blocking", "io blocking", "blocking call", "io_degradation")):
-        return ["off_cpu_wait_profile", "dependency_check", "source_snapshot"]
+        return ["off_cpu_wait_profile", "dependency_check", "python_runtime_profile", "source_snapshot"]
     if any(token in token_text for token in ("exception_storm", "exception storm", "traceback", "error storm")):
-        return ["python_exception_profile", "source_snapshot"]
+        return ["python_exception_profile", "python_runtime_profile", "source_snapshot"]
     if any(token in token_text for token in ("queue_backlog", "queue backlog", "celery", "rq", "worker backlog")):
-        return ["python_queue_profile", "source_snapshot"]
+        return ["python_queue_profile", "python_runtime_profile", "source_snapshot"]
     if any(token in token_text for token in ("pool_exhaustion", "pool exhaustion", "connection pool", "queuepool")):
-        return ["python_pool_profile", "source_snapshot"]
+        return ["python_pool_profile", "python_runtime_profile", "source_snapshot"]
     if any(token in token_text for token in ("retry_timeout", "retry timeout", "retry storm", "timeout config")):
-        return ["python_retry_timeout_profile", "source_snapshot"]
+        return ["python_retry_timeout_profile", "python_runtime_profile", "source_snapshot"]
     if any(token in token_text for token in ("cache_growth", "cache growth", "cache key", "cache grows", "cachedsession", "file cache")):
-        return ["python_cache_profile", "source_snapshot"]
+        return ["python_cache_profile", "python_runtime_profile", "source_snapshot"]
     if any(token in token_text for token in ("input_slow_path", "input slow", "groupby", "categorical", "cardinality", "input-triggered")):
         return ["python_input_profile", "python_runtime_profile", "source_snapshot"]
-    if any(token in token_text for token in ("lock_wait", "lock wait", "lock contention", "runtime_contention")):
-        return ["off_cpu_wait_profile", "python_lock_wait_profile", "source_snapshot"]
+    if any(token in token_text for token in ("lock_wait", "lock wait", "lock_contention", "lock contention", "runtime_contention")):
+        return ["off_cpu_wait_profile", "python_lock_wait_profile", "python_runtime_profile", "source_snapshot"]
     return None
 
 
