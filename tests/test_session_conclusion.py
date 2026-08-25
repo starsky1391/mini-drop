@@ -163,6 +163,59 @@ def test_verified_line_localization_reports_mechanism_and_source_relation_gaps()
     assert qualification["eligible_candidate_ids"] == []
 
 
+def test_runtime_observed_line_remains_line_in_session_qualification():
+    qualification = build_session_qualification(
+        [],
+        {
+            "line_anchor_eligibility": {
+                "status": "runtime_observed",
+                "line_localization_status": "runtime_observed",
+                "source_verification_status": "not_started",
+                "file": "worker.py",
+                "line": 42,
+            },
+            "layers": [{
+                "unknown_causes": [{
+                    "candidate_id": "coarse",
+                    "generated_by": "analyzer_observation",
+                    "relation": "root",
+                    "node_type": "cluster_root",
+                    "claim": "Python 运行时热点",
+                    "supported_level": "process",
+                    "status": "unknown",
+                }],
+            }, {
+                "unknown_causes": [{
+                    "candidate_id": "runtime-line",
+                    "generated_by": "analyzer_observation",
+                    "relation": "refinement",
+                    "node_type": "line_anchor",
+                    "depth_kind": "base",
+                    "parent_candidate_ids": ["coarse"],
+                    "origin_parent_candidate_id": "coarse",
+                    "claim": "worker.py:42 已由工业采集器观察到。",
+                    "supported_level": "line",
+                    "status": "missing_evidence",
+                    "claim_type": "partial_localization",
+                    "causal_status": "unproven",
+                    "decision": "continue_probe",
+                    "evidence_refs": ["ev-runtime"],
+                }],
+            }],
+        },
+        base={"evidence_refs": ["ev-runtime"]},
+        retained_conclusion={
+            "candidate_id": "runtime-line",
+            "claim": "worker.py:42 已由工业采集器观察到。",
+            "supported_level": "line",
+        },
+    )
+
+    assert qualification["qualification"] == "partial_localization"
+    assert qualification["supported_level"] == "line"
+    assert qualification["eligible_candidate_ids"] == []
+
+
 def test_ai_gate_failure_marks_missing_window_and_parent_as_failed_gates():
     tree = {
         "layers": [{

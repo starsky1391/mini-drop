@@ -236,6 +236,29 @@ def test_line_anchor_eligibility_reports_structured_failure_reasons():
     assert mismatch["failure_reasons"] == ["runtime_source_match_failed"]
 
 
+def test_line_anchor_eligibility_keeps_runtime_line_before_source_verification():
+    observed = orchestrator_module._line_anchor_eligibility_summary(
+        {
+            "file": "/opt/project/worker.py",
+            "line": 42,
+            "runtime_line_candidates": [{
+                "file": "/opt/project/worker.py",
+                "line": 42,
+                "symbol": "process_item",
+                "evidence_ref": "ev-runtime",
+            }],
+        },
+        has_verified_line_anchor=False,
+        source_snapshot_hashes=[],
+        origin_parent_candidate_id="coarse-root",
+    )
+
+    assert observed["status"] == "runtime_observed"
+    assert observed["line_localization_status"] == "runtime_observed"
+    assert observed["source_verification_status"] == "not_started"
+    assert "source_context_invalid" in observed["failure_reasons"]
+
+
 def test_orchestrator_never_merges_python_scenario_gate_clusters():
     ai_cluster = RootCauseCluster(
         cluster_id="rc-ai",
@@ -4423,6 +4446,125 @@ def test_source_snapshot_without_ast_verification_does_not_promote_line():
     assert result.get("line_localization_status") != "verified"
 
 
+@pytest.mark.parametrize(
+    ("snapshot", "expected_status"),
+    [
+        (
+            {
+                "source_context_hash": "sha256:revision",
+                "revision": "old",
+                "evidence_validity": {
+                    "evidence_status": "blocked",
+                    "reason": "source_revision_mismatch",
+                    "detail": "revision changed",
+                },
+            },
+            "revision_mismatch",
+        ),
+        (
+            {
+                "source_context_hash": "sha256:syntax",
+                "revision": "abc123",
+                "evidence_validity": {
+                    "evidence_status": "unparseable",
+                    "reason": "python_ast_unparseable",
+                    "detail": "syntax error",
+                },
+                "source_syntax": [{
+                    "source_syntax_status": "unparseable",
+                    "evidence_status": "unparseable",
+                }],
+            },
+            "unparseable",
+        ),
+        (
+            {
+                "source_context_hash": "sha256:file",
+                "revision": "abc123",
+                "source_verification_status": "file_missing",
+                "evidence_validity": {
+                    "evidence_status": "blocked",
+                    "reason": "source_root_missing",
+                    "detail": "源码根目录不存在",
+                },
+            },
+            "file_missing",
+        ),
+        (
+            {
+                "source_context_hash": "sha256:line",
+                "revision": "abc123",
+                "evidence_validity": {"evidence_status": "partial"},
+                "snippets": [{
+                    "file": "worker.py",
+                    "focus_line": 3,
+                    "lines": [{"line": 2, "text": "pass"}],
+                }],
+                "verified_source_lines": [],
+            },
+            "line_out_of_range",
+        ),
+    ],
+)
+def test_runtime_line_survives_each_source_verification_failure(snapshot, expected_status):
+    anchor = {
+        "supported_level": "function",
+        "file": "worker.py",
+        "line": 3,
+        "function": "process_item",
+        "runtime_line_candidates": [{
+            "file": "worker.py",
+            "line": 3,
+            "symbol": "process_item",
+            "runtime_verified": True,
+        }],
+    }
+
+    checked = orchestrator_module._verified_source_anchor(
+        anchor,
+        [{"source_snapshot": snapshot}],
+    )
+    promoted = orchestrator_module._promote_runtime_line_anchor(checked)
+
+    assert promoted["supported_level"] == "line"
+    assert promoted["line_localization_status"] == "runtime_observed"
+    assert promoted["source_verification_status"] == expected_status
+    assert promoted["root_claim_allowed"] is False
+
+
+def test_runtime_line_candidate_priority_is_stable_and_prefers_verified_business_frame():
+    candidates = [
+        {
+            "file": "/usr/local/lib/python3.11/threading.py",
+            "line": 982,
+            "symbol": "run",
+            "runtime_verified": False,
+            "samples": 200,
+            "percent": 80.0,
+        },
+        {
+            "file": "/case/tasks.py",
+            "line": 79,
+            "symbol": "handle_request",
+            "runtime_verified": True,
+            "samples": 4,
+            "percent": 2.0,
+        },
+    ]
+
+    forward = orchestrator_module._promote_runtime_line_anchor({
+        "supported_level": "function",
+        "runtime_line_candidates": candidates,
+    })
+    reverse = orchestrator_module._promote_runtime_line_anchor({
+        "supported_level": "function",
+        "runtime_line_candidates": list(reversed(candidates)),
+    })
+
+    assert (forward["file"], forward["line"]) == ("/case/tasks.py", 79)
+    assert (reverse["file"], reverse["line"]) == ("/case/tasks.py", 79)
+
+
 def test_source_snapshot_ast_span_matches_line_inside_multiline_statement():
     snapshot = {
         "verified_source_lines": [{
@@ -4488,6 +4630,54 @@ def test_session_tree_promotes_verified_source_anchor_to_line_before_causal_qual
         if node.supported_level == "line"
     ]
     assert line_nodes
+    assert line_nodes[0].conclusion_eligible is False
+
+
+def test_session_tree_keeps_runtime_line_when_source_snapshot_is_not_ready():
+    tree = orchestrator_module._build_session_controlled_ai_tree(
+        diagnosis_id="diag-runtime-line-before-source",
+        cluster_assessment={
+            "classification": "python_cpu_hotspot",
+            "summary": "运行时 profile 已提供 Python 源码行，源码验证尚未完成。",
+            "supported_level": "call_path",
+            "max_supported_level": "call_path",
+            "confidence": 0.55,
+            "evidence_refs": ["ev-runtime"],
+            "primary_anchor": {
+                "supported_level": "call_path",
+                "file": "/opt/project/worker.py",
+                "line": 42,
+                "function": "process_item",
+                "runtime_line_candidates": [{
+                    "file": "/opt/project/worker.py",
+                    "line": 42,
+                    "symbol": "process_item",
+                    "evidence_ref": "ev-runtime",
+                }],
+                "evidence_refs": ["ev-runtime"],
+            },
+            "conclusion_eligible": False,
+        },
+        candidates=[],
+        followup_requests=["source_snapshot"],
+        probes=[],
+        child_trees=[],
+        source_snapshot_hashes=[],
+    )
+
+    assert tree.final_supported_level == "line"
+    assert tree.line_anchor_eligibility["status"] == "runtime_observed"
+    assert tree.line_anchor_eligibility["line_localization_status"] == "runtime_observed"
+    line_nodes = [
+        node
+        for layer in tree.layers
+        for node in orchestrator_module._layer_nodes_for_validation(layer)
+        if node.node_type == "line_anchor"
+    ]
+    assert line_nodes
+    assert line_nodes[0].supported_level == "line"
+    assert line_nodes[0].line_localization_status == "runtime_observed"
+    assert line_nodes[0].source_verification_status == "not_started"
     assert line_nodes[0].conclusion_eligible is False
 
 
@@ -6525,8 +6715,15 @@ def test_mechanism_anchor_only_closes_same_candidate_codeql_and_pyheap_paths():
 
     assert mismatched["root_claim_allowed"] is False
     assert mismatched["runtime_reference_paths"] == []
+    assert mismatched["source_mechanism_status"] == "verified"
+    assert mismatched["runtime_reference_status"] == "failed"
+    assert mismatched["retention_chain_verified"] is False
+    assert mismatched["candidate_id_alignment"]["status"] == "failed"
     assert matched["root_claim_allowed"] is True
     assert matched["runtime_reference_paths"][0]["candidate_id"] == "ai_proposal_bound_method"
+    assert matched["runtime_reference_status"] == "verified"
+    assert matched["retention_chain_verified"] is True
+    assert matched["candidate_id_alignment"]["status"] == "verified"
 
 
 def test_werkzeug_1521_fixture_closes_bound_method_branch_and_greys_defaults():

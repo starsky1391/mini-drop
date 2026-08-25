@@ -395,6 +395,27 @@ class AITreeCandidateNode(BaseModel):
     mechanism: str = ""
     target: str = ""
     line_origin: str = ""
+    line_localization_status: Literal[
+        "",
+        "runtime_observed",
+        "verified",
+        "source_hint_only",
+        "blocked",
+    ] = ""
+    source_verification_status: Literal[
+        "",
+        "not_started",
+        "pending",
+        "verified",
+        "failed",
+        "blocked",
+        "unparseable",
+        "revision_mismatch",
+        "file_missing",
+        "line_out_of_range",
+        "symbol_mismatch",
+    ] = ""
+    source_verification_reason: str = ""
     primitive_kind: Optional[Literal[
         "wait_primitive",
         "scheduler_primitive",

@@ -27,20 +27,52 @@ class SourceSnapshotCollector:
         output_dir.mkdir(parents=True, exist_ok=True)
         source_root = self._map_host_path(Path(str(task.options.get("source_root") or "")).resolve())
         if not self._allowed(source_root):
-            return self._result(output_dir, False, "source_root_not_allowed", "路径不在配置的源码根目录", {})
+            return self._result(
+                output_dir,
+                False,
+                "source_root_not_allowed",
+                "路径不在配置的源码根目录",
+                {},
+                evidence_status="blocked",
+                source_verification_status="blocked",
+            )
         if not source_root.is_dir():
-            return self._result(output_dir, False, "source_root_missing", "源码根目录不存在", {})
+            return self._result(
+                output_dir,
+                False,
+                "source_root_missing",
+                "源码根目录不存在",
+                {},
+                evidence_status="blocked",
+                source_verification_status="file_missing",
+            )
         git = shutil.which("git")
         ctags = shutil.which("ctags")
         if not git:
-            return self._result(output_dir, False, "source_tools_missing", "Git 命令不可用", {})
+            return self._result(
+                output_dir,
+                False,
+                "source_tools_missing",
+                "Git 命令不可用",
+                {},
+                evidence_status="blocked",
+                source_verification_status="blocked",
+            )
 
         git_command = [git, "-c", f"safe.directory={source_root}", "-C", str(source_root)]
         revision_result = subprocess.run(
             [*git_command, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10
         )
         if revision_result.returncode != 0:
-            return self._result(output_dir, False, "git_revision_unavailable", revision_result.stderr.strip(), {})
+            return self._result(
+                output_dir,
+                False,
+                "git_revision_unavailable",
+                revision_result.stderr.strip(),
+                {},
+                evidence_status="blocked",
+                source_verification_status="blocked",
+            )
         revision = revision_result.stdout.strip()
         expected = str(task.options.get("source_revision") or "").strip()
         if expected and not revision.startswith(expected) and not expected.startswith(revision):
@@ -50,6 +82,8 @@ class SourceSnapshotCollector:
                 "source_revision_mismatch",
                 f"源码 revision 不匹配: expected={expected}, actual={revision}",
                 {"revision": revision, "expected_revision": expected},
+                evidence_status="blocked",
+                source_verification_status="revision_mismatch",
             )
 
         tracked_result = subprocess.run(
@@ -221,6 +255,31 @@ class SourceSnapshotCollector:
             sort_keys=True,
         )
         source_hash = f"sha256:{hashlib.sha256(hash_input.encode('utf-8')).hexdigest()}"
+        syntax_statuses = {
+            str(item.get("source_syntax_status") or "")
+            for item in source_syntax
+            if isinstance(item, dict)
+        }
+        has_unparseable = "unparseable" in syntax_statuses
+        if verified_source_lines:
+            snapshot_status = "partial" if has_unparseable else "valid"
+        elif has_unparseable:
+            snapshot_status = "unparseable"
+        elif snippets:
+            snapshot_status = "partial"
+        else:
+            snapshot_status = "blocked"
+        snapshot_reason = (
+            "source_context_and_ast_verified"
+            if snapshot_status == "valid"
+            else "source_context_partial_ast_failure"
+            if snapshot_status == "partial" and has_unparseable
+            else "source_context_without_verified_ast_line"
+            if snapshot_status == "partial"
+            else "python_ast_unparseable"
+            if snapshot_status == "unparseable"
+            else "no_readable_line_candidates"
+        )
         return self._result(
             output_dir,
             bool(snippets),
@@ -235,6 +294,12 @@ class SourceSnapshotCollector:
                 "source_reference_hints": source_reference_hints,
                 "source_syntax": source_syntax[:12],
                 "verified_source_lines": verified_source_lines[:64],
+                "source_verification_status": (
+                    "verified"
+                    if snapshot_status == "valid"
+                    else snapshot_status
+                ),
+                "source_verification_reason": snapshot_reason,
                 "ctags_index": symbols,
                 "source_tools": {
                     "git": True,
@@ -242,18 +307,41 @@ class SourceSnapshotCollector:
                     "ctags": bool(ctags),
                 },
             },
+            evidence_status=snapshot_status,
+            evidence_reason=snapshot_reason,
         )
 
-    def _result(self, output_dir: Path, ok: bool, reason: str, detail: str, extra: dict[str, Any]) -> CollectorResult:
+    def _result(
+        self,
+        output_dir: Path,
+        ok: bool,
+        reason: str,
+        detail: str,
+        extra: dict[str, Any],
+        *,
+        evidence_status: str | None = None,
+        evidence_reason: str | None = None,
+        source_verification_status: str | None = None,
+    ) -> CollectorResult:
+        resolved_evidence_status = evidence_status or ("valid" if ok else "blocked")
         payload = {
             "schema_version": "1.0",
             "producer": "git+python.ast",
             **extra,
+            "source_verification_status": (
+                source_verification_status
+                or str(extra.get("source_verification_status") or "")
+                or (
+                    "verified"
+                    if resolved_evidence_status == "valid"
+                    else resolved_evidence_status
+                )
+            ),
             "evidence_validity": {
                 "execution_status": "completed" if ok else "failed",
                 "artifact_status": "produced",
-                "evidence_status": "valid" if ok else "blocked",
-                "reason": reason,
+                "evidence_status": resolved_evidence_status,
+                "reason": evidence_reason or reason,
                 "detail": detail,
             },
         }

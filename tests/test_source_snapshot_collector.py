@@ -110,6 +110,80 @@ def test_source_snapshot_uses_official_ast_when_ctags_is_unavailable(tmp_path, m
     assert payload["verified_source_lines"][0]["source_syntax_valid"] is True
 
 
+def test_source_snapshot_marks_python_syntax_error_unparseable(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    source = repo / "app.py"
+    repo.mkdir(parents=True)
+    source.write_text("def broken(:\n    pass\n", encoding="utf-8")
+    monkeypatch.setenv("MINI_DROP_SOURCE_ROOTS", str(tmp_path))
+    collector = SourceSnapshotCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    task = _task(repo, revision="abc123")
+    task = task.__class__(**{
+        **task.__dict__,
+        "options": {
+            **task.options,
+            "line_candidates": [{"file": "app.py", "line": 1, "symbol": "broken"}],
+        },
+    })
+
+    def fake_run(cmd, **_kwargs):
+        if "rev-parse" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="abc123\n", stderr="")
+        if "ls-files" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"app.py\0", stderr=b"")
+        raise AssertionError(cmd)
+
+    with mock.patch("shutil.which", side_effect=lambda name: "/usr/bin/git" if name == "git" else None), mock.patch(
+        "subprocess.run", side_effect=fake_run
+    ):
+        result = collector.collect(task)
+
+    payload = result.artifacts[0]["metadata"]["data"]
+    assert result.ok is True
+    assert payload["evidence_validity"]["evidence_status"] == "unparseable"
+    assert payload["source_verification_status"] == "unparseable"
+    assert payload["source_verification_reason"] == "python_ast_unparseable"
+    assert payload["source_syntax"][0]["source_syntax_status"] == "unparseable"
+
+
+def test_source_snapshot_marks_context_without_verified_ast_line_partial(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    source = repo / "app.py"
+    repo.mkdir(parents=True)
+    source.write_text("def ok():\n    return 1\n", encoding="utf-8")
+    monkeypatch.setenv("MINI_DROP_SOURCE_ROOTS", str(tmp_path))
+    collector = SourceSnapshotCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    task = _task(repo, revision="abc123")
+    task = task.__class__(**{
+        **task.__dict__,
+        "options": {
+            **task.options,
+            "line_candidates": [{"file": "app.py", "line": 99, "symbol": "ok"}],
+        },
+    })
+
+    def fake_run(cmd, **_kwargs):
+        if "rev-parse" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="abc123\n", stderr="")
+        if "ls-files" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"app.py\0", stderr=b"")
+        raise AssertionError(cmd)
+
+    with mock.patch("shutil.which", side_effect=lambda name: "/usr/bin/git" if name == "git" else None), mock.patch(
+        "subprocess.run", side_effect=fake_run
+    ):
+        result = collector.collect(task)
+
+    payload = result.artifacts[0]["metadata"]["data"]
+    assert result.ok is True
+    assert payload["evidence_validity"]["evidence_status"] == "partial"
+    assert payload["source_verification_status"] == "partial"
+    assert payload["verified_source_lines"] == []
+    assert payload["source_verification_reason"] == "source_context_without_verified_ast_line"
+
+
 def test_source_snapshot_scopes_safe_directory_to_each_git_command(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     source = repo / "werkzeug" / "routing.py"
@@ -257,6 +331,19 @@ def test_source_snapshot_rejects_revision_mismatch(tmp_path, monkeypatch):
     assert result.ok is False
     payload = result.artifacts[0]["metadata"]["data"]
     assert payload["evidence_validity"]["reason"] == "source_revision_mismatch"
+    assert payload["source_verification_status"] == "revision_mismatch"
+
+
+def test_source_snapshot_missing_root_exposes_file_missing_verification_status(tmp_path, monkeypatch):
+    missing = tmp_path / "missing-repo"
+    monkeypatch.setenv("MINI_DROP_SOURCE_ROOTS", str(tmp_path))
+
+    result = SourceSnapshotCollector().collect(_task(missing))
+
+    assert result.ok is False
+    payload = result.artifacts[0]["metadata"]["data"]
+    assert payload["evidence_validity"]["reason"] == "source_root_missing"
+    assert payload["source_verification_status"] == "file_missing"
 
 
 def test_source_snapshot_reports_innermost_python_method_and_keeps_class_analysis_scope(tmp_path, monkeypatch):
