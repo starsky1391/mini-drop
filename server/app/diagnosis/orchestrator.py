@@ -148,6 +148,22 @@ FUNCTION_DEPTH_EVIDENCE_GAPS = {
     "python_cache_profile",
     "python_input_profile",
 }
+SOURCE_SNAPSHOT_UPSTREAM_EVIDENCE_GAPS = {
+    "baseline_window_profile",
+    "cpu_profile",
+    "off_cpu_wait_profile",
+    "trace_endpoint_profile",
+    "python_runtime_profile",
+    "python_heap_profile",
+    "go_heap_profile",
+    "python_lock_wait_profile",
+    "python_exception_profile",
+    "python_queue_profile",
+    "python_pool_profile",
+    "python_retry_timeout_profile",
+    "python_cache_profile",
+    "python_input_profile",
+}
 MEMORY_DEPTH_EVIDENCE_GAPS = {
     "python_heap_profile",
     "go_heap_profile",
@@ -876,10 +892,59 @@ class DiagnosisOrchestrator:
             if (probe.get("parameters") or {}).get("execution_policy") != "all_registered":
                 continue
             definition = get_probe(probe["probe_id"])
+            evidence_gap = str((probe.get("parameters") or {}).get("evidence_gap") or "")
+            if definition is None:
+                continue
+            if evidence_gap == "source_snapshot" and not self._session_line_candidates(diagnosis_id):
+                probes = self.store.list_probes(diagnosis_id)
+                if _source_snapshot_upstream_line_producers_open(probes):
+                    self._record_source_snapshot_disposition(
+                        diagnosis_id,
+                        "deferred",
+                        "waiting_runtime_line_candidates",
+                        probe_id=definition.probe_id,
+                        target_instance_id=str((probe.get("target") or {}).get("instance_id") or ""),
+                    )
+                    continue
+                self.store.update_probe(
+                    probe["step_id"],
+                    status="SKIPPED",
+                    evidence_status="blocked",
+                    evidence_reason="runtime_line_candidate_missing",
+                )
+                self._record_source_snapshot_disposition(
+                    diagnosis_id,
+                    "blocked",
+                    "runtime_line_candidate_missing",
+                    probe_id=definition.probe_id,
+                    target_instance_id=str((probe.get("target") or {}).get("instance_id") or ""),
+                )
+                continue
             duration = int((probe.get("parameters") or {}).get("duration_sec") or 0)
             if self._followup_budget_block(diagnosis_id, definition, duration):
                 continue
             self._schedule_probe(probe["step_id"])
+
+    def _record_source_snapshot_disposition(
+        self,
+        diagnosis_id: str,
+        disposition: str,
+        reason: str,
+        *,
+        probe_id: str = "",
+        target_instance_id: str = "",
+    ) -> None:
+        self.store.record_event(
+            diagnosis_id,
+            "source_snapshot_followup_disposition",
+            {
+                "evidence_gap": "source_snapshot",
+                "disposition": disposition,
+                "reason": reason,
+                "probe_id": probe_id,
+                "target_instance_id": target_instance_id,
+            },
+        )
 
     def _task_options_for_probe(
         self,
@@ -2223,7 +2288,13 @@ class DiagnosisOrchestrator:
         created = 0
         for evidence_gap in dict.fromkeys(request_ids):
             if created >= remaining_slots:
-                break
+                if evidence_gap == "source_snapshot":
+                    self._record_source_snapshot_disposition(
+                        diagnosis_id,
+                        "blocked",
+                        "followup_round_capacity_exhausted",
+                    )
+                continue
             probe_id = evidence_gap_to_probe_id(evidence_gap)
             target = self._select_followup_target(session, evidence_gap, parent_target)
             target_key = str(target.get("instance_id") or "")
@@ -2233,10 +2304,60 @@ class DiagnosisOrchestrator:
                 if str((probe.get("parameters") or {}).get("evidence_gap") or "") == evidence_gap
                 and str((probe.get("target") or {}).get("instance_id") or "") == target_key
             ]
-            if not probe_id or not _can_schedule_evidence_attempt(evidence_gap, matching_probes):
+            if not probe_id:
+                if evidence_gap == "source_snapshot":
+                    self._record_source_snapshot_disposition(
+                        diagnosis_id,
+                        "blocked",
+                        "source_snapshot_probe_unregistered",
+                        target_instance_id=target_key,
+                    )
+                continue
+            if not _can_schedule_evidence_attempt(evidence_gap, matching_probes):
+                if evidence_gap == "source_snapshot":
+                    self._record_source_snapshot_disposition(
+                        diagnosis_id,
+                        "skipped",
+                        "source_snapshot_already_attempted",
+                        probe_id=probe_id,
+                        target_instance_id=target_key,
+                    )
                 continue
             definition = get_probe(probe_id)
             if definition is None:
+                if evidence_gap == "source_snapshot":
+                    self._record_source_snapshot_disposition(
+                        diagnosis_id,
+                        "blocked",
+                        "source_snapshot_probe_definition_missing",
+                        probe_id=probe_id,
+                        target_instance_id=target_key,
+                    )
+                continue
+            collector_parameters = self._collector_probe_parameters(
+                probe_id,
+                session.get("target_scope", {}),
+                target,
+                diagnosis_id,
+            )
+            guarded_probe_input = (
+                (probe_inputs or {}).get(evidence_gap)
+                if isinstance((probe_inputs or {}).get(evidence_gap), dict)
+                else {}
+            )
+            if evidence_gap == "source_snapshot" and not (
+                {**collector_parameters, **guarded_probe_input}
+            ).get("line_candidates"):
+                upstream_open = _source_snapshot_upstream_line_producers_open(existing_probes)
+                self._record_source_snapshot_disposition(
+                    diagnosis_id,
+                    "deferred" if upstream_open else "blocked",
+                    "waiting_runtime_line_candidates"
+                    if upstream_open
+                    else "runtime_line_candidate_missing",
+                    probe_id=probe_id,
+                    target_instance_id=target_key,
+                )
                 continue
             if definition.risk_level in {"R2", "R3"} and policy == "safe_only":
                 requires_approval = True
@@ -2275,20 +2396,17 @@ class DiagnosisOrchestrator:
                                 ),
                             },
                         )
+                        if evidence_gap == "source_snapshot":
+                            self._record_source_snapshot_disposition(
+                                diagnosis_id,
+                                "blocked",
+                                "budget_or_policy_blocked",
+                                probe_id=probe_id,
+                                target_instance_id=target_key,
+                            )
                         continue
-            collector_parameters = self._collector_probe_parameters(
-                probe_id,
-                session.get("target_scope", {}),
-                target,
-                diagnosis_id,
-            )
             if evidence_gap == "source_mechanism_query":
                 collector_parameters["total_timeout_sec"] = duration
-            guarded_probe_input = (
-                (probe_inputs or {}).get(evidence_gap)
-                if isinstance((probe_inputs or {}).get(evidence_gap), dict)
-                else {}
-            )
             deep_candidate_id, origin_parent_candidate_id = _followup_provenance(
                 evidence_gap,
                 guarded_probe_input,
@@ -2405,6 +2523,14 @@ class DiagnosisOrchestrator:
                 "diagnosis_id": diagnosis_id,
                 "status": "WAITING_APPROVAL" if requires_approval else "PLANNED",
             })
+            if evidence_gap == "source_snapshot":
+                self._record_source_snapshot_disposition(
+                    diagnosis_id,
+                    "planned",
+                    "line_candidates_available",
+                    probe_id=probe_id,
+                    target_instance_id=target_key,
+                )
             existing_probes.append(self.store.get_probe(step_id) or {})
             created += 1
             if not requires_approval and not deferred:
@@ -2442,6 +2568,10 @@ class DiagnosisOrchestrator:
             ]
             if any(str(probe.get("status") or "") in open_statuses for probe in matching):
                 return True
+            if request == "source_snapshot" and not self._session_line_candidates(diagnosis_id):
+                if _source_snapshot_upstream_line_producers_open(probes):
+                    return True
+                continue
         followup_round = max(0, len(session.get("conclusion_versions") or []) - 1)
         if followup_round >= _max_followup_rounds(session):
             return False
@@ -2451,6 +2581,10 @@ class DiagnosisOrchestrator:
                 if str((probe.get("parameters") or {}).get("evidence_gap") or "") == request
             ]
             if matching and not _can_schedule_evidence_attempt(request, matching):
+                continue
+            if request == "source_snapshot" and not self._session_line_candidates(diagnosis_id):
+                if _source_snapshot_upstream_line_producers_open(probes):
+                    return True
                 continue
             probe_id = evidence_gap_to_probe_id(request)
             definition = get_probe(probe_id) if probe_id else None
@@ -5106,6 +5240,22 @@ def _source_files_match(left: Any, right: Any) -> bool:
     right_text = str(right or "").replace("\\", "/").lstrip("/")
     if not left_text or not right_text:
         return False
+    canonical = []
+    for value in (left_text, right_text):
+        variants = {value}
+        parts = [part for part in value.split("/") if part]
+        for marker in ("site-packages", "dist-packages"):
+            if marker not in parts:
+                continue
+            marker_index = parts.index(marker)
+            tail = "/".join(parts[marker_index + 1 :])
+            if tail:
+                variants.update({tail, f"src/{tail}"})
+        if parts and parts[0] == "src":
+            variants.add("/".join(parts[1:]))
+        canonical.append(variants)
+    if canonical[0].intersection(canonical[1]):
+        return True
     if left_text == right_text or left_text.endswith(f"/{right_text}") or right_text.endswith(f"/{left_text}"):
         return True
     left_parts = [part for part in left_text.split("/") if part]
@@ -5795,9 +5945,12 @@ def _parse_runtime_frame_line(frame: Any) -> dict[str, Any] | None:
 
 def _is_low_value_runtime_file(file_name: str, symbol: str = "") -> bool:
     text = f"{file_name} {symbol}".replace("\\", "/").lower()
+    installed_package = "/site-packages/" in text or "/dist-packages/" in text
     return (
-        text.startswith(("/usr/local/lib/python", "/usr/lib/python"))
-        or "/site-packages/" in text
+        (
+            text.startswith(("/usr/local/lib/python", "/usr/lib/python"))
+            and not installed_package
+        )
         or any(
             token in text
             for token in (
@@ -5842,13 +5995,17 @@ def _source_symbol_priority(symbol: Any, file_name: Any = "") -> int:
 def _runtime_line_candidate_score(
     candidate: dict[str, Any],
     index: int = 0,
-) -> tuple[int, int, int, int, float, float, int]:
+) -> tuple[int, int, int, int, int, int, float, float, int]:
     file_name = str(candidate.get("file") or "").replace("\\", "/")
     symbol = str(candidate.get("symbol") or candidate.get("function") or "")
     low_value = _is_low_value_runtime_file(file_name, symbol)
+    case_driver = "/case/" in f"/{file_name.lower()}"
+    frozen_or_native = file_name.startswith("<") or file_name.lower() in {"unknown", "[unknown]"}
     generic_runtime_frame = int(symbol.lower() in _GENERIC_RUNTIME_SOURCE_SYMBOLS)
     return (
         int(candidate.get("runtime_verified") is True),
+        int(not frozen_or_native),
+        int(not case_driver),
         int(not low_value),
         _source_symbol_priority(symbol, file_name),
         -generic_runtime_frame,
@@ -5859,7 +6016,9 @@ def _runtime_line_candidate_score(
 
 
 def _prioritized_line_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    def score(index_and_candidate: tuple[int, dict[str, Any]]) -> tuple[int, int, int, int, float, float, int]:
+    def score(
+        index_and_candidate: tuple[int, dict[str, Any]],
+    ) -> tuple[int, int, int, int, int, int, float, float, int]:
         index, candidate = index_and_candidate
         candidate_score = _runtime_line_candidate_score(candidate, index)
         return candidate_score
@@ -10749,6 +10908,19 @@ def _collect_probe_gate_failures(
                 reason=str(payload.get("reason") or payload.get("blocked_reason") or ""),
                 actual_value=str(payload.get("execution_policy") or ""),
             )
+        elif event_type == "source_snapshot_followup_disposition":
+            disposition = str(payload.get("disposition") or "")
+            if disposition != "planned":
+                add(
+                    gate="source_snapshot",
+                    failure_code=str(payload.get("reason") or "source_snapshot_not_scheduled"),
+                    reason=(
+                        "source_snapshot 调度结果："
+                        f"{disposition or 'unknown'} / {payload.get('reason') or 'unknown'}。"
+                    ),
+                    status=disposition or "blocked",
+                    probe_id=str(payload.get("probe_id") or ""),
+                )
         elif event_type == "followup_round_limit_reached":
             add(
                 gate="followup_round",
@@ -11049,6 +11221,23 @@ def _can_schedule_evidence_attempt(evidence_gap: str, matching_probes: list[dict
     # diagnosis retains the verified parent line instead of dispatching another
     # query with a different prompt.
     return False
+
+
+def _source_snapshot_upstream_line_producers_open(probes: list[dict[str, Any]]) -> bool:
+    open_statuses = {
+        "PLANNED",
+        "WAITING_APPROVAL",
+        "APPROVED",
+        "SCHEDULED",
+        "RUNNING",
+    }
+    return any(
+        str((probe.get("parameters") or {}).get("evidence_gap") or "")
+        in SOURCE_SNAPSHOT_UPSTREAM_EVIDENCE_GAPS
+        and str(probe.get("status") or "").upper() in open_statuses
+        for probe in probes
+        if isinstance(probe, dict)
+    )
 
 
 def _guarded_query_spec_hash(probe_input: dict[str, Any]) -> str:

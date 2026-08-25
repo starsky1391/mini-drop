@@ -45,6 +45,24 @@ def test_line_candidates_match_ast_span_from_source_snapshot():
     ) is True
 
 
+def test_line_candidates_match_installed_package_to_src_snapshot():
+    assert _line_candidates_match_source(
+        [{
+            "file": "/usr/local/lib/python3.11/site-packages/urllib3/util/retry.py",
+            "line": 337,
+        }],
+        {
+            "status": "valid",
+            "source_context_hash": "sha256:source",
+            "revision": "abc123",
+            "verified_source_lines": [{
+                "file": "src/urllib3/util/retry.py",
+                "verified_line": 337,
+            }],
+        },
+    ) is True
+
+
 def _candidate(candidate_id: str, refs: list[str]) -> CandidateCause:
     return CandidateCause(
         candidate_id=candidate_id,
@@ -139,6 +157,42 @@ def test_runtime_stack_business_frame_becomes_cpu_line_candidate():
     assert gate["line_candidates"][0]["file"] == "/srv/app/orders.py"
     assert gate["line_candidates"][0]["line"] == 42
     assert gate["conclusion_eligible"] is False
+
+
+def test_runtime_stack_keeps_installed_package_frame_when_no_business_frame():
+    structured = structure_artifact_evidence(
+        task_id="runtime_installed_package_frame",
+        artifacts=[
+            {"artifact_type": "python_stack_samples_json", "filename": "stack_samples.json"},
+        ],
+        artifact_values={
+            "top_json": [{"name": "_PyEval_EvalFrameDefault", "samples": 8, "percent": 80.0}],
+            "python_stack_samples_json": {
+                "sample_quality": {
+                    "diagnostic_value": "medium",
+                    "primitive_frame_ratio": 0.0,
+                    "framework_loop_ratio": 0.0,
+                    "target_code_ratio": 0.9,
+                    "sample_count": 8,
+                },
+                "stack_samples": [{
+                    "hot_frame": "_PyEval_EvalFrameDefault",
+                    "sample_count": 8,
+                    "percent": 80.0,
+                    "stack": [
+                        "/usr/local/lib/python3.11/runpy.py:198:_run_module_as_main",
+                        "/usr/local/lib/python3.11/site-packages/urllib3/util/retry.py:337:increment",
+                    ],
+                }],
+            },
+        },
+    )
+
+    gate = structured.confidence_inputs["python_scenario_gates"]["python_cpu_hotspot"]
+
+    assert gate["gate_checks"]["runtime_line_candidate"] is True
+    assert gate["line_candidates"][0]["file"] == "/usr/local/lib/python3.11/site-packages/urllib3/util/retry.py"
+    assert gate["line_candidates"][0]["line"] == 337
 
 
 def test_evidence_window_metadata_distinguishes_same_window_from_followup():

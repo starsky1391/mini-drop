@@ -242,6 +242,87 @@ def test_source_snapshot_maps_container_absolute_path_to_unique_git_file(tmp_pat
     assert result.artifacts[0]["metadata"]["data"]["snippets"][0]["file"] == "werkzeug/routing.py"
 
 
+def test_source_snapshot_maps_site_packages_path_to_src_layout(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    source = repo / "src" / "urllib3" / "util" / "retry.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def increment():\n    return 1\n", encoding="utf-8")
+    monkeypatch.setenv("MINI_DROP_SOURCE_ROOTS", str(tmp_path))
+    collector = SourceSnapshotCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    base_task = _task(repo)
+    task = base_task.__class__(**{
+        **base_task.__dict__,
+        "options": {
+            **base_task.options,
+            "line_candidates": [{
+                "file": "/usr/local/lib/python3.11/site-packages/urllib3/util/retry.py",
+                "line": 1,
+                "symbol": "increment",
+            }],
+        },
+    })
+
+    def fake_run(cmd, **_kwargs):
+        if "rev-parse" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="abc123\n", stderr="")
+        if "ls-files" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"src/urllib3/util/retry.py\0", stderr=b"")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with mock.patch("shutil.which", side_effect=lambda name: f"/usr/bin/{name}"), mock.patch(
+        "subprocess.run", side_effect=fake_run
+    ):
+        result = collector.collect(task)
+
+    payload = result.artifacts[0]["metadata"]["data"]
+    assert result.ok is True
+    assert payload["snippets"][0]["file"] == "src/urllib3/util/retry.py"
+    assert payload["mapped_line_candidate_count"] == 1
+    assert payload["candidate_mappings"][0]["source_kind"] == "installed_package_source"
+
+
+def test_source_snapshot_explains_unmappable_runtime_candidates(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("MINI_DROP_SOURCE_ROOTS", str(tmp_path))
+    collector = SourceSnapshotCollector()
+    collector.OUTPUT_BASE = str(tmp_path / "out")
+    base_task = _task(repo)
+    task = base_task.__class__(**{
+        **base_task.__dict__,
+        "options": {
+            **base_task.options,
+            "line_candidates": [
+                {"file": "/case/urllib3_pool_workload.py", "line": 49, "symbol": "run"},
+                {"file": "<frozen abc>", "line": 117, "symbol": "__subclasscheck__"},
+            ],
+        },
+    })
+
+    def fake_run(cmd, **_kwargs):
+        if "rev-parse" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="abc123\n", stderr="")
+        if "ls-files" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"src/urllib3/util/retry.py\0", stderr=b"")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with mock.patch("shutil.which", side_effect=lambda name: f"/usr/bin/{name}"), mock.patch(
+        "subprocess.run", side_effect=fake_run
+    ):
+        result = collector.collect(task)
+
+    payload = result.artifacts[0]["metadata"]["data"]
+    assert result.ok is False
+    assert payload["evidence_validity"]["reason"] == "runtime_line_candidate_not_repo_mappable"
+    assert payload["input_line_candidate_count"] == 2
+    assert payload["mapped_line_candidate_count"] == 0
+    assert {item["source_kind"] for item in payload["unmapped_line_candidates"]} == {
+        "case_driver",
+        "stdlib_or_frozen",
+    }
+
+
 def test_source_snapshot_prioritizes_tracked_candidates_before_bounded_limit(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     source = repo / "celery" / "app" / "trace.py"

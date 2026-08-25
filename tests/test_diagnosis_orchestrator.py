@@ -105,6 +105,13 @@ def test_runtime_stack_sample_line_candidates_keep_real_runtime_frames():
     ]
 
 
+def test_source_file_match_accepts_installed_package_to_src_layout():
+    assert orchestrator_module._source_files_match(
+        "/usr/local/lib/python3.11/site-packages/urllib3/util/retry.py",
+        "src/urllib3/util/retry.py",
+    )
+
+
 def test_runtime_file_line_deterministically_requests_source_snapshot():
     assessment = {
         "classification": "self_code_or_process_pressure",
@@ -3075,7 +3082,7 @@ def test_development_ai_tree_allows_mechanism_retry_beyond_five_rounds(client: T
     assert followup["parameters"]["followup_round"] == 5
 
 
-def test_ai_tree_allows_third_followup_after_initial_analysis(client: TestClient):
+def test_ai_tree_allows_third_followup_after_initial_analysis(client: TestClient, monkeypatch):
     repo.register_agent(
         "a1", "host-1", "10.0.0.1",
         capabilities=[
@@ -3093,6 +3100,13 @@ def test_ai_tree_allows_third_followup_after_initial_analysis(client: TestClient
         diagnosis_id,
         conclusion_versions=[{"version": index + 1} for index in range(3)],
     )
+    monkeypatch.setattr(
+        diagnosis_orchestrator,
+        "_session_line_candidates",
+        lambda current_id: [{"file": "service.py", "line": 10, "symbol": "handle"}]
+        if current_id == diagnosis_id
+        else [],
+    )
 
     created = diagnosis_orchestrator._plan_followup_requests(
         diagnosis_id,
@@ -3107,6 +3121,83 @@ def test_ai_tree_allows_third_followup_after_initial_analysis(client: TestClient
         if (item.get("parameters") or {}).get("evidence_gap") == "source_snapshot"
     )
     assert followup["parameters"]["followup_round"] == 2
+
+
+def test_source_snapshot_waits_for_open_runtime_line_producer(client: TestClient, monkeypatch):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=[*repo.agents["a1"].capabilities, "source_snapshot", "pyspy"],
+    )
+    data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    parent_task = repo.tasks[data["child_task_ids"][0]]
+    diagnosis_orchestrator.store.add_probe({
+        "step_id": "step-runtime-open",
+        "diagnosis_id": diagnosis_id,
+        "probe_id": "process_python_runtime_profile",
+        "target": data["target_scope"]["instances"][0],
+        "parameters": {"evidence_gap": "python_runtime_profile"},
+        "reason": "runtime line producer",
+        "risk_level": "R2",
+        "requires_approval": False,
+        "status": "RUNNING",
+    })
+    monkeypatch.setattr(diagnosis_orchestrator, "_session_line_candidates", lambda _id: [])
+
+    created = diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["source_snapshot"],
+        parent_task,
+    )
+    schedulable = diagnosis_orchestrator._has_schedulable_followup_work(
+        diagnosis_id,
+        ["source_snapshot"],
+        diagnosis_orchestrator.store.list_probes(diagnosis_id),
+        parent_task,
+    )
+
+    assert created == 0
+    assert schedulable is True
+    assert any(
+        event["event_type"] == "source_snapshot_followup_disposition"
+        and event["payload"]["disposition"] == "deferred"
+        and event["payload"]["reason"] == "waiting_runtime_line_candidates"
+        for event in diagnosis_orchestrator.store.get_detail(diagnosis_id)["events"]
+    )
+
+
+def test_source_snapshot_without_runtime_line_candidate_is_not_schedulable(client: TestClient, monkeypatch):
+    repo.register_agent(
+        "a1", "host-1", "10.0.0.1",
+        capabilities=[*repo.agents["a1"].capabilities, "source_snapshot"],
+    )
+    data = client.post("/api/v1/diagnoses", json=_payload()).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    parent_task = repo.tasks[data["child_task_ids"][0]]
+    for probe in diagnosis_orchestrator.store.list_probes(diagnosis_id):
+        diagnosis_orchestrator.store.update_probe(probe["step_id"], status="COMPLETED")
+    monkeypatch.setattr(diagnosis_orchestrator, "_session_line_candidates", lambda _id: [])
+
+    created = diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["source_snapshot"],
+        parent_task,
+    )
+    schedulable = diagnosis_orchestrator._has_schedulable_followup_work(
+        diagnosis_id,
+        ["source_snapshot"],
+        diagnosis_orchestrator.store.list_probes(diagnosis_id),
+        parent_task,
+    )
+
+    assert created == 0
+    assert schedulable is False
+    assert any(
+        event["event_type"] == "source_snapshot_followup_disposition"
+        and event["payload"]["disposition"] == "blocked"
+        and event["payload"]["reason"] == "runtime_line_candidate_missing"
+        for event in diagnosis_orchestrator.store.get_detail(diagnosis_id)["events"]
+    )
 
 
 def test_memory_investigation_does_not_fall_through_to_wait_or_network_probes():

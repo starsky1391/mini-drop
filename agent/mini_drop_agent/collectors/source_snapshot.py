@@ -100,11 +100,17 @@ class SourceSnapshotCollector:
         reference_paths = []
         source_texts: dict[str, str] = {}
         syntax_candidates: dict[str, list[dict[str, Any]]] = {}
-        candidates = list(task.options.get("line_candidates") or [])
+        candidates = [
+            candidate
+            for candidate in list(task.options.get("line_candidates") or [])
+            if isinstance(candidate, dict)
+        ]
+        candidate_mappings = [
+            self._candidate_mapping(candidate, tracked_files)
+            for candidate in candidates
+        ]
         candidates.sort(key=lambda candidate: self._candidate_sort_key(candidate, tracked_files))
         for candidate in candidates[: self.MAX_CANDIDATES]:
-            if not isinstance(candidate, dict):
-                continue
             relative_text = self._tracked_file(str(candidate.get("file") or ""), tracked_files)
             if not relative_text:
                 continue
@@ -261,6 +267,14 @@ class SourceSnapshotCollector:
             if isinstance(item, dict)
         }
         has_unparseable = "unparseable" in syntax_statuses
+        input_candidate_count = len(candidates)
+        mapped_candidate_count = sum(1 for item in candidate_mappings if item.get("tracked_file"))
+        unmapped_line_candidates = [
+            item
+            for item in candidate_mappings
+            if not item.get("tracked_file")
+        ][:32]
+        rejected_line_candidate_count = max(0, input_candidate_count - mapped_candidate_count)
         if verified_source_lines:
             snapshot_status = "partial" if has_unparseable else "valid"
         elif has_unparseable:
@@ -269,6 +283,13 @@ class SourceSnapshotCollector:
             snapshot_status = "partial"
         else:
             snapshot_status = "blocked"
+        missing_reason = (
+            "runtime_line_candidate_missing"
+            if input_candidate_count == 0
+            else "runtime_line_candidate_not_repo_mappable"
+            if mapped_candidate_count == 0
+            else "no_readable_line_candidates"
+        )
         snapshot_reason = (
             "source_context_and_ast_verified"
             if snapshot_status == "valid"
@@ -278,16 +299,25 @@ class SourceSnapshotCollector:
             if snapshot_status == "partial"
             else "python_ast_unparseable"
             if snapshot_status == "unparseable"
-            else "no_readable_line_candidates"
+            else missing_reason
         )
         return self._result(
             output_dir,
             bool(snippets),
-            "source_context_ready" if snippets else "no_readable_line_candidates",
-            "源码上下文已按 revision 有界提取" if snippets else "没有可读取的行候选",
+            "source_context_ready" if snippets else missing_reason,
+            "源码上下文已按 revision 有界提取" if snippets else (
+                "没有运行时 file:line 候选"
+                if input_candidate_count == 0
+                else "运行时 file:line 候选无法映射到当前 checkout"
+            ),
             {
                 "revision": revision,
                 "source_context_hash": source_hash,
+                "input_line_candidate_count": input_candidate_count,
+                "mapped_line_candidate_count": mapped_candidate_count,
+                "rejected_line_candidate_count": rejected_line_candidate_count,
+                "candidate_mappings": candidate_mappings[:64],
+                "unmapped_line_candidates": unmapped_line_candidates,
                 "snippets": snippets,
                 "enclosing_contexts": enclosing_contexts[:4],
                 "reference_paths": reference_paths[:12],
@@ -657,15 +687,78 @@ class SourceSnapshotCollector:
             return "callable_or_value"
         return "expression"
 
-    @staticmethod
-    def _tracked_file(candidate: str, tracked_files: list[str]) -> str:
+    @classmethod
+    def _tracked_file(cls, candidate: str, tracked_files: list[str]) -> str:
         normalized = candidate.replace("\\", "/").lstrip("/")
-        matches = []
+        variants = cls._candidate_path_variants(normalized)
+        matches: list[str] = []
         for item in tracked_files:
             tracked = item.replace("\\", "/").lstrip("/")
-            if normalized == tracked or normalized.endswith(f"/{tracked}"):
+            if any(
+                variant == tracked
+                or variant.endswith(f"/{tracked}")
+                or tracked.endswith(f"/{variant}")
+                for variant in variants
+                if variant
+            ):
                 matches.append(item)
-        return matches[0] if len(matches) == 1 else ""
+        unique = list(dict.fromkeys(matches))
+        return unique[0] if len(unique) == 1 else ""
+
+    @staticmethod
+    def _candidate_path_variants(candidate: str) -> list[str]:
+        normalized = str(candidate or "").replace("\\", "/").lstrip("/")
+        if not normalized:
+            return []
+        variants = [normalized]
+        parts = [part for part in normalized.split("/") if part]
+        for marker in ("site-packages", "dist-packages"):
+            if marker not in parts:
+                continue
+            marker_index = parts.index(marker)
+            package_tail = "/".join(parts[marker_index + 1 :])
+            if package_tail:
+                variants.extend([package_tail, f"src/{package_tail}"])
+        return list(dict.fromkeys(variants))
+
+    @classmethod
+    def _candidate_source_kind(cls, candidate: str, tracked_files: list[str]) -> str:
+        normalized = str(candidate or "").replace("\\", "/").lstrip("/")
+        text = normalized.lower()
+        if not normalized or text.startswith("<") or text in {"[unknown]", "unknown"}:
+            return "stdlib_or_frozen" if "frozen" in text else "native_or_unknown"
+        if not normalized.endswith(".py"):
+            return "native_or_unknown"
+        if "/case/" in f"/{text}" and not any(
+            token in f"/{text}/"
+            for token in ("/case/src/", "/case/repo/", "/case/project/")
+        ):
+            return "case_driver"
+        tracked = cls._tracked_file(normalized, tracked_files)
+        if tracked:
+            if "/site-packages/" in text or "/dist-packages/" in text:
+                return "installed_package_source"
+            return "repo_source"
+        if text.startswith(("usr/local/lib/python", "usr/lib/python")) or "/lib/python" in text:
+            return "stdlib_or_frozen"
+        return "native_or_unknown"
+
+    @classmethod
+    def _candidate_mapping(cls, candidate: dict[str, Any], tracked_files: list[str]) -> dict[str, Any]:
+        file_name = str(candidate.get("file") or "").replace("\\", "/")
+        tracked = cls._tracked_file(file_name, tracked_files)
+        try:
+            line = int(candidate.get("line") or 0)
+        except (TypeError, ValueError):
+            line = 0
+        return {
+            "file": file_name,
+            "line": line,
+            "symbol": str(candidate.get("symbol") or candidate.get("function") or ""),
+            "source_kind": cls._candidate_source_kind(file_name, tracked_files),
+            "tracked_file": tracked,
+            "mapped": bool(tracked),
+        }
 
     @classmethod
     def _candidate_sort_key(cls, candidate: Any, tracked_files: list[str]) -> tuple[int, int, int]:
@@ -673,12 +766,19 @@ class SourceSnapshotCollector:
             return (1, 0, 1)
         file_name = str(candidate.get("file") or "").replace("\\", "/")
         symbol = str(candidate.get("symbol") or candidate.get("function") or "")
-        tracked = cls._tracked_file(file_name, tracked_files)
+        source_kind = cls._candidate_source_kind(file_name, tracked_files)
+        source_rank = {
+            "repo_source": 0,
+            "installed_package_source": 1,
+            "case_driver": 4,
+            "stdlib_or_frozen": 5,
+            "native_or_unknown": 6,
+        }.get(source_kind, 6)
         generic_runtime_frame = int(symbol.lower() in {
             "start", "worker", "main", "caller", "invoke", "new_func",
             "asynloop", "create_loop", "poll", "fire_timers",
         })
-        return (0 if tracked else 1, -cls._source_symbol_priority(symbol, file_name), generic_runtime_frame)
+        return (source_rank, -cls._source_symbol_priority(symbol, file_name), generic_runtime_frame)
 
     @staticmethod
     def _source_symbol_priority(symbol: Any, file_name: Any = "") -> int:

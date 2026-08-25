@@ -564,6 +564,11 @@ def derive_root_cause_clusters_from_ai_tree(
         for node in nodes
         if node.get("candidate_id")
     }
+    semi_closed_ids = {
+        str(candidate_id)
+        for candidate_id in session_tree.get("semi_closed_root_cause_candidate_ids", [])
+        if str(candidate_id)
+    }
     qualified_nodes: list[dict[str, Any]] = []
     parsed_nodes: list[AITreeCandidateNode] = []
     for node in nodes:
@@ -572,13 +577,26 @@ def derive_root_cause_clusters_from_ai_tree(
         except Exception:
             continue
         parsed_nodes.append(ai_node)
-        eligible, _ = qualify_ai_candidate(
-            ai_node,
-            valid_evidence_refs=valid_evidence_refs,
-            known_candidate_ids=known_ids,
-            anchor_evidence_refs=anchor_evidence_refs,
-            runtime_anchor_evidence_refs=runtime_anchor_evidence_refs,
-            line_anchor_evidence_refs=line_anchor_evidence_refs,
+        semiclosed = (
+            ai_node.candidate_id in semi_closed_ids
+            and ai_node.conclusion_eligible
+            and ai_node.supported_level == "line"
+            and ai_node.status == "supported"
+            and ai_node.causal_status == "supported"
+            and ai_node.decision == "conclude"
+            and ai_node.blocked_probe == "source_mechanism_query"
+        )
+        eligible, _ = (
+            (True, "verified source line 的 source_mechanism_query 为后续补证边界。")
+            if semiclosed
+            else qualify_ai_candidate(
+                ai_node,
+                valid_evidence_refs=valid_evidence_refs,
+                known_candidate_ids=known_ids,
+                anchor_evidence_refs=anchor_evidence_refs,
+                runtime_anchor_evidence_refs=runtime_anchor_evidence_refs,
+                line_anchor_evidence_refs=line_anchor_evidence_refs,
+            )
         )
         if not eligible:
             continue

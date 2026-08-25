@@ -1691,7 +1691,25 @@ def _line_candidates_match_source(candidates: list[dict[str, Any]], source_state
 def _source_file_matches(left: str, right: str) -> bool:
     left = str(left or "").replace("\\", "/").lstrip("/")
     right = str(right or "").replace("\\", "/").lstrip("/")
-    return bool(left and right) and (
+    if not left or not right:
+        return False
+    canonical: list[set[str]] = []
+    for value in (left, right):
+        variants = {value}
+        parts = [part for part in value.split("/") if part]
+        for marker in ("site-packages", "dist-packages"):
+            if marker not in parts:
+                continue
+            marker_index = parts.index(marker)
+            tail = "/".join(parts[marker_index + 1 :])
+            if tail:
+                variants.update({tail, f"src/{tail}"})
+        if parts and parts[0] == "src":
+            variants.add("/".join(parts[1:]))
+        canonical.append(variants)
+    if canonical[0].intersection(canonical[1]):
+        return True
+    return (
         left == right
         or left.endswith(f"/{right}")
         or right.endswith(f"/{left}")
@@ -1705,20 +1723,29 @@ def _line_candidates_from_items(items: list[dict[str, Any]]) -> list[dict[str, A
             continue
         file = str(item.get("file") or "")
         line = _safe_int(item.get("line") or item.get("focus_line"))
+        function = str(item.get("function") or item.get("name") or item.get("top_frame") or "")
         if not file and isinstance(item.get("stack"), list):
+            installed_package_candidate = None
             for frame in reversed(item["stack"]):
-                if _looks_like_runtime_frame(str(frame)):
-                    continue
                 candidate = _line_candidate_from_frame(str(frame))
-                if candidate:
-                    file = candidate["file"]
-                    line = candidate["line"]
-                    break
+                if not candidate:
+                    continue
+                if _looks_like_runtime_frame(str(frame)):
+                    if installed_package_candidate is None and _looks_like_installed_package_frame(candidate["file"]):
+                        installed_package_candidate = candidate
+                    continue
+                file = candidate["file"]
+                line = candidate["line"]
+                break
+            if not file and installed_package_candidate:
+                file = installed_package_candidate["file"]
+                line = installed_package_candidate["line"]
+                function = str(installed_package_candidate.get("function") or function)
         if file and line > 0:
             candidates.append({
                 "file": file,
                 "line": line,
-                "function": str(item.get("function") or item.get("name") or item.get("top_frame") or ""),
+                "function": function,
                 "evidence_ref": item.get("evidence_ref"),
             })
     return candidates[:20]
@@ -1817,6 +1844,11 @@ def _looks_like_runtime_frame(frame: str) -> bool:
             "concurrent/futures",
         )
     )
+
+
+def _looks_like_installed_package_frame(frame: str) -> bool:
+    text = str(frame or "").replace("\\", "/").lower()
+    return "/site-packages/" in text or "/dist-packages/" in text
 
 
 def _has_baseline_or_impact_signal(value: Any) -> bool:
