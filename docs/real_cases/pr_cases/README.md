@@ -36,7 +36,7 @@ python run_pr_case_vm.py --case playwright_3004
 python run_pr_case_vm.py --case aiohttp_10570 --mode pair
 ```
 
-The runner creates timestamped output under `reports/eval/real-open-source/pr-cases/`. It builds and controls the containers from the VM host, waits for diagnosis or workload timeout, collects evidence, and always performs Compose cleanup. The default run is vulnerable-only with a 400 second workload and diagnosis window.
+The runner creates timestamped output under `reports/eval/real-open-source/pr-cases/`. It builds and controls the containers from the VM host, waits for diagnosis or workload timeout, collects evidence, and always performs Compose cleanup. The default run is vulnerable-only with a 400 second workload and a 1200 second diagnosis wait window.
 
 For normal repeated vulnerable-only runs, use the case-local one-shot entrypoint. It pins the case and standard defaults so future real-case runs do not require re-entering duration, diagnosis timeout, output settings, or even the case name:
 
@@ -57,4 +57,4 @@ The shared wrapper remains available when automation needs to choose a case dyna
 
 ## Current VM Validation
 
-Vulnerable-only VM runs have completed for `playwright_3004`, `aiohttp_10570`, `kafka_2286`, `pyav_751`, `requests_5891`, `starlette_1868`, `celery_9849`, `urllib3_2197`, `urllib3_2494`, `requests_cache_1050`, and `pandas_58084`. The earlier core cases used the previous 600 second window; the scenario-expansion cases were validated with the 400 second workload and diagnosis window. The `vllm_38602` preflight records `nvidia_gpu_unavailable` on the current VM.
+Vulnerable-only VM runs have completed for `playwright_3004`, `aiohttp_10570`, `kafka_2286`, `pyav_751`, `requests_5891`, `starlette_1868`, `celery_9849`, `urllib3_2197`, `urllib3_2494`, `requests_cache_1050`, and `pandas_58084`. The earlier core cases used the previous 600 second diagnosis window; the scenario-expansion cases were validated with the 400 second workload window. The current default is a 400 second workload with a 1200 second diagnosis wait fallback. The `vllm_38602` preflight records `nvidia_gpu_unavailable` on the current VM.

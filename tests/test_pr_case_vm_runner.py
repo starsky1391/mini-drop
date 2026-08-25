@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER_PATH = ROOT / "docs" / "real_cases" / "pr_cases" / "run_pr_case_vm.py"
+PR_CASES_ROOT = ROOT / "docs" / "real_cases" / "pr_cases"
 
 
 def load_runner():
@@ -14,6 +15,20 @@ def load_runner():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_pr_case_runner_defaults_use_400_second_workload_and_1200_second_diagnosis_wait():
+    runner = load_runner()
+
+    assert runner.DEFAULT_CASE_DURATION_SEC == 400
+    assert runner.DEFAULT_DIAGNOSIS_TIMEOUT_SEC == 1200
+
+    scripts = sorted(PR_CASES_ROOT.glob("*/run_vulnerable_only.ps1"))
+    assert len(scripts) == 12
+    for script in scripts:
+        content = script.read_text(encoding="utf-8")
+        assert "[int]$DurationSec = 400" in content
+        assert "[int]$DiagnosisTimeoutSec = 1200" in content
 
 
 def test_diagnosis_timeout_refreshes_control_plane_before_return(monkeypatch):

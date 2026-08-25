@@ -7,7 +7,7 @@
 - [x] T003 Keep Agent inputs generic and exclude issue, PR, answer, phase, batch, and fixed/vulnerable labels.
 - [x] T004 Add VM capability preflight and explicit blocked results for unsupported hardware.
 - [x] T005 Add per-case vulnerable-only one-shot entrypoints so repeated VM case runs do not require re-entering standard runner settings.
-- [x] T006 Make vulnerable-only the default acceptance path with a 400 second workload and diagnosis window.
+- [x] T006 Make vulnerable-only the default acceptance path with a 400 second workload and a 1200 second diagnosis wait window.
 - [x] T007 Keep pair control replay opt-in only and out of normal acceptance.
 
 ## Case adapters

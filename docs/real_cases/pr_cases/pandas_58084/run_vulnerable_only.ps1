@@ -1,6 +1,6 @@
 param(
     [int]$DurationSec = 400,
-    [int]$DiagnosisTimeoutSec = 400,
+    [int]$DiagnosisTimeoutSec = 1200,
     [string]$OutputRoot = ""
 )
 

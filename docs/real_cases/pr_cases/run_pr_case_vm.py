@@ -33,6 +33,8 @@ TERMINAL_STATUSES = {
     "BUDGET_EXHAUSTED", "TOPOLOGY_UNAVAILABLE", "FAILED",
 }
 RUNNER_RELEASE_TIMEOUT_REASON = "diagnosis_timeout"
+DEFAULT_CASE_DURATION_SEC = 400
+DEFAULT_DIAGNOSIS_TIMEOUT_SEC = 1200
 
 
 def progress(message: str) -> None:
@@ -399,8 +401,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--case", required=True)
     parser.add_argument("--mode", choices=("vulnerable", "pair"), default="vulnerable")
-    parser.add_argument("--duration-sec", type=int, default=400)
-    parser.add_argument("--diagnosis-timeout-sec", type=int, default=400)
+    parser.add_argument("--duration-sec", type=int, default=DEFAULT_CASE_DURATION_SEC)
+    parser.add_argument("--diagnosis-timeout-sec", type=int, default=DEFAULT_DIAGNOSIS_TIMEOUT_SEC)
     parser.add_argument("--output-root", default="reports/eval/real-open-source/pr-cases")
     parser.add_argument("--password", default="")
     args = parser.parse_args()
