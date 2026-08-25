@@ -2260,6 +2260,16 @@ class DiagnosisOrchestrator:
                     {"requested_evidence_gaps": list(dict.fromkeys(request_ids))[:MAX_FOLLOWUP_REQUESTS_PER_ROUND]},
                 )
             return 0
+        request_ids = list(dict.fromkeys(request_ids))
+        source_snapshot_ready = bool(
+            _source_context_available(session.get("target_scope", {}))
+            and self._session_line_candidates(diagnosis_id)
+        )
+        if source_snapshot_ready and "source_snapshot" in request_ids:
+            request_ids = [
+                "source_snapshot",
+                *[request for request in request_ids if request != "source_snapshot"],
+            ]
         parent_target = self._target_for_task(diagnosis_id, parent_task)
         existing_probes = self.store.list_probes(diagnosis_id)
         policy = str((session.get("risk_budget") or {}).get("auto_execute_policy") or "safe_only")
@@ -2286,8 +2296,13 @@ class DiagnosisOrchestrator:
         )
         remaining_slots = max(0, MAX_FOLLOWUP_REQUESTS_PER_ROUND - round_created)
         created = 0
+        scheduled_request_ids: list[str] = []
         for evidence_gap in dict.fromkeys(request_ids):
-            if created >= remaining_slots:
+            source_snapshot_bridge_slot = (
+                evidence_gap == "source_snapshot"
+                and source_snapshot_ready
+            )
+            if created >= remaining_slots and not source_snapshot_bridge_slot:
                 if evidence_gap == "source_snapshot":
                     self._record_source_snapshot_disposition(
                         diagnosis_id,
@@ -2533,6 +2548,7 @@ class DiagnosisOrchestrator:
                 )
             existing_probes.append(self.store.get_probe(step_id) or {})
             created += 1
+            scheduled_request_ids.append(evidence_gap)
             if not requires_approval and not deferred:
                 self._schedule_probe(plan.step_id)
         if created:
@@ -2544,7 +2560,7 @@ class DiagnosisOrchestrator:
                     for probe in self.store.list_probes(diagnosis_id)
                 ) else DiagnosisStatus.COLLECTING,
                 "followup_evidence_requested",
-                {"evidence_gaps": list(dict.fromkeys(request_ids))[:MAX_FOLLOWUP_REQUESTS_PER_ROUND]},
+                {"evidence_gaps": scheduled_request_ids},
             )
         return created
 

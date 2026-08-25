@@ -3123,6 +3123,68 @@ def test_ai_tree_allows_third_followup_after_initial_analysis(client: TestClient
     assert followup["parameters"]["followup_round"] == 2
 
 
+def test_source_snapshot_uses_bridge_slot_after_followup_capacity_is_full(client: TestClient, monkeypatch):
+    repo.register_agent(
+        "a1",
+        "host-1",
+        "10.0.0.1",
+        capabilities=[
+            *repo.agents["a1"].capabilities,
+            "source_snapshot",
+            "baseline_window_profile",
+            "off_cpu_wait_profile",
+            "dependency_check",
+        ],
+    )
+    payload = _payload("service-a 请求变慢，检查 Python 源码行")
+    payload["budget_profile"] = "development"
+    payload["auto_execute_policy"] = "all_registered"
+    payload["context"]["source_context"] = {
+        "source_paths": ["/host/cases/service-a/source"],
+        "repo_revision": "rev-1",
+    }
+    data = client.post("/api/v1/diagnoses", json=payload).json()["data"]
+    diagnosis_id = data["diagnosis_id"]
+    parent_task = repo.tasks[data["child_task_ids"][0]]
+    monkeypatch.setattr(
+        diagnosis_orchestrator,
+        "_session_line_candidates",
+        lambda current_id: [{"file": "service.py", "line": 10, "symbol": "handle"}]
+        if current_id == diagnosis_id
+        else [],
+    )
+
+    created = diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["baseline_window_profile", "off_cpu_wait_profile", "dependency_check"],
+        parent_task,
+    )
+    assert created == 3
+
+    source_created = diagnosis_orchestrator._plan_followup_requests(
+        diagnosis_id,
+        ["source_snapshot"],
+        parent_task,
+    )
+
+    followups = [
+        item
+        for item in diagnosis_orchestrator.store.list_probes(diagnosis_id)
+        if (item.get("parameters") or {}).get("budget_phase") == "followup"
+    ]
+    assert source_created == 1
+    assert len(followups) == 4
+    assert any(
+        (item.get("parameters") or {}).get("evidence_gap") == "source_snapshot"
+        for item in followups
+    )
+    assert not any(
+        event["event_type"] == "source_snapshot_followup_disposition"
+        and event["payload"].get("reason") == "followup_round_capacity_exhausted"
+        for event in diagnosis_orchestrator.store.get_detail(diagnosis_id)["events"]
+    )
+
+
 def test_source_snapshot_waits_for_open_runtime_line_producer(client: TestClient, monkeypatch):
     repo.register_agent(
         "a1", "host-1", "10.0.0.1",
