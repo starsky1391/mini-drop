@@ -3,8 +3,6 @@ import json, os, time
 
 EVIDENCE = Path(os.environ.get("CASE_EVIDENCE_ROOT", "/evidence"))
 PATTERN = os.environ.get("TARGET_PROCESS_PATTERN", "")
-DEADLINE = time.monotonic() + max(60, int(os.environ.get("CASE_DURATION_SEC", "180")))
-
 def pid():
     for item in Path("/proc").iterdir():
         if not item.name.isdigit():
@@ -26,7 +24,7 @@ def rss(value):
         return None
 
 EVIDENCE.mkdir(parents=True, exist_ok=True)
-while time.monotonic() < DEADLINE:
+while not (EVIDENCE / "runner-release.json").exists():
     target = pid()
     with (EVIDENCE / "worker_observations.ndjson").open("a", encoding="utf-8") as handle:
         handle.write(json.dumps({"event": "rss_sample", "observed_at": time.time(), "pid": target, "rss_bytes": rss(target) if target else None}) + "\n")

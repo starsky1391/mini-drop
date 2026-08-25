@@ -65,6 +65,8 @@ class Remote:
             for path in local_root.iterdir():
                 if path.is_file():
                     sftp.put(str(path), posixpath.join(remote_root, path.name))
+            shared_lifecycle = local_root.parent / "case_lifecycle.py"
+            sftp.put(str(shared_lifecycle), posixpath.join(remote_root, shared_lifecycle.name))
         finally:
             sftp.close()
 
@@ -219,6 +221,59 @@ def diagnosis(api: ControlAPI, manifest: dict, duration_sec: int, timeout_sec: i
     }
 
 
+def request_case_release(
+    remote: Remote,
+    evidence_root: str,
+    reason: str,
+    diagnosis_id: str | None = None,
+) -> dict:
+    payload = {
+        "reason": reason,
+        "diagnosis_id": diagnosis_id,
+        "released_at": datetime.now(timezone.utc).isoformat(),
+    }
+    script = (
+        "import json, pathlib; "
+        f"path = pathlib.Path({evidence_root!r}) / 'runner-release.json'; "
+        f"path.write_text(json.dumps({payload!r}, sort_keys=True), encoding='utf-8')"
+    )
+    remote.run(f"python3 -c {shlex.quote(script)}", timeout=60)
+    return payload
+
+
+def wait_for_initial_window_complete(
+    remote: Remote,
+    evidence_root: str,
+    duration_sec: int,
+) -> None:
+    timeout_sec = max(60, duration_sec + 60)
+    remote.run(
+        f"for i in $(seq 1 {timeout_sec}); do "
+        f"test -f {shlex.quote(evidence_root)}/initial-window-complete && exit 0; "
+        "sleep 1; "
+        f"done; echo 'initial window did not complete' >&2; exit 1",
+        timeout=timeout_sec + 30,
+    )
+
+
+def wait_for_workload_complete(
+    remote: Remote,
+    evidence_root: str,
+    timeout_sec: int = 120,
+) -> bool:
+    try:
+        remote.run(
+            f"for i in $(seq 1 {timeout_sec}); do "
+            f"test -f {shlex.quote(evidence_root)}/complete && exit 0; "
+            "sleep 1; "
+            "done; exit 1",
+            timeout=timeout_sec + 30,
+        )
+    except RuntimeError:
+        return False
+    return True
+
+
 def inspect_target(remote: Remote, remote_root: str, project_name: str, service: str, target_pattern: str) -> dict:
     project = shlex.quote(project_name)
     service_arg = shlex.quote(service)
@@ -354,7 +409,6 @@ def run_stage(remote: Remote, case: dict, *, revision: str, stage: str, mode: st
             else {}
         )
         release_requested = bool(release.get("release_requested"))
-        timeout_release = diagnosis_result.get("runner_release_reason") == RUNNER_RELEASE_TIMEOUT_REASON
         result["runner_control"] = {
             "release_requested": release_requested,
             "reason": (
@@ -370,19 +424,28 @@ def run_stage(remote: Remote, case: dict, *, revision: str, stage: str, mode: st
                 else None
             ),
         }
-        if not (mode == "vulnerable" and (release_requested or timeout_release)):
-            completion = max(120, duration_sec + 120)
-            try:
-                remote.run(
-                    f"for i in $(seq 1 {completion}); do test -f {shlex.quote(evidence_root)}/complete && exit 0; sleep 1; done; exit 1",
-                    timeout=completion + 30,
-                )
-                result["workload_completed"] = True
-            except RuntimeError:
-                result["workload_completed"] = False
-        else:
-            result["workload_completed"] = False
+        if mode == "vulnerable":
+            wait_for_initial_window_complete(remote, evidence_root, duration_sec)
+            release_reason = (
+                diagnosis_result.get("runner_release_reason")
+                or RUNNER_RELEASE_TIMEOUT_REASON
+            )
+            release = request_case_release(
+                remote,
+                evidence_root,
+                release_reason,
+                diagnosis_result.get("diagnosis_id"),
+            )
+            result["runner_control"]["release_file"] = release
             result["workload_stopped_by_runner_release"] = True
+        else:
+            wait_for_initial_window_complete(remote, evidence_root, duration_sec)
+            release = request_case_release(remote, evidence_root, "control_window_complete")
+            result["runner_control"]["release_file"] = release
+        result["workload_completed"] = wait_for_workload_complete(
+            remote,
+            evidence_root,
+        )
         return result
     finally:
         progress(f"{case_id}: collecting evidence and cleaning containers")

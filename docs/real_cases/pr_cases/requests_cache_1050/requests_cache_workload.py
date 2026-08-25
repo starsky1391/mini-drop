@@ -11,6 +11,8 @@ from pathlib import Path
 import requests_cache
 from requests_cache.serializers.pipeline import SerializerPipeline, Stage
 
+from case_lifecycle import CaseLifecycle
+
 
 EVIDENCE = Path(os.environ.get("CASE_EVIDENCE_ROOT", "/evidence"))
 CACHE_ROOT = Path(os.environ.get("CACHE_ROOT", "/evidence/http-cache"))
@@ -54,11 +56,11 @@ def main() -> None:
         expire_after=3600,
         serializer=raw_pickle_serializer,
     )
-    deadline = time.monotonic() + max(30, int(os.environ.get("CASE_DURATION_SEC", "180")))
+    lifecycle = CaseLifecycle(EVIDENCE)
     count = 0
     (EVIDENCE / "ready").touch()
     try:
-        while time.monotonic() < deadline:
+        while lifecycle.tick(emit) != "released":
             url = f"http://127.0.0.1:18080/item/{count}?variant={count}"
             response = session.get(url, timeout=2)
             count += 1

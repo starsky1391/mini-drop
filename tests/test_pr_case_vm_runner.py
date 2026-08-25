@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER_PATH = ROOT / "docs" / "real_cases" / "pr_cases" / "run_pr_case_vm.py"
+LIFECYCLE_PATH = ROOT / "docs" / "real_cases" / "pr_cases" / "case_lifecycle.py"
 PR_CASES_ROOT = ROOT / "docs" / "real_cases" / "pr_cases"
 
 
@@ -15,6 +16,33 @@ def load_runner():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def load_lifecycle():
+    spec = importlib.util.spec_from_file_location("case_lifecycle", LIFECYCLE_PATH)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_case_lifecycle_keeps_target_alive_until_release(tmp_path, monkeypatch):
+    lifecycle_module = load_lifecycle()
+    monkeypatch.setenv("CASE_DURATION_SEC", "30")
+    clock = iter([0.0, 0.0, 31.0]).__next__
+    monkeypatch.setattr(lifecycle_module.time, "monotonic", clock)
+    lifecycle = lifecycle_module.CaseLifecycle(tmp_path)
+    events: list[tuple[str, dict]] = []
+
+    def emit(event: str, **fields: object) -> None:
+        events.append((event, fields))
+
+    assert lifecycle.tick(emit) == "initial"
+    assert lifecycle.tick(emit) == "sustain"
+    assert events == [("initial_window_complete", {"duration_sec": 30})]
+
+    (tmp_path / "runner-release.json").write_text("{}", encoding="utf-8")
+    assert lifecycle.tick(emit) == "released"
 
 
 def test_pr_case_runner_defaults_use_400_second_workload_and_1200_second_diagnosis_wait():
@@ -29,6 +57,21 @@ def test_pr_case_runner_defaults_use_400_second_workload_and_1200_second_diagnos
         content = script.read_text(encoding="utf-8")
         assert "[int]$DurationSec = 400" in content
         assert "[int]$DiagnosisTimeoutSec = 1200" in content
+
+
+def test_all_pr_cases_use_release_handshake_for_workload_and_monitor():
+    cases = sorted(
+        path for path in PR_CASES_ROOT.iterdir()
+        if path.is_dir() and (path / "Dockerfile").exists()
+    )
+    assert len(cases) == 12
+    for case in cases:
+        dockerfile = (case / "Dockerfile").read_text(encoding="utf-8")
+        workload = next(case.glob("*workload.py")).read_text(encoding="utf-8")
+        monitor = (case / "monitor.py").read_text(encoding="utf-8")
+        assert "COPY case_lifecycle.py /case/case_lifecycle.py" in dockerfile
+        assert "from case_lifecycle import CaseLifecycle" in workload
+        assert "runner-release.json" in monitor
 
 
 def test_diagnosis_timeout_refreshes_control_plane_before_return(monkeypatch):
@@ -173,4 +216,5 @@ def test_run_stage_stops_workload_after_runner_release(tmp_path, monkeypatch):
 
     assert result["runner_control"]["release_requested"] is True
     assert result["workload_stopped_by_runner_release"] is True
-    assert not any("test -f" in command and "/complete" in command for command in commands)
+    assert any("runner-release.json" in command for command in commands)
+    assert any("test -f" in command and "/complete" in command for command in commands)

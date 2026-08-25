@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from celery_queue_tasks import app, delayed_noop, immediate_work
+from case_lifecycle import CaseLifecycle
 
 
 EVIDENCE = Path(os.environ.get("CASE_EVIDENCE_ROOT", "/evidence"))
@@ -67,14 +68,14 @@ def main() -> None:
         (EVIDENCE / "ready").touch()
         eta_count = max(1, int(os.environ.get("CELERY_ETA_TASK_COUNT", "5000")))
         countdown = max(60, int(os.environ.get("CELERY_ETA_COUNTDOWN_SEC", "1800")))
-        deadline = time.monotonic() + max(30, int(os.environ.get("CASE_DURATION_SEC", "180")))
+        lifecycle = CaseLifecycle(EVIDENCE)
         emit("producer_start", eta_count=eta_count, countdown_sec=countdown)
         for sequence in range(1, eta_count + 1):
             delayed_noop.apply_async(args=[sequence], countdown=countdown, queue="eta-workload")
             submitted_eta = sequence
             if sequence % 250 == 0:
                 emit("eta_submission_sample", submitted_eta=submitted_eta, scheduled_count=scheduled_count())
-        while time.monotonic() < deadline:
+        while lifecycle.tick(emit) != "released":
             submitted_immediate += 1
             immediate_work.apply_async(args=[submitted_immediate], queue="eta-workload")
             if submitted_immediate % 10 == 0:

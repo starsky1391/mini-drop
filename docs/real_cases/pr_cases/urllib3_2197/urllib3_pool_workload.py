@@ -9,6 +9,8 @@ from pathlib import Path
 
 import urllib3
 
+from case_lifecycle import CaseLifecycle
+
 
 EVIDENCE = Path(os.environ.get("CASE_EVIDENCE_ROOT", "/evidence"))
 
@@ -32,10 +34,10 @@ def emit(event: str, **fields: object) -> None:
         handle.write(json.dumps({"event": event, "observed_at": time.time(), **fields}, sort_keys=True) + "\n")
 
 
-def worker(pool: urllib3.PoolManager, stop_at: float, worker_id: int) -> None:
+def worker(pool: urllib3.PoolManager, lifecycle: CaseLifecycle, worker_id: int) -> None:
     successes = 0
     failures = 0
-    while time.monotonic() < stop_at:
+    while lifecycle.tick(emit) != "released":
         started = time.perf_counter()
         try:
             response = pool.request(
@@ -62,15 +64,15 @@ def main() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 18080), SlowHandler)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    deadline = time.monotonic() + max(30, int(os.environ.get("CASE_DURATION_SEC", "180")))
+    lifecycle = CaseLifecycle(EVIDENCE)
     pool = urllib3.PoolManager(num_pools=1, maxsize=2, block=True)
-    threads = [threading.Thread(target=worker, args=(pool, deadline, i), daemon=True) for i in range(8)]
+    threads = [threading.Thread(target=worker, args=(pool, lifecycle, i), daemon=True) for i in range(8)]
     (EVIDENCE / "ready").touch()
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join()
-    emit("workload_complete", workers=len(threads))
+    emit("workload_complete", workers=len(threads), release_reason="runner_release")
     (EVIDENCE / "complete").touch()
     server.shutdown()
 

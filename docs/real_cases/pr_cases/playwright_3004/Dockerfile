@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir playwright==1.58.0
 WORKDIR /runtime/source
 COPY monitor.py /case/monitor.py
+COPY case_lifecycle.py /case/case_lifecycle.py
 COPY playwright_workload.py /case/playwright_workload.py
 COPY source /runtime/source
 RUN cp -a /usr/local/lib/python3.11/site-packages/playwright/driver /runtime/source/playwright/driver

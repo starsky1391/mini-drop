@@ -8,6 +8,8 @@ from pathlib import Path
 
 from playwright.async_api import async_playwright
 
+from case_lifecycle import CaseLifecycle
+
 
 EVIDENCE = Path(os.environ.get("CASE_EVIDENCE_ROOT", "/evidence"))
 
@@ -28,8 +30,8 @@ async def main() -> None:
             args=["--no-sandbox"],
         )
         emit("started")
-        deadline = time.monotonic() + max(30, int(os.environ.get("CASE_DURATION_SEC", "180")))
-        while time.monotonic() < deadline:
+        lifecycle = CaseLifecycle(EVIDENCE)
+        while lifecycle.tick(emit) != "released":
             async def operation() -> None:
                 page = await browser.new_page()
                 await page.goto("data:text/html,<title>mini-drop</title>")

@@ -274,6 +274,26 @@ def diagnosis(
     }
 
 
+def request_case_release(
+    remote: Remote,
+    evidence_root: str,
+    reason: str,
+    diagnosis_id: str | None = None,
+) -> dict:
+    payload = {
+        "reason": reason,
+        "diagnosis_id": diagnosis_id,
+        "released_at": datetime.now(timezone.utc).isoformat(),
+    }
+    script = (
+        "import json, pathlib; "
+        f"path = pathlib.Path({evidence_root!r}) / 'runner-release.json'; "
+        f"path.write_text(json.dumps({payload!r}, sort_keys=True), encoding='utf-8')"
+    )
+    remote.run(f"python3 -c {shlex.quote(script)}", timeout=60)
+    return payload
+
+
 def inspect_worker_target(remote: Remote, remote_root_value: str, project_name: str) -> dict:
     project = shlex.quote(project_name)
     container_name = shlex.quote(f"{project_name}-worker-1")
@@ -499,6 +519,16 @@ def run_stage(
                 progress(f"{stage_role}: producer did not complete within the wait window; saving partial evidence")
             else:
                 progress(f"{stage_role}: producer completed both worker-side barriers")
+        release_reason = (
+            diagnosis_result.get("runner_release_reason")
+            or ("diagnosis_unavailable" if diagnosis_mode == "full" else "control_window_complete")
+        )
+        result["runner_control"]["release_file"] = request_case_release(
+            remote,
+            evidence_root_value,
+            release_reason,
+            diagnosis_result.get("diagnosis_id"),
+        )
         return {
             "stage_role": stage_role,
             "diagnosis_mode": diagnosis_mode,

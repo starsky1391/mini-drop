@@ -24,6 +24,13 @@ def test_celery_runner_defaults_use_400_second_workload_and_1200_second_fallback
     assert runner.DEFAULT_DIAGNOSIS_TIMEOUT_SEC == 1200
 
 
+def test_celery_worker_monitor_waits_for_runner_release():
+    monitor = (CASE_ROOT.parent / "celery_8882" / "worker_monitor.py").read_text(encoding="utf-8")
+
+    assert "runner-release.json" in monitor
+    assert "while not release_path.exists()" in monitor
+
+
 class FakeRemote:
     def __init__(self):
         self.commands: list[str] = []

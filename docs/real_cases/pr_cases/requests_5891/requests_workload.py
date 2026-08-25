@@ -9,6 +9,8 @@ from pathlib import Path
 
 import requests
 
+from case_lifecycle import CaseLifecycle
+
 
 EVIDENCE = Path(os.environ.get("CASE_EVIDENCE_ROOT", "/evidence"))
 
@@ -36,12 +38,12 @@ def main() -> None:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     session = requests.Session()
-    deadline = time.monotonic() + max(30, int(os.environ.get("CASE_DURATION_SEC", "180")))
+    lifecycle = CaseLifecycle(EVIDENCE)
     count = 0
     started = time.perf_counter()
     (EVIDENCE / "ready").touch()
     try:
-        while time.monotonic() < deadline:
+        while lifecycle.tick(emit) != "released":
             response = session.get("http://127.0.0.1:18080/", timeout=2)
             count += 1
             if count % 100 == 0:

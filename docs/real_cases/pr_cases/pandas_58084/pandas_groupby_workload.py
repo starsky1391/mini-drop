@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from case_lifecycle import CaseLifecycle
+
 
 EVIDENCE = Path(os.environ.get("CASE_EVIDENCE_ROOT", "/evidence"))
 
@@ -30,9 +32,9 @@ def build_frame(rows: int = 50000, categories: int = 5000) -> pd.DataFrame:
 def main() -> None:
     frame = build_frame()
     (EVIDENCE / "ready").touch()
-    deadline = time.monotonic() + max(30, int(os.environ.get("CASE_DURATION_SEC", "180")))
+    lifecycle = CaseLifecycle(EVIDENCE)
     count = 0
-    while time.monotonic() < deadline:
+    while lifecycle.tick(emit) != "released":
         started = time.perf_counter()
         result = frame.groupby("group", observed=False)["value"].transform("sum")
         elapsed_ms = (time.perf_counter() - started) * 1000

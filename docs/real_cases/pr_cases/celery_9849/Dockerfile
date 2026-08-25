@@ -3,6 +3,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc procps && r
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 WORKDIR /opt/project
 COPY monitor.py /case/monitor.py
+COPY case_lifecycle.py /case/case_lifecycle.py
 COPY celery_queue_tasks.py /case/celery_queue_tasks.py
 COPY celery_queue_workload.py /case/celery_queue_workload.py
 COPY source /opt/project

@@ -7,6 +7,8 @@ from pathlib import Path
 
 from kafka.admin import KafkaAdminClient, NewTopic
 
+from case_lifecycle import CaseLifecycle
+
 
 EVIDENCE = Path(os.environ.get("CASE_EVIDENCE_ROOT", "/evidence"))
 
@@ -18,10 +20,10 @@ def emit(event: str, **fields: object) -> None:
 
 
 def main() -> None:
-    deadline = time.monotonic() + max(30, int(os.environ.get("CASE_DURATION_SEC", "180")))
+    lifecycle = CaseLifecycle(EVIDENCE)
     bootstrap = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "dependency:9092")
     ready = False
-    while time.monotonic() < deadline:
+    while lifecycle.tick(emit) != "released":
         admin = None
         try:
             admin = KafkaAdminClient(bootstrap_servers=bootstrap, request_timeout_ms=3000, api_version_auto_timeout_ms=3000)

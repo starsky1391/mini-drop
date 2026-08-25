@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir --upgrade pip setuptools "cython<3.1" numpy
 WORKDIR /opt/project
 COPY monitor.py /case/monitor.py
+COPY case_lifecycle.py /case/case_lifecycle.py
 COPY pyav_workload.py /case/pyav_workload.py
 COPY source /opt/project
 RUN python -c "from pathlib import Path; p = Path('av/bitstream.pxd'); text = p.read_text(encoding='utf-8'); old = '    cdef const lib.AVBSFContext *ptr\\n'; new = '    cdef lib.AVBSFContext *ptr\\n'; assert old in text, 'bitstream.pxd pointer declaration not found'; p.write_text(text.replace(old, new), encoding='utf-8')" && \

@@ -11,6 +11,8 @@ from pathlib import Path
 import urllib3
 from urllib3.util import Retry
 
+from case_lifecycle import CaseLifecycle
+
 
 EVIDENCE = Path(os.environ.get("CASE_EVIDENCE_ROOT", "/evidence"))
 
@@ -54,11 +56,11 @@ def main() -> None:
     pool = urllib3.PoolManager(retries=retries, timeout=urllib3.Timeout(connect=1.0, read=1.0))
     emit("retry_configuration", retry_kwargs=repr(retries))
     (EVIDENCE / "ready").touch()
-    deadline = time.monotonic() + max(30, int(os.environ.get("CASE_DURATION_SEC", "180")))
+    lifecycle = CaseLifecycle(EVIDENCE)
     count = 0
     errors = 0
     try:
-        while time.monotonic() < deadline:
+        while lifecycle.tick(emit) != "released":
             started = time.perf_counter()
             try:
                 pool.request("GET", "http://127.0.0.1:18080/flaky")

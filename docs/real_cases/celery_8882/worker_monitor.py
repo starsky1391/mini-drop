@@ -73,11 +73,10 @@ def emit(event: str, pid: int | None, **fields: object) -> None:
 
 def main() -> int:
     interval = max(0.2, float(os.environ.get("CELERY_SAMPLE_INTERVAL_SEC", "1")))
-    duration = max(60.0, float(os.environ.get("CELERY_CASE_DURATION_SEC", "300")))
-    deadline = time.monotonic() + duration
+    release_path = EVIDENCE / "runner-release.json"
     emit("monitor_start", None)
     pid = None
-    while time.monotonic() < deadline:
+    while not release_path.exists():
         pid = worker_pid()
         if pid is None:
             emit("worker_not_found", None)
@@ -88,7 +87,7 @@ def main() -> int:
     pid = worker_pid() or pid
     if pid:
         os.kill(pid, signal.SIGTERM)
-    emit("worker_exit_requested", pid)
+    emit("worker_exit_requested", pid, reason="runner_release")
     return 0
 
 

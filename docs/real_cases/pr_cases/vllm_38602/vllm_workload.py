@@ -5,6 +5,8 @@ import os
 import time
 from pathlib import Path
 
+from case_lifecycle import CaseLifecycle
+
 
 EVIDENCE = Path(os.environ.get("CASE_EVIDENCE_ROOT", "/evidence"))
 
@@ -22,8 +24,8 @@ def main() -> None:
     ray.init(address=os.environ.get("RAY_ADDRESS", "auto"), ignore_reinit_error=True)
     emit("ray_connected")
     emit("logprobs_workload_requires_gpu", gpu_required=True)
-    deadline = time.monotonic() + max(30, int(os.environ.get("CASE_DURATION_SEC", "180")))
-    while time.monotonic() < deadline:
+    lifecycle = CaseLifecycle(EVIDENCE)
+    while lifecycle.tick(emit) != "released":
         time.sleep(1)
     (EVIDENCE / "complete").touch()
 

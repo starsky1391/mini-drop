@@ -8,9 +8,6 @@ from pathlib import Path
 
 EVIDENCE = Path(os.environ.get("CASE_EVIDENCE_ROOT", "/evidence"))
 PATTERN = os.environ.get("TARGET_PROCESS_PATTERN", "")
-DURATION = max(60, int(os.environ.get("CASE_DURATION_SEC", "180")))
-
-
 def find_target() -> int | None:
     for path in sorted(Path("/proc").iterdir(), key=lambda item: item.name):
         if not path.name.isdigit():
@@ -43,8 +40,7 @@ def emit(event: str, **fields: object) -> None:
         handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
 
-deadline = time.monotonic() + DURATION
-while time.monotonic() < deadline:
+while not (EVIDENCE / "runner-release.json").exists():
     pid = find_target()
     emit("rss_sample", pid=pid, rss_bytes=rss(pid))
     time.sleep(1)

@@ -8,6 +8,8 @@ from pathlib import Path
 
 from aiohttp import ClientSession, ClientTimeout, web
 
+from case_lifecycle import CaseLifecycle
+
 
 EVIDENCE = Path(os.environ.get("CASE_EVIDENCE_ROOT", "/evidence"))
 PAYLOAD = b"x" * (8 * 1024 * 1024)
@@ -36,9 +38,9 @@ async def main() -> None:
     site = web.TCPSite(runner, "127.0.0.1", 18080)
     await site.start()
     (EVIDENCE / "ready").touch()
-    deadline = time.monotonic() + max(30, int(os.environ.get("CASE_DURATION_SEC", "180")))
+    lifecycle = CaseLifecycle(EVIDENCE)
     async with ClientSession(timeout=ClientTimeout(total=30)) as session:
-        while time.monotonic() < deadline:
+        while lifecycle.tick(emit) != "released":
             try:
                 async with session.get(
                     "http://127.0.0.1:18080/large",

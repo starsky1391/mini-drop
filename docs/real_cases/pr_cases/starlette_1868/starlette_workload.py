@@ -15,6 +15,8 @@ from starlette.requests import Request
 from starlette.responses import StreamingResponse
 from starlette.routing import Route
 
+from case_lifecycle import CaseLifecycle
+
 
 EVIDENCE = Path(os.environ.get("CASE_EVIDENCE_ROOT", "/evidence"))
 
@@ -50,10 +52,10 @@ def serve() -> None:
 
 
 async def run_client() -> None:
-    deadline = time.monotonic() + max(30, int(os.environ.get("CASE_DURATION_SEC", "180")))
+    lifecycle = CaseLifecycle(EVIDENCE)
     count = 0
     async with httpx.AsyncClient(timeout=10) as client:
-        while time.monotonic() < deadline:
+        while lifecycle.tick(emit) != "released":
             started = time.perf_counter()
             response = await client.get("http://127.0.0.1:18080/stream")
             elapsed_ms = (time.perf_counter() - started) * 1000

@@ -9,6 +9,8 @@ from pathlib import Path
 
 import av
 
+from case_lifecycle import CaseLifecycle
+
 
 EVIDENCE = Path(os.environ.get("CASE_EVIDENCE_ROOT", "/evidence"))
 
@@ -32,8 +34,8 @@ def main() -> None:
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     av.logging.set_level(av.logging.VERBOSE)
     (EVIDENCE / "ready").touch()
-    deadline = time.monotonic() + max(30, int(os.environ.get("CASE_DURATION_SEC", "180")))
-    while time.monotonic() < deadline:
+    lifecycle = CaseLifecycle(EVIDENCE)
+    while lifecycle.tick(emit) != "released":
         threads = [threading.Thread(target=worker, daemon=True) for _ in range(4)]
         for thread in threads:
             thread.start()
